@@ -6,6 +6,7 @@
 namespace {
   bool armed = false;
   bool computeCreated = false;
+  uint32_t computeAttempts = 0;
   void *resolve(const char *name) {
     static void *loader = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
     return dlsym(loader, name);
@@ -51,7 +52,8 @@ extern "C" VKAPI_ATTR VkResult VKAPI_CALL vkCreateComputePipelines(VkDevice devi
                                                                    const VkComputePipelineCreateInfo *infos,
                                                                    const VkAllocationCallbacks *alloc,
                                                                    VkPipeline *outputs) {
-  if (fault("compute")) {
+  ++computeAttempts;
+  if (fault("compute") || (fault("transparency-compute") && computeAttempts == 2)) {
     for (uint32_t i = 0; i < count; ++i)
       outputs[i] = VK_NULL_HANDLE;
     return VK_ERROR_OUT_OF_DEVICE_MEMORY;

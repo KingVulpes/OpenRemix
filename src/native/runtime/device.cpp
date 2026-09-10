@@ -201,6 +201,10 @@ namespace remix {
         const auto required = VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
         missing((target.optimalTilingFeatures & required) == required, "G-buffer attachment/storage format");
       }
+      VkFormatProperties stateFormat;
+      vkGetPhysicalDeviceFormatProperties(selection.physicalDevice, VK_FORMAT_R32G32B32A32_UINT, &stateFormat);
+      missing((stateFormat.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) != 0,
+              "RGBA32UI tracing state storage");
       VkPhysicalDeviceAccelerationStructurePropertiesKHR accelerationProperties = {
           .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR};
       VkPhysicalDeviceProperties2 tracingProperties = {

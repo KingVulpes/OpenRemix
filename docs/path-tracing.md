@@ -27,8 +27,8 @@ Required capabilities are Vulkan 1.2, `VK_KHR_acceleration_structure`,
 buffer device addresses, shader int64, nonuniform sampled-image array indexing,
 512 sampled-image descriptors, 524 compute-stage resources, two AS descriptors,
 eight storage-image descriptors, four color attachments, storage/color-attachment support
-for RGBA32F, RGBA16F, RGBA8 and R32F, and a graphics/compute/presentation queue. Supported tracing
-features are enabled when the Vulkan device is created. Raster still requires
+for RGBA32F, RGBA16F, RGBA8 and R32F, RGBA32UI storage support, and a
+graphics/compute/presentation queue. Supported tracing features are enabled when the Vulkan device is created. Raster still requires
 only its previous Vulkan 1.1 graphics/presentation capabilities.
 
 | Config suffix under `rtx.native.pathtrace.` | Range | Default |
@@ -163,10 +163,23 @@ REBLUR_DIFFUSE_SH, and resolved with the sample's high-quality SG resolve and di
 re-jittering. Both SH outputs are used before restoring material factors. Full-rate
 sampling disables hit-distance reconstruction; roughness is linear and fixed at one.
 
-Blended primary sheets are excluded from opaque guides. A separate bounded pass
-shades at most 32 sheets and combines straight-through tint and opacity with the
-denoised opaque background. Distant-light shadows use deterministic opacity/tint
-products; indirect continuations use stochastic transmission. The translucent
+Blended primary sheets are excluded from opaque guides. Opaque lighting and transparent
+composition use separate compute dispatches. The first walks through at most 32
+sheets and shades the opaque background with the initial RNG sequence used by
+confidence retracing. The second walks the sheets again in batches of at most eight
+position/normal/color records, shades them in the original order, and combines
+straight-through tint and opacity with the denoised opaque background. The smaller
+records are never live across opaque shading or NRD guide generation.
+
+The existing transmission image uses RGBA32UI storage between dispatches for exact
+background-radiance and RNG bits. World-color alpha temporarily carries the signed
+sheet count (negative means the layer bound blocked the background), preserving
+previous RGB for progressive accumulation. A compute write-to-read/write barrier
+orders the dispatches. Composition restores stable depth and clears transmission
+before the retained raster multiply/add passes. No extra per-pixel allocation,
+lighting sample, public interface field or history-reset condition is introduced.
+
+Distant-light shadows use deterministic opacity/tint products; indirect continuations use stochastic transmission. The translucent
 material fallback still multiplies alpha by 0.2. The layer bound absorbs remaining
 rays. There is no ray bending or specular material model.
 

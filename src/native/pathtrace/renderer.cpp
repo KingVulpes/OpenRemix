@@ -19,6 +19,8 @@ namespace remix {
       vkDestroyQueryPool(device, timestamps, nullptr);
     if (compaction)
       vkDestroyQueryPool(device, compaction, nullptr);
+    if (transparencyCompute)
+      vkDestroyPipeline(device, transparencyCompute, nullptr);
     if (compute)
       vkDestroyPipeline(device, compute, nullptr);
     for (auto shader : shaders)
@@ -178,6 +180,17 @@ namespace remix {
                   .pName = "main"},
         .layout = g.layout};
     check(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline, nullptr, &g.compute));
+    VkShaderModuleCreateInfo transparencyInfo{
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .codeSize = sizeof(trace::transparencyShader),
+        .pCode = trace::transparencyShader};
+    VkShaderModule transparencyShader{};
+    check(vkCreateShaderModule(device, &transparencyInfo, nullptr, &transparencyShader));
+    pipeline.stage.module = transparencyShader;
+    auto transparencyResult =
+        vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline, nullptr, &g.transparencyCompute);
+    vkDestroyShaderModule(device, transparencyShader, nullptr);
+    check(transparencyResult);
     uint32_t count = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(physical, &count, nullptr);
     std::vector<VkQueueFamilyProperties> families(count);
@@ -198,7 +211,7 @@ namespace remix {
     g.extent = extent;
     g.encodeOutput = encodeOutput;
     g.world = g.image();
-    g.transmission = g.image();
+    g.transmission = g.image(false, VK_FORMAT_R32G32B32A32_UINT);
     g.sky = g.image(true);
     g.createPrimary(depthFormat, depthView);
     VkAttachmentDescription attachments[] = {

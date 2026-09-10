@@ -142,6 +142,7 @@ namespace remix {
     VkDescriptorPool pool = VK_NULL_HANDLE;
     VkDescriptorSet set = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
+    VkPipeline transparencyCompute{}, temporalTransparencyCompute{};
     VkPipeline compute = VK_NULL_HANDLE, composite[2] = {};
     VkShaderModule shaders[3] = {};
     VkQueryPool compaction = VK_NULL_HANDLE, timestamps = VK_NULL_HANDLE;

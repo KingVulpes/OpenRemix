@@ -369,6 +369,12 @@ namespace remix {
                               nullptr);
     }
     vkCmdDispatch(command, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
+    // Publish opaque lighting, RNG and sheet count to transparent composition.
+    barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE,
+                      denoiser ? temporalTransparencyCompute : transparencyCompute);
+    vkCmdDispatch(command, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
     if (timestamps) {
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, timestamps, 3);
       timingPending = true;

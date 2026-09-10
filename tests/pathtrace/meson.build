@@ -37,5 +37,8 @@ if get_option('gpu_tests')
     test('Tracing initialization failure fallback', pathtrace_test,
       args : [meson.current_build_dir() / 'pathtrace-scenes', 'init-failure'],
       env : ['LD_PRELOAD=' + faults.full_path(), 'REMIX_TEST_FAULT=compute'], timeout : 30)
+    test('Tracing transparent pipeline failure fallback', pathtrace_test,
+      args : [meson.current_build_dir() / 'pathtrace-scenes', 'init-failure'],
+      env : ['LD_PRELOAD=' + faults.full_path(), 'REMIX_TEST_FAULT=transparency-compute'], timeout : 30)
   endif
 endif

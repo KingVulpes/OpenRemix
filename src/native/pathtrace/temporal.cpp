@@ -10,6 +10,9 @@ namespace remix {
       denoisedFrames += s.renderedFrames;
       postPeakMemory = std::max(postPeakMemory, s.peakMemoryBytes);
     }
+    if (temporalTransparencyCompute)
+      vkDestroyPipeline(device, temporalTransparencyCompute, nullptr);
+    temporalTransparencyCompute = VK_NULL_HANDLE;
     if (temporalCompute)
       vkDestroyPipeline(device, temporalCompute, nullptr);
     if (confidenceCompute)
@@ -64,6 +67,8 @@ namespace remix {
         check(result);
       };
       make(trace::temporalShader, sizeof(trace::temporalShader), temporalCompute);
+      make(trace::temporalTransparencyShader, sizeof(trace::temporalTransparencyShader),
+           temporalTransparencyCompute);
       if (reblur)
         make(trace::confidenceShader, sizeof(trace::confidenceShader), confidenceCompute);
       denoiser = std::move(next);

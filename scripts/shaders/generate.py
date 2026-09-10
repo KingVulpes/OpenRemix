@@ -11,7 +11,7 @@ import nrd
 ROOT = Path(__file__).resolve().parents[2]
 BACKENDS = {
     'raster': ('raster', 'vulkan1.1', ('vert', 'frag')),
-    'pathtrace': ('trace', 'vulkan1.2', ('vert', 'frag', 'comp', 'temporal', 'confidence', 'gbufferVert', 'gbufferFrag', 'depthFrag')),
+    'pathtrace': ('trace', 'vulkan1.2', ('vert', 'frag', 'comp', 'temporal', 'transparency', 'temporalTransparency', 'confidence', 'gbufferVert', 'gbufferFrag', 'depthFrag')),
     'denoise': ('denoise', 'vulkan1.2', ('comp',)),
 }
 
@@ -32,8 +32,9 @@ def process(backend, check, validate):
                 words = [int(word, 16) for word in re.findall(r'0x[0-9a-fA-F]+', match[1])]
                 binary.write_bytes(struct.pack('<' + 'I' * len(words), *words))
             else:
-                defines = ['-DTEMPORAL=1'] if stage in ('temporal', 'confidence') else []
+                defines = ['-DTEMPORAL=1'] if stage in ('temporal', 'temporalTransparency', 'confidence') else []
                 if stage == 'confidence': defines += ['-DCONFIDENCE_PASS=1']
+                if stage in ('transparency', 'temporalTransparency'): defines += ['-DTRANSPARENCY_PASS=1']
                 source_stage = 'comp' if defines else stage
                 source = directory / (backend + '.' + source_stage)
                 if stage in ('gbufferVert', 'gbufferFrag', 'depthFrag'):

@@ -12,7 +12,9 @@ layout(local_size_x=8, local_size_y=8) in;
 layout(set=0,binding=0) uniform accelerationStructureEXT staticScene;
 layout(set=0,binding=1) uniform accelerationStructureEXT dynamicScene;
 layout(set=0,binding=4,rgba32f) uniform image2D worldColor;
-layout(set=0,binding=5,rgba32f) uniform image2D backgroundTransmission;
+// Between lighting dispatches: background RGB bits and the opaque sample RNG.
+// After composition: zero transmission for the retained raster multiply pass.
+layout(set=0,binding=5,rgba32ui) uniform uimage2D backgroundTransmission;
 layout(set=0,binding=7,rgba32f) readonly uniform image2D rawSky;
 
 layout(set=0,binding=8,rgba32f) readonly uniform image2D primaryPosition;
@@ -57,7 +59,8 @@ void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, ino
   hit.color=albedo(s,tri/3,bary);
   hit.blended=(s.state.w&2)!=0;
   hit.previousPosition=hit.p;hit.historyValid=false;
-#ifdef TEMPORAL
+// Transparent sheets never provide motion or NRD guides.
+#if defined(TEMPORAL) && !defined(TRANSPARENCY_PASS)
   if(s.previousVertices!=0) {
     Vertices previous=Vertices(s.previousVertices);
     vec3 pa=previous.v[s.indices.i[tri]].position.xyz;
@@ -160,13 +163,12 @@ void main() {
   // Shared with raster visibility and sky; zero unless TAA or accumulation can resolve it.
   vec2 jitter=frame.jitter.xy;
   vec3 origin,direction;ray((vec2(pixel)+.5+jitter)/vec2(frame.target.xy)*2-1,frame.inverseCamera,origin,direction);
+#ifndef TRANSPARENCY_PASS
   Hit primary=frame.target.w!=0?rasterPrimary(pixel,origin):closest(origin,direction);
-  vec3 tint=vec3(1),transparent=vec3(0);float opacityProduct=1;
-  // Bounded straight-through primary composition. Blended surfaces never supply NRD guides.
-  // Shade sheets after the opaque sample below so confidence retracing uses the same seeds.
-  Hit sheets[32];uint sheetCount=0;
-  while(primary.blended&&sheetCount<32) {
-    sheets[sheetCount++]=primary;origin=offsetRay(primary.p,-primary.n);primary=closest(origin,direction);
+  // Opaque lighting owns the initial random sequence used by confidence retracing.
+  uint sheetCount=0;
+  while(sheetCount<32&&primary.blended) {
+    ++sheetCount;origin=offsetRay(primary.p,-primary.n);primary=closest(origin,direction);
   }
   vec3 indirect=vec3(0),primaryDirect=vec3(0);vec4 packed0=vec4(0),packed1=vec4(0);
   if(primary.t<1e30&&!primary.blended) {
@@ -181,14 +183,9 @@ void main() {
 #endif
     }
   }
-  for(uint layer=0;layer<sheetCount;++layer) {
-    Hit hit=sheets[layer];vec3 surfaceLight=direct(hit);
-    for(uint i=0;i<frame.config.x;++i){vec3 d;float t;surfaceLight+=hit.color.rgb*continuation(hit,d,t)/float(frame.config.x);}
-    transparent+=tint*hit.color.a*surfaceLight;tint*=hit.color.rgb*(1-hit.color.a);opacityProduct*=1-hit.color.a;
-  }
   bool opaque=primary.t<1e30&&!primary.blended;
-  vec3 color=transparent+tint*(opaque?primaryDirect+primary.color.rgb*indirect:imageLoad(rawSky,pixel).rgb);
-  if(primary.blended)color=transparent; // Layer bound: unresolved background is blocked.
+  vec3 color=opaque?primaryDirect+primary.color.rgb*indirect:imageLoad(rawSky,pixel).rgb;
+  if(primary.blended)color=vec3(0);
 #ifdef TEMPORAL
   float z=opaque?abs((temporal.view*vec4(primary.p,1)).z):1e10;
   vec4 mv=vec4(0);vec3 N=opaque?primary.n:vec3(0,0,1);
@@ -205,7 +202,43 @@ void main() {
   imageStore(guideAlbedo,pixel,opaque?vec4(primary.color.rgb,1):vec4(0));
   imageStore(sh0,pixel,packed0);imageStore(sh1,pixel,packed1);
   imageStore(directLight,pixel,vec4(safeRadiance(primaryDirect),1));imageStore(lighting,pixel,vec4(safeRadiance(indirect),1));
-  imageStore(transparentLight,pixel,vec4(safeRadiance(transparent),1));imageStore(transmittance,pixel,vec4(primary.blended?vec3(0):tint,opacityProduct));
+#endif
+  // Integer storage preserves every RNG bit, including float NaN/subnormal patterns.
+  imageStore(backgroundTransmission,pixel,uvec4(floatBitsToUint(color),rng));
+  // Reuse depth as a signed sheet count until composition writes stable depth.
+  // Preserve accumulated RGB; a negative count marks a blocked layer-limit exit.
+  vec3 previousColor=frame.config.w>0?imageLoad(worldColor,pixel).rgb:vec3(0);
+  imageStore(worldColor,pixel,vec4(previousColor,primary.blended?-float(sheetCount):float(sheetCount)));
+#else
+  uvec4 background=imageLoad(backgroundTransmission,pixel);
+  rng=background.a;
+  vec3 tint=vec3(1),transparent=vec3(0);float opacityProduct=1;
+  float signedCount=imageLoad(worldColor,pixel).a;
+  uint sheetCount=uint(abs(signedCount));
+  Hit primary;
+  if(sheetCount!=0)primary=frame.target.w!=0?rasterPrimary(pixel,origin):closest(origin,direction);
+  // Keep only shading fields, at most eight sheets at once. Separating these
+  // batches from opaque/NRD work avoids the old 32-Hit array living across both.
+  // Pretrace each batch before shading it; retain front-to-back RNG order.
+  struct Sheet { vec3 p;vec3 n;vec4 color; };
+  Sheet sheets[8];
+  for(uint batch=0;batch<sheetCount;batch+=8) {
+    uint count=min(8,sheetCount-batch);
+    for(uint layer=0;layer<count;++layer) {
+      sheets[layer]=Sheet(primary.p,primary.n,primary.color);
+      if(batch+layer+1<sheetCount)primary=closest(offsetRay(primary.p,-primary.n),direction);
+    }
+    for(uint layer=0;layer<count;++layer) {
+      Hit hit;hit.p=sheets[layer].p;hit.n=sheets[layer].n;hit.color=sheets[layer].color;
+      vec3 surfaceLight=direct(hit);
+      for(uint i=0;i<frame.config.x;++i){vec3 d;float t;surfaceLight+=hit.color.rgb*continuation(hit,d,t)/float(frame.config.x);}
+      transparent+=tint*hit.color.a*surfaceLight;tint*=hit.color.rgb*(1-hit.color.a);opacityProduct*=1-hit.color.a;
+    }
+  }
+  vec3 color=transparent+tint*uintBitsToFloat(background.rgb);
+#ifdef TEMPORAL
+  imageStore(transparentLight,pixel,vec4(safeRadiance(transparent),1));
+  imageStore(transmittance,pixel,vec4(signedCount<0?vec3(0):tint,opacityProduct));
 #endif
   float depth=1;
   if(frame.target.w!=0) {
@@ -229,12 +262,11 @@ void main() {
     }
   }
   float count=float(frame.config.w);
-  vec3 transmission=vec3(0);
   if (count>0) {
     color=(imageLoad(worldColor,pixel).rgb*count+color)/(count+1);
-    transmission=(imageLoad(backgroundTransmission,pixel).rgb*count+transmission)/(count+1);
   }
   imageStore(worldColor,pixel,vec4(color,depth));
-  imageStore(backgroundTransmission,pixel,vec4(transmission,1));
+  imageStore(backgroundTransmission,pixel,uvec4(0,0,0,floatBitsToUint(1.0)));
+#endif
 #endif
 }

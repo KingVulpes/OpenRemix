@@ -206,6 +206,8 @@ namespace remix {
     }
     std::copy_n(light.direction, 3, frame.direction);
     std::copy_n(light.radiance, 3, frame.radiance);
+    if (options.sky)
+      std::copy_n(resources.skyRadiance().data(), 3, frame.skyRadiance);
     frame.config[0] = options.samples;
     frame.config[1] = options.bounces;
     frame.target[0] = extent.width;

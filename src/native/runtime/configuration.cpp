@@ -79,6 +79,8 @@ namespace remix {
       m_traceOptions.taa = number != 0;
     else if (!std::strcmp(key, "validation") && number <= 1)
       m_traceOptions.validation = number != 0;
+    else if (!std::strcmp(key, "sky") && number <= 1)
+      m_traceOptions.sky = number != 0;
     else if (!std::strcmp(key, "forceRebuild") && number <= 1)
       m_traceOptions.forceRebuild = number != 0;
     else

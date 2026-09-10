@@ -79,6 +79,17 @@ typedef struct remixapi_CameraTemporalEXT {
   const void* pNext;
   uint64_t worldEpoch, historyResetEpoch;
 } remixapi_CameraTemporalEXT;
+// Optional world CameraInfo pNext. Linear, nonnegative, finite RGB radiance at
+// unit strength; enabled must be 0 or 1. Absent/disabled means black indirect
+// environment. Sky/viewmodel cameras never replace the world environment.
+#define REMIXAPI_STRUCT_TYPE_CAMERA_ENVIRONMENT_EXT ((remixapi_StructType)0x7fff1004)
+typedef struct remixapi_CameraEnvironmentEXT {
+  remixapi_StructType sType;
+  const void* pNext;
+  remixapi_Bool enabled;
+  remixapi_Float3D radiance;
+} remixapi_CameraEnvironmentEXT;
+
 typedef struct remixapi_DenoisingCapabilitiesEXT {
   uint32_t structSize, reblurShSupported, taaSupported, reserved;
   char unavailableReason[256];

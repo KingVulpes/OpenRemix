@@ -41,11 +41,12 @@ only its previous Vulkan 1.1 graphics/presentation capabilities.
 | `taa` | `0`, `1`, `false`, `true` | true |
 | `validation` | Same booleans; NRD validation overlay | false |
 | `forceRebuild` | Same booleans; rebuild dynamic TLAS for profiling | false |
+| `sky` | Same booleans; indirect environment illumination | true |
 
 The last distant light drawn during a frame is selected, including zero radiance.
 Direction specifies the direction light travels; radiance and color are linear.
-No submitted distant light means no world illumination. The sample and BetaRT draw
-a white daylight light each frame. The debug panel can override its normalized
+No submitted distant light means no direct sunlight. The sample draws white daylight;
+BetaRT updates its white distant light from the visible sun each world frame. The debug panel can override its normalized
 direction, color and intensity. Other light types and automatic persistent-light
 submission retain their compatibility no-op behavior.
 
@@ -68,7 +69,7 @@ instances when explicitly using the extension. Sky and viewmodel categories rema
 raster-only. Hidden/ignored/first-person-shadow categories retain their prior skip
 behavior. Client submissions must explicitly classify gameplay feedback.
 
-BetaRT private JNI protocol version 3 carries lifetime IDs, classification, raster
+BetaRT private JNI protocol version 5 carries lifetime IDs, classification, raster
 visibility, object transforms, separate camera/floating-origin data, and camera world/reset epochs. Every camera packet carries the epochs, so replacing a pending frame cannot lose a reset. JNI still
 copies packets before returning and retains ordered resource updates plus the
 bounded frame mailbox. Terrain IDs use world generation, section lifetime and mesh
@@ -167,7 +168,25 @@ shades at most 32 sheets and combines straight-through tint and opacity with the
 denoised opaque background. Distant-light shadows use deterministic opacity/tint
 products; indirect continuations use stochastic transmission. The translucent
 material fallback still multiplies alpha by 0.2. The layer bound absorbs remaining
-rays. There is no ray bending, specular material model or environment illumination.
+rays. There is no ray bending or specular material model.
+
+Optional `remixapi_CameraEnvironmentEXT` on the world camera supplies an enabled
+flag and finite, nonnegative linear RGB sky radiance. Invalid metadata rejects the
+whole camera submission before changing matrices, epochs or environment state.
+Absent or disabled metadata selects black; sky/viewmodel submissions leave world
+environment state intact. The CPU/GPU frame appends one aligned radiance vector.
+Each existing diffuse continuation that escapes adds throughput times this uniform
+radiance, including cutout rejection and stochastic tinted transmission. No extra
+sample, pass, screen lookup or cubemap is used. The existing bounce/layer bounds
+and NRD SH packing still apply; zero indirect bounces disables sky illumination.
+
+BetaRT reads the same interpolated sky RGB and celestial angle as its rasterized
+sky. It applies the sRGB transfer to sky RGB exactly once, at unit strength. With
+`theta = 2*pi*celestialAngle`, sun travel direction is `(0, -cos(theta), -sin(theta))`;
+white radiance is `pi * clamp(2*cos(theta), 0, 1) * (1-rain) * (1-thunder)`.
+Sunlight fades continuously to zero at both horizons. Dimensions without a sky
+submit disabled sky and zero sunlight. Night ambient comes solely from Minecraft's
+night-sky color. The sky toggle is independent of the manual daylight override.
 
 Sky renders to linear HDR. Resolved opaque light, transparent light and native TAA
 compose there before raster particles, weather, labels, held items, selection and
@@ -204,7 +223,9 @@ Motion is previous-minus-current screen position in pixels plus view-depth delta
 NRD receives nonjittered matrices and separate current/previous pixel jitter. Sparse
 lighting confidence retraces previous samples with their previous seeds in the
 current scene at one-fifth width/height, then applies five geometry-aware blur passes.
-This detects illumination changes from moving offscreen occluders without SHARC.
+This detects illumination changes from moving offscreen occluders and updated sky
+radiance without SHARC. Ordinary time/weather and sky-toggle changes update scene
+identity and progressive accumulation, while preserving global temporal history.
 REBLUR retains pinned defaults apart from full-rate reconstruction, enabled confidence
 and history length derived from actual frame time and the SDK accumulation duration.
 

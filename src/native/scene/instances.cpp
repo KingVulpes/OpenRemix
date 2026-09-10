@@ -79,11 +79,24 @@ namespace remix {
       camera[c * 4 + 1] = -camera[c * 4 + 1];
     } // Vulkan framebuffer Y.
     finite(camera.data(), 16);
+    // Validate every extension before committing any camera or world state.
+    std::array<float, 3> sky = {};
+    if (const auto *environment = static_cast<const remixapi_CameraEnvironmentEXT *>(
+            extension(info.pNext, REMIXAPI_STRUCT_TYPE_CAMERA_ENVIRONMENT_EXT))) {
+      const auto &rgb = environment->radiance;
+      sky = {rgb.x, rgb.y, rgb.z};
+      finite(sky.data(), sky.size());
+      if (environment->enabled > 1 || std::any_of(sky.begin(), sky.end(), [](float v) { return v < 0; }))
+        throw invalid;
+      if (!environment->enabled)
+        sky = {};
+    }
     if (info.type == REMIXAPI_CAMERA_TYPE_WORLD) {
       const auto *metadata = static_cast<const remixapi_CameraTemporalEXT *>(
           extension(info.pNext, REMIXAPI_STRUCT_TYPE_CAMERA_TEMPORAL_EXT));
       m_temporalEpoch =
           metadata ? TemporalEpoch{metadata->worldEpoch, metadata->historyResetEpoch} : TemporalEpoch{};
+      m_skyRadiance = sky;
     }
     m_cameras[info.type] = camera;
     m_views[info.type] = view;

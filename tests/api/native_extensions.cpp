@@ -24,6 +24,9 @@ int main(int argc, char **argv) {
   static_assert(sizeof(remixapi_InputEvent) == 32);
   static_assert(sizeof(remixapi_WindowMetrics) == 16);
   static_assert(sizeof(remixapi_CameraTemporalEXT) == 32);
+  static_assert(sizeof(remixapi_CameraEnvironmentEXT) == 32);
+  static_assert(offsetof(remixapi_CameraEnvironmentEXT, enabled) == 16);
+  static_assert(offsetof(remixapi_CameraEnvironmentEXT, radiance) == 20);
   static_assert(sizeof(remixapi_DenoisingCapabilitiesEXT) == 272);
   static_assert(sizeof(remixapi_DenoisingStatisticsEXT) == 344);
   remixapi_DenoisingCapabilitiesEXT denoiseCaps{};

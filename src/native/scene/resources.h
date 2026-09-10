@@ -44,6 +44,7 @@ namespace remix {
     const scene::Matrix &view(uint32_t type = 0) const { return m_views[type]; }
     bool cameraValid() const { return m_cameraValid[0]; }
     scene::TemporalEpoch temporalEpoch() const { return m_temporalEpoch; }
+    const std::array<float, 3> &skyRadiance() const { return m_skyRadiance; }
     void createLight(const remixapi_LightInfo &info, remixapi_LightHandle &handle);
     void updateLight(remixapi_LightHandle handle, const remixapi_LightInfo &info);
     void destroyLight(remixapi_LightHandle handle);
@@ -70,6 +71,7 @@ namespace remix {
     scene::DistantLight m_light;
     std::array<bool, 3> m_cameraValid = {};
     scene::TemporalEpoch m_temporalEpoch;
+    std::array<float, 3> m_skyRadiance = {};
     std::vector<scene::Draw> m_draws, m_uiDraws, m_overlay;
     std::unordered_set<uint64_t> m_frameIds;
     float m_tint[4] = {};

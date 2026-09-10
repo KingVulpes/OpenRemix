@@ -29,6 +29,7 @@ namespace remix {
     m_default.reset();
     m_cameraValid = {};
     m_temporalEpoch = {};
+    m_skyRadiance = {};
     m_lights.clear();
     m_light = {};
     for (auto &view : m_views)

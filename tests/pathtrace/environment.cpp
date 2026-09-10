@@ -1,0 +1,242 @@
+#include <remix/remix_native_ext.h>
+#include <SDL3/SDL.h>
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <vector>
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_ONLY_PNG
+#include <image/stb_image.h>
+
+namespace {
+  void require(bool value, const char *message) {
+    if (!value) { std::fprintf(stderr, "%s\n", message); std::exit(1); }
+  }
+  void ok(remixapi_ErrorCode result) { require(!result, "Environment test API failure"); }
+}
+int main(int argc, char **argv) {
+  require(argc == 2, "Supply screenshot directory");
+  const auto directory = std::filesystem::absolute(argv[1]);
+  std::filesystem::create_directories(directory);
+  remixapi_Interface api{};
+  remixapi_InitializeLibraryInfo init{};
+  init.sType = REMIXAPI_STRUCT_TYPE_INITIALIZE_LIBRARY_INFO;
+  init.version = REMIXAPI_VERSION_MAKE(0, 1003, 0);
+  ok(remixapi_InitializeLibrary(&init, &api));
+  remixapi_StartupInfo startup{};
+  startup.sType = REMIXAPI_STRUCT_TYPE_STARTUP_INFO;
+#if !defined(_WIN32)
+  startup.windowWidth = startup.windowHeight = 64;
+#endif
+  ok(api.Startup(&startup));
+  remixapi_BackendCapabilitiesEXT caps{};
+  caps.structSize = sizeof(caps);
+  ok(remixapi_GetBackendCapabilitiesEXT(&caps));
+  if (!(caps.supportedBackends & 2)) {
+    std::printf("Sky scenes unavailable: %s\n", caps.unavailableReason);
+    ok(api.Shutdown());
+    return 77;
+  }
+  ok(api.SetConfigVariable("rtx.native.backend", "pathtrace"));
+  ok(api.SetConfigVariable("rtx.native.pathtrace.samples", "16"));
+  ok(api.SetConfigVariable("rtx.native.pathtrace.bounces", "1"));
+  require(api.SetConfigVariable("rtx.native.pathtrace.sky", "2") == REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS,
+          "Invalid sky toggle accepted");
+  uint64_t next = 100;
+  auto material = [&](remixapi_Float3D color, float alpha, bool cutout = false) {
+    remixapi_MaterialInfoOpaqueEXT opaque{};
+    opaque.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_EXT;
+    opaque.albedoConstant = color;
+    opaque.opacityConstant = alpha;
+    opaque.alphaTestType = cutout ? 4 : 7; // GREATER .5
+    opaque.alphaReferenceValue = 128;
+    remixapi_MaterialInfo info{};
+    info.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO;
+    info.pNext = &opaque;
+    info.hash = next++;
+    remixapi_MaterialHandle handle{};
+    ok(api.CreateMaterial(&info, &handle));
+    return handle;
+  };
+  const auto white = material({1, 1, 1}, 1), black = material({0, 0, 0}, 1);
+  const auto cutout = material({1, 1, 1}, 0, true), tint = material({.1f, 1, .2f}, .5f);
+  auto quad = [&](int axis, float plane, float a0, float a1, float b0, float b1, remixapi_MaterialHandle mat) {
+    remixapi_HardcodedVertex vertices[4]{};
+    for (int i = 0; i < 4; ++i) {
+      vertices[i].position[axis] = plane;
+      vertices[i].position[(axis + 1) % 3] = i == 0 || i == 3 ? a0 : a1;
+      vertices[i].position[(axis + 2) % 3] = i < 2 ? b0 : b1;
+      vertices[i].color = 0xffffffff;
+    }
+    uint32_t indices[] = {0, 1, 2, 0, 2, 3};
+    remixapi_MeshInfoSurfaceTriangles surface{};
+    surface.vertices_values = vertices; surface.vertices_count = 4;
+    surface.indices_values = indices; surface.indices_count = 6; surface.material = mat;
+    remixapi_MeshInfo mesh{};
+    mesh.sType = REMIXAPI_STRUCT_TYPE_MESH_INFO;
+    mesh.hash = next++; mesh.surfaces_values = &surface; mesh.surfaces_count = 1;
+    remixapi_MeshHandle handle{};
+    ok(api.CreateMesh(&mesh, &handle));
+    return handle;
+  };
+  const auto receiver = quad(2, .5f, -2, 2, -2, 2, white);
+  std::vector<remixapi_MeshHandle> sides;
+  for (float sign : {-1.f, 1.f}) {
+    sides.push_back(quad(0, sign, -1, 1, -1, .5f, black));
+    sides.push_back(quad(1, sign, -1, .5f, -1, 1, black));
+  }
+  const auto back = quad(2, -1, -1, 1, -1, 1, black);
+  const auto holes = quad(2, -1, -1, 1, -1, 1, cutout);
+  const auto glass = quad(2, -1, -1, 1, -1, 1, tint);
+  const std::vector<remixapi_MeshHandle> opening = {
+    quad(2, -1, -1, -.5f, -1, 1, black), quad(2, -1, .5f, 1, -1, 1, black),
+    quad(2, -1, -.5f, .5f, -1, -.5f, black), quad(2, -1, -.5f, .5f, .5f, 1, black)};
+  remixapi_CameraEnvironmentEXT environment{};
+  environment.sType = REMIXAPI_STRUCT_TYPE_CAMERA_ENVIRONMENT_EXT;
+  environment.enabled = 1;
+  environment.radiance = {.25f, .5f, .75f};
+  remixapi_CameraTemporalEXT epoch{};
+  epoch.sType = REMIXAPI_STRUCT_TYPE_CAMERA_TEMPORAL_EXT;
+  epoch.worldEpoch = 1; epoch.pNext = &environment;
+  remixapi_CameraInfo camera{};
+  camera.sType = REMIXAPI_STRUCT_TYPE_CAMERA_INFO; camera.pNext = &epoch;
+  for (int i = 0; i < 4; ++i) camera.view[i][i] = camera.projection[i][i] = 1;
+  remixapi_LightInfoDistantEXT distant{};
+  distant.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_DISTANT_EXT;
+  distant.direction = {0, 0, 1};
+  remixapi_LightInfo light{};
+  light.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO; light.pNext = &distant; light.hash = next++;
+  remixapi_LightHandle sun{};
+  ok(api.CreateLight(&light, &sun));
+  std::vector<remixapi_MeshHandle> enclosure;
+  auto draw = [&](remixapi_MeshHandle mesh) {
+    remixapi_InstanceIdentityEXT identity{};
+    identity.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_IDENTITY_EXT;
+    identity.instanceId = reinterpret_cast<uintptr_t>(mesh); identity.rasterVisible = 1;
+    remixapi_InstanceInfoBlendEXT blend{};
+    blend.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_BLEND_EXT; blend.pNext = &identity;
+    blend.alphaBlendEnabled = mesh == glass;
+    remixapi_InstanceInfo instance{};
+    instance.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO; instance.pNext = &blend;
+    instance.mesh = mesh; instance.doubleSided = 1;
+    for (int i = 0; i < 3; ++i) instance.transform.matrix[i][i] = 1;
+    ok(api.DrawInstance(&instance));
+  };
+  auto frame = [&] {
+    ok(api.PumpEvents()); ok(api.SetupCamera(&camera)); ok(api.DrawLightInstance(sun));
+    draw(receiver);
+    for (auto mesh : enclosure) draw(mesh);
+    ok(api.Present(nullptr));
+  };
+  auto temporal = [&] {
+    remixapi_DenoisingStatisticsEXT stats{}; stats.structSize = sizeof(stats);
+    ok(remixapi_GetDenoisingStatisticsEXT(&stats)); return stats;
+  };
+  auto tracing = [&] {
+    remixapi_TracingStatisticsEXT stats{}; stats.structSize = sizeof(stats);
+    ok(remixapi_GetTracingStatisticsEXT(&stats)); return stats;
+  };
+  auto readback = [&](const std::string &name) {
+    const auto file = (directory / (name + ".png")).string();
+    ok(api.RequestPresentedScreenshot(file.c_str())); frame(); frame();
+    int width, height, channels;
+    auto pixels = stbi_load(file.c_str(), &width, &height, &channels, 4);
+    require(pixels, "Missing sky screenshot");
+    std::array<float, 3> average{};
+    for (int y = height / 2 - 4; y < height / 2 + 4; ++y)
+      for (int x = width / 2 - 4; x < width / 2 + 4; ++x)
+        for (int c = 0; c < 3; ++c) {
+          float v = pixels[(y * width + x) * 4 + c] / 255.f;
+          average[c] += (v <= .04045f ? v / 12.92f : std::pow((v + .055f) / 1.055f, 2.4f)) / 64;
+        }
+    stbi_image_free(pixels);
+    std::printf("%s linear RGB: %.4f %.4f %.4f\n", name.c_str(), average[0], average[1], average[2]);
+    return average;
+  };
+  auto capture = [&](const std::string &name, int frames) {
+    // Independent scenes use explicit cuts; live-change checks below do not.
+    ++epoch.historyResetEpoch;
+    for (int i = 0; i < frames; ++i) frame();
+    return readback(name);
+  };
+  remixapi_DenoisingCapabilitiesEXT denoiseCaps{};
+  denoiseCaps.structSize = sizeof(denoiseCaps);
+  ok(remixapi_GetDenoisingCapabilitiesEXT(&denoiseCaps));
+  for (const char *primary : {"raster", "ray"}) for (bool filtered : {false, true}) {
+    ok(api.SetConfigVariable("rtx.native.pathtrace.primaryVisibility", primary));
+    ok(api.SetConfigVariable("rtx.native.pathtrace.accumulate", filtered ? "0" : "1"));
+    const std::string prefix = std::string(primary) + (filtered ? "-nrd-taa-" : "-raw-");
+    const int frames = filtered ? 48 : 16;
+    environment.radiance = {.25f, .5f, .75f}; enclosure.clear();
+    auto exposed = capture(prefix + "exposed", frames);
+    if (filtered)
+      require(temporal().activeDenoiser == denoiseCaps.reblurShSupported &&
+                  temporal().activeTaa == denoiseCaps.taaSupported,
+              "Supported temporal filters failed to activate");
+    for (int c = 0; c < 3; ++c)
+      require(std::abs(exposed[c] - .25f * (c + 1)) < .09f, "Sky radiance/color transfer incorrect");
+    enclosure = sides; enclosure.push_back(back);
+    auto closed = capture(prefix + "closed", frames);
+    require(closed[0] < .005f && closed[1] < .005f && closed[2] < .005f, "Closed room leaked sky");
+    enclosure = sides; enclosure.insert(enclosure.end(), opening.begin(), opening.end());
+    auto opened = capture(prefix + "opening", frames);
+    require(opened[1] > .02f && opened[1] < exposed[1] * .7f, "Opening did not admit bounded sky");
+    enclosure = sides;
+    auto uncovered = capture(prefix + "uncovered", frames);
+    enclosure.push_back(holes);
+    auto cut = capture(prefix + "cutout", frames);
+    require(std::abs(cut[1] - uncovered[1]) < .04f, "Rejected alpha cutout blocked sky");
+    enclosure.back() = glass;
+    auto tinted = capture(prefix + "tinted", frames);
+    require(tinted[1] > .015f && tinted[1] < uncovered[1] * .8f && tinted[0] < tinted[1] * .2f &&
+                tinted[2] < tinted[1] * .5f, "Tinted transmission lost sky attenuation/color");
+    enclosure.clear();
+    environment.enabled = 0;
+    auto disabled = capture(prefix + "disabled", frames);
+    require(disabled[2] < .005f, "Disabled environment illuminated receiver");
+    environment.enabled = 1;
+    ok(api.SetConfigVariable("rtx.native.pathtrace.sky", "0"));
+    auto toggled = capture(prefix + "toggle-off", frames);
+    require(toggled[2] < .005f, "Sky toggle failed");
+    ok(api.SetConfigVariable("rtx.native.pathtrace.sky", "1"));
+    ok(api.SetConfigVariable("rtx.native.pathtrace.bounces", "0"));
+    auto zero = capture(prefix + "zero-bounce", frames);
+    require(zero[2] < .005f, "Zero indirect bounces admitted sky");
+    ok(api.SetConfigVariable("rtx.native.pathtrace.bounces", "1"));
+    frame(); frame();
+    const auto resets = temporal().historyResets;
+    auto previous = tracing();
+    for (int i = 0; i < 12; ++i) {
+      environment.radiance.x = .1f + i * .01f;
+      light.radiance = {.01f * i, .01f * i, .01f * i};
+      distant.direction = {0, -.01f * i, 1};
+      ok(api.UpdateLightDefinition(sun, &light)); frame();
+      auto now = tracing();
+      require(now.sceneGeneration > previous.sceneGeneration, "Sky/sun update reused cached world");
+      if (filtered) require(temporal().historyResets == resets, "Time/weather reset global history");
+      else require(now.accumulationCount == 1, "Sky/sun update retained progressive accumulation");
+      previous = now;
+    }
+    light.radiance = {}; ok(api.UpdateLightDefinition(sun, &light));
+    frame(); frame();
+    previous = tracing();
+    // A change to sky alone must invalidate progressive/cached output too.
+    environment.radiance = {.7f, .2f, .1f}; frame();
+    require(tracing().sceneGeneration > previous.sceneGeneration, "Sky-only change not detected");
+    if (!filtered) require(tracing().accumulationCount == 1, "Sky-only change retained accumulation");
+    for (int i = 0; i < 128 && (!filtered ? i < frames : temporal().redrawRequested); ++i) frame();
+    auto updated = readback(prefix + "live-sky-change");
+    // NRD retains history for live changes. Require at least 75% of this abrupt
+    // color transition during its advertised warmup, rather than a history reset.
+    const float before[] = {.21f, .5f, .75f}, after[] = {.7f, .2f, .1f};
+    for (int c = 0; c < 3; ++c)
+      require(std::abs(updated[c] - after[c]) < .25f * std::abs(before[c] - after[c]) + .005f,
+              "History did not respond to live sky radiance");
+    if (filtered) require(temporal().historyResets == resets, "Sky-only change reset history");
+  }
+  ok(api.Shutdown());
+  std::puts("Sky illumination, occlusion, transmission, controls and temporal checks passed");
+}

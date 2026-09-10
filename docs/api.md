@@ -49,7 +49,7 @@ handles at DrawInstance; already queued draws retain the resolved material versi
 
 See [supported material/UI semantics and limits](raster-renderer-design.md).
 The independent `remix_native_ext.h` adds backend capability/statistics exports and
-optional stable instance identity/classification and camera temporal epoch extensions without changing the
+optional stable instance identity/classification, camera environment radiance and temporal epoch extensions without changing the
 0.1003 interface. See [path tracing](path-tracing.md) for their contracts.
 
 On Windows the library is `remix.dll`. Startup with a null HWND creates a resizable

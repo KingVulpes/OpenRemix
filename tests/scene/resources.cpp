@@ -2,6 +2,7 @@
 #include "scene/images.h"
 #include <fstream>
 #include <limits>
+#include <remix/remix_native_ext.h>
 
 using namespace remix::test;
 namespace {
@@ -46,6 +47,59 @@ namespace {
     params.up = {0, 1, 0};
     params.fovYInDegrees = 180;
     rejected([&] { r.setupCamera(cam); });
+    params.fovYInDegrees = 60;
+    cam.type = REMIXAPI_CAMERA_TYPE_WORLD;
+    remixapi_CameraTemporalEXT temporal{};
+    temporal.sType = REMIXAPI_STRUCT_TYPE_CAMERA_TEMPORAL_EXT;
+    temporal.worldEpoch = 7;
+    temporal.historyResetEpoch = 9;
+    params.pNext = &temporal;
+    remixapi_CameraEnvironmentEXT environment{};
+    environment.sType = REMIXAPI_STRUCT_TYPE_CAMERA_ENVIRONMENT_EXT;
+    environment.enabled = 1;
+    environment.radiance = {.2f, .4f, .8f};
+    temporal.pNext = &environment;
+    r.setupCamera(cam);
+    const auto accepted = r.camera(), acceptedView = r.view();
+    const auto acceptedSky = r.skyRadiance();
+    require(acceptedSky == std::array<float, 3>{.2f, .4f, .8f}, "Linear sky was altered");
+    params.position.x = 2;
+    temporal.worldEpoch = 13;
+    auto invalidEnvironment = [&] {
+      rejected([&] { r.setupCamera(cam); });
+      require(r.camera() == accepted && r.view() == acceptedView && r.skyRadiance() == acceptedSky &&
+                  r.temporalEpoch().world == 7,
+              "Invalid environment changed accepted camera state");
+    };
+    for (float bad : {-1.f, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()}) {
+      environment.radiance.y = bad;
+      invalidEnvironment();
+      environment.enabled = 0;
+      invalidEnvironment(); // Disabled metadata must still be well-formed.
+      environment.enabled = 1;
+    }
+    environment.radiance = {.2f, .4f, .8f};
+    environment.enabled = 2;
+    invalidEnvironment();
+    environment.enabled = 0;
+    for (auto type : {REMIXAPI_CAMERA_TYPE_SKY, REMIXAPI_CAMERA_TYPE_VIEW_MODEL}) {
+      cam.type = type;
+      r.setupCamera(cam);
+      require(r.skyRadiance() == acceptedSky && r.temporalEpoch().world == 7,
+              "Non-world camera replaced world environment or epoch");
+    }
+    cam.type = REMIXAPI_CAMERA_TYPE_WORLD;
+    r.setupCamera(cam);
+    require(r.skyRadiance() == std::array<float, 3>{}, "Disabled environment retained sky");
+    environment.enabled = 1;
+    r.setupCamera(cam);
+    temporal.pNext = nullptr;
+    r.setupCamera(cam);
+    require(r.skyRadiance() == std::array<float, 3>{}, "Legacy camera retained sky");
+    temporal.pNext = &environment;
+    r.setupCamera(cam);
+    r.reset();
+    require(r.skyRadiance() == std::array<float, 3>{}, "Reset retained sky");
     remixapi_TextureInfo texture = {};
     texture.width = texture.height = 1;
     texture.mipLevels = 1;

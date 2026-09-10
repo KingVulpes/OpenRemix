@@ -59,6 +59,7 @@ namespace remix {
                       denoising.gpuConfidenceMilliseconds, denoising.gpuDenoiseMilliseconds,
                       denoising.gpuTaaMilliseconds, double(denoising.memoryBytes) / (1024 * 1024));
           ImGui::Checkbox("Force dynamic TLAS rebuild", &m_traceOptions.forceRebuild);
+          ImGui::Checkbox("Sky illumination", &m_traceOptions.sky);
           ImGui::Checkbox("Override daylight", &m_traceOptions.overrideLight);
           if (m_traceOptions.overrideLight) {
             ImGui::SliderFloat3("Light direction", m_traceOptions.lightDirection, -1, 1);

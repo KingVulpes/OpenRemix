@@ -10,6 +10,7 @@ namespace remix {
     bool accumulate = false, forceRebuild = false;
     bool denoiser = true, taa = true, validation = false;
     bool rasterPrimary = true;
+    bool sky = true;
     bool overrideLight = false;
     float lightDirection[3] = {-0.4f, -0.8f, -0.3f};
     float lightColor[3] = {1, 1, 1};

@@ -120,7 +120,7 @@ vec3 continuation(Hit primary,out vec3 firstDirection,out float firstDistance) {
   for(uint step=0;step<164&&bounce<frame.config.y;++step) {
     Hit hit=closest(origin,direction);
     if(bounce==0)firstDistance+=hit.t;
-    if(hit.t==1e30)break;
+    if(hit.t==1e30) { result+=throughput*frame.skyRadiance.rgb;break; }
     if(hit.blended&&random()>=hit.color.a) {
       if(++layers>=32)break;
       throughput*=hit.color.rgb;origin=offsetRay(hit.p,-hit.n);continue;

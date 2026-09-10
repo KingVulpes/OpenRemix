@@ -1,4 +1,4 @@
-"""Pinned DXC diffuse SH permutations (no compiler needed by normal builds)."""
+"""Pinned DXC diffuse SH and SIGMA permutations (no compiler needed by normal builds)."""
 from pathlib import Path
 import json, os, re, struct, subprocess, tempfile
 from storage_writes import widen
@@ -13,6 +13,13 @@ IDENTIFIERS = ['REBLUR_ClassifyTiles.cs.hlsl'] + [
     'REBLUR_' + name + '.cs.hlsl' + COMMON for name in ('TemporalStabilization', 'SplitScreen')] + [
     'REBLUR_Validation.cs.hlsl', 'Clear.cs.hlsl|FLOAT=0', 'Clear.cs.hlsl|FLOAT=1']
 
+IDENTIFIERS += [
+    'SIGMA_ClassifyTiles.cs.hlsl|TRANSLUCENCY=1',
+    'SIGMA_SmoothTiles.cs.hlsl', 'SIGMA_Copy.cs.hlsl',
+    'SIGMA_Blur.cs.hlsl|TRANSLUCENCY=1|FIRST_PASS=1',
+    'SIGMA_Blur.cs.hlsl|TRANSLUCENCY=1|FIRST_PASS=0',
+    'SIGMA_TemporalStabilization.cs.hlsl|TRANSLUCENCY=1',
+    'SIGMA_SplitScreen.cs.hlsl|TRANSLUCENCY=1']
 
 def process(check=False, validate=False):
     target = ROOT / 'src/native/denoise/shaders/nrd_embedded.h'

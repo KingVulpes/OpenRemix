@@ -28,6 +28,10 @@ namespace remix::denoise {
     Lighting,
     Composed,
     Validation,
+    BaseImageCount,
+    Penumbra = BaseImageCount,
+    ShadowInput,
+    ShadowOutput,
     ImageCount
   };
   // Shared std140 constants. Matrices are nonjittered, in Vulkan framebuffer coordinates.
@@ -38,15 +42,18 @@ namespace remix::denoise {
     uint32_t flags[4] = {};  // reset, NRD, TAA, history parity
     uint32_t target[4] = {}; // width, height, previous seed, samples
     float timing[4] = {};    // frame milliseconds, validation, world changed, reserved
+    float sun[4] = {};       // direction toward sun, SIGMA active
+    uint32_t shadow[4] = {}; // SIGMA reset, debug view, reserved
   };
-  static_assert(sizeof(Frame) == 400);
+  static_assert(sizeof(Frame) == 432 && offsetof(Frame, sun) == 400 && offsetof(Frame, shadow) == 416);
   remixapi_DenoisingCapabilitiesEXT capabilities(VkPhysicalDevice physical);
+  bool sigmaSupported(VkPhysicalDevice physical);
   class Renderer {
   public:
     Renderer();
     ~Renderer();
     void initialize(VkPhysicalDevice physical, VkDevice device, VkExtent2D extent, bool reblur,
-                    uint32_t queueFamily);
+                    uint32_t queueFamily, bool sigma = false);
     VkDescriptorSetLayout inputLayout() const;
     VkDescriptorSet inputs() const;
     void begin(VkCommandBuffer command, const Frame &frame, const scene::Matrix &projection,
@@ -54,6 +61,7 @@ namespace remix::denoise {
     void beginConfidence(VkCommandBuffer command);
     void record(VkCommandBuffer command);
     void submitted();
+    remixapi_ShadowStatisticsEXT shadowStatistics() const;
     remixapi_DenoisingStatisticsEXT statistics() const;
 
   private:

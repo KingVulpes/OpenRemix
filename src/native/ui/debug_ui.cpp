@@ -44,6 +44,21 @@ namespace remix {
           if (ImGui::SliderInt("Indirect bounces", &bounces, 0, 4))
             m_traceOptions.bounces = uint32_t(bounces);
           ImGui::Checkbox("REBLUR diffuse SH", &m_traceOptions.denoiser);
+          ImGui::Checkbox("SIGMA sun shadows", &m_traceOptions.sigma);
+          const auto shadows = shadowStatistics();
+          ImGui::Text("SIGMA: %s", shadows.active ? "active" : "inactive");
+          if (shadows.active && shadows.gpuTimingsAvailable)
+            ImGui::Text("Sun shadow filter %.3f ms", shadows.gpuSigmaMilliseconds);
+          if (shadows.unavailableReason[0])
+            ImGui::TextWrapped("%s", shadows.unavailableReason);
+          bool overrideSize = m_traceOptions.sunAngularDiameter >= 0;
+          if (ImGui::Checkbox("Override sun size", &overrideSize))
+            m_traceOptions.sunAngularDiameter = overrideSize ? .533f : -1.f;
+          if (overrideSize)
+            ImGui::SliderFloat("Sun diameter (degrees)", &m_traceOptions.sunAngularDiameter, 0.f, 3.f, "%.3f");
+          int shadowView = int(m_traceOptions.shadowDebug);
+          if (ImGui::Combo("Shadow view", &shadowView, "Final lighting\0Raw visibility\0SIGMA visibility\0"))
+            m_traceOptions.shadowDebug = uint32_t(shadowView);
           ImGui::Checkbox("Native resolution TAA", &m_traceOptions.taa);
           ImGui::Checkbox("NRD validation", &m_traceOptions.validation);
           ImGui::Checkbox("Progressive accumulation", &m_traceOptions.accumulate);

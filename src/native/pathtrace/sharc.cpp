@@ -129,7 +129,10 @@ namespace remix {
       sharcPipeline(trace::sharcQueryShader, sizeof(trace::sharcQueryShader), layout, sharc.query);
       sharcPipeline(trace::sharcTransparencyShader, sizeof(trace::sharcTransparencyShader), layout, sharc.transparency);
       if (denoiser) {
-        sharcPipeline(trace::sharcTemporalShader, sizeof(trace::sharcTemporalShader), temporalLayout, sharc.temporal);
+        if (postSigma)
+          sharcPipeline(trace::sharcSigmaTemporalShader, sizeof(trace::sharcSigmaTemporalShader), temporalLayout, sharc.temporal);
+        else
+          sharcPipeline(trace::sharcTemporalShader, sizeof(trace::sharcTemporalShader), temporalLayout, sharc.temporal);
         sharcPipeline(trace::sharcTemporalTransparencyShader, sizeof(trace::sharcTemporalTransparencyShader), temporalLayout,
                       sharc.temporalTransparency);
         if (postReblur)

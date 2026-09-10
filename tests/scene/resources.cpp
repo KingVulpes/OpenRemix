@@ -100,6 +100,25 @@ namespace {
     r.setupCamera(cam);
     r.reset();
     require(r.skyRadiance() == std::array<float, 3>{}, "Reset retained sky");
+    remixapi_LightInfoDistantEXT distant{};
+    distant.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_DISTANT_EXT;
+    distant.direction = {0, -1, 0}; distant.angularDiameterDegrees = .533f;
+    remixapi_LightInfo sunlight{};
+    sunlight.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO; sunlight.pNext = &distant;
+    sunlight.hash = 789; sunlight.radiance = {1, 1, 1};
+    remixapi_LightHandle sun{};
+    r.createLight(sunlight, sun); r.drawLight(sun);
+    const auto acceptedSun = r.light();
+    for (float invalidDiameter : {-1.f, 180.f, std::numeric_limits<float>::infinity(),
+                                   std::numeric_limits<float>::quiet_NaN()}) {
+      distant.angularDiameterDegrees = invalidDiameter;
+      rejected([&] { r.updateLight(sun, sunlight); });
+      r.drawLight(sun);
+      require(r.light() == acceptedSun, "Invalid sun diameter changed accepted light");
+    }
+    distant.angularDiameterDegrees = 0;
+    r.updateLight(sun, sunlight); r.drawLight(sun);
+    require(r.light().angularDiameterDegrees == 0, "Zero sun diameter did not retain hard shadows");
     remixapi_TextureInfo texture = {};
     texture.width = texture.height = 1;
     texture.mipLevels = 1;

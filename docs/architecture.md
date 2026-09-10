@@ -18,7 +18,7 @@ and private headers together. Tests mirror these features under `tests`.
 | `scene` | CPU resource validation and lifetime, types/math, texture decoding, materials, meshes, cameras, instances, lights, and submitted UI geometry |
 | `raster` | GPU uploads and caches, allocation, pipelines, draw preparation, recording, and raster shaders |
 | `pathtrace` | Acceleration allocation, geometry cache, BLAS builds/compaction, TLAS builds/refits and policy, frame preparation/accumulation, rasterized primary G-buffer/depth passes, optional SHARC cache ownership/update/resolve/query, dispatch, and tracing shaders |
-| `denoise` | NRD instance, dispatch binding, texture pools, per-dispatch constants, confidence filtering, SH resolve, TAA and temporal diagnostics |
+| `denoise` | Independent REBLUR SH / SIGMA instances, dispatch binding, texture pools, per-dispatch constants, confidence filtering, SH resolve, sun visibility resolve, TAA and temporal diagnostics |
 | `platform` | SDL windows/surfaces, events, input state, and key/button translation |
 | `ui` | ImGui integration and the debug panel |
 

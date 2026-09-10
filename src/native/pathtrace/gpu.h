@@ -102,10 +102,11 @@ namespace remix::trace::detail {
     uint64_t sharcHash = 0, sharcAccumulation = 0, sharcResolved = 0, sharcCounters = 0;
     uint32_t sharcConfig[4] = {};
     float sharcGrid[4] = {}, sharcPreviousCamera[4] = {};
+    float sun[4] = {}; // tangent of angular radius, SIGMA active, debug view, reserved
   };
-  static_assert(sizeof(Frame) == 320 && offsetof(Frame, skyRadiance) == 224 &&
+  static_assert(sizeof(Frame) == 336 && offsetof(Frame, skyRadiance) == 224 &&
                 offsetof(Frame, sharcHash) == 240 && offsetof(Frame, sharcConfig) == 272 &&
-                offsetof(Frame, sharcGrid) == 288 && offsetof(Frame, sharcPreviousCamera) == 304);
+                offsetof(Frame, sharcGrid) == 288 && offsetof(Frame, sharcPreviousCamera) == 304 && offsetof(Frame, sun) == 320);
   inline float linear(float c) { return c <= .04045f ? c / 12.92f : std::pow((c + .055f) / 1.055f, 2.4f); }
   inline void barrier(VkCommandBuffer command, VkPipelineStageFlags source, VkAccessFlags writes,
                       VkPipelineStageFlags destination, VkAccessFlags reads) {
@@ -182,6 +183,10 @@ namespace remix {
     std::unique_ptr<denoise::Renderer> denoiser;
     VkPipeline temporalCompute{}, confidenceCompute{};
     VkPipelineLayout temporalLayout{};
+    uint64_t shadowFrames = 0, shadowResets = 0;
+    bool sigmaCapable = false;
+    bool postSigma = false, postSigmaRequested = false;
+    float previousSun[8] = {}, pendingSun[8] = {};
     bool postReblur = false, postTaa = false, postAttempted = false, rendered = false;
     std::string postFailure;
     remixapi_DenoisingCapabilitiesEXT postCapabilities{};

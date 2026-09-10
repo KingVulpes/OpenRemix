@@ -54,7 +54,7 @@ extern "C" VKAPI_ATTR VkResult VKAPI_CALL vkCreateComputePipelines(VkDevice devi
                                                                    VkPipeline *outputs) {
   ++computeAttempts;
   if (fault("compute") || (fault("transparency-compute") && computeAttempts == 2) ||
-      (fault("sharc-compute") && computeAttempts == 3)) {
+      ((fault("sharc-compute") || fault("sigma-compute")) && computeAttempts == 3)) {
     for (uint32_t i = 0; i < count; ++i)
       outputs[i] = VK_NULL_HANDLE;
     return VK_ERROR_OUT_OF_DEVICE_MEMORY;
@@ -70,6 +70,11 @@ extern "C" VKAPI_ATTR VkResult VKAPI_CALL vkCreateImage(VkDevice device, const V
                                                         const VkAllocationCallbacks *alloc, VkImage *output) {
   if (computeCreated && fault("denoise-allocation") && info->format == VK_FORMAT_R16G16B16A16_SFLOAT &&
       !(info->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)) {
+    *output = VK_NULL_HANDLE;
+    return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+  }
+  if (computeCreated && fault("sigma-allocation") && info->format == VK_FORMAT_R8G8B8A8_UNORM &&
+      (info->usage & VK_IMAGE_USAGE_STORAGE_BIT) && !(info->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)) {
     *output = VK_NULL_HANDLE;
     return VK_ERROR_OUT_OF_DEVICE_MEMORY;
   }
@@ -121,6 +126,10 @@ extern "C" VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceProperties(VkPhysicalDe
                                                                     VkPhysicalDeviceProperties *properties) {
   reinterpret_cast<PFN_vkGetPhysicalDeviceProperties>(resolve("vkGetPhysicalDeviceProperties"))(device,
                                                                                                 properties);
+  if (fault("sigma-descriptor-limit")) {
+    properties->limits.maxPerStageDescriptorStorageImages = 33;
+    properties->limits.maxDescriptorSetStorageImages = 33;
+  }
   if (fault("temporal-descriptor-limit")) {
     properties->limits.maxPerStageDescriptorStorageImages = 27;
     properties->limits.maxDescriptorSetStorageImages = 27;

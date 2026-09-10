@@ -51,6 +51,29 @@ namespace remix::denoise {
         vkFreeMemory(device, memory, nullptr);
     }
   };
+#ifdef REMIX_HAS_NRD
+  // Each signal owns its dispatch descriptors, constants and temporal history.
+  struct NrdPass {
+    VkDevice device{};
+    bool sigma{};
+    nrd::Instance *instance{};
+    std::vector<std::unique_ptr<Texture>> permanent, transient;
+    struct Pipeline {
+      VkDescriptorSetLayout resources{};
+      VkPipelineLayout layout{};
+      VkPipeline pipeline{};
+    };
+    std::vector<Pipeline> pipelines;
+    VkDescriptorSetLayout commonLayout{};
+    VkDescriptorPool nrdPool{};
+    VkSampler samplers[2]{};
+    std::unique_ptr<Buffer> constants;
+    VkDeviceSize constantStride{};
+    const nrd::DispatchDesc *dispatches{};
+    uint32_t dispatchCount{};
+    ~NrdPass();
+  };
+#endif
   struct Renderer::Gpu {
     VkPhysicalDevice physical{};
     VkDevice device{};
@@ -68,27 +91,16 @@ namespace remix::denoise {
     uint32_t timestampBits{};
     bool timingPending{}, initialized{}, submittedFrame{};
     Frame frame{};
+    bool sigma{};
+    float sigmaMilliseconds{};
+    remixapi_ShadowStatisticsEXT shadowStats{.structSize = sizeof(shadowStats)};
     uint32_t quietFrames = 0, warmupFrames = 32;
     remixapi_DenoisingStatisticsEXT stats{.structSize = sizeof(stats)};
 #ifdef REMIX_HAS_NRD
-    nrd::Instance *instance{};
-    std::vector<std::unique_ptr<Texture>> permanent, transient;
-    struct Pipeline {
-      VkDescriptorSetLayout resources{};
-      VkPipelineLayout layout{};
-      VkPipeline pipeline{};
-    };
-    std::vector<Pipeline> pipelines;
-    VkDescriptorSetLayout commonLayout{};
-    VkDescriptorPool nrdPool{};
-    VkSampler samplers[2]{};
-    std::unique_ptr<Buffer> constants;
-    VkDeviceSize constantStride{};
-    const nrd::DispatchDesc *dispatches{};
-    uint32_t dispatchCount{};
-    void initializeNrd();
-    void prepareNrd(const scene::Matrix &projection, const scene::Matrix &previousProjection);
-    void recordNrd(VkCommandBuffer command);
+    std::unique_ptr<NrdPass> indirect, shadow;
+    void initializeNrd(NrdPass &pass, bool sigma);
+    void prepareNrd(NrdPass &pass, const scene::Matrix &projection, const scene::Matrix &previousProjection);
+    void recordNrd(NrdPass &pass, VkCommandBuffer command);
 #endif
     ~Gpu();
     uint32_t memoryType(uint32_t bits, VkMemoryPropertyFlags flags);

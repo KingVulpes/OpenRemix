@@ -25,6 +25,11 @@ layout(set=1,binding=20,rgba16f) uniform image2D composed;
 layout(set=1,binding=21,rgba16f) uniform image2D validation;
 layout(set=1,binding=22,rgba32f) uniform image2D finalWorld;
 layout(set=1,binding=23,rgba32f) uniform image2D skyColor;
+#ifdef SIGMA_PASS
+layout(set=1,binding=26,r16f) uniform image2D shadowPenumbra;
+layout(set=1,binding=27,rgba8) uniform image2D shadowInput;
+layout(set=1,binding=28,rgba8) uniform image2D shadowOutput;
+#endif
 layout(set=1,binding=25,std140) uniform TemporalFrame {
   mat4 view;
   mat4 previousView;
@@ -36,6 +41,8 @@ layout(set=1,binding=25,std140) uniform TemporalFrame {
   uvec4 flags;
   uvec4 target;
   vec4 timing;
+  vec4 sun;
+  uvec4 shadow;
 } temporal;
 vec3 safeRadiance(vec3 v) { return any(isnan(v))||any(isinf(v))?vec3(0):clamp(v,vec3(0),vec3(65000)); }
 vec2 encodeNormal(vec3 n) {

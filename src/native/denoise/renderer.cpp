@@ -22,10 +22,10 @@ namespace remix::denoise {
     require(f.shaderStorageImageExtendedFormats, "extended storage-image formats");
     // The temporal set is used alongside the tracer set (eight storage images,
     // 512 textures, two acceleration structures, a storage buffer and a UBO).
-    require(p.limits.maxPerStageDescriptorStorageImages >= ImageCount + 11 &&
-                p.limits.maxDescriptorSetStorageImages >= ImageCount + 11,
+    require(p.limits.maxPerStageDescriptorStorageImages >= BaseImageCount + 11 &&
+                p.limits.maxDescriptorSetStorageImages >= BaseImageCount + 11,
             "temporal storage-image descriptor limit");
-    require(p.limits.maxPerStageResources >= 512 + ImageCount + 16, "temporal per-stage resource limit");
+    require(p.limits.maxPerStageResources >= 512 + BaseImageCount + 16, "temporal per-stage resource limit");
     const VkFormat formats[] = {VK_FORMAT_R16G16B16A16_SFLOAT,
                                 VK_FORMAT_R32G32B32A32_SFLOAT,
                                 VK_FORMAT_R32_SFLOAT,
@@ -58,6 +58,26 @@ namespace remix::denoise {
     result.reblurShSupported = reason.empty();
     std::strncpy(result.unavailableReason, reason.c_str(), sizeof(result.unavailableReason) - 1);
     return result;
+  }
+  bool sigmaSupported(VkPhysicalDevice physical) {
+    if (!capabilities(physical).reblurShSupported)
+      return false;
+    VkPhysicalDeviceProperties p;
+    vkGetPhysicalDeviceProperties(physical, &p);
+    if (p.limits.maxPerStageDescriptorStorageImages < ImageCount + 11 ||
+        p.limits.maxDescriptorSetStorageImages < ImageCount + 11 ||
+        p.limits.maxPerStageResources < 512 + ImageCount + 16)
+      return false;
+    for (auto format : {VK_FORMAT_R32_UINT, VK_FORMAT_R8G8_UNORM, VK_FORMAT_R8G8B8A8_UNORM}) {
+      VkFormatProperties fp;
+      vkGetPhysicalDeviceFormatProperties(physical, format, &fp);
+      VkFormatFeatureFlags required = VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+      if (format != VK_FORMAT_R32_UINT)
+        required |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+      if ((fp.optimalTilingFeatures & required) != required)
+        return false;
+    }
+    return true;
   }
   uint32_t Renderer::Gpu::memoryType(uint32_t bits, VkMemoryPropertyFlags flags) {
     for (uint32_t i = 0; i < memory.memoryTypeCount; ++i)
@@ -136,8 +156,8 @@ namespace remix::denoise {
     check(status);
     return result;
   }
-  Renderer::Gpu::~Gpu() {
 #ifdef REMIX_HAS_NRD
+  NrdPass::~NrdPass() {
     for (auto &p : pipelines) {
       if (p.pipeline)
         vkDestroyPipeline(device, p.pipeline, nullptr);
@@ -155,7 +175,9 @@ namespace remix::denoise {
         vkDestroySampler(device, sampler, nullptr);
     if (instance)
       nrd::DestroyInstance(*instance);
+  }
 #endif
+  Renderer::Gpu::~Gpu() {
     if (timestamps)
       vkDestroyQueryPool(device, timestamps, nullptr);
     if (post)
@@ -172,17 +194,18 @@ namespace remix::denoise {
   Renderer::Renderer() = default;
   Renderer::~Renderer() = default;
   void Renderer::initialize(VkPhysicalDevice physical, VkDevice device, VkExtent2D extent, bool reblur,
-                            uint32_t queueFamily) {
+                            uint32_t queueFamily, bool sigma) {
     m_gpu = std::make_unique<Gpu>();
     auto &g = *m_gpu;
     g.physical = physical;
     g.device = device;
     g.extent = extent;
+    g.sigma = sigma;
     vkGetPhysicalDeviceMemoryProperties(physical, &g.memory);
     vkGetPhysicalDeviceProperties(physical, &g.properties);
     if (extent.width > 65535 || extent.height > 65535)
       throw VK_ERROR_FORMAT_NOT_SUPPORTED;
-    for (uint32_t i = 0; i < ImageCount; ++i) {
+    for (uint32_t i = 0; i < (sigma ? ImageCount : BaseImageCount); ++i) {
       VkFormat format = VK_FORMAT_R16G16B16A16_SFLOAT;
       if (i == Normal || i == PreviousNormal)
         format = VK_FORMAT_A2B10G10R10_UNORM_PACK32;
@@ -190,6 +213,10 @@ namespace remix::denoise {
         format = VK_FORMAT_R32_SFLOAT;
       if (i == Motion)
         format = VK_FORMAT_R32G32B32A32_SFLOAT;
+      if (i == Penumbra)
+        format = VK_FORMAT_R16_SFLOAT;
+      if (i == ShadowInput || i == ShadowOutput)
+        format = VK_FORMAT_R8G8B8A8_UNORM;
       VkExtent2D size = extent;
       if (i == GradientA || i == GradientB)
         size = {(extent.width + 4) / 5, (extent.height + 4) / 5};
@@ -197,16 +224,19 @@ namespace remix::denoise {
     }
     g.uniform = g.buffer(sizeof(Frame));
     std::vector<VkDescriptorSetLayoutBinding> bindings;
-    for (uint32_t i = 0; i < ImageCount + 3; ++i)
+    for (uint32_t i = 0; i < BaseImageCount + 3; ++i)
       bindings.push_back({i, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr});
     bindings.push_back(
-        {ImageCount + 3, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr});
+        {BaseImageCount + 3, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr});
+    if (sigma)
+      for (uint32_t i = 26; i < 29; ++i)
+        bindings.push_back({i, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr});
     VkDescriptorSetLayoutCreateInfo ci{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     check(vkCreateDescriptorSetLayout(device, &ci, nullptr, &g.emptyLayout));
     ci.bindingCount = uint32_t(bindings.size());
     ci.pBindings = bindings.data();
     check(vkCreateDescriptorSetLayout(device, &ci, nullptr, &g.inputLayout));
-    VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, ImageCount + 3},
+    VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, BaseImageCount + 3 + (sigma ? 3u : 0u)},
                                     {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}};
     VkDescriptorPoolCreateInfo pc{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
                                   .maxSets = 1,
@@ -226,10 +256,17 @@ namespace remix::denoise {
                                   .pushConstantRangeCount = 1,
                                   .pPushConstantRanges = &push};
     check(vkCreatePipelineLayout(device, &li, nullptr, &g.layout));
-    g.post = g.pipeline(g.layout, compShader, sizeof(compShader));
+    g.post = sigma ? g.pipeline(g.layout, sigmaShader, sizeof(sigmaShader))
+                   : g.pipeline(g.layout, compShader, sizeof(compShader));
 #ifdef REMIX_HAS_NRD
-    if (reblur)
-      g.initializeNrd();
+    if (reblur) {
+      g.indirect = std::make_unique<NrdPass>();
+      g.initializeNrd(*g.indirect, false);
+    }
+    if (sigma) {
+      g.shadow = std::make_unique<NrdPass>();
+      g.initializeNrd(*g.shadow, true);
+    }
 #else
     (void)reblur;
 #endif
@@ -241,7 +278,7 @@ namespace remix::denoise {
     if (g.timestampBits && g.properties.limits.timestampComputeAndGraphics) {
       VkQueryPoolCreateInfo qi{.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
                                .queryType = VK_QUERY_TYPE_TIMESTAMP,
-                               .queryCount = 5};
+                               .queryCount = 7};
       check(vkCreateQueryPool(device, &qi, nullptr, &g.timestamps));
     }
     g.stats.peakMemoryBytes = g.stats.memoryBytes;
@@ -254,8 +291,8 @@ namespace remix::denoise {
     g.frame = frame;
     g.frame.flags[0] |= !g.initialized;
     if (g.timingPending) {
-      uint64_t values[5];
-      auto r = vkGetQueryPoolResults(g.device, g.timestamps, 0, 5, sizeof(values), values, 8,
+      uint64_t values[7];
+      auto r = vkGetQueryPoolResults(g.device, g.timestamps, 0, 7, sizeof(values), values, 8,
                                      VK_QUERY_RESULT_64_BIT);
       if (r == VK_ERROR_DEVICE_LOST)
         throw r;
@@ -267,20 +304,27 @@ namespace remix::denoise {
             float((values[2] - values[1]) & mask) * g.properties.limits.timestampPeriod / 1e6f;
         g.stats.gpuTaaMilliseconds =
             float((values[4] - values[3]) & mask) * g.properties.limits.timestampPeriod / 1e6f;
+        g.sigmaMilliseconds = g.sigma ?
+            float((values[6] - values[5]) & mask) * g.properties.limits.timestampPeriod / 1e6f : 0;
         g.stats.gpuTimingsAvailable = 1;
       }
     }
     if (g.timestamps)
-      vkCmdResetQueryPool(command, g.timestamps, 0, 5);
+      vkCmdResetQueryPool(command, g.timestamps, 0, 7);
     if (!g.initialized) {
       std::vector<Texture *> textures;
       for (auto &t : g.images)
-        textures.push_back(t.get());
+        if (t)
+          textures.push_back(t.get());
 #ifdef REMIX_HAS_NRD
-      for (auto &t : g.permanent)
-        textures.push_back(t.get());
-      for (auto &t : g.transient)
-        textures.push_back(t.get());
+      for (auto *pass : {g.indirect.get(), g.shadow.get()}) {
+        if (!pass)
+          continue;
+        for (auto &t : pass->permanent)
+          textures.push_back(t.get());
+        for (auto &t : pass->transient)
+          textures.push_back(t.get());
+      }
 #endif
       for (auto *t : textures) {
         VkImageMemoryBarrier b{.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
@@ -301,30 +345,35 @@ namespace remix::denoise {
     synchronize(command);
     std::memcpy(g.uniform->mapped, &g.frame, sizeof(Frame));
     std::vector<VkDescriptorImageInfo> images;
-    for (auto &t : g.images)
-      images.push_back({VK_NULL_HANDLE, t->view, VK_IMAGE_LAYOUT_GENERAL});
+    for (uint32_t i = 0; i < BaseImageCount; ++i)
+      images.push_back({VK_NULL_HANDLE, g.images[i]->view, VK_IMAGE_LAYOUT_GENERAL});
     images.push_back({VK_NULL_HANDLE, world, VK_IMAGE_LAYOUT_GENERAL});
     images.push_back({VK_NULL_HANDLE, sky, VK_IMAGE_LAYOUT_GENERAL});
     images.push_back(images[0]);
+    if (g.sigma)
+      for (uint32_t i = Penumbra; i < ImageCount; ++i)
+        images.push_back({VK_NULL_HANDLE, g.images[i]->view, VK_IMAGE_LAYOUT_GENERAL});
     std::vector<VkWriteDescriptorSet> writes;
     for (uint32_t i = 0; i < images.size(); ++i)
       writes.push_back({.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                         .dstSet = g.inputs,
-                        .dstBinding = i,
+                        .dstBinding = i < 25 ? i : i + 1,
                         .descriptorCount = 1,
                         .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                         .pImageInfo = &images[i]});
     VkDescriptorBufferInfo bi{g.uniform->buffer, 0, sizeof(Frame)};
     writes.push_back({.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                       .dstSet = g.inputs,
-                      .dstBinding = ImageCount + 3,
+                      .dstBinding = BaseImageCount + 3,
                       .descriptorCount = 1,
                       .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                       .pBufferInfo = &bi});
     vkUpdateDescriptorSets(g.device, uint32_t(writes.size()), writes.data(), 0, nullptr);
 #ifdef REMIX_HAS_NRD
     if (g.frame.flags[1])
-      g.prepareNrd(projection, previousProjection);
+      g.prepareNrd(*g.indirect, projection, previousProjection);
+    if (g.sigma)
+      g.prepareNrd(*g.shadow, projection, previousProjection);
 #else
     (void)projection;
     (void)previousProjection;
@@ -354,10 +403,18 @@ namespace remix::denoise {
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g.timestamps, 1);
 #ifdef REMIX_HAS_NRD
     if (g.frame.flags[1])
-      g.recordNrd(command);
+      g.recordNrd(*g.indirect, command);
 #endif
     if (g.timestamps)
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g.timestamps, 2);
+    if (g.timestamps)
+      vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g.timestamps, 5);
+#ifdef REMIX_HAS_NRD
+    if (g.sigma)
+      g.recordNrd(*g.shadow, command);
+#endif
+    if (g.timestamps)
+      vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g.timestamps, 6);
     g.pass(command, 2);
     if (g.timestamps)
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g.timestamps, 3);
@@ -379,6 +436,11 @@ namespace remix::denoise {
       ++g.stats.historyResets;
       g.stats.historyFrames = 0;
     }
+    if (g.sigma) {
+      ++g.shadowStats.renderedFrames;
+      if (g.frame.flags[0] || g.frame.shadow[0])
+        ++g.shadowStats.historyResets;
+    }
     ++g.stats.renderedFrames;
     ++g.stats.historyFrames;
     g.stats.activeDenoiser = g.frame.flags[1];
@@ -388,6 +450,14 @@ namespace remix::denoise {
       g.quietFrames = 0;
     ++g.quietFrames;
     g.stats.redrawRequested = g.quietFrames < g.warmupFrames;
+  }
+  remixapi_ShadowStatisticsEXT Renderer::shadowStatistics() const {
+    auto result = m_gpu->shadowStats;
+    result.active = m_gpu->sigma;
+    result.debugView = m_gpu->frame.shadow[1];
+    result.gpuTimingsAvailable = m_gpu->stats.gpuTimingsAvailable;
+    result.gpuSigmaMilliseconds = m_gpu->sigmaMilliseconds;
+    return result;
   }
   remixapi_DenoisingStatisticsEXT Renderer::statistics() const { return m_gpu->stats; }
 } // namespace remix::denoise

@@ -11,8 +11,8 @@ import nrd
 ROOT = Path(__file__).resolve().parents[2]
 BACKENDS = {
     'raster': ('raster', 'vulkan1.1', ('vert', 'frag')),
-    'pathtrace': ('trace', 'vulkan1.2', ('vert', 'frag', 'comp', 'temporal', 'transparency', 'temporalTransparency', 'confidence', 'gbufferVert', 'gbufferFrag', 'depthFrag', 'sharcUpdate', 'sharcResolve', 'sharcQuery', 'sharcTransparency', 'sharcTemporal', 'sharcTemporalTransparency', 'sharcConfidence')),
-    'denoise': ('denoise', 'vulkan1.2', ('comp',)),
+    'pathtrace': ('trace', 'vulkan1.2', ('vert', 'frag', 'comp', 'temporal', 'transparency', 'temporalTransparency', 'confidence', 'gbufferVert', 'gbufferFrag', 'depthFrag', 'sharcUpdate', 'sharcResolve', 'sharcQuery', 'sharcTransparency', 'sharcTemporal', 'sharcTemporalTransparency', 'sharcConfidence', 'sigmaTemporal', 'sharcSigmaTemporal')),
+    'denoise': ('denoise', 'vulkan1.2', ('comp', 'sigma')),
 }
 
 
@@ -33,6 +33,8 @@ def process(backend, check, validate):
                 binary.write_bytes(struct.pack('<' + 'I' * len(words), *words))
             else:
                 defines = ['-DTEMPORAL=1'] if stage in ('temporal', 'temporalTransparency', 'confidence') else []
+                if stage in ('sigma', 'sigmaTemporal', 'sharcSigmaTemporal'): defines += ['-DSIGMA_PASS=1']
+                if stage in ('sigmaTemporal', 'sharcSigmaTemporal'): defines += ['-DTEMPORAL=1']
                 if stage == 'confidence': defines += ['-DCONFIDENCE_PASS=1']
                 if stage in ('transparency', 'temporalTransparency'): defines += ['-DTRANSPARENCY_PASS=1']
                 if stage.startswith('sharc') and stage not in ('sharcUpdate', 'sharcResolve'):

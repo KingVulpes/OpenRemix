@@ -9,7 +9,7 @@ namespace remix::denoise {
   namespace {
     void require(nrd::Result r) {
       if (r != nrd::Result::SUCCESS)
-        throw std::runtime_error("NRD API rejected diffuse SH configuration");
+        throw std::runtime_error("NRD API rejected denoiser configuration");
     }
     VkFormat format(nrd::Format value) {
       switch (value) {
@@ -21,6 +21,12 @@ namespace remix::denoise {
         return VK_FORMAT_R16_UINT;
       case nrd::Format::R16_SFLOAT:
         return VK_FORMAT_R16_SFLOAT;
+      case nrd::Format::R32_UINT:
+        return VK_FORMAT_R32_UINT;
+      case nrd::Format::RG8_UNORM:
+        return VK_FORMAT_R8G8_UNORM;
+      case nrd::Format::RGBA8_UNORM:
+        return VK_FORMAT_R8G8B8A8_UNORM;
       case nrd::Format::R32_SFLOAT:
         return VK_FORMAT_R32_SFLOAT;
       case nrd::Format::RGBA16_SFLOAT:
@@ -28,17 +34,19 @@ namespace remix::denoise {
       case nrd::Format::R10_G10_B10_A2_UNORM:
         return VK_FORMAT_A2B10G10R10_UNORM_PACK32;
       default:
-        throw std::runtime_error("Unexpected NRD diffuse SH texture format");
+        throw std::runtime_error("Unexpected NRD texture format");
       }
     }
   } // namespace
-  void Renderer::Gpu::initializeNrd() {
-    const nrd::DenoiserDesc denoiser{0, nrd::Denoiser::REBLUR_DIFFUSE_SH};
+  void Renderer::Gpu::initializeNrd(NrdPass &pass, bool sigma) {
+    pass.device = device;
+    pass.sigma = sigma;
+    const nrd::DenoiserDesc denoiser{0, sigma ? nrd::Denoiser::SIGMA_SHADOW_TRANSLUCENCY : nrd::Denoiser::REBLUR_DIFFUSE_SH};
     nrd::InstanceCreationDesc create{};
     create.denoisers = &denoiser;
     create.denoisersNum = 1;
-    require(nrd::CreateInstance(create, instance));
-    const auto &desc = *nrd::GetInstanceDesc(*instance);
+    require(nrd::CreateInstance(create, pass.instance));
+    const auto &desc = *nrd::GetInstanceDesc(*pass.instance);
     const auto &offset = nrd::GetLibraryDesc()->spirvBindingOffsets;
     if (desc.resourcesSpaceIndex != 0 || desc.constantBufferAndSamplersSpaceIndex != 1)
       throw std::runtime_error("Unexpected NRD register spaces");
@@ -50,22 +58,22 @@ namespace remix::denoise {
                              .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
                              .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
                              .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE};
-      check(vkCreateSampler(device, &ci, nullptr, &samplers[i]));
+      check(vkCreateSampler(device, &ci, nullptr, &pass.samplers[i]));
     }
     std::vector<VkDescriptorSetLayoutBinding> bindings;
     for (uint32_t i = 0; i < desc.samplersNum; ++i)
       bindings.push_back({offset.samplerOffset + desc.samplersBaseRegisterIndex + i,
-                          VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, &samplers[i]});
+                          VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, &pass.samplers[i]});
     bindings.push_back({offset.constantBufferOffset + desc.constantBufferRegisterIndex,
                         VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr});
     VkDescriptorSetLayoutCreateInfo ci{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
                                        .bindingCount = uint32_t(bindings.size()),
                                        .pBindings = bindings.data()};
-    check(vkCreateDescriptorSetLayout(device, &ci, nullptr, &commonLayout));
-    pipelines.resize(desc.pipelinesNum);
+    check(vkCreateDescriptorSetLayout(device, &ci, nullptr, &pass.commonLayout));
+    pass.pipelines.resize(desc.pipelinesNum);
     for (uint32_t i = 0; i < desc.pipelinesNum; ++i) {
       const auto &source = desc.pipelines[i];
-      auto &p = pipelines[i];
+      auto &p = pass.pipelines[i];
       // Reconstruction is unreachable with full-rate diffuse sampling. No unused
       // permutation is compiled, and an unexpected dispatch fails explicitly.
       const Shader *shader = nullptr;
@@ -89,7 +97,7 @@ namespace remix::denoise {
       ci.bindingCount = uint32_t(bindings.size());
       ci.pBindings = bindings.data();
       check(vkCreateDescriptorSetLayout(device, &ci, nullptr, &p.resources));
-      VkDescriptorSetLayout layouts[] = {p.resources, commonLayout};
+      VkDescriptorSetLayout layouts[] = {p.resources, pass.commonLayout};
       VkPipelineLayoutCreateInfo li{.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                     .setLayoutCount = 2,
                                     .pSetLayouts = layouts};
@@ -105,10 +113,10 @@ namespace remix::denoise {
                                   .maxSets = pd.setsMaxNum * 2,
                                   .poolSizeCount = 4,
                                   .pPoolSizes = sizes};
-    check(vkCreateDescriptorPool(device, &pc, nullptr, &nrdPool));
+    check(vkCreateDescriptorPool(device, &pc, nullptr, &pass.nrdPool));
     const VkDeviceSize a = properties.limits.minUniformBufferOffsetAlignment;
-    constantStride = (desc.constantBufferMaxDataSize + a - 1) & ~(a - 1);
-    constants = buffer(constantStride * pd.setsMaxNum);
+    pass.constantStride = (desc.constantBufferMaxDataSize + a - 1) & ~(a - 1);
+    pass.constants = buffer(pass.constantStride * pd.setsMaxNum);
     auto allocate = [&](auto &pool, const nrd::TextureDesc *textures, uint32_t count) {
       for (uint32_t i = 0; i < count; ++i) {
         uint32_t d = textures[i].downsampleFactor;
@@ -116,10 +124,10 @@ namespace remix::denoise {
             texture(format(textures[i].format), {(extent.width + d - 1) / d, (extent.height + d - 1) / d}));
       }
     };
-    allocate(permanent, desc.permanentPool, desc.permanentPoolSize);
-    allocate(transient, desc.transientPool, desc.transientPoolSize);
+    allocate(pass.permanent, desc.permanentPool, desc.permanentPoolSize);
+    allocate(pass.transient, desc.transientPool, desc.transientPoolSize);
   }
-  void Renderer::Gpu::prepareNrd(const scene::Matrix &projection, const scene::Matrix &previousProjection) {
+  void Renderer::Gpu::prepareNrd(NrdPass &pass, const scene::Matrix &projection, const scene::Matrix &previousProjection) {
     nrd::CommonSettings common{};
     std::copy(projection.begin(), projection.end(), common.viewToClipMatrix);
     std::copy(previousProjection.begin(), previousProjection.end(), common.viewToClipMatrixPrev);
@@ -137,37 +145,55 @@ namespace remix::denoise {
     common.timeDeltaBetweenFrames = frame.timing[0];
     common.frameIndex = uint32_t(stats.renderedFrames);
     common.accumulationMode =
-        frame.flags[0] ? nrd::AccumulationMode::CLEAR_AND_RESTART : nrd::AccumulationMode::CONTINUE;
-    common.isHistoryConfidenceAvailable = true;
+        (frame.flags[0] || (pass.sigma && frame.shadow[0]))
+            ? nrd::AccumulationMode::CLEAR_AND_RESTART : nrd::AccumulationMode::CONTINUE;
     common.enableValidation = frame.timing[1] != 0;
-    nrd::ReblurSettings settings{};
-    settings.hitDistanceReconstructionMode = nrd::HitDistanceReconstructionMode::OFF;
-    settings.hitDistanceParameters = {frame.hitDistance[0], frame.hitDistance[1], frame.hitDistance[2]};
-    settings.maxAccumulatedFrameNum =
-        std::clamp(nrd::GetMaxAccumulatedFrameNum(nrd::REBLUR_DEFAULT_ACCUMULATION_TIME,
-                                                  1000.f / std::max(frame.timing[0], 1.f)),
-                   1u, nrd::REBLUR_MAX_HISTORY_FRAME_NUM);
-    warmupFrames = std::max(32u, settings.maxAccumulatedFrameNum);
-    settings.maxFastAccumulatedFrameNum =
-        std::min(settings.maxFastAccumulatedFrameNum, settings.maxAccumulatedFrameNum);
-    require(nrd::SetCommonSettings(*instance, common));
-    require(nrd::SetDenoiserSettings(*instance, 0, &settings));
+    common.isHistoryConfidenceAvailable = !pass.sigma;
+    common.enableValidation &= !pass.sigma;
+    require(nrd::SetCommonSettings(*pass.instance, common));
+    if (pass.sigma) {
+      nrd::SigmaSettings settings{};
+      std::copy_n(frame.sun, 3, settings.lightDirection);
+      settings.maxStabilizedFrameNum = std::clamp(
+          nrd::GetMaxAccumulatedFrameNum(nrd::SIGMA_DEFAULT_ACCUMULATION_TIME,
+                                        1000.f / std::max(frame.timing[0], 1.f)),
+          1u, nrd::SIGMA_MAX_HISTORY_FRAME_NUM);
+      require(nrd::SetDenoiserSettings(*pass.instance, 0, &settings));
+    } else {
+      nrd::ReblurSettings settings{};
+      settings.hitDistanceReconstructionMode = nrd::HitDistanceReconstructionMode::OFF;
+      settings.hitDistanceParameters = {frame.hitDistance[0], frame.hitDistance[1], frame.hitDistance[2]};
+      settings.maxAccumulatedFrameNum =
+          std::clamp(nrd::GetMaxAccumulatedFrameNum(nrd::REBLUR_DEFAULT_ACCUMULATION_TIME,
+                                                    1000.f / std::max(frame.timing[0], 1.f)),
+                     1u, nrd::REBLUR_MAX_HISTORY_FRAME_NUM);
+      warmupFrames = std::max(32u, settings.maxAccumulatedFrameNum);
+      settings.maxFastAccumulatedFrameNum =
+          std::min(settings.maxFastAccumulatedFrameNum, settings.maxAccumulatedFrameNum);
+      require(nrd::SetDenoiserSettings(*pass.instance, 0, &settings));
+    }
     const nrd::Identifier id = 0;
-    require(nrd::GetComputeDispatches(*instance, &id, 1, dispatches, dispatchCount));
-    check(vkResetDescriptorPool(device, nrdPool, 0));
+    require(nrd::GetComputeDispatches(*pass.instance, &id, 1, pass.dispatches, pass.dispatchCount));
+    check(vkResetDescriptorPool(device, pass.nrdPool, 0));
   }
-  void Renderer::Gpu::recordNrd(VkCommandBuffer command) {
-    const auto &desc = *nrd::GetInstanceDesc(*instance);
+  void Renderer::Gpu::recordNrd(NrdPass &pass, VkCommandBuffer command) {
+    const auto &desc = *nrd::GetInstanceDesc(*pass.instance);
     const auto &offset = nrd::GetLibraryDesc()->spirvBindingOffsets;
-    if (dispatchCount > desc.descriptorPoolDesc.setsMaxNum)
+    if (pass.dispatchCount > desc.descriptorPoolDesc.setsMaxNum)
       throw std::runtime_error("NRD dispatch limit exceeded");
     auto resolve = [&](const nrd::ResourceDesc &r) -> Texture & {
       using R = nrd::ResourceType;
       switch (r.type) {
       case R::PERMANENT_POOL:
-        return *permanent.at(r.indexInPool);
+        return *pass.permanent.at(r.indexInPool);
       case R::TRANSIENT_POOL:
-        return *transient.at(r.indexInPool);
+        return *pass.transient.at(r.indexInPool);
+      case R::IN_PENUMBRA:
+        return *images[Penumbra];
+      case R::IN_TRANSLUCENCY:
+        return *images[ShadowInput];
+      case R::OUT_SHADOW_TRANSLUCENCY:
+        return *images[ShadowOutput];
       case R::IN_MV:
         return *images[Motion];
       case R::IN_NORMAL_ROUGHNESS:
@@ -190,15 +216,15 @@ namespace remix::denoise {
         throw std::runtime_error("Unbound NRD resource");
       }
     };
-    for (uint32_t i = 0; i < dispatchCount; ++i) {
-      const auto &d = dispatches[i];
-      const auto &p = pipelines.at(d.pipelineIndex);
+    for (uint32_t i = 0; i < pass.dispatchCount; ++i) {
+      const auto &d = pass.dispatches[i];
+      const auto &p = pass.pipelines.at(d.pipelineIndex);
       if (!p.pipeline)
         throw std::runtime_error("Uncompiled NRD shader requested");
-      VkDescriptorSetLayout layouts[] = {p.resources, commonLayout};
+      VkDescriptorSetLayout layouts[] = {p.resources, pass.commonLayout};
       VkDescriptorSet sets[2];
       VkDescriptorSetAllocateInfo ai{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-                                     .descriptorPool = nrdPool,
+                                     .descriptorPool = pass.nrdPool,
                                      .descriptorSetCount = 2,
                                      .pSetLayouts = layouts};
       check(vkAllocateDescriptorSets(device, &ai, sets));
@@ -219,14 +245,14 @@ namespace remix::denoise {
              .descriptorType = storage ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
              .pImageInfo = &imagesInfo[r]});
       }
-      if (d.constantBufferDataSize > constantStride)
+      if (d.constantBufferDataSize > pass.constantStride)
         throw std::runtime_error("NRD constant limit exceeded");
-      const auto position = constantStride * i;
+      const auto position = pass.constantStride * i;
       // Every dispatch has its own descriptors and constants until the frame fence.
       if (d.constantBufferDataSize)
-        std::memcpy(static_cast<char *>(constants->mapped) + position, d.constantBufferData,
+        std::memcpy(static_cast<char *>(pass.constants->mapped) + position, d.constantBufferData,
                     d.constantBufferDataSize);
-      VkDescriptorBufferInfo bi{constants->buffer, position, desc.constantBufferMaxDataSize};
+      VkDescriptorBufferInfo bi{pass.constants->buffer, position, desc.constantBufferMaxDataSize};
       writes.push_back({.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                         .dstSet = sets[1],
                         .dstBinding = offset.constantBufferOffset + desc.constantBufferRegisterIndex,

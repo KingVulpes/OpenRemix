@@ -46,6 +46,9 @@ only its previous Vulkan 1.1 graphics/presentation capabilities.
 
 The last distant light drawn during a frame is selected, including zero radiance.
 Direction specifies the direction light travels; radiance and color are linear.
+The existing angular diameter sets sun size; BetaRT uses 0.533 degrees. Primary
+opaque sun visibility is filtered separately by [SIGMA](features/sigma.md), while
+REBLUR diffuse SH retains indirect lighting. Zero diameter retains hard shadows.
 No submitted distant light means no direct sunlight. The sample draws white daylight;
 BetaRT updates its white distant light from the visible sun each world frame. The debug panel can override its normalized
 direction, color and intensity. Other light types and automatic persistent-light
@@ -180,7 +183,7 @@ orders the dispatches. Composition restores stable depth and clears transmission
 before the retained raster multiply/add passes. No extra per-pixel allocation,
 lighting sample, public interface field or history-reset condition is introduced.
 
-Distant-light shadows use deterministic opacity/tint products; indirect continuations use stochastic transmission. The translucent
+Distant-light shadow rays retain deterministic opacity/tint products; indirect continuations use stochastic transmission. The translucent
 material fallback still multiplies alpha by 0.2. The layer bound absorbs remaining
 rays. There is no ray bending or specular material model.
 

@@ -63,6 +63,7 @@ namespace remix {
     struct DistantLight {
       float direction[3] = {0, -1, 0}; // Direction in which light travels.
       float radiance[3] = {};
+      float angularDiameterDegrees = 0;
       bool isDistant = false;
       bool operator==(const DistantLight &) const = default;
     };

@@ -106,6 +106,7 @@ namespace remix {
     g.device = device;
     g.queueFamily = queueFamily;
     g.postCapabilities = denoise::capabilities(physical);
+    g.sigmaCapable = denoise::sigmaSupported(physical);
     vkGetPhysicalDeviceMemoryProperties(physical, &g.memory);
     vkGetPhysicalDeviceProperties(physical, &g.properties);
     VkPhysicalDeviceProperties2 properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,

@@ -233,6 +233,10 @@ namespace remix {
       for (int i = 0; i < 3; ++i)
         light.radiance[i] = options.lightColor[i] * options.lightIntensity;
     }
+    const float diameter = options.sunAngularDiameter >= 0 ? options.sunAngularDiameter : light.angularDiameterDegrees;
+    frame.sun[0] = std::tan(diameter * (3.14159265359f / 360.f));
+    frame.sun[1] = denoiser && postSigma;
+    frame.sun[2] = frame.sun[1] != 0 ? float(options.shadowDebug) : 0;
     std::copy_n(light.direction, 3, frame.direction);
     std::copy_n(light.radiance, 3, frame.radiance);
     if (options.sky)
@@ -291,7 +295,7 @@ namespace remix {
     std::copy_n(temporalFrame.jitter, 2, frame.jitter);
     temporalFrame.jitter[2] = history.reset() ? temporalFrame.jitter[0] : previousJitter[0];
     temporalFrame.jitter[3] = history.reset() ? temporalFrame.jitter[1] : previousJitter[1];
-    temporalFrame.flags[0] = history.reset();
+    temporalFrame.flags[0] = history.reset() || frame.sun[2] != previousSun[7];
     temporalFrame.flags[1] = postReblur;
     temporalFrame.flags[2] = postTaa;
     temporalFrame.flags[3] = denoiser ? uint32_t(denoiser->statistics().renderedFrames % 2) : 0;
@@ -306,6 +310,25 @@ namespace remix {
             : 16.6667f;
     temporalFrame.timing[1] = options.validation;
     temporalFrame.timing[2] = sceneChanged;
+    for (int i = 0; i < 3; ++i) {
+      temporalFrame.sun[i] = -frame.direction[i];
+      pendingSun[i] = frame.direction[i];
+      pendingSun[i + 3] = frame.radiance[i];
+    }
+    pendingSun[6] = diameter;
+    pendingSun[7] = frame.sun[2];
+    temporalFrame.sun[3] = frame.sun[1];
+    // Abrupt sun changes invalidate only SIGMA. Ordinary time/weather changes
+    // keep both denoisers' histories and the existing lighting confidence path.
+    float directionDelta = 0, radianceDelta = 0, previousRadiance = 0;
+    for (int i = 0; i < 3; ++i) {
+      directionDelta += (pendingSun[i] - previousSun[i]) * (pendingSun[i] - previousSun[i]);
+      radianceDelta += std::abs(pendingSun[i + 3] - previousSun[i + 3]);
+      previousRadiance += previousSun[i + 3];
+    }
+    temporalFrame.shadow[0] = directionDelta > .01f || radianceDelta > std::max(.1f, previousRadiance * .5f) ||
+                              diameter != previousSun[6];
+    temporalFrame.shadow[1] = uint32_t(frame.sun[2]);
     frame.config[2] = uint32_t(sequence++);
     frame.config[3] = uint32_t(stats.accumulationCount);
     hostBuffer(uniform, &frame, sizeof(frame), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);

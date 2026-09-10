@@ -34,6 +34,10 @@ namespace remix {
       const float radiance[] = {info.radiance.x, info.radiance.y, info.radiance.z};
       finite(direction, 3);
       finite(radiance, 3);
+      const float diameter = distant->angularDiameterDegrees;
+      if (!std::isfinite(diameter) || diameter < 0 || diameter >= 180)
+        throw invalid;
+      light.angularDiameterDegrees = diameter;
       float norm = std::hypot(direction[0], direction[1], direction[2]);
       if (!std::isfinite(norm) || norm < 1e-6f)
         throw invalid;

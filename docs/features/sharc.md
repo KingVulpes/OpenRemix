@@ -60,7 +60,7 @@ cache and all indirect illumination.
 The tracer owns three device buffers with SDK strides of 8, 16 and 16 bytes for
 hash keys, atomic accumulation and resolved native-fp16 data. Capacity defaults
 to `2^22` entries (160 MiB plus two small diagnostic buffers). Device addresses
-are appended to the private 320-byte CPU/GLSL frame layout; existing public ABI
+are appended to the private 336-byte CPU/GLSL frame layout; existing public ABI
 layouts and function tables are unchanged.
 
 Initialization clears all three buffers. Transfer-to-compute, update-to-resolve,

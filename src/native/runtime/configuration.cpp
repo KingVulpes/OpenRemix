@@ -28,6 +28,7 @@
 #include <cstring>
 #include <limits>
 #include <charconv>
+#include <cmath>
 
 namespace remix {
   remixapi_ErrorCode RemixNativeRuntime::selectBackend(const char *value) {
@@ -58,6 +59,16 @@ namespace remix {
       m_traceOptions.denoiser = !std::strcmp(value, "reblur-sh");
       return REMIXAPI_ERROR_CODE_SUCCESS;
     }
+    if (!std::strcmp(key, "sunAngularDiameter")) {
+      float diameter = 0;
+      const char *end = value + std::strlen(value);
+      auto parsed = std::from_chars(value, end, diameter);
+      if (parsed.ec != std::errc{} || parsed.ptr != end || !std::isfinite(diameter) ||
+          (diameter != -1 && (diameter < 0 || diameter > 10)))
+        return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+      m_traceOptions.sunAngularDiameter = diameter;
+      return REMIXAPI_ERROR_CODE_SUCCESS;
+    }
     unsigned number = 0;
     const char *end = value + std::strlen(value);
     auto parsed = std::from_chars(value, end, number);
@@ -75,6 +86,10 @@ namespace remix {
       m_traceOptions.bounces = number;
     else if (!std::strcmp(key, "accumulate") && number <= 1)
       m_traceOptions.accumulate = number != 0;
+    else if (!std::strcmp(key, "sigma") && number <= 1)
+      m_traceOptions.sigma = number != 0;
+    else if (!std::strcmp(key, "shadowDebug") && number <= 2)
+      m_traceOptions.shadowDebug = number;
     else if (!std::strcmp(key, "taa") && number <= 1)
       m_traceOptions.taa = number != 0;
     else if (!std::strcmp(key, "validation") && number <= 1)
@@ -128,6 +143,12 @@ namespace remix {
     if (!m_pathTracer)
       std::strncpy(result.unavailableReason, REMIX_HAS_SHARC ? "Path tracing is inactive" : "SHARC was disabled at build time",
                    sizeof(result.unavailableReason) - 1);
+    return result;
+  }
+  remixapi_ShadowStatisticsEXT RemixNativeRuntime::shadowStatistics() const {
+    auto result = m_pathTracer ? m_pathTracer->shadowStatistics()
+                              : remixapi_ShadowStatisticsEXT{.structSize = sizeof(remixapi_ShadowStatisticsEXT)};
+    result.requested = m_traceOptions.sigma;
     return result;
   }
   remixapi_DenoisingStatisticsEXT RemixNativeRuntime::denoisingStatistics() const {

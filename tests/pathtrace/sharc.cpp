@@ -193,6 +193,7 @@ int main(int argc, char **argv) {
   auto configure = [&](const char *key, const char *value) {
     ok(api.SetConfigVariable((std::string("rtx.native.pathtrace.") + key).c_str(), value));
   };
+  if (std::getenv("REMIX_TEST_FAULT")) configure("sigma", "0");
   configure("denoiser", "off"); configure("taa", "0");
   frame(); frame();
   if (const char *fault = std::getenv("REMIX_TEST_FAULT")) {

@@ -9,6 +9,9 @@ namespace remix {
     uint32_t samples = 1, bounces = 2;
     bool accumulate = false, forceRebuild = false;
     bool denoiser = true, taa = true, validation = false;
+    bool sigma = true;
+    uint32_t shadowDebug = 0;
+    float sunAngularDiameter = -1; // -1 inherits the distant light's diameter.
     bool rasterPrimary = true;
     bool sky = true;
     bool sharc = true, sharcDebug = false;
@@ -31,6 +34,7 @@ namespace remix {
     VkRenderPass skyPass() const;
     void beginFrame(const TraceOptions &options);
     void submitted();
+    remixapi_ShadowStatisticsEXT shadowStatistics() const;
     remixapi_DenoisingStatisticsEXT denoisingStatistics() const;
     remixapi_SharcStatisticsEXT sharcStatistics() const;
     void destroyTarget();

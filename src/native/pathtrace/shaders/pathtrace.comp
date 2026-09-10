@@ -120,6 +120,37 @@ vec3 shadow(vec3 origin,vec3 direction) {
   }
   return vec3(0); // Conservative bound, independent of diffuse bounce depth.
 }
+// Independent primary-shadow sampling preserves the diffuse/confidence RNG.
+// The first attenuating sheet provides a finite penumbra even if the ray later
+// escapes; otherwise SIGMA would classify tinted transmission as fully lit.
+vec3 sunVisibility(Hit receiver,ivec2 pixel,out float blockerDistance) {
+  vec3 center=-frame.lightDirection.xyz;
+  blockerDistance=0;
+  if(dot(receiver.n,center)<=0||all(equal(frame.lightRadiance.rgb,vec3(0))))return vec3(0);
+  vec3 direction=center;
+  if(frame.sun.x>0) {
+    uint sequence=frame.sun.y!=0?(frame.config.z&7u):frame.config.z;
+    uint state=hash(uint(pixel.x)+uint(pixel.y)*frame.target.x+hash(sequence+0xa511e9b3u));
+    float u=float(state>>8)*(1.0/16777216.0);
+    float angle=6.28318530718*float(hash(state)>>8)*(1.0/16777216.0);
+    vec3 t=normalize(cross(abs(center.z)<.999?vec3(0,0,1):vec3(0,1,0),center));
+    direction=normalize(center+frame.sun.x*sqrt(u)*(cos(angle)*t+sin(angle)*cross(center,t)));
+  }
+  if(dot(receiver.n,direction)<=0)return vec3(0);
+  vec3 transmission=vec3(1),origin=offsetRay(receiver.p,receiver.n);
+  float distance=0;blockerDistance=65504;
+  for(uint layer=0;layer<32;++layer) {
+    Hit hit=closest(origin,direction);
+    if(hit.t==1e30)return transmission;
+    distance+=hit.t;
+    if(!hit.blended){blockerDistance=min(distance,65000);return vec3(0);}
+    vec3 tint=hit.color.rgb*(1-hit.color.a);
+    if(any(lessThan(tint,vec3(.999))))blockerDistance=min(blockerDistance,min(distance,65000));
+    transmission*=tint;
+    origin=offsetRay(hit.p,-hit.n);
+  }
+  blockerDistance=min(distance,65000);return vec3(0);
+}
 vec3 direct(Hit hit) {
   vec3 toLight=-frame.lightDirection.xyz;
   float cosine=max(0,dot(hit.n,toLight));
@@ -258,8 +289,11 @@ void main() {
     ++sheetCount;origin=offsetRay(primary.p,-primary.n);primary=closest(origin,direction);
   }
   vec3 indirect=vec3(0),primaryDirect=vec3(0);vec4 packed0=vec4(0),packed1=vec4(0);
+  vec3 sunTransmittance=vec3(1),unshadowedDirect=vec3(0);float blockerDistance=65504;
   if(primary.t<1e30&&!primary.blended) {
-    primaryDirect=direct(primary);
+    sunTransmittance=sunVisibility(primary,pixel,blockerDistance);
+    unshadowedDirect=primary.color.rgb*(max(0,dot(primary.n,-frame.lightDirection.xyz))/3.14159265359)*frame.lightRadiance.rgb;
+    primaryDirect=unshadowedDirect*sunTransmittance;
     for(uint i=0;i<frame.config.x;++i) {
       vec3 firstDir;float firstDist;vec3 sampleLight=continuation(primary,firstDir,firstDist);
       indirect+=sampleLight/float(frame.config.x);
@@ -297,6 +331,11 @@ void main() {
   imageStore(guideNormal,pixel,NRD_FrontEnd_PackNormalAndRoughness(N,1,0));
   imageStore(guideAlbedo,pixel,opaque?vec4(primary.color.rgb,1):vec4(0));
   imageStore(sh0,pixel,packed0);imageStore(sh1,pixel,packed1);
+#ifdef SIGMA_PASS
+  imageStore(shadowPenumbra,pixel,vec4(SIGMA_FrontEnd_PackPenumbra(blockerDistance,frame.sun.x)));
+  imageStore(shadowInput,pixel,SIGMA_FrontEnd_PackTranslucency(blockerDistance,sunTransmittance));
+  primaryDirect=unshadowedDirect;
+#endif
   imageStore(directLight,pixel,vec4(safeRadiance(primaryDirect),1));imageStore(lighting,pixel,vec4(safeRadiance(indirect),1));
 #endif
   // Integer storage preserves every RNG bit, including float NaN/subnormal patterns.

@@ -78,11 +78,20 @@ void main() {
           N,normalAt(p+ivec2(1,0)),normalAt(p-ivec2(1,0)),normalAt(p+ivec2(0,1)),normalAt(p-ivec2(0,1)));
         indirect*=factor.x;
       }
-      color=imageLoad(directLight,p).rgb+safeRadiance(indirect)*material.rgb;
+      vec3 direct=imageLoad(directLight,p).rgb;
+#ifdef SIGMA_PASS
+      direct*=SIGMA_BackEnd_UnpackShadow(imageLoad(shadowOutput,p)).yzw;
+#endif
+      color=direct+safeRadiance(indirect)*material.rgb;
     }
     vec4 tr=imageLoad(transmittance,p);
     color=safeRadiance(imageLoad(transparentLight,p).rgb+tr.rgb*color);
     if(temporal.timing.y!=0&&temporal.flags.y!=0)color=imageLoad(validation,p).rgb;
+#ifdef SIGMA_PASS
+    if(temporal.shadow.y!=0)
+      color=z>=500000?vec3(0):temporal.shadow.y==1?imageLoad(shadowInput,p).yzw:
+            SIGMA_BackEnd_UnpackShadow(imageLoad(shadowOutput,p)).yzw;
+#endif
     imageStore(composed,p,vec4(color,1-tr.a));return;
   }
   if(pass.mode==3) {
@@ -125,7 +134,7 @@ void main() {
     }
     vec4 history=vec4(result,rate);
     if(temporal.flags.w==0)imageStore(history1,p,history);else imageStore(history0,p,history);
-    vec4 world=imageLoad(finalWorld,p);world.rgb=temporal.flags.z!=0?safeRadiance(expanded(result)):inputColor.rgb;
+    vec4 world=imageLoad(finalWorld,p);world.rgb=temporal.flags.z!=0&&temporal.shadow.y==0?safeRadiance(expanded(result)):inputColor.rgb;
     imageStore(finalWorld,p,world);return;
   }
   imageStore(previousDepth,p,imageLoad(guideDepth,p));imageStore(previousNormal,p,imageLoad(guideNormal,p));imageStore(previousLighting,p,imageLoad(lighting,p));

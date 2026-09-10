@@ -11,6 +11,10 @@ namespace remix {
     bool denoiser = true, taa = true, validation = false;
     bool rasterPrimary = true;
     bool sky = true;
+    bool sharc = true, sharcDebug = false;
+    uint32_t sharcCapacityLog2 = 22, sharcDownscale = 5, sharcSceneScale = 50;
+    uint32_t sharcAccumulationFrames = 32, sharcStaleFrames = 64;
+    uint64_t sharcReset = 0;
     bool overrideLight = false;
     float lightDirection[3] = {-0.4f, -0.8f, -0.3f};
     float lightColor[3] = {1, 1, 1};
@@ -28,6 +32,7 @@ namespace remix {
     void beginFrame(const TraceOptions &options);
     void submitted();
     remixapi_DenoisingStatisticsEXT denoisingStatistics() const;
+    remixapi_SharcStatisticsEXT sharcStatistics() const;
     void destroyTarget();
     void prepare(VkCommandBuffer command, RasterRenderer &resources, const TraceOptions &options);
     void record(VkCommandBuffer command);

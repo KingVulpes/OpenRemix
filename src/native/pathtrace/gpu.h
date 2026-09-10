@@ -99,8 +99,13 @@ namespace remix::trace::detail {
     uint32_t config[4] = {}, target[4] = {};
     float jitter[4] = {}; // primary sample offset in pixels; zw reserved
     float skyRadiance[4] = {}; // linear uniform environment; w reserved
+    uint64_t sharcHash = 0, sharcAccumulation = 0, sharcResolved = 0, sharcCounters = 0;
+    uint32_t sharcConfig[4] = {};
+    float sharcGrid[4] = {}, sharcPreviousCamera[4] = {};
   };
-  static_assert(sizeof(Frame) == 240 && offsetof(Frame, skyRadiance) == 224);
+  static_assert(sizeof(Frame) == 320 && offsetof(Frame, skyRadiance) == 224 &&
+                offsetof(Frame, sharcHash) == 240 && offsetof(Frame, sharcConfig) == 272 &&
+                offsetof(Frame, sharcGrid) == 288 && offsetof(Frame, sharcPreviousCamera) == 304);
   inline float linear(float c) { return c <= .04045f ? c / 12.92f : std::pow((c + .055f) / 1.055f, 2.4f); }
   inline void barrier(VkCommandBuffer command, VkPipelineStageFlags source, VkAccessFlags writes,
                       VkPipelineStageFlags destination, VkAccessFlags reads) {
@@ -222,6 +227,25 @@ namespace remix {
     std::map<std::tuple<const scene::Mesh *, uint64_t, uint32_t>, MeshView> meshes;
     std::vector<std::shared_ptr<Geometry>> compactPending;
     remixapi_TracingStatisticsEXT stats = {.structSize = sizeof(remixapi_TracingStatisticsEXT)};
+    struct Sharc {
+      std::unique_ptr<Buffer> hash, accumulation, resolved, counters, readback;
+      VkPipeline update{}, resolve{}, query{}, transparency{}, temporal{}, temporalTransparency{}, confidence{};
+      VkQueryPool timestamps{};
+      bool clear = true, pending = false, attempted = false;
+      scene::TemporalEpoch epoch{};
+      uint64_t reset = 0, warmFrames = 0;
+      uint32_t scale = 0, bounces = 0, responsiveFrames = 0, warmTarget = 64;
+      float previousEye[3] = {}, light[9] = {};
+      std::vector<uint8_t> geometry, dynamicGeometry;
+      remixapi_SharcStatisticsEXT stats{.structSize = sizeof(remixapi_SharcStatisticsEXT)};
+    } sharc;
+    void beginSharc(const TraceOptions &options);
+    void destroySharc(bool temporalOnly = false);
+    void configureSharc(Frame &frame, const TraceOptions &options, scene::TemporalEpoch epoch,
+                        std::vector<uint8_t> geometry, std::vector<uint8_t> dynamicGeometry);
+    void recordSharc(VkCommandBuffer command, const TraceOptions &options);
+    void finishSharc(VkCommandBuffer command);
+    void sharcPipeline(const uint32_t *code, size_t size, VkPipelineLayout pipelineLayout, VkPipeline &out);
     std::vector<uint8_t> lastScene;
     uint64_t sequence = 0;
     std::chrono::steady_clock::time_point epoch = std::chrono::steady_clock::now();

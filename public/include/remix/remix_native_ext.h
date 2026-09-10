@@ -60,6 +60,17 @@ typedef enum remixapi_RebuildReasonEXT {
   REMIXAPI_REBUILD_DISPLACEMENT_EXT = 4, REMIXAPI_REBUILD_FORCED_EXT = 5,
   REMIXAPI_REBUILD_STATIC_TRANSFORM_EXT = 6,
 } remixapi_RebuildReasonEXT;
+// Optional SHARC diagnostics; counters/times describe the last completed cache frame.
+// Query counters sample 1/64 pixels (excluding confidence retracing), not all rays.
+typedef struct remixapi_SharcStatisticsEXT {
+  uint32_t structSize, supported, requested, active;
+  uint32_t capacity, occupiedEntries, updatePaths, queryAttempts, queryHits;
+  uint32_t gpuTimingsAvailable, debugView, reserved;
+  uint64_t memoryBytes, renderedFrames, resets;
+  double gpuUpdateMilliseconds, gpuResolveMilliseconds;
+  char unavailableReason[256];
+} remixapi_SharcStatisticsEXT;
+
 typedef struct remixapi_TracingStatisticsEXT {
   uint32_t structSize, samplesPerPixel, indirectBounces, accumulationEnabled;
   uint64_t accumulationCount, sampleSequence, sceneGeneration;
@@ -153,6 +164,9 @@ typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_GetPresentationCount)(uin
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetPresentationCount(uint64_t* out_count);
 
 typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_GetBackendCapabilitiesEXT)(remixapi_BackendCapabilitiesEXT* capabilities);
+typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_GetSharcStatisticsEXT)(remixapi_SharcStatisticsEXT* statistics);
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetSharcStatisticsEXT(remixapi_SharcStatisticsEXT* statistics);
+
 typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_GetTracingStatisticsEXT)(remixapi_TracingStatisticsEXT* statistics);
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetBackendCapabilitiesEXT(remixapi_BackendCapabilitiesEXT* capabilities);
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetTracingStatisticsEXT(remixapi_TracingStatisticsEXT* statistics);

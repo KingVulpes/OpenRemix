@@ -14,6 +14,7 @@ endif
 if system == 'windows'
   add_project_arguments('-DNOMINMAX', language : ['c', 'cpp'])
 endif
+add_project_arguments('-DREMIX_HAS_SHARC=' + (get_option('sharc') ? '1' : '0'), language : ['c', 'cpp'])
 threads_dep = dependency('threads')
 dl_dep = cpp.find_library('dl', required : false)
 remix_public_include = include_directories('public/include')
@@ -51,6 +52,9 @@ if get_option('vulkan_probes')
   subdir('tools/vulkan-probes')
 endif
 install_subdir('public/include/remix', install_dir : get_option('includedir'))
+if get_option('sharc')
+  install_data('third_party/sharc/License.md', rename : 'SHARC.md', install_dir : get_option('datadir') / 'remix/licenses')
+endif
 install_data('LICENSE', 'LICENSE-MIT', 'ThirdPartyLicenses.txt', install_dir : get_option('datadir') / 'remix/licenses')
 install_data('third_party/image/LICENSES.txt', rename : 'ImageDecoders.txt',
   install_dir : get_option('datadir') / 'remix/licenses')

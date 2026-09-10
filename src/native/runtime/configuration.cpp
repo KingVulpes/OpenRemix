@@ -79,6 +79,22 @@ namespace remix {
       m_traceOptions.taa = number != 0;
     else if (!std::strcmp(key, "validation") && number <= 1)
       m_traceOptions.validation = number != 0;
+    else if (!std::strcmp(key, "sharc") && number <= 1)
+      m_traceOptions.sharc = number != 0;
+    else if (!std::strcmp(key, "sharcDebug") && number <= 1)
+      m_traceOptions.sharcDebug = number != 0;
+    else if (!std::strcmp(key, "sharcReset") && number == 1)
+      ++m_traceOptions.sharcReset;
+    else if (!std::strcmp(key, "sharcCapacityLog2") && number >= 16 && number <= 22)
+      m_traceOptions.sharcCapacityLog2 = number;
+    else if (!std::strcmp(key, "sharcDownscale") && number >= 1 && number <= 16)
+      m_traceOptions.sharcDownscale = number;
+    else if (!std::strcmp(key, "sharcSceneScale") && number >= 1 && number <= 200)
+      m_traceOptions.sharcSceneScale = number;
+    else if (!std::strcmp(key, "sharcAccumulationFrames") && number >= 1 && number <= 1024)
+      m_traceOptions.sharcAccumulationFrames = number;
+    else if (!std::strcmp(key, "sharcStaleFrames") && number >= 8 && number <= 1024)
+      m_traceOptions.sharcStaleFrames = number;
     else if (!std::strcmp(key, "sky") && number <= 1)
       m_traceOptions.sky = number != 0;
     else if (!std::strcmp(key, "forceRebuild") && number <= 1)
@@ -101,7 +117,17 @@ namespace remix {
     auto result = m_pathTracer
                       ? m_pathTracer->statistics()
                       : remixapi_TracingStatisticsEXT{.structSize = sizeof(remixapi_TracingStatisticsEXT)};
-    result.redrawRequested = (m_backend && m_traceOptions.accumulate) || m_backend != m_requestedBackend;
+    result.redrawRequested = (m_backend && (result.redrawRequested || m_traceOptions.accumulate)) ||
+                             m_backend != m_requestedBackend;
+    return result;
+  }
+  remixapi_SharcStatisticsEXT RemixNativeRuntime::sharcStatistics() const {
+    auto result = m_pathTracer ? m_pathTracer->sharcStatistics()
+                              : remixapi_SharcStatisticsEXT{.structSize = sizeof(remixapi_SharcStatisticsEXT)};
+    result.requested = m_traceOptions.sharc;
+    if (!m_pathTracer)
+      std::strncpy(result.unavailableReason, REMIX_HAS_SHARC ? "Path tracing is inactive" : "SHARC was disabled at build time",
+                   sizeof(result.unavailableReason) - 1);
     return result;
   }
   remixapi_DenoisingStatisticsEXT RemixNativeRuntime::denoisingStatistics() const {

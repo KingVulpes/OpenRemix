@@ -1,0 +1,29 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_buffer_reference2 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_atomic_int64 : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_EXT_nonuniform_qualifier : require
+layout(local_size_x=128) in;
+#include "scene.glsl"
+#include "sharc.glsl"
+shared uint occupied;
+void main() {
+  if(gl_LocalInvocationIndex==0)occupied=0;
+  barrier();
+  uint index=gl_GlobalInvocationID.x;
+  SharcParameters parameters=cacheParameters();
+  SharcResolveParameters resolve;
+  resolve.cameraPositionPrev=frame.sharcPreviousCamera.xyz;
+  resolve.accumulationFrameNum=uint(frame.sharcGrid.z);
+  resolve.responsiveFrameNum=1;
+  resolve.staleFrameNumMax=uint(frame.sharcGrid.w);
+  resolve.frameIndex=frame.config.z;
+  SharcResolveEntry(index,parameters,resolve);
+  if(index<frame.sharcConfig.y&&parameters.hashGridData.hashEntriesBuffer.data[index]!=uint64_t(0))atomicAdd(occupied,1u);
+  barrier();
+  if(gl_LocalInvocationIndex==0&&occupied!=0)atomicAdd(CacheCounters(frame.sharcCounters).data[3],occupied);
+}

@@ -34,6 +34,8 @@ for source, name in [('LICENSE.txt','NRD.txt'), ('External/MathLib/LICENSE.txt',
                      ('External/ShaderMake/LICENSE.txt','ShaderMake.txt'), ('External/sse2neon/LICENSE','sse2neon.txt')]:
     shutil.copy2(root / 'third_party/nrd' / source, licenses / name)
 shutil.copy2(root / 'third_party/nrd/README.remix.md', licenses / 'NRD-provenance.md')
+shutil.copy2(root / 'third_party/sharc/License.md', licenses / 'SHARC.md')
+shutil.copy2(root / 'third_party/sharc/README.md', licenses / 'SHARC-provenance.md')
 
 shutil.copytree(root / 'include/vulkan/LICENSES', licenses / 'Vulkan-Headers')
 shutil.copy2(root / 'include/vulkan/LICENSE.md', licenses / 'Vulkan-Headers/NOTICE.md')

@@ -177,9 +177,9 @@ int main(int argc, char **argv) {
               initialDenoising.activeTaa == denoiseCaps.taaSupported,
           "Supported temporal defaults not active");
   if (initialDenoising.activeDenoiser || initialDenoising.activeTaa) {
-    for (int i = 0; i < 80 && denoiseStats().redrawRequested; ++i)
+    for (int i = 0; i < 80 && (denoiseStats().redrawRequested || statistics().redrawRequested); ++i)
       frame();
-    require(!denoiseStats().redrawRequested, "Unchanged world never converged");
+    require(!denoiseStats().redrawRequested && !statistics().redrawRequested, "Unchanged world never converged");
     auto converged = denoiseStats();
     frame();
     frame();

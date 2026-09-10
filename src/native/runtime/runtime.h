@@ -58,6 +58,7 @@ namespace remix {
     remixapi_ErrorCode configureTracing(const char *key, const char *value);
     remixapi_BackendCapabilitiesEXT backendCapabilities() const;
     remixapi_TracingStatisticsEXT tracingStatistics() const;
+    remixapi_SharcStatisticsEXT sharcStatistics() const;
     void setVsync(bool enabled) { m_vsync = enabled; }
     void setUiState(remixapi_UIState state) {
       m_uiState = state;

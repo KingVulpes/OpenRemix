@@ -53,7 +53,8 @@ extern "C" VKAPI_ATTR VkResult VKAPI_CALL vkCreateComputePipelines(VkDevice devi
                                                                    const VkAllocationCallbacks *alloc,
                                                                    VkPipeline *outputs) {
   ++computeAttempts;
-  if (fault("compute") || (fault("transparency-compute") && computeAttempts == 2)) {
+  if (fault("compute") || (fault("transparency-compute") && computeAttempts == 2) ||
+      (fault("sharc-compute") && computeAttempts == 3)) {
     for (uint32_t i = 0; i < count; ++i)
       outputs[i] = VK_NULL_HANDLE;
     return VK_ERROR_OUT_OF_DEVICE_MEMORY;
@@ -124,4 +125,26 @@ extern "C" VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceProperties(VkPhysicalDe
     properties->limits.maxPerStageDescriptorStorageImages = 27;
     properties->limits.maxDescriptorSetStorageImages = 27;
   }
+}
+
+extern "C" VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceFeatures2(VkPhysicalDevice device,
+                                                                   VkPhysicalDeviceFeatures2 *features) {
+  reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(resolve("vkGetPhysicalDeviceFeatures2"))(device, features);
+  if (fault("sharc-capability")) {
+    for (auto *next = static_cast<VkBaseOutStructure *>(features->pNext); next; next = next->pNext)
+      if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES)
+        reinterpret_cast<VkPhysicalDeviceVulkan12Features *>(next)->shaderBufferInt64Atomics = VK_FALSE;
+  }
+}
+
+extern "C" VKAPI_ATTR VkResult VKAPI_CALL vkCreateBuffer(VkDevice device, const VkBufferCreateInfo *info,
+                                                         const VkAllocationCallbacks *alloc, VkBuffer *output) {
+  // The focused cache fixture uses 2^18 entries: fail its 16-byte accumulation
+  // buffer after the hash buffer was allocated, exercising partial cleanup.
+  if (fault("sharc-allocation") && info->size == (uint64_t(1) << 18) * 16 &&
+      (info->usage & VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) {
+    *output = VK_NULL_HANDLE;
+    return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+  }
+  return reinterpret_cast<PFN_vkCreateBuffer>(resolve("vkCreateBuffer"))(device, info, alloc, output);
 }

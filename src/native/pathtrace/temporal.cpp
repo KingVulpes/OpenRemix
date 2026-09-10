@@ -10,6 +10,7 @@ namespace remix {
       denoisedFrames += s.renderedFrames;
       postPeakMemory = std::max(postPeakMemory, s.peakMemoryBytes);
     }
+    destroySharc(true);
     if (temporalTransparencyCompute)
       vkDestroyPipeline(device, temporalTransparencyCompute, nullptr);
     temporalTransparencyCompute = VK_NULL_HANDLE;
@@ -28,8 +29,8 @@ namespace remix {
   void PathTracer::Gpu::beginFrame(const TraceOptions &options) {
     retiredPreviousVertices.clear(); // beginFrame runs after the previous submission fence.
     const auto &caps = postCapabilities;
-    const bool reblur = options.denoiser && !options.accumulate && caps.reblurShSupported;
-    const bool taa = options.taa && !options.accumulate && caps.taaSupported;
+    const bool reblur = options.denoiser && !options.accumulate && !options.sharcDebug && caps.reblurShSupported;
+    const bool taa = options.taa && !options.accumulate && !options.sharcDebug && caps.taaSupported;
     if (reblur != postReblur || taa != postTaa) {
       destroyPost();
       postReblur = reblur;
@@ -85,7 +86,10 @@ namespace remix {
       postFailure = std::string("Temporal initialization failed: ") + e.what();
     }
   }
-  void PathTracer::beginFrame(const TraceOptions &options) { m_gpu->beginFrame(options); }
+  void PathTracer::beginFrame(const TraceOptions &options) {
+    m_gpu->beginFrame(options);
+    m_gpu->beginSharc(options);
+  }
   VkRenderPass PathTracer::skyPass() const { return m_gpu->skyPass; }
   void PathTracer::submitted() {
     auto &g = *m_gpu;
@@ -93,6 +97,10 @@ namespace remix {
       return;
     g.rendered = false;
     g.history.commit();
+    if (g.sharc.stats.active) {
+      ++g.sharc.stats.renderedFrames;
+      ++g.sharc.warmFrames;
+    }
     g.retiredPreviousVertices = std::move(g.previousVertices);
     g.previousVertices = std::move(g.pendingVertices);
     g.previousCamera = scene::inverse(g.temporalFrame.inverseCamera);

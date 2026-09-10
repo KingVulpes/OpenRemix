@@ -82,6 +82,16 @@ remixapi_GetTracingStatisticsEXT(remixapi_TracingStatisticsEXT *out) {
   return REMIXAPI_ERROR_CODE_SUCCESS;
 }
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL
+remixapi_GetSharcStatisticsEXT(remixapi_SharcStatisticsEXT *out) {
+  if (!out || out->structSize != sizeof(*out))
+    return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+  std::lock_guard lock(g_apiMutex);
+  if (!g_runtime.isInitialized())
+    return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+  *out = g_runtime.sharcStatistics();
+  return REMIXAPI_ERROR_CODE_SUCCESS;
+}
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL
 remixapi_GetDenoisingCapabilitiesEXT(remixapi_DenoisingCapabilitiesEXT *out) {
   if (!out || out->structSize != sizeof(*out))
     return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;

@@ -16,7 +16,8 @@ namespace remix {
     const uint64_t integrator =
         options.samples | uint64_t(options.bounces) << 8 | uint64_t(options.accumulate) << 16 |
         uint64_t(bool(denoiser) && postReblur) << 17 | uint64_t(bool(denoiser) && postTaa) << 18 |
-        uint64_t(options.rasterPrimary) << 19;
+        uint64_t(options.rasterPrimary) << 19 | uint64_t(bool(sharc.stats.active)) << 20 |
+        uint64_t(options.sharcDebug) << 21;
     history.begin(resources.temporalEpoch(), integrator, extent.width, extent.height);
     pendingVertices.clear();
     // Group whole mesh submissions, then sort persistent identities so caller order is immaterial.
@@ -59,7 +60,11 @@ namespace remix {
     primaryDraws.clear();
     std::vector<VkDescriptorImageInfo> textures;
     std::unordered_map<const Material *, uint32_t> textureIndices;
-    std::vector<uint8_t> scene;
+    std::vector<uint8_t> scene, staticGeometry, dynamicGeometry;
+    auto appendStatic = [&](const void *data, size_t size) {
+      const auto *bytes = static_cast<const uint8_t *>(data);
+      staticGeometry.insert(staticGeometry.end(), bytes, bytes + size);
+    };
     auto append = [&](const void *data, size_t size) {
       const auto *bytes = static_cast<const uint8_t *>(data);
       scene.insert(scene.end(), bytes, bytes + size);
@@ -91,6 +96,24 @@ namespace remix {
                         model[8] * (model[1] * model[6] - model[5] * model[2]);
       if (std::abs(det) < 1e-12f)
         continue;
+      if (draw.classification == 1) {
+        auto appendDynamic = [&](const void *data, size_t size) {
+          const auto *bytes = static_cast<const uint8_t *>(data);
+          dynamicGeometry.insert(dynamicGeometry.end(), bytes, bytes + size);
+        };
+        appendDynamic(&draw.instanceId, sizeof(draw.instanceId));
+        appendDynamic(&draw.instanceIndex, sizeof(draw.instanceIndex));
+        appendDynamic(model.data(), sizeof(model));
+        appendDynamic(&geometry.revision, sizeof(geometry.revision));
+      }
+      if (draw.classification == 0) {
+        appendStatic(&draw.instanceId, sizeof(draw.instanceId));
+        appendStatic(&draw.instanceIndex, sizeof(draw.instanceIndex));
+        appendStatic(model.data(), sizeof(model));
+        const auto identity = reinterpret_cast<uintptr_t>(draw.mesh.get());
+        appendStatic(&identity, sizeof(identity));
+        appendStatic(&geometry.revision, sizeof(geometry.revision));
+      }
       float scale = 0;
       for (int c = 0; c < 3; ++c)
         scale = std::max(scale, std::hypot(model[c * 4], model[c * 4 + 1], model[c * 4 + 2]));
@@ -156,7 +179,13 @@ namespace remix {
         const float reference = surface.alphaOverride ? surface.reference : material.reference;
         std::memcpy(&value.state[2], &reference, 4);
         value.state[3] = uint32_t(surface.ignoreAlpha) | uint32_t(b.enabled) << 1 |
-                         uint32_t(surface.doubleSided) << 2 | uint32_t(material.transmission) << 3;
+                         uint32_t(surface.doubleSided) << 2 | uint32_t(material.transmission) << 3 |
+                         uint32_t(draw.classification == 0) << 4;
+        if (draw.classification == 0) {
+          appendStatic(value.tint, sizeof(value.tint));
+          appendStatic(value.factor, sizeof(value.factor));
+          appendStatic(value.state, sizeof(value.state));
+        }
         value.textureState[0] = entry->second;
         primaryDraws.push_back(
             {model, uint32_t(surfaces.size()), uint32_t(surface.surface->indices.size()), b.enabled});
@@ -217,11 +246,15 @@ namespace remix {
     append(&frame, sizeof(frame));
     append(&integrator, sizeof(integrator));
     append(&options.validation, sizeof(options.validation));
+    const uint64_t cacheSettings[] = {options.sharcReset, options.sharcCapacityLog2, options.sharcSceneScale,
+        options.sharcDownscale, options.sharcAccumulationFrames, options.sharcStaleFrames};
+    append(cacheSettings, sizeof(cacheSettings));
     const auto temporalEpoch = resources.temporalEpoch();
     append(&temporalEpoch, sizeof(temporalEpoch));
-    // An unchanged world can reuse its cached output once temporal convergence is warm.
+    configureSharc(frame, options, temporalEpoch, std::move(staticGeometry), std::move(dynamicGeometry));
+    // An unchanged world can reuse its cached output once both histories are warm.
     if (scene == lastScene && !options.accumulate && denoiser && !denoiser->statistics().redrawRequested &&
-        !history.reset())
+        !history.reset() && !(sharc.stats.active && sharc.warmFrames < 2 * options.sharcAccumulationFrames))
       return;
     const bool sceneChanged = scene != lastScene;
     if (sceneChanged) {
@@ -281,7 +314,8 @@ namespace remix {
     stats.accumulationEnabled = options.accumulate;
     ++stats.accumulationCount;
     stats.sampleSequence = sequence;
-    stats.redrawRequested = options.accumulate;
+    stats.redrawRequested = options.accumulate ||
+        (sharc.stats.active && sharc.warmFrames < 2 * options.sharcAccumulationFrames);
     if (textures.empty())
       textures.push_back(resources.sampledMaterial(resources.defaultMaterial(), command));
     textures.resize(PathTracer::textureLimit, textures.front());
@@ -357,10 +391,12 @@ namespace remix {
     if (timestamps)
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, timestamps, 2);
     recordPrimary(command, options.rasterPrimary);
+    recordSharc(command, options);
     if (denoiser)
       denoiser->begin(command, temporalFrame, pendingProjection,
                       history.reset() ? pendingProjection : previousProjection, world->view, sky->view);
-    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, denoiser ? temporalCompute : compute);
+    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE,
+        sharc.stats.active ? (denoiser ? sharc.temporal : sharc.query) : (denoiser ? temporalCompute : compute));
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, denoiser ? temporalLayout : layout, 0, 1,
                             &set, 0, nullptr);
     if (denoiser) {
@@ -373,7 +409,8 @@ namespace remix {
     barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE,
-                      denoiser ? temporalTransparencyCompute : transparencyCompute);
+                      sharc.stats.active ? (denoiser ? sharc.temporalTransparency : sharc.transparency)
+                                         : (denoiser ? temporalTransparencyCompute : transparencyCompute));
     vkCmdDispatch(command, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
     if (timestamps) {
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, timestamps, 3);
@@ -384,11 +421,12 @@ namespace remix {
       if (postReblur) {
         barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
-        vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, confidenceCompute);
+        vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, sharc.stats.active ? sharc.confidence : confidenceCompute);
         vkCmdDispatch(command, ((extent.width + 4) / 5 + 7) / 8, ((extent.height + 4) / 5 + 7) / 8, 1);
       }
       denoiser->record(command);
     }
+    finishSharc(command);
     rendered = true;
     barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);

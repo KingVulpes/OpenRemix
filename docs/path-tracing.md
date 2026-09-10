@@ -42,6 +42,7 @@ only its previous Vulkan 1.1 graphics/presentation capabilities.
 | `validation` | Same booleans; NRD validation overlay | false |
 | `forceRebuild` | Same booleans; rebuild dynamic TLAS for profiling | false |
 | `sky` | Same booleans; indirect environment illumination | true |
+| `sharc` | Same booleans; [diffuse radiance cache](features/sharc.md) | true |
 
 The last distant light drawn during a frame is selected, including zero radiance.
 Direction specifies the direction light travels; radiance and color are linear.
@@ -237,7 +238,7 @@ NRD receives nonjittered matrices and separate current/previous pixel jitter. Sp
 lighting confidence retraces previous samples with their previous seeds in the
 current scene at one-fifth width/height, then applies five geometry-aware blur passes.
 This detects illumination changes from moving offscreen occluders and updated sky
-radiance without SHARC. Ordinary time/weather and sky-toggle changes update scene
+radiance. SHARC uses matching cache queries during confidence retracing. Ordinary time/weather and sky-toggle changes update scene
 identity and progressive accumulation, while preserving global temporal history.
 REBLUR retains pinned defaults apart from full-rate reconstruction, enabled confidence
 and history length derived from actual frame time and the SDK accumulation duration.
@@ -285,9 +286,12 @@ local reports under `_work/reports/`.
 
 Build with `-Dnrd=false` to omit the static NRD CPU library and SH dispatches; native TAA remains available. All shader binaries are checked in. See [shader regeneration](shader-toolchain.md) for pinned DXC and validation commands.
 
+SHARC integration, controls, SDK provenance and additional book/sample references are
+described in [the cache feature guide](features/sharc.md).
+
 ## References
 
-Primary reference: [local Ray Tracing Gems](../../ray-tracing-gems/book.md),
+Primary reference: [local Ray Tracing Gems](../../reference/ray-tracing-gems/book.md),
 chapters 3 and 19 (AS and retained scenes), 6 (robust origins), and 15–16 (sampling).
 The implementation was also informed by ZetaRay's static caching/compaction
 (`Source/ZetaCore/RayTracing/RtAccelerationStructure.cpp`), MCVR's chunk submission

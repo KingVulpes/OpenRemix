@@ -2,6 +2,17 @@ policy_test = executable('remix-tlas-policy-test', 'tlas_policy.cpp',
   include_directories : test_includes, link_with : pathtrace_library)
 test('Tracing scene and TLAS policy', policy_test)
 if get_option('gpu_tests')
+  sharc_test = executable('remix-sharc-test', 'sharc.cpp',
+    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
+  test('SHARC diffuse cache and temporal changes', sharc_test,
+    args : [meson.current_build_dir() / 'sharc-scenes'], timeout : 240)
+  if system == 'linux'
+    foreach fault : ['sharc-compute', 'sharc-capability', 'sharc-allocation']
+      test('SHARC fallback ' + fault, sharc_test,
+        args : [meson.current_build_dir() / fault],
+        env : ['LD_PRELOAD=' + faults.full_path(), 'REMIX_TEST_FAULT=' + fault], timeout : 45)
+    endforeach
+  endif
   environment_test = executable('remix-environment-test', 'environment.cpp',
     include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
   test('Sky illumination and temporal changes', environment_test,

@@ -146,8 +146,10 @@ namespace remix {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR, .pNext = &ray};
     VkPhysicalDeviceVulkan12Features vulkan12 = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = &acceleration};
+    VkPhysicalDeviceVulkan11Features vulkan11 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, .pNext = &vulkan12};
     VkPhysicalDeviceFeatures2 features = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-                                          .pNext = &vulkan12};
+                                          .pNext = &vulkan11};
     m_traceUnavailable.clear();
     auto missing = [&](bool supported, const char *name) {
       if (!supported) {
@@ -224,7 +226,10 @@ namespace remix {
     }
     m_traceSupported = m_traceUnavailable.empty();
     m_denoiseCapabilities = denoise::capabilities(selection.physicalDevice);
+    const bool sharcSupported = REMIX_HAS_SHARC && m_traceSupported &&
+        vulkan11.storageBuffer16BitAccess && vulkan12.shaderFloat16 && vulkan12.shaderBufferInt64Atomics;
     features.features = {};
+    vulkan11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, .pNext = &vulkan12};
     vulkan12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = &acceleration};
     acceleration = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR,
                     .pNext = &ray};
@@ -235,6 +240,10 @@ namespace remix {
       vulkan12.bufferDeviceAddress = VK_TRUE;
       vulkan12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
       acceleration.accelerationStructure = ray.rayQuery = VK_TRUE;
+      if (sharcSupported) {
+        vulkan11.storageBuffer16BitAccess = VK_TRUE;
+        vulkan12.shaderFloat16 = vulkan12.shaderBufferInt64Atomics = VK_TRUE;
+      }
     }
     if (m_denoiseCapabilities.taaSupported)
       features.features.shaderStorageImageExtendedFormats = VK_TRUE;

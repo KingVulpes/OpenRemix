@@ -24,6 +24,10 @@ layout(set=0,binding=3,std140) uniform Frame {
   uvec4 target; // width, height, structure mask, raster primary visibility
   vec4 jitter; // primary sample offset in pixels; zw reserved
   vec4 skyRadiance; // linear uniform environment; w reserved
+  uint64_t sharcHash, sharcAccumulation, sharcResolved, sharcCounters;
+  uvec4 sharcConfig; // active, capacity, update downscale, debug view
+  vec4 sharcGrid; // scene scale, level bias, accumulation frames, stale frames
+  vec4 sharcPreviousCamera;
 } frame;
 layout(set=0,binding=6) uniform sampler2D textures[512];
 vec3 linearColor(vec3 c) {

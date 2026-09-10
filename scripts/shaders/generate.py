@@ -11,7 +11,7 @@ import nrd
 ROOT = Path(__file__).resolve().parents[2]
 BACKENDS = {
     'raster': ('raster', 'vulkan1.1', ('vert', 'frag')),
-    'pathtrace': ('trace', 'vulkan1.2', ('vert', 'frag', 'comp', 'temporal', 'transparency', 'temporalTransparency', 'confidence', 'gbufferVert', 'gbufferFrag', 'depthFrag')),
+    'pathtrace': ('trace', 'vulkan1.2', ('vert', 'frag', 'comp', 'temporal', 'transparency', 'temporalTransparency', 'confidence', 'gbufferVert', 'gbufferFrag', 'depthFrag', 'sharcUpdate', 'sharcResolve', 'sharcQuery', 'sharcTransparency', 'sharcTemporal', 'sharcTemporalTransparency', 'sharcConfidence')),
     'denoise': ('denoise', 'vulkan1.2', ('comp',)),
 }
 
@@ -35,13 +35,21 @@ def process(backend, check, validate):
                 defines = ['-DTEMPORAL=1'] if stage in ('temporal', 'temporalTransparency', 'confidence') else []
                 if stage == 'confidence': defines += ['-DCONFIDENCE_PASS=1']
                 if stage in ('transparency', 'temporalTransparency'): defines += ['-DTRANSPARENCY_PASS=1']
+                if stage.startswith('sharc') and stage not in ('sharcUpdate', 'sharcResolve'):
+                    defines += ['-DSHARC_QUERY=1']
+                if stage in ('sharcTemporal', 'sharcTemporalTransparency', 'sharcConfidence'):
+                    defines += ['-DTEMPORAL=1']
+                if stage == 'sharcConfidence': defines += ['-DCONFIDENCE_PASS=1']
+                if stage in ('sharcTransparency', 'sharcTemporalTransparency'): defines += ['-DTRANSPARENCY_PASS=1']
+                if stage == 'sharcUpdate': defines += ['-DSHARC_UPDATE_PASS=1']
                 source_stage = 'comp' if defines else stage
                 source = directory / (backend + '.' + source_stage)
                 if stage in ('gbufferVert', 'gbufferFrag', 'depthFrag'):
                     source = directory / ('gbuffer.vert' if stage == 'gbufferVert' else 'gbuffer.frag')
                     if stage == 'depthFrag': defines += ['-DSTABLE_DEPTH=1']
-                subprocess.run(['glslangValidator', '-V', '--target-env', environment, *defines,
-                                '-I' + str(ROOT/'third_party/nrd/Shaders'), '-o', str(binary), str(source)], check=True)
+                if stage == 'sharcResolve': source = directory / 'sharc-resolve.comp'
+                subprocess.run(['glslangValidator' , '-V', '--target-env', environment, *defines,
+                                '-I' + str(ROOT/'third_party/nrd/Shaders'), '-I' + str(ROOT/'third_party/sharc/include'), '-o', str(binary), str(source)], check=True)
             subprocess.run(['spirv-val', '--target-env', environment, str(binary)], check=True)
             if not validate:
                 data = binary.read_bytes()

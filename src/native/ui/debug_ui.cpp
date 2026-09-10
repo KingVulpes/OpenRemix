@@ -60,6 +60,29 @@ namespace remix {
                       denoising.gpuTaaMilliseconds, double(denoising.memoryBytes) / (1024 * 1024));
           ImGui::Checkbox("Force dynamic TLAS rebuild", &m_traceOptions.forceRebuild);
           ImGui::Checkbox("Sky illumination", &m_traceOptions.sky);
+          if (ImGui::CollapsingHeader("SHARC radiance cache")) {
+            ImGui::Checkbox("SHARC", &m_traceOptions.sharc);
+            ImGui::Checkbox("Show cached radiance (raw)", &m_traceOptions.sharcDebug);
+            if (ImGui::Button("Reset cache"))
+              ++m_traceOptions.sharcReset;
+            int scale = int(m_traceOptions.sharcSceneScale), downscale = int(m_traceOptions.sharcDownscale);
+            if (ImGui::SliderInt("Cache scene scale", &scale, 1, 200))
+              m_traceOptions.sharcSceneScale = uint32_t(scale);
+            if (ImGui::SliderInt("Update downscale", &downscale, 1, 16))
+              m_traceOptions.sharcDownscale = uint32_t(downscale);
+            auto cache = sharcStatistics();
+            ImGui::Text("%s | %u / %u entries | %.1f MiB", cache.active ? "Active" : "Inactive",
+                        cache.occupiedEntries, cache.capacity, double(cache.memoryBytes) / (1024 * 1024));
+            ImGui::Text("Update paths %u | sampled query hits %.1f%% | resets %llu", cache.updatePaths,
+                        cache.queryAttempts ? 100.0 * cache.queryHits / cache.queryAttempts : 0.0,
+                        (unsigned long long)cache.resets);
+            if (cache.gpuTimingsAvailable)
+              ImGui::Text("Update %.3f / resolve %.3f ms", cache.gpuUpdateMilliseconds, cache.gpuResolveMilliseconds);
+            if (cache.unavailableReason[0])
+              ImGui::TextWrapped("%s", cache.unavailableReason);
+            if (m_traceOptions.accumulate)
+              ImGui::TextUnformatted("Progressive reference rendering bypasses SHARC.");
+          }
           ImGui::Checkbox("Override daylight", &m_traceOptions.overrideLight);
           if (m_traceOptions.overrideLight) {
             ImGui::SliderFloat3("Light direction", m_traceOptions.lightDirection, -1, 1);

@@ -31,3 +31,6 @@ NRD 4.18.0, MathLib v11, ShaderMake headers, and sse2neon v1.8.0
   Vendored provenance: third_party/nrd/README.remix.md
   Licenses: third_party/nrd/LICENSE.txt and External/{MathLib,ShaderMake,sse2neon}.
   Distributed license copies: NRD.txt, MathLib.txt, ShaderMake.txt, sse2neon.txt.
+
+NVIDIA SHARC 1.8.3.0 (optional): third_party/sharc/License.md.
+This software contains source code provided by NVIDIA Corporation.

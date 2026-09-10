@@ -7,6 +7,7 @@ namespace remix {
 
   PathTracer::Gpu::~Gpu() {
     destroyTarget();
+    destroySharc();
     meshes.clear();
     compactPending.clear();
     retired.clear();
@@ -68,6 +69,7 @@ namespace remix {
 
   void PathTracer::Gpu::destroyTarget() {
     destroyPost();
+    sharc.clear = true;
     destroyPrimary();
     history.clear();
     previousVertices.clear();
@@ -346,6 +348,11 @@ namespace remix {
       m_gpu->destroyTarget();
   }
 
-  remixapi_TracingStatisticsEXT PathTracer::statistics() const { return m_gpu->stats; }
+  remixapi_TracingStatisticsEXT PathTracer::statistics() const {
+    auto result = m_gpu->stats;
+    result.redrawRequested = result.accumulationEnabled ||
+        (m_gpu->sharc.stats.active && m_gpu->sharc.warmFrames < m_gpu->sharc.warmTarget);
+    return result;
+  }
 
 } // namespace remix

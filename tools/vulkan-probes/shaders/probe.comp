@@ -1,0 +1,22 @@
+#version 460
+#extension GL_EXT_ray_query : require
+#ifdef USE_BINDLESS
+#extension GL_EXT_nonuniform_qualifier : require
+layout(set = 1, binding = 0, std430) readonly buffer Input { float value; } inputs[];
+#endif
+layout(local_size_x = 1) in;
+layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
+layout(set = 0, binding = 1, std430) buffer Results { float values[]; } result;
+
+void main() {
+  uint index = gl_GlobalInvocationID.x;
+  rayQueryEXT query;
+  rayQueryInitializeEXT(query, scene, gl_RayFlagsOpaqueEXT, 0xff,
+    vec3(index == 0 ? 0.0 : 10.0, 0.0, -1.0), 0.001, vec3(0.0, 0.0, 1.0), 100.0);
+  while (rayQueryProceedEXT(query)) { }
+  result.values[index] = rayQueryGetIntersectionTypeEXT(query, true) == gl_RayQueryCommittedIntersectionTriangleEXT
+    ? rayQueryGetIntersectionTEXT(query, true) : -1.0;
+#ifdef USE_BINDLESS
+  result.values[index] *= inputs[nonuniformEXT(index == 0 ? 0 : 65535)].value;
+#endif
+}

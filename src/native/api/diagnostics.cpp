@@ -1,0 +1,104 @@
+/*
+ * Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+ * DEALINGS IN THE SOFTWARE.
+ */
+
+#include "api/state.h"
+#include "api/entrypoints.h"
+
+using namespace remix::api;
+
+extern "C" {
+
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_RequestPresentedScreenshot(const char *absolutePath) {
+  if (absolutePath == nullptr || absolutePath[0] == '\0') {
+    return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+  }
+  std::lock_guard lock(g_apiMutex);
+  try {
+    return g_runtime.requestScreenshot(absolutePath);
+  } catch (...) {
+    return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+  }
+}
+
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetPresentationCount(uint64_t *outCount) {
+  if (!outCount)
+    return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+  *outCount = 0;
+  std::lock_guard lock(g_apiMutex);
+  if (!g_runtime.isInitialized())
+    return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+  *outCount = g_runtime.presentationCount();
+  return REMIXAPI_ERROR_CODE_SUCCESS;
+}
+
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL
+remixapi_GetFeatureAvailability(remixapi_FeatureAvailability *outFeatures) {
+  if (outFeatures == nullptr) {
+    return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+  }
+  std::lock_guard lock(g_apiMutex);
+  *outFeatures = g_runtime.getFeatureAvailability();
+  return REMIXAPI_ERROR_CODE_SUCCESS;
+}
+
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL
+remixapi_GetBackendCapabilitiesEXT(remixapi_BackendCapabilitiesEXT *out) {
+  if (!out || out->structSize != sizeof(*out))
+    return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+  std::lock_guard lock(g_apiMutex);
+  if (!g_runtime.isInitialized())
+    return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+  *out = g_runtime.backendCapabilities();
+  return REMIXAPI_ERROR_CODE_SUCCESS;
+}
+
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL
+remixapi_GetTracingStatisticsEXT(remixapi_TracingStatisticsEXT *out) {
+  if (!out || out->structSize != sizeof(*out))
+    return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+  std::lock_guard lock(g_apiMutex);
+  if (!g_runtime.isInitialized())
+    return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+  *out = g_runtime.tracingStatistics();
+  return REMIXAPI_ERROR_CODE_SUCCESS;
+}
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL
+remixapi_GetDenoisingCapabilitiesEXT(remixapi_DenoisingCapabilitiesEXT *out) {
+  if (!out || out->structSize != sizeof(*out))
+    return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+  std::lock_guard lock(g_apiMutex);
+  if (!g_runtime.isInitialized())
+    return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+  *out = g_runtime.denoisingCapabilities();
+  return REMIXAPI_ERROR_CODE_SUCCESS;
+}
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL
+remixapi_GetDenoisingStatisticsEXT(remixapi_DenoisingStatisticsEXT *out) {
+  if (!out || out->structSize != sizeof(*out))
+    return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+  std::lock_guard lock(g_apiMutex);
+  if (!g_runtime.isInitialized())
+    return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+  *out = g_runtime.denoisingStatistics();
+  return REMIXAPI_ERROR_CODE_SUCCESS;
+}
+}

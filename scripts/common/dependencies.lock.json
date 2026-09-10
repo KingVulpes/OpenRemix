@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "target": "x86_64-linux-gnu",
+  "baseline": "glibc-2.28",
+  "dependencies": {
+    "sdl3": {
+      "version": "3.4.14",
+      "revision": "147a8ee32dbf427af09d1725a19db23c9d5506d4",
+      "url": "https://github.com/libsdl-org/SDL/releases/download/release-3.4.14/SDL3-3.4.14.tar.gz",
+      "sha256": "30d4aa2b3037718142b32dffd4e72f917ebb6cc5227150e7bb9c45efb2153aeb"
+    }
+  }
+}

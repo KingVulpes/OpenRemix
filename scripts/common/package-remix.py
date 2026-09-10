@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""Package the shell, SDL3 and (on macOS) standard SDK Vulkan/MoltenVK libraries."""
+import argparse
+import json
+import os
+from pathlib import Path
+import platform
+import shutil
+import subprocess
+import tempfile
+
+root = Path(__file__).resolve().parents[2]
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--build', type=Path, required=True)
+parser.add_argument('--deps', type=Path, required=True, help='SDL build-dependencies output directory')
+parser.add_argument('--output', type=Path, required=True)
+parser.add_argument('--vulkan-sdk', type=Path)
+parser.add_argument('--max-glibc', default='2.28', help='Linux package glibc ceiling')
+args = parser.parse_args()
+build, deps, output = args.build.resolve(), args.deps.resolve(), args.output.resolve()
+if output.exists(): parser.error('Use a fresh output directory.')
+system = platform.system()
+if system == 'Darwin' and not args.vulkan_sdk: parser.error('macOS requires --vulkan-sdk.')
+for directory in ['bin', 'lib', 'include/remix', 'share/remix/licenses']:
+    (output / directory).mkdir(parents=True, exist_ok=True)
+licenses = output / 'share/remix/licenses'
+for name in ['LICENSE', 'LICENSE-MIT', 'ThirdPartyLicenses.txt', 'README.md']:
+    shutil.copy2(root / name, output / 'share/remix' / name)
+for name in ['remix.h', 'remix_c.h', 'remix_native_ext.h']:
+    shutil.copy2(root / 'public/include/remix' / name, output / 'include/remix' / name)
+shutil.copy2(root / 'third_party/imgui/LICENSE.txt', licenses / 'ImGui.txt')
+shutil.copy2(root / 'third_party/image/LICENSES.txt', licenses / 'ImageDecoders.txt')
+for source, name in [('LICENSE.txt','NRD.txt'), ('External/MathLib/LICENSE.txt','MathLib.txt'),
+                     ('External/ShaderMake/LICENSE.txt','ShaderMake.txt'), ('External/sse2neon/LICENSE','sse2neon.txt')]:
+    shutil.copy2(root / 'third_party/nrd' / source, licenses / name)
+shutil.copy2(root / 'third_party/nrd/README.remix.md', licenses / 'NRD-provenance.md')
+
+shutil.copytree(root / 'include/vulkan/LICENSES', licenses / 'Vulkan-Headers')
+shutil.copy2(root / 'include/vulkan/LICENSE.md', licenses / 'Vulkan-Headers/NOTICE.md')
+shutil.copy2(deps / 'sources/sdl3/LICENSE.txt', licenses / 'SDL3.txt')
+shutil.copy2(root / 'scripts/common/dependencies.lock.json', output / 'share/remix/dependencies.lock.json')
+if system == 'Windows':
+    for path in [build / 'src/native/remix.dll', deps / 'prefix/bin/SDL3.dll',
+                 build / 'samples/remix-native/remix-native-sample.exe']:
+        shutil.copy2(path, output / 'bin' / path.name)
+elif system == 'Linux':
+    staging = tempfile.TemporaryDirectory(prefix='remix-package-')
+    subprocess.run(['meson', 'install', '-C', str(build), '--no-rebuild', '--destdir', staging.name],
+                   check=True, stdout=subprocess.DEVNULL)
+    installed = next(Path(staging.name).rglob('libremix.so.0.1003.0')).parent
+    for path in list(installed.glob('libremix.so*')) + list((deps / 'prefix/lib').glob('libSDL3.so*')):
+        if path.is_symlink():
+            (output / 'lib' / path.name).symlink_to(path.resolve().name)
+        elif path.is_file():
+            subprocess.run(['bash', str(root / 'scripts/linux/check-glibc.sh'), str(path), args.max_glibc], check=True)
+            shutil.copy2(path, output / 'lib' / path.name)
+    sample = next(Path(staging.name).rglob('remix-native-sample'))
+    subprocess.run(['bash', str(root / 'scripts/linux/check-glibc.sh'), str(sample), args.max_glibc], check=True)
+    shutil.copy2(sample, output / 'bin' / sample.name)
+    for path in (output / 'lib').iterdir():
+        if path.is_symlink(): continue
+        dynamic = subprocess.check_output(['readelf', '-d', path], text=True)
+        needed = '\n'.join(line.lower() for line in dynamic.splitlines() if '(NEEDED)' in line)
+        for removed in ['ngx', 'nrd', 'usd', 'rtxio', 'dxvk', 'd3d', 'xess', 'slang']:
+            if removed in needed: raise RuntimeError(f'Removed dependency {removed}: {path}')
+    launcher = output / 'bin/run-sample'
+    launcher.write_text('''#!/usr/bin/env bash
+set -euo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+export LD_LIBRARY_PATH="$root/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+exec "$root/bin/remix-native-sample" "$root/lib/libremix.so.0" "$@"
+''')
+    launcher.chmod(0o755)
+elif system == 'Darwin':
+    sdk = args.vulkan_sdk.resolve()
+    libraries = {
+        'libremix.0.dylib': build / 'src/native/libremix.0.dylib',
+        'libSDL3.0.dylib': deps / 'prefix/lib/libSDL3.0.dylib',
+        'libvulkan.1.dylib': sdk / 'lib/libvulkan.1.dylib',
+        'libMoltenVK.dylib': sdk / 'lib/libMoltenVK.dylib',
+    }
+    for name, source in libraries.items():
+        target = output / 'lib' / name
+        architectures = subprocess.check_output(['lipo', '-archs', source], text=True).split()
+        if 'arm64' not in architectures: raise RuntimeError(f'No arm64 slice: {source}')
+        if len(architectures) > 1:
+            subprocess.run(['lipo', source, '-thin', 'arm64', '-output', target], check=True)
+        else: shutil.copy2(source, target)
+        subprocess.run(['install_name_tool', '-id', '@rpath/' + name, target], check=True)
+        for line in subprocess.check_output(['otool', '-L', target], text=True).splitlines()[2:]:
+            dependency = line.strip().split(' (compatibility version', 1)[0]
+            if dependency.startswith(('/usr/lib/', '/System/Library/')): continue
+            basename = Path(dependency).name
+            if basename not in libraries: raise RuntimeError(f'Unbundled dependency: {dependency}')
+            subprocess.run(['install_name_tool', '-change', dependency, '@loader_path/' + basename, target], check=True)
+        subprocess.run(['codesign', '--force', '--sign', '-', target], check=True)
+    shutil.copy2(build / 'samples/remix-native/remix-native-sample', output / 'bin/remix-native-sample')
+    (output / 'lib/libremix.dylib').symlink_to('libremix.0.dylib')
+    manifests = list((sdk / 'share/vulkan/icd.d').glob('*MoltenVK*.json')) + list((sdk / 'etc/vulkan/icd.d').glob('*MoltenVK*.json'))
+    if not manifests: raise RuntimeError('SDK MoltenVK ICD manifest missing')
+    icd = json.loads(manifests[0].read_text())
+    icd['ICD']['library_path'] = '../../../lib/libMoltenVK.dylib'
+    target = output / 'etc/vulkan/icd.d/MoltenVK_icd.json'
+    target.parent.mkdir(parents=True)
+    target.write_text(json.dumps(icd, indent=2) + '\n')
+    sdk_licenses = next((p for p in [sdk.parent / 'Licenses', sdk / 'share/vulkan/licensing', sdk / 'Licenses'] if p.is_dir()), None)
+    if sdk_licenses is None: raise RuntimeError('Vulkan SDK license directory missing')
+    shutil.copytree(sdk_licenses, licenses / 'VulkanSDK')
+    launcher = output / 'bin/run-sample'
+    launcher.write_text('''#!/usr/bin/env python3
+import os
+from pathlib import Path
+import sys
+root = Path(__file__).resolve().parent.parent
+env = dict(os.environ, VK_DRIVER_FILES=str(root / 'etc/vulkan/icd.d/MoltenVK_icd.json'),
+           DYLD_LIBRARY_PATH=str(root / 'lib'))
+os.execve(root / 'bin/remix-native-sample', ['remix-native-sample', str(root / 'lib/libremix.0.dylib'), *sys.argv[1:]], env)
+''')
+    launcher.chmod(0o755)
+else:
+    parser.error('Use scripts/android/build-apk.py for Android packaging.')
+print(output)

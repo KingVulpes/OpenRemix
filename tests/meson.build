@@ -1,0 +1,12 @@
+python = find_program('python3')
+test_include = include_directories('.')
+test_includes = [remix_public_include, native_include, test_include, image_include]
+subdir('abi')
+subdir('api')
+subdir('scene')
+subdir('ui')
+subdir('platform')
+subdir('runtime')
+subdir('raster')
+subdir('pathtrace')
+subdir('denoise')

@@ -1,0 +1,152 @@
+#include "runtime/screenshot.h"
+#include <SDL3/SDL.h>
+#include <filesystem>
+#include <fstream>
+#include <cstring>
+#include <utility>
+#include <vector>
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#define STBI_WRITE_NO_STDIO
+#include <image/stb_image_write.h>
+
+namespace remix {
+  namespace {
+    // u8path also works with the GCC 8 standard library used by the glibc 2.28 build.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    std::filesystem::path nativePath(const char *path) { return std::filesystem::u8path(path); }
+#pragma clang diagnostic pop
+    void check(VkResult result) {
+      if (result != VK_SUCCESS)
+        throw result;
+    }
+  } // namespace
+
+  remixapi_ErrorCode PresentedScreenshot::request(const char *path, bool supported) {
+    const std::filesystem::path destination = nativePath(path);
+    if (!destination.is_absolute())
+      return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+    if (destination.extension() != ".png" || !supported)
+      return REMIXAPI_ERROR_CODE_FEATURE_UNAVAILABLE;
+    if (!m_requested.empty() || !m_captured.empty())
+      return REMIXAPI_ERROR_CODE_ALREADY_EXISTS;
+    m_requested = path;
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  }
+
+  void PresentedScreenshot::record(VkPhysicalDevice physical, VkDevice device, VkCommandBuffer command,
+                                   VkImage image, VkExtent2D extent, VkFormat format) {
+    if (m_requested.empty() || !m_captured.empty())
+      return;
+    const VkDeviceSize size = VkDeviceSize(extent.width) * extent.height * 4;
+    if (!size || size > 512u * 1024u * 1024u) {
+      SDL_Log("Screenshot dimensions exceed the readback limit");
+      m_requested.clear();
+      return;
+    }
+    m_extent = extent;
+    m_bgra = format == VK_FORMAT_B8G8R8A8_SRGB || format == VK_FORMAT_B8G8R8A8_UNORM;
+    const VkBufferCreateInfo info = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                                     .size = size,
+                                     .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+    check(vkCreateBuffer(device, &info, nullptr, &m_buffer));
+    VkMemoryRequirements requirements;
+    vkGetBufferMemoryRequirements(device, m_buffer, &requirements);
+    VkPhysicalDeviceMemoryProperties properties;
+    vkGetPhysicalDeviceMemoryProperties(physical, &properties);
+    uint32_t type = properties.memoryTypeCount;
+    for (uint32_t i = 0; i < properties.memoryTypeCount; ++i) {
+      if ((requirements.memoryTypeBits & (1u << i)) &&
+          (properties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
+        type = i;
+        break;
+      }
+    }
+    if (type == properties.memoryTypeCount)
+      throw VK_ERROR_FEATURE_NOT_PRESENT;
+    const VkMemoryAllocateInfo allocation = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                                             .allocationSize = requirements.size,
+                                             .memoryTypeIndex = type};
+    check(vkAllocateMemory(device, &allocation, nullptr, &m_memory));
+    check(vkBindBufferMemory(device, m_buffer, m_memory, 0));
+    VkImageMemoryBarrier barrier = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                                    .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                                    .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+                                    .oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                                    .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                    .image = image,
+                                    .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+    const VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                    .imageExtent = {extent.width, extent.height, 1}};
+    vkCmdCopyImageToBuffer(command, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, m_buffer, 1, &copy);
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    barrier.dstAccessMask = 0;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0,
+                         nullptr, 0, nullptr, 1, &barrier);
+    const VkBufferMemoryBarrier host = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+                                        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                        .dstAccessMask = VK_ACCESS_HOST_READ_BIT,
+                                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                        .buffer = m_buffer,
+                                        .size = VK_WHOLE_SIZE};
+    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr,
+                         1, &host, 0, nullptr);
+    m_captured = std::exchange(m_requested, {});
+  }
+
+  void PresentedScreenshot::complete(VkDevice device, VkFence fence) {
+    if (m_captured.empty() || vkGetFenceStatus(device, fence) != VK_SUCCESS)
+      return;
+    try {
+      // Allocate before mapping, so allocation failure cannot leave memory mapped.
+      std::vector<unsigned char> pixels(size_t(m_extent.width) * m_extent.height * 4);
+      void *mapped = nullptr;
+      check(vkMapMemory(device, m_memory, 0, VK_WHOLE_SIZE, 0, &mapped));
+      const VkMappedMemoryRange range = {
+          .sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = m_memory, .size = VK_WHOLE_SIZE};
+      const auto result = vkInvalidateMappedMemoryRanges(device, 1, &range);
+      if (result == VK_SUCCESS)
+        std::memcpy(pixels.data(), mapped, pixels.size());
+      vkUnmapMemory(device, m_memory);
+      check(result);
+      for (size_t i = 0; i < pixels.size(); i += 4) {
+        if (m_bgra)
+          std::swap(pixels[i], pixels[i + 2]);
+        pixels[i + 3] = 255;
+      }
+      std::ofstream output(nativePath(m_captured.c_str()), std::ios::binary);
+      const auto writer = [](void *context, void *data, int size) {
+        static_cast<std::ofstream *>(context)->write(static_cast<char *>(data), size);
+      };
+      const int written =
+          output && stbi_write_png_to_func(writer, &output, static_cast<int>(m_extent.width),
+                                           static_cast<int>(m_extent.height), 4, pixels.data(),
+                                           static_cast<int>(m_extent.width * 4));
+      output.flush();
+      if (!written || !output)
+        SDL_Log("Screenshot write failed: %s", m_captured.c_str());
+    } catch (...) {
+      SDL_Log("Screenshot readback failed: %s", m_captured.c_str());
+    }
+    reset(device);
+  }
+
+  void PresentedScreenshot::reset(VkDevice device, bool keepRequest) {
+    if (m_buffer)
+      vkDestroyBuffer(device, m_buffer, nullptr);
+    if (m_memory)
+      vkFreeMemory(device, m_memory, nullptr);
+    m_buffer = VK_NULL_HANDLE;
+    m_memory = VK_NULL_HANDLE;
+    if (!keepRequest)
+      m_requested.clear();
+    m_captured.clear();
+  }
+} // namespace remix

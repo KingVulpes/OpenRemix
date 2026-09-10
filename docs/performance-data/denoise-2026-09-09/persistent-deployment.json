@@ -1,0 +1,51 @@
+{
+  "instance": "/home/cr/.local/share/PrismLauncher/instances/BetaRT-Raster-Profile",
+  "files": {
+    "customjar-1.jar": {
+      "before": "7dc713032ba25d51f130360259e857003d6844f037edde94e458e26a1722e15a",
+      "after": "71c1b6413778adc367a4ffdbb7dd5b76e10f3a4b8bfb1f1833f30a6186d6e361"
+    },
+    "libmcrtx_jni.so": {
+      "before": "f53638206f7fe4f7a76ea77a3aadf5bd0eda6162a256546c636d2a8557f51d19",
+      "after": "40aefccf2c60b4179a50787b809b4c97dc1afe471bf38f72878cceca722c8c90"
+    },
+    "libremix.so.0.1003.0": {
+      "before": "df79bd3c9e95452f19a0451b974933bfb7d001584ff6b48add76a3c58413dfb2",
+      "after": "c6dfcd91951b51bf62aabb0603566ef866895469fbb20fee07b4951a393c724c"
+    },
+    "libSDL3.so.0.4.14": {
+      "before": "f4444de2ae3ec283450375896bdc19432426b5a28849235b6089494ec11bf784",
+      "after": "f4444de2ae3ec283450375896bdc19432426b5a28849235b6089494ec11bf784"
+    }
+  },
+  "deployed_at": "2026-09-09T16:32:33.836463+00:00",
+  "host": "192.168.50.13",
+  "deployment": "/home/cr/remix-raster-profiles/20260909-reblur-deploy",
+  "instance_name": "BetaRT Raster Profile",
+  "configuration": {
+    "before": "3a74cb4539b1babee8de18532d508e4fc8ba5459b31f3cd268a108737b3d8409",
+    "after": "50ea3c7641147621d978b7008182aeba839b964fa226c910a41dce67cfce7121"
+  },
+  "settings": {
+    "backend": "pathtrace",
+    "denoiser": "reblur-sh",
+    "taa": true,
+    "accumulate": false,
+    "samples": 1,
+    "bounces": 2
+  },
+  "state": "installed",
+  "verification": {
+    "test": "DirectWorldTest through deployed launch.sh",
+    "resolution": [
+      1920,
+      1080
+    ],
+    "presentations": 164,
+    "reblur_active_all_frames": true,
+    "taa_active_all_frames": true,
+    "vulkan_validation_errors": 0,
+    "installed_hashes_verified": true,
+    "saved_worlds_or_servers_used": false
+  }
+}

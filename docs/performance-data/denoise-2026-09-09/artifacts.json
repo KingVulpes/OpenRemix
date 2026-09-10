@@ -1,0 +1,18 @@
+{
+  "_work/build/denoise-client/minecraft-b1.7.3-client-mcrtx.jar": {
+    "sha256": "71c1b6413778adc367a4ffdbb7dd5b76e10f3a4b8bfb1f1833f30a6186d6e361",
+    "bytes": 1499476
+  },
+  "_work/build/betart-denoise-portable/native/libmcrtx_jni.so": {
+    "sha256": "40aefccf2c60b4179a50787b809b4c97dc1afe471bf38f72878cceca722c8c90",
+    "bytes": 636624
+  },
+  "_work/packages/denoise-linux-complete/lib/libremix.so.0.1003.0": {
+    "sha256": "c6dfcd91951b51bf62aabb0603566ef866895469fbb20fee07b4951a393c724c",
+    "bytes": 2488776
+  },
+  "_work/packages/denoise-linux-complete/lib/libSDL3.so.0.4.14": {
+    "sha256": "f4444de2ae3ec283450375896bdc19432426b5a28849235b6089494ec11bf784",
+    "bytes": 3697576
+  }
+}

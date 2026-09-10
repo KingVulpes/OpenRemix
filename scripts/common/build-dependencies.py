@@ -1,0 +1,74 @@
+#!/usr/bin/env python3
+"""Build the pinned SDL3 shared library; Vulkan comes from the platform SDK."""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import subprocess
+import tarfile
+import urllib.request
+
+def fetch(output, name, pin, strip_root=True):
+    archive = output / (name + '.tar.gz')
+    if not archive.exists() or hashlib.sha256(archive.read_bytes()).hexdigest() != pin['sha256']:
+        temporary = archive.with_suffix('.download')
+        urllib.request.urlretrieve(pin['url'], temporary)
+        if hashlib.sha256(temporary.read_bytes()).hexdigest() != pin['sha256']:
+            raise RuntimeError(f'{name}: archive checksum mismatch')
+        temporary.replace(archive)
+    destination = output / 'sources' / name
+    marker = destination / '.remix-pin'
+    if marker.exists() and marker.read_text() == pin['sha256']:
+        return destination
+    if destination.exists():
+        raise RuntimeError(f'{destination} exists without the matching source pin; use a fresh output directory')
+    destination.mkdir(parents=True)
+    with tarfile.open(archive) as source:
+        for member in source.getmembers():
+            if strip_root:
+                parts = member.name.split('/', 1)
+                if len(parts) != 2 or not parts[1]:
+                    continue
+                member.name = parts[1]
+            target = (destination / member.name).resolve()
+            if destination.resolve() not in target.parents or member.issym() or member.islnk():
+                raise RuntimeError('Unexpected archive member: ' + member.name)
+            source.extract(member, destination)
+    marker.write_text(pin['sha256'])
+    return destination
+
+
+def main():
+    root = Path(__file__).resolve().parents[2]
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--ndk', type=Path)
+    parser.add_argument('--jobs', type=int, default=8)
+    args = parser.parse_args()
+    output = args.output.resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    pin = json.loads((root / 'scripts/common/dependencies.lock.json').read_text())['dependencies']['sdl3']
+    source = fetch(output, 'sdl3', pin)
+    build = output / 'build-sdl3'
+    options = []
+    if args.ndk:
+        options += ['-DCMAKE_TOOLCHAIN_FILE=' + str(args.ndk.resolve() / 'build/cmake/android.toolchain.cmake'),
+                    '-DANDROID_ABI=arm64-v8a', '-DANDROID_PLATFORM=android-29']
+    elif platform.system() == 'Windows':
+        options += ['-DCMAKE_C_COMPILER=clang-cl', '-DCMAKE_CXX_COMPILER=clang-cl']
+    else:
+        options += ['-DCMAKE_C_COMPILER=clang', '-DCMAKE_CXX_COMPILER=clang++']
+        if platform.system() == 'Darwin':
+            options += ['-DCMAKE_OSX_ARCHITECTURES=arm64',
+                        '-DCMAKE_OSX_DEPLOYMENT_TARGET=' + os.environ.get('MACOSX_DEPLOYMENT_TARGET', '13.0')]
+    subprocess.run(['cmake', '-S', str(source), '-B', str(build), '-G', 'Ninja',
+        '-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_INSTALL_PREFIX=' + str(output / 'prefix'),
+        '-DCMAKE_INSTALL_LIBDIR=lib', '-DSDL_SHARED=ON', '-DSDL_STATIC=OFF',
+        '-DSDL_TEST_LIBRARY=OFF', '-DSDL_TESTS=OFF', '-DSDL_EXAMPLES=OFF', *options], check=True)
+    subprocess.run(['cmake', '--build', str(build), '--parallel', str(args.jobs)], check=True)
+    subprocess.run(['cmake', '--install', str(build)], check=True)
+
+if __name__ == '__main__':
+    main()

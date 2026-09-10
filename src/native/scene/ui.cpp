@@ -1,0 +1,176 @@
+#include "scene/resources.h"
+#include "scene/images.h"
+#include "scene/validation.h"
+#include <remix/remix_native_ext.h>
+
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+#include <limits>
+#include <numeric>
+
+namespace remix {
+  using namespace scene;
+  using namespace scene::detail;
+
+  void NativeResources::registerUiTexture(uint64_t id, uint32_t width, uint32_t height,
+                                          remixapi_Format format, const void *pixels, uint64_t size) {
+    if (!id || !width || !height || !pixels || uint64_t(width) * height > UINT64_MAX / 4 ||
+        size != uint64_t(width) * height * 4 ||
+        (format != REMIXAPI_FORMAT_R8G8B8A8_UNORM && format != REMIXAPI_FORMAT_R8G8B8A8_SRGB &&
+         format != REMIXAPI_FORMAT_B8G8R8A8_UNORM && format != REMIXAPI_FORMAT_B8G8R8A8_SRGB)) {
+      throw invalid;
+    }
+    remixapi_TextureInfo info = {};
+    info.width = width;
+    info.height = height;
+    info.format = format;
+    info.data = pixels;
+    info.dataSize = size;
+    auto texture = std::make_shared<Texture>();
+    texture->pixels = decodeTexture(info);
+    // Game UI uploads are display-color bytes, including legacy UNORM captures.
+    texture->pixels.srgb = true;
+    m_uiTextures[id] = std::move(texture);
+  }
+
+  void NativeResources::freeUiTexture(uint64_t id) {
+    if (!id) {
+      throw invalid;
+    }
+    m_uiTextures.erase(id);
+  }
+
+  void NativeResources::submitUi(const remixapi_UIDrawList *info) {
+    if (!info || !info->commandCount) {
+      m_uiDraws.clear();
+      return;
+    }
+    if (info->sType != REMIXAPI_STRUCT_TYPE_UI_DRAW_LIST || !info->pVertices || !info->pIndices ||
+        !info->pCommands || !info->displayWidth || !info->displayHeight ||
+        info->vertexCount > 8 * 1024 * 1024 || info->indexCount > 24 * 1024 * 1024 ||
+        info->commandCount > 65536) {
+      throw invalid;
+    }
+    auto surface = std::make_shared<Surface>();
+    surface->vertices.resize(info->vertexCount);
+    surface->indices.assign(info->pIndices, info->pIndices + info->indexCount);
+    for (uint32_t i = 0; i < info->vertexCount; ++i) {
+      const auto &src = info->pVertices[i];
+      auto &dst = surface->vertices[i];
+      const float values[] = {src.x, src.y, src.z, src.u, src.v};
+      finite(values, 5);
+      std::copy_n(values, 3, dst.position);
+      std::copy_n(values + 3, 2, dst.uv);
+      rgba(src.color, dst.color, true);
+    }
+    std::vector<Draw> pending;
+    for (uint32_t i = 0; i < info->commandCount; ++i) {
+      const auto &cmd = info->pCommands[i];
+      const uint64_t end = uint64_t(cmd.indexOffset) + cmd.indexCount;
+      constexpr uint32_t nativeFlags = 0xff1fu;
+      const uint32_t sourceBlend = (cmd.flags >> REMIXAPI_UI_NATIVE_SRC_BLEND_SHIFT) & 15;
+      const uint32_t destinationBlend = (cmd.flags >> REMIXAPI_UI_NATIVE_DST_BLEND_SHIFT) & 15;
+      if ((cmd.flags & ~nativeFlags) || end > info->indexCount || cmd.indexCount % 3 || sourceBlend > 14 ||
+          destinationBlend > 14 ||
+          (!(cmd.flags & REMIXAPI_UI_NATIVE_CUSTOM_BLEND) && (cmd.flags & 0xff00u))) {
+        throw invalid;
+      }
+      for (uint64_t n = cmd.indexOffset; n < end; ++n) {
+        const int64_t v = int64_t(surface->indices[n]) + cmd.vertexOffset;
+        if (v < 0 || uint64_t(v) >= info->vertexCount) {
+          throw invalid;
+        }
+      }
+      if (!cmd.indexCount) {
+        continue;
+      }
+      Draw draw;
+      draw.surface = surface;
+      draw.ui = true;
+      draw.depth = (cmd.flags & REMIXAPI_UI_DRAW_FLAG_DEPTH_TEST) != 0;
+      draw.doubleSided = true;
+      draw.blend.enabled = true;
+      draw.blend.alphaOpTexture = 3;
+      draw.blend.alpha2 = 2;
+      if (cmd.flags & REMIXAPI_UI_NATIVE_CUSTOM_BLEND) {
+        draw.blend.src = draw.blend.srcAlpha = sourceBlend;
+        draw.blend.dst = draw.blend.dstAlpha = destinationBlend;
+      }
+      draw.material = std::make_shared<Material>();
+      if (cmd.textureId) {
+        auto it = m_uiTextures.find(cmd.textureId);
+        if (it == m_uiTextures.end()) {
+          throw invalid;
+        }
+        draw.material->texture = it->second;
+      } else {
+        draw.material->texture = texturePath(nullptr);
+      }
+      draw.material->wrapU = (cmd.flags & REMIXAPI_UI_NATIVE_REPEAT_U) ? 1 : 3;
+      draw.material->wrapV = (cmd.flags & REMIXAPI_UI_NATIVE_REPEAT_V) ? 1 : 3;
+      draw.material->filter = (cmd.flags & REMIXAPI_UI_NATIVE_LINEAR) ? 1 : 0;
+      draw.firstIndex = cmd.indexOffset;
+      draw.indexCount = cmd.indexCount;
+      draw.vertexOffset = cmd.vertexOffset;
+      draw.canvasWidth = info->displayWidth;
+      draw.canvasHeight = info->displayHeight;
+      pending.push_back(std::move(draw));
+    }
+    m_uiDraws = std::move(pending);
+  }
+
+  void NativeResources::overlay(const void *pixels, uint32_t width, uint32_t height, remixapi_Format format,
+                                float opacity) {
+    if (!std::isfinite(opacity) || opacity > 1) {
+      throw invalid;
+    }
+    if (!pixels && !width && !height && opacity <= 0) {
+      m_overlay.clear();
+      return;
+    }
+    if (!pixels || !width || !height) {
+      throw invalid;
+    }
+    auto texture = std::make_shared<Texture>();
+    remixapi_TextureInfo info = {};
+    info.width = width;
+    info.height = height;
+    info.format = format;
+    info.data = pixels;
+    info.dataSize = uint64_t(width) * height * 4;
+    if (format != REMIXAPI_FORMAT_R8G8B8A8_UNORM && format != REMIXAPI_FORMAT_R8G8B8A8_SRGB &&
+        format != REMIXAPI_FORMAT_B8G8R8A8_UNORM && format != REMIXAPI_FORMAT_B8G8R8A8_SRGB) {
+      throw invalid;
+    }
+    texture->pixels = decodeTexture(info);
+    texture->pixels.srgb = true;
+    Draw draw;
+    draw.ui = true;
+    draw.depth = false;
+    draw.doubleSided = true;
+    draw.blend.enabled = true;
+    draw.canvasWidth = draw.canvasHeight = 1;
+    draw.material = std::make_shared<Material>();
+    draw.material->texture = std::move(texture);
+    draw.material->tint[3] = std::max(0.0f, opacity);
+    draw.material->wrapU = draw.material->wrapV = 3;
+    draw.surface = std::make_shared<Surface>();
+    draw.surface->vertices = {{{0, 0, 0}, {0, 0}, {1, 1, 1, 1}},
+                              {{1, 0, 0}, {1, 0}, {1, 1, 1, 1}},
+                              {{1, 1, 0}, {1, 1}, {1, 1, 1, 1}},
+                              {{0, 1, 0}, {0, 1}, {1, 1, 1, 1}}};
+    draw.surface->indices = {0, 1, 2, 0, 2, 3};
+    m_overlay = {std::move(draw)};
+  }
+
+  void NativeResources::setTint(float r, float g, float b, float a) {
+    const float values[] = {r, g, b, a};
+    finite(values, 4);
+    if (a > 1) {
+      throw invalid;
+    }
+    std::copy_n(values, 4, m_tint);
+    m_tint[3] = std::max(0.0f, a);
+  }
+} // namespace remix

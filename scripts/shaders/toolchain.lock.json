@@ -1,0 +1,10 @@
+{
+  "dxc": {
+    "release": "v1.9.2602.24",
+    "version": "1.9.0.5191",
+    "linux-x86_64": {
+      "url": "https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.9.2602.24/linux_dxc_2026_05_26.x86_64.tar.gz",
+      "sha256": "928b3e9986d11dc4279050e02340950c29bcbd1e5efb9d3ded9669dade37639d"
+    }
+  }
+}

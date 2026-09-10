@@ -1,0 +1,6 @@
+REMIX_0.1003 {
+  global:
+    remixapi_*;
+  local:
+    *;
+};

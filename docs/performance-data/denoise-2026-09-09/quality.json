@@ -1,0 +1,22 @@
+[
+  {
+    "mode": "raw",
+    "mse": 0.215114444,
+    "temporal_variance": 0.200575087
+  },
+  {
+    "mode": "raw-taa",
+    "mse": 0.038134706,
+    "temporal_variance": 0.001291998
+  },
+  {
+    "mode": "reblur-sh",
+    "mse": 0.023915898,
+    "temporal_variance": 2.259e-06
+  },
+  {
+    "mode": "reblur-sh-taa",
+    "mse": 0.02476301,
+    "temporal_variance": 1.465e-06
+  }
+]

@@ -1,0 +1,636 @@
+#include "pathtrace/tlas_policy.h"
+#include <remix/remix_native_ext.h>
+#include <SDL3/SDL.h>
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <cmath>
+#include <algorithm>
+#include <functional>
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_ONLY_PNG
+#include <image/stb_image.h>
+
+namespace {
+  void require(bool value, const char *message) {
+    if (!value) {
+      std::fprintf(stderr, "%s\n", message);
+      std::exit(1);
+    }
+  }
+  void ok(remixapi_ErrorCode result) {
+    if (result) {
+      std::fprintf(stderr, "API failed: 0x%x\n", unsigned(result));
+      std::exit(1);
+    }
+  }
+
+} // namespace
+int main(int argc, char **argv) {
+  require(argc >= 2, "Supply scene output directory");
+  remixapi_Interface api = {};
+  remixapi_InitializeLibraryInfo init = {};
+  init.sType = REMIXAPI_STRUCT_TYPE_INITIALIZE_LIBRARY_INFO;
+  init.version = REMIXAPI_VERSION_MAKE(0, 1003, 0);
+  ok(remixapi_InitializeLibrary(&init, &api));
+  remixapi_StartupInfo startup = {};
+  startup.sType = REMIXAPI_STRUCT_TYPE_STARTUP_INFO;
+#if !defined(_WIN32)
+  startup.windowWidth = 96;
+  startup.windowHeight = 96;
+#endif
+  ok(api.Startup(&startup));
+  remixapi_BackendCapabilitiesEXT caps = {};
+  caps.structSize = sizeof(caps);
+  ok(remixapi_GetBackendCapabilitiesEXT(&caps));
+  require(caps.activeBackend == 0 && caps.requestedBackend == 0, "Raster must be default");
+  require(api.SetConfigVariable("rtx.native.backend", "invalid") == REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS,
+          "Invalid backend accepted");
+  require(api.SetConfigVariable("rtx.native.pathtrace.samples", "17") ==
+              REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS,
+          "Invalid samples accepted");
+  if (!(caps.supportedBackends & 2)) {
+    require(api.SetConfigVariable("rtx.native.backend", "pathtrace") ==
+                REMIXAPI_ERROR_CODE_FEATURE_UNAVAILABLE,
+            "Unsupported pathtrace selected");
+    ok(remixapi_GetBackendCapabilitiesEXT(&caps));
+    require(!caps.activeBackend && !caps.requestedBackend && caps.unavailableReason[0],
+            "Unsupported fallback reason/state");
+    ok(api.Present(nullptr));
+    ok(api.Shutdown());
+    std::printf("Unsupported-device fallback passed: %s\n", caps.unavailableReason);
+    return 0;
+  }
+  ok(api.SetConfigVariable("rtx.native.backend", "pathtrace"));
+  if (argc > 2 && std::string(argv[2]) == "init-failure") {
+    ok(api.Present(nullptr));
+    ok(remixapi_GetBackendCapabilitiesEXT(&caps));
+    require(!caps.activeBackend && !caps.requestedBackend && caps.unavailableReason[0],
+            "Tracing initialization failure did not retain raster");
+    ok(api.Present(nullptr));
+    ok(api.Shutdown());
+    return 0;
+  }
+  remixapi_LightInfoDistantEXT distant = {};
+  distant.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_DISTANT_EXT;
+  distant.direction = {0, 0, 1};
+  remixapi_LightInfo light = {};
+  light.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO;
+  light.pNext = &distant;
+  light.hash = 10;
+  light.radiance = {3.14159265f, 3.14159265f, 3.14159265f};
+  remixapi_LightHandle sun;
+  ok(api.CreateLight(&light, &sun));
+  remixapi_MaterialInfoOpaqueEXT opaque = {};
+  opaque.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_EXT;
+  opaque.albedoConstant = {1, 0, 0};
+  opaque.opacityConstant = 1;
+  opaque.alphaTestType = 7;
+  remixapi_MaterialInfo material = {};
+  material.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO;
+  material.pNext = &opaque;
+  material.hash = 11;
+  remixapi_MaterialHandle mat;
+  ok(api.CreateMaterial(&material, &mat));
+  remixapi_HardcodedVertex vertices[4] = {};
+  const float positions[4][3] = {{-2, -2, .5f}, {2, -2, .5f}, {2, 2, .5f}, {-2, 2, .5f}};
+  for (unsigned i = 0; i < 4; ++i) {
+    std::copy_n(positions[i], 3, vertices[i].position);
+    vertices[i].color = 0xffffffff;
+  }
+  uint32_t indices[] = {0, 1, 2, 0, 2, 3};
+  remixapi_MeshInfoSurfaceTriangles surface = {};
+  surface.vertices_values = vertices;
+  surface.vertices_count = 4;
+  surface.indices_values = indices;
+  surface.indices_count = 6;
+  surface.material = mat;
+  remixapi_MeshInfo mesh = {};
+  mesh.sType = REMIXAPI_STRUCT_TYPE_MESH_INFO;
+  mesh.hash = 12;
+  mesh.surfaces_values = &surface;
+  mesh.surfaces_count = 1;
+  remixapi_MeshHandle geometry;
+  ok(api.CreateMesh(&mesh, &geometry));
+  remixapi_InstanceIdentityEXT identity = {};
+  identity.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_IDENTITY_EXT;
+  identity.instanceId = 20;
+  identity.rasterVisible = 1;
+  remixapi_InstanceInfo instance = {};
+  instance.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO;
+  instance.pNext = &identity;
+  instance.mesh = geometry;
+  instance.doubleSided = 1;
+  for (int r = 0; r < 3; ++r)
+    instance.transform.matrix[r][r] = 1;
+  remixapi_CameraInfo camera = {};
+  camera.sType = REMIXAPI_STRUCT_TYPE_CAMERA_INFO;
+  for (int i = 0; i < 4; ++i)
+    camera.view[i][i] = camera.projection[i][i] = 1;
+  std::function<void()> extra = [] {};
+  unsigned debugFrame = 0;
+  auto frame = [&] {
+    if (std::getenv("REMIX_TEST_FRAME_LOG"))
+      std::fprintf(stderr, "GPU frame %u\n", ++debugFrame);
+    ok(api.PumpEvents());
+    ok(api.SetupCamera(&camera));
+    ok(api.DrawLightInstance(sun));
+    ok(api.DrawInstance(&instance));
+    extra();
+    ok(api.Present(nullptr));
+  };
+  auto statistics = [&] {
+    remixapi_TracingStatisticsEXT s = {};
+    s.structSize = sizeof(s);
+    ok(remixapi_GetTracingStatisticsEXT(&s));
+    return s;
+  };
+  for (int i = 0; i < 4; ++i)
+    frame();
+  ok(remixapi_GetBackendCapabilitiesEXT(&caps));
+  require(caps.activeBackend == 1, "Hardware pathtrace did not activate");
+  remixapi_DenoisingCapabilitiesEXT denoiseCaps{};
+  denoiseCaps.structSize = sizeof(denoiseCaps);
+  ok(remixapi_GetDenoisingCapabilitiesEXT(&denoiseCaps));
+  auto denoiseStats = [&] {
+    remixapi_DenoisingStatisticsEXT s{};
+    s.structSize = sizeof(s);
+    ok(remixapi_GetDenoisingStatisticsEXT(&s));
+    return s;
+  };
+  auto initialDenoising = denoiseStats();
+  if (argc > 2 && std::string(argv[2]) == "denoise-failure" && denoiseCaps.taaSupported) {
+    require(!initialDenoising.activeDenoiser && !initialDenoising.activeTaa &&
+                initialDenoising.unavailableReason[0],
+            "Temporal allocation failure did not retain raw tracing");
+    frame();
+    frame();
+    require(statistics().sampleSequence >= 6, "Raw tracing stopped after temporal failure");
+    ok(api.Shutdown());
+    return 0;
+  }
+  require(initialDenoising.requestedDenoiser == 1 && initialDenoising.requestedTaa == 1,
+          "Temporal defaults not requested");
+  require(initialDenoising.activeDenoiser == denoiseCaps.reblurShSupported &&
+              initialDenoising.activeTaa == denoiseCaps.taaSupported,
+          "Supported temporal defaults not active");
+  if (initialDenoising.activeDenoiser || initialDenoising.activeTaa) {
+    for (int i = 0; i < 80 && denoiseStats().redrawRequested; ++i)
+      frame();
+    require(!denoiseStats().redrawRequested, "Unchanged world never converged");
+    auto converged = denoiseStats();
+    frame();
+    frame();
+    require(denoiseStats().renderedFrames == converged.renderedFrames,
+            "UI-only redraw retraced converged world");
+    camera.view[3][0] = .01f;
+    frame();
+    require(denoiseStats().renderedFrames == converged.renderedFrames + 1 && denoiseStats().redrawRequested,
+            "Camera motion did not resume temporal redraws");
+    camera.view[3][0] = 0;
+    frame();
+  }
+  auto warm = statistics();
+  require(warm.blasBuilds == 1, "Static BLAS not cached");
+  for (int i = 0; i < 4; ++i)
+    frame();
+  auto stable = statistics();
+  require(stable.blasBuilds == warm.blasBuilds && stable.staticTlasBuilds == warm.staticTlasBuilds &&
+              stable.dynamicTlasRefits == warm.dynamicTlasRefits,
+          "Warm scene acceleration work");
+  camera.view[3][0] = .1f;
+  frame();
+  require(denoiseStats().historyResets == initialDenoising.historyResets, "Camera motion reset denoiser");
+  require(statistics().staticTlasBuilds == warm.staticTlasBuilds, "Camera motion rebuilt acceleration");
+  ok(api.SetConfigVariable("rtx.native.pathtrace.accumulate", "1"));
+  frame();
+  frame();
+  require(!denoiseStats().activeDenoiser && !denoiseStats().activeTaa && denoiseStats().requestedDenoiser &&
+              denoiseStats().requestedTaa,
+          "Reference accumulation failed to bypass temporal filters");
+  auto accumulated = statistics();
+  require(accumulated.accumulationCount >= 2, "Accumulation not advancing");
+  ok(api.CreateMesh(&mesh, &geometry));
+  ok(api.CreateMaterial(&material, &mat));
+  frame();
+  require(statistics().accumulationCount == accumulated.accumulationCount + 1,
+          "Identical resubmission reset accumulation");
+  const auto path = std::filesystem::absolute(std::filesystem::path(argv[1]));
+  std::filesystem::create_directories(path);
+  const auto red = (path / "diffuse-red.png").string();
+  ok(api.RequestPresentedScreenshot(red.c_str()));
+  frame();
+  frame();
+  int width, height, channels;
+  auto pixels = stbi_load(red.c_str(), &width, &height, &channels, 4);
+  require(pixels, "Read traced screenshot");
+  const auto *center = pixels + (height / 2 * width + width / 2) * 4;
+  std::printf("Traced red center: %u %u %u; BLAS %llu compactions %llu\n", center[0], center[1], center[2],
+              (unsigned long long)stable.blasBuilds, (unsigned long long)stable.blasCompactions);
+  require(center[0] > 240 && center[1] < 5 && center[2] < 5, "Diffuse light / color / composition pixel");
+  stbi_image_free(pixels);
+  opaque.albedoConstant = {0, 1, 0};
+  ok(api.CreateMaterial(&material, &mat));
+  frame();
+  require(statistics().accumulationCount == 1 && statistics().blasBuilds == stable.blasBuilds,
+          "Material change acceleration/invalidation");
+  identity.classification = REMIXAPI_INSTANCE_DYNAMIC_EXT;
+  frame();
+  warm = statistics();
+  instance.transform.matrix[0][3] += .01f;
+  frame();
+  stable = statistics();
+  require(stable.blasBuilds == warm.blasBuilds && stable.dynamicTlasRefits == warm.dynamicTlasRefits + 1,
+          "Rigid animation refit");
+  frame();
+  require(statistics().dynamicTlasRefits == stable.dynamicTlasRefits, "Unchanged dynamic TLAS work");
+  ok(api.SetConfigVariable("rtx.native.pathtrace.forceRebuild", "1"));
+  frame();
+  require(statistics().dynamicRebuildReason == REMIXAPI_REBUILD_FORCED_EXT, "Forced rebuild mode");
+  ok(api.SetConfigVariable("rtx.native.pathtrace.forceRebuild", "0"));
+  ok(api.SetConfigVariable("rtx.native.pathtrace.accumulate", "0"));
+  ok(api.SetConfigVariable("rtx.native.pathtrace.bounces", "0"));
+  camera.view[3][0] = 0;
+  instance.transform.matrix[0][3] = 0;
+  opaque.albedoConstant = {1, 1, 1};
+  opaque.useDrawCallAlphaState = 1;
+  ok(api.CreateMaterial(&material, &mat));
+  auto capture = [&](const char *name) {
+    auto file = (path / name).string();
+    ok(api.RequestPresentedScreenshot(file.c_str()));
+    frame();
+    frame();
+    int w, h, n;
+    auto bytes = stbi_load(file.c_str(), &w, &h, &n, 4);
+    require(bytes, "Scene screenshot");
+    std::array<unsigned, 3> color = {bytes[(h / 2 * w + w / 2) * 4], bytes[(h / 2 * w + w / 2) * 4 + 1],
+                                     bytes[(h / 2 * w + w / 2) * 4 + 2]};
+    stbi_image_free(bytes);
+    return color;
+  };
+  instance.doubleSided = 0;
+  auto facing = capture("single-sided.png");
+  require(facing[0] > 240, "Ray-query front face disagrees with raster clockwise fronts");
+  instance.doubleSided = 1;
+  // Subpixel motion of a two-pixel-wide surface must stay visible without a
+  // broad history trail. Retain these frames for visual edge inspection.
+  instance.transform.matrix[0][0] = .01f;
+  for (unsigned sample = 0; sample < 4; ++sample) {
+    instance.transform.matrix[0][3] = float(sample) * .005f;
+    for (unsigned i = 0; i < 8; ++i)
+      frame();
+    auto name = "thin-motion-" + std::to_string(sample) + ".png";
+    capture(name.c_str());
+    int w, h, n;
+    auto bytes = stbi_load((path / name).string().c_str(), &w, &h, &n, 4);
+    require(bytes, "Read thin surface frame");
+    unsigned litPixels = 0;
+    for (int x = 0; x < w; ++x)
+      litPixels += bytes[(h / 2 * w + x) * 4] > 180;
+    stbi_image_free(bytes);
+    require(litPixels >= 1 && litPixels <= 8, "Thin geometry vanished or retained a broad history trail");
+  }
+  instance.transform.matrix[0][0] = 1;
+  instance.transform.matrix[0][3] = 0;
+  // An offscreen, raster-culled rigid instance shadows the visible receiver.
+  auto blocker = instance;
+  remixapi_InstanceIdentityEXT blockerId = identity;
+  blockerId.instanceId = 21;
+  blockerId.rasterVisible = 0;
+  blocker.pNext = &blockerId;
+  for (int r = 0; r < 3; ++r)
+    blocker.transform.matrix[r][r] = .25f;
+  blocker.transform.matrix[0][3] = 2.5f;
+  blocker.transform.matrix[2][3] = -.125f;
+  distant.direction = {-.9805807f, 0, .1961161f};
+  ok(api.UpdateLightDefinition(sun, &light));
+  auto lit = capture("unoccluded.png");
+  require(lit[0] > 80, "Unoccluded distant light");
+  extra = [&] { ok(api.DrawInstance(&blocker)); };
+  auto shadowed = capture("offscreen-shadow.png");
+  require(shadowed[0] < 5, "Offscreen shadow missing");
+  remixapi_InstanceInfoBlendEXT blend = {};
+  blend.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_BLEND_EXT;
+  blend.pNext = &blockerId;
+  blocker.pNext = &blend;
+  blend.alphaTestEnabled = 1;
+  blend.alphaTestCompareOp = 4;
+  blend.alphaTestReferenceValue = 128;
+  blend.textureAlphaOperation = 1;
+  blend.textureAlphaArg1Source = 3;
+  blend.tFactor = 0x00ffffff;
+  auto cutout = capture("cutout-shadow.png");
+  require(cutout[0] > 80, "Cutout shadow ray rejected transparency");
+  // The same cutout handling applies to primary visibility.
+  blocker.transform = instance.transform;
+  blocker.transform.matrix[2][3] = -.3f;
+  auto primaryCutout = capture("cutout-primary.png");
+  require(primaryCutout[0] > 80, "Primary cutout handling");
+  // Actual texture alpha replacement changes visibility without touching BLASes.
+  uint8_t texel[] = {0, 255, 0, 0};
+  remixapi_TextureInfo texture = {};
+  texture.sType = REMIXAPI_STRUCT_TYPE_TEXTURE_INFO;
+  texture.hash = 40;
+  texture.width = texture.height = 1;
+  texture.format = REMIXAPI_FORMAT_R8G8B8A8_SRGB;
+  texture.data = texel;
+  texture.dataSize = 4;
+  remixapi_TextureHandle textureHandle;
+  ok(api.CreateTexture(&texture, &textureHandle));
+  material.hash = 41;
+#if defined(_WIN32)
+  material.albedoTexture = L"0x28";
+#else
+  material.albedoTexture = "0x28";
+#endif
+  remixapi_MaterialHandle textured;
+  ok(api.CreateMaterial(&material, &textured));
+  surface.material = textured;
+  mesh.hash = 42;
+  remixapi_MeshHandle texturedMesh;
+  ok(api.CreateMesh(&mesh, &texturedMesh));
+  surface.material = mat;
+  mesh.hash = 12;
+  blocker.mesh = texturedMesh;
+  blend.textureAlphaArg1Source = 1;
+  blend.tFactor = 0xffffffff;
+  auto textureHole = capture("texture-cutout.png");
+  require(textureHole[0] > 80 && textureHole[1] > 80, "Texture alpha hole missing");
+  auto textureBuilds = statistics().blasBuilds;
+  texel[3] = 255;
+  ok(api.CreateTexture(&texture, &textureHandle));
+  ok(api.CreateMaterial(&material, &textured));
+  auto textureSolid = capture("texture-alpha-replaced.png");
+  require(textureSolid[0] < 5 && textureSolid[1] > 80 && statistics().blasBuilds == textureBuilds,
+          "Texture alpha replacement rebuilt BLAS or retained stale alpha");
+  material.hash = 11;
+  material.albedoTexture = nullptr;
+  blocker.mesh = geometry;
+  blend.textureAlphaArg1Source = 3;
+  ok(api.DestroyMesh(texturedMesh));
+  ok(api.DestroyMaterial(textured));
+  ok(api.DestroyTexture(textureHandle));
+  distant.direction = {0, 0, 1};
+  ok(api.UpdateLightDefinition(sun, &light));
+  blend.alphaTestEnabled = 0;
+  blend.alphaBlendEnabled = 1;
+  blend.srcColorBlendFactor = blend.srcAlphaBlendFactor = 6;
+  blend.dstColorBlendFactor = blend.dstAlphaBlendFactor = 7;
+  blend.textureColorOperation = 3;
+  blend.textureColorArg1Source = 1;
+  blend.textureColorArg2Source = 3;
+  blend.tFactor = 0x0000ff00;
+  auto tinted = capture("tinted-transmission.png");
+  require(tinted[1] > 240 && tinted[0] < 5 && tinted[2] < 5, "Tinted primary/shadow transmission");
+  // Raster gameplay feedback shares primary world depth.
+  blockerId.classification = REMIXAPI_INSTANCE_RASTER_ONLY_EXT;
+  blockerId.rasterVisible = 1;
+  blend.alphaBlendEnabled = 0;
+  blend.tFactor = 0xff0000ff;
+  blocker.transform.matrix[2][3] = .3f;
+  auto behind = capture("overlay-behind.png");
+  require(behind[0] > 240 && behind[1] > 240, "Raster overlay ignored world depth");
+  blocker.transform.matrix[2][3] = -.3f;
+  auto front = capture("overlay-front.png");
+  require(front[2] > 240 && front[0] < 5, "Raster foreground overlay missing");
+  extra = [] {};
+  auto builds = statistics().blasBuilds;
+  camera.view[3][0] = -1024;
+  instance.transform.matrix[0][3] = 1024;
+  auto large = capture("floating-origin.png");
+  require(large[0] > 240 && statistics().blasBuilds == builds,
+          "Floating-origin geometry rebuilt or incorrect");
+  camera.view[3][0] = 0;
+  instance.transform.matrix[0][3] = 0;
+  ok(api.SetConfigVariable("rtx.native.pathtrace.accumulate", "1"));
+  frame();
+  frame();
+  auto countBeforeUi = statistics().accumulationCount;
+  ok(api.SetScreenTint(0, 0, 0, .1f));
+  frame();
+  require(statistics().accumulationCount == countBeforeUi + 1, "UI-only change reset accumulation");
+  ok(api.SetScreenTint(0, 0, 0, 0));
+  // A red side wall transfers diffuse light to a receiver with zero direct illumination.
+  ok(api.SetConfigVariable("rtx.native.pathtrace.accumulate", "0"));
+  blockerId.classification = REMIXAPI_INSTANCE_DYNAMIC_EXT;
+  blockerId.rasterVisible = 0;
+  blocker.transform = {};
+  blocker.transform.matrix[0][2] = 1;
+  blocker.transform.matrix[1][1] = 1;
+  blocker.transform.matrix[2][0] = -1;
+  blocker.transform.matrix[0][3] = .3f;
+  blend.tFactor = 0xffff0000;
+  distant.direction = {1, 0, 0};
+  ok(api.UpdateLightDefinition(sun, &light));
+  extra = [&] { ok(api.DrawInstance(&blocker)); };
+  auto noBounce = capture("indirect-disabled.png");
+  require(noBounce[0] < 5, "Sky supplied unintended environment light");
+  ok(api.SetConfigVariable("rtx.native.pathtrace.samples", "16"));
+  ok(api.SetConfigVariable("rtx.native.pathtrace.bounces", "1"));
+  ok(api.SetConfigVariable("rtx.native.pathtrace.accumulate", "1"));
+  for (int i = 0; i < 32; ++i)
+    frame();
+  auto transferred = capture("diffuse-color-transfer.png");
+  require(transferred[0] > 30 && transferred[1] < 5 && transferred[2] < 5, "Diffuse color transfer missing");
+  if (std::getenv("REMIX_TEST_DENOISE_QUALITY") && denoiseCaps.reblurShSupported) {
+    auto readRegion = [&](const std::string &file) {
+      int w, h, n;
+      auto bytes = stbi_load(file.c_str(), &w, &h, &n, 4);
+      require(bytes, "Read quality frame");
+      std::vector<double> values;
+      for (int y = h / 2 - 12; y < h / 2 + 12; ++y)
+        for (int x = w / 2 - 12; x < w / 2 + 12; ++x) {
+          const double c = double(bytes[(y * w + x) * 4]) / 255;
+          values.push_back(c <= .04045 ? c / 12.92 : std::pow((c + .055) / 1.055, 2.4));
+        }
+      stbi_image_free(bytes);
+      return values;
+    };
+    const auto reference = readRegion((path / "diffuse-color-transfer.png").string());
+    struct Quality {
+      double error = 0, variance = 0;
+    };
+    Quality results[4];
+    ok(api.SetConfigVariable("rtx.native.pathtrace.accumulate", "0"));
+    ok(api.SetConfigVariable("rtx.native.pathtrace.samples", "1"));
+    for (unsigned mode = 0; mode < 4; ++mode) {
+      ok(api.SetConfigVariable("rtx.native.pathtrace.denoiser", mode >= 2 ? "reblur-sh" : "off"));
+      ok(api.SetConfigVariable("rtx.native.pathtrace.taa", mode % 2 ? "1" : "0"));
+      for (unsigned i = 0; i < 80; ++i) {
+        camera.view[3][0] = float(i % 2) * .0001f;
+        frame();
+      }
+      std::vector<double> sum(reference.size()), squares(reference.size());
+      for (unsigned sample = 0; sample < 16; ++sample) {
+        camera.view[3][0] = float(sample % 2) * .0001f;
+        auto name = "quality-" + std::to_string(mode) + "-" + std::to_string(sample) + ".png";
+        capture(name.c_str());
+        auto values = readRegion((path / name).string());
+        for (size_t i = 0; i < values.size(); ++i) {
+          double d = values[i] - reference[i];
+          results[mode].error += d * d;
+          sum[i] += values[i];
+          squares[i] += values[i] * values[i];
+        }
+      }
+      results[mode].error /= 16 * reference.size();
+      for (size_t i = 0; i < sum.size(); ++i)
+        results[mode].variance += squares[i] / 16 - std::pow(sum[i] / 16, 2);
+      results[mode].variance /= sum.size();
+      std::printf("Quality mode %u: MSE %.9f variance %.9f\n", mode, results[mode].error,
+                  results[mode].variance);
+    }
+    require(results[2].error < results[0].error && results[2].variance < results[0].variance,
+            "REBLUR SH did not improve diffuse lighting error and temporal variance");
+    require(results[3].error < results[0].error && results[3].variance < results[0].variance,
+            "REBLUR SH plus TAA did not improve diffuse error and variance");
+    camera.view[3][0] = 0;
+    // Removing an offscreen source of indirect light must update local lighting
+    // without a global reset. Keep a motion sequence for visual ghosting review.
+    auto beforeRemoval = denoiseStats();
+    extra = [] {};
+    for (unsigned i = 0; i <= 32; ++i) {
+      camera.view[3][0] = .1f * float(i) / 32;
+      if (i == 0 || (i & (i - 1)) == 0) {
+        auto name = "motion-light-removed-" + std::to_string(i) + ".png";
+        auto color = capture(name.c_str());
+        if (i == 32)
+          require(color[0] < 12, "Offscreen lighting remained stale after convergence");
+      } else
+        frame();
+    }
+    require(denoiseStats().historyResets == beforeRemoval.historyResets,
+            "Offscreen geometry/camera motion reset all history");
+    camera.view[3][0] = 0;
+  }
+
+  extra = [] {};
+  distant.direction = {0, 0, 1};
+  ok(api.UpdateLightDefinition(sun, &light));
+  ok(api.SetConfigVariable("rtx.native.pathtrace.samples", "1"));
+  ok(api.SetConfigVariable("rtx.native.pathtrace.accumulate", "0"));
+  // Vertex deformation updates a private BLAS and refreshes its TLAS bounds.
+  float weights[] = {1, 1, 1, 1};
+  uint32_t bones[] = {0, 0, 0, 0};
+  surface.skinning_hasvalue = 1;
+  surface.skinning_value = {1, weights, 4, bones, 4};
+  mesh.hash = 30;
+  remixapi_MeshHandle skinned;
+  ok(api.CreateMesh(&mesh, &skinned));
+  instance.mesh = skinned;
+  remixapi_Transform bone = {};
+  for (int i = 0; i < 3; ++i)
+    bone.matrix[i][i] = 1;
+  remixapi_InstanceInfoBoneTransformsEXT skin = {};
+  skin.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_BONE_TRANSFORMS_EXT;
+  skin.pNext = &identity;
+  skin.boneTransforms_count = 1;
+  skin.boneTransforms_values = &bone;
+  instance.pNext = &skin;
+  frame();
+  auto beforeSkin = statistics();
+  bone.matrix[0][3] = .2f;
+  frame();
+  auto afterSkin = statistics();
+  require(afterSkin.blasBuilds == beforeSkin.blasBuilds &&
+              afterSkin.blasRefits == beforeSkin.blasRefits + 1 &&
+              afterSkin.dynamicTlasRefits == beforeSkin.dynamicTlasRefits + 1,
+          "Deformation BLAS/TLAS refit");
+  frame();
+  require(statistics().blasRefits == afterSkin.blasRefits, "Identical deformation refit");
+  instance.mesh = geometry;
+  instance.pNext = &identity;
+  ok(api.DestroyMesh(skinned));
+  // Legacy frame-local IDs coexist with every legal persistent ID.
+  identity.instanceId = UINT64_MAX;
+  auto legacyInstance = instance;
+  legacyInstance.pNext = nullptr;
+  legacyInstance.transform.matrix[0][3] = 10;
+  extra = [&] { ok(api.DrawInstance(&legacyInstance)); };
+  frame();
+  frame();
+  extra = [] {};
+  ok(api.DrawInstance(&instance));
+  require(api.DrawInstance(&instance) == REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS,
+          "Duplicate persistent identity accepted");
+  ok(api.Present(nullptr));
+  identity.instanceId = 20;
+  frame();
+  // Replacement preserves queued geometry; only its changed BLAS builds next frame.
+  auto beforeReplacement = statistics();
+  ok(api.SetupCamera(&camera));
+  ok(api.DrawLightInstance(sun));
+  ok(api.DrawInstance(&instance));
+  mesh.hash = 12;
+  surface.skinning_hasvalue = 0;
+  vertices[0].position[0] -= .1f;
+  ok(api.CreateMesh(&mesh, &geometry));
+  ok(api.Present(nullptr));
+  require(statistics().blasBuilds == beforeReplacement.blasBuilds, "Queued mesh version replaced early");
+  frame();
+  require(statistics().blasBuilds == beforeReplacement.blasBuilds + 1, "Mesh edit rebuilt unrelated BLASes");
+  frame();
+  frame();
+  builds = statistics().blasBuilds;
+  vertices[0].texcoord[0] = .25f;
+  ok(api.CreateMesh(&mesh, &geometry));
+  frame();
+  require(statistics().blasBuilds == builds, "UV-only replacement rebuilt acceleration geometry");
+  // The last selected distant light may be black, and destroyed handles fail.
+  light.radiance = {0, 0, 0};
+  ok(api.UpdateLightDefinition(sun, &light));
+  auto black = capture("zero-light.png");
+  require(black[0] < 5 && black[1] < 5 && black[2] < 5,
+          "Black distant light did not replace previous selection");
+  light.radiance = {3.14159265f, 3.14159265f, 3.14159265f};
+  ok(api.UpdateLightDefinition(sun, &light));
+  std::puts("Diffuse color transfer and deformation BLAS/TLAS updates passed");
+  std::puts("Offscreen shadows, primary/shadow cutouts, tinted transmission, floating origin and raster "
+            "depth passed");
+  if (denoiseCaps.reblurShSupported) {
+    remixapi_CameraTemporalEXT temporal{};
+    temporal.sType = REMIXAPI_STRUCT_TYPE_CAMERA_TEMPORAL_EXT;
+    temporal.worldEpoch = 1;
+    temporal.historyResetEpoch = 1;
+    camera.pNext = &temporal;
+    frame();
+    auto beforeReset = denoiseStats();
+    ++temporal.historyResetEpoch;
+    frame();
+    require(denoiseStats().historyResets == beforeReset.historyResets + 1,
+            "Camera cut/rebase epoch did not reset");
+    auto beforeWorld = denoiseStats();
+    ++temporal.worldEpoch;
+    frame();
+    require(denoiseStats().historyResets == beforeWorld.historyResets + 1, "World epoch did not reset");
+    ok(api.SetConfigVariable("rtx.native.pathtrace.validation", "1"));
+    frame();
+    frame();
+    require(denoiseStats().validationEnabled, "NRD validation overlay did not activate");
+    ok(api.SetConfigVariable("rtx.native.pathtrace.validation", "0"));
+    opaque.albedoConstant = {0, 0, 0};
+    ok(api.CreateMaterial(&material, &mat));
+    auto blackMaterial = capture("black-material.png");
+    require(blackMaterial[0] < 5 && blackMaterial[1] < 5 && blackMaterial[2] < 5,
+            "Black material retained demodulated light");
+    camera.pNext = nullptr;
+  }
+  ok(api.SetConfigVariable("rtx.native.backend", "raster"));
+  frame();
+  ok(remixapi_GetBackendCapabilitiesEXT(&caps));
+  require(caps.activeBackend == 0, "Switch to raster");
+  ok(api.SetConfigVariable("rtx.native.backend", "pathtrace"));
+  frame();
+  int number = 0;
+  auto windows = SDL_GetWindows(&number);
+  require(number == 1, "Runtime window");
+  SDL_SetWindowSize(windows[0], 128, 96);
+  SDL_free(windows);
+  frame();
+  frame();
+  ok(api.DestroyLight(sun));
+  require(api.DrawLightInstance(sun) == REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS,
+          "Destroyed distant light accepted");
+  ok(api.Shutdown());
+  std::puts("Hardware tracing, caching, accumulation, switching and resize passed");
+}

@@ -1,0 +1,367 @@
+/*
+ * Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+ * DEALINGS IN THE SOFTWARE.
+ */
+
+#include "runtime/runtime.h"
+
+#include <algorithm>
+#include <array>
+#include <cstdlib>
+#include <cstring>
+#include <limits>
+#include <charconv>
+
+namespace remix {
+  namespace {
+    bool succeeded(VkResult result) { return result == VK_SUCCESS; }
+  } // namespace
+
+  remixapi_ErrorCode RemixNativeRuntime::createSwapchain() {
+    VkSurfaceCapabilitiesKHR capabilities = {};
+    if (!succeeded(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(m_physicalDevice, m_surface, &capabilities))) {
+      return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+    }
+
+    uint32_t formatCount = 0;
+    if (vkGetPhysicalDeviceSurfaceFormatsKHR(m_physicalDevice, m_surface, &formatCount, nullptr) !=
+            VK_SUCCESS ||
+        formatCount == 0) {
+      return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+    }
+    std::vector<VkSurfaceFormatKHR> formats(formatCount);
+    if (vkGetPhysicalDeviceSurfaceFormatsKHR(m_physicalDevice, m_surface, &formatCount, formats.data()) !=
+            VK_SUCCESS ||
+        !formatCount) {
+      return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+    }
+    formats.resize(formatCount);
+
+    uint32_t modeCount = 0;
+    if (vkGetPhysicalDeviceSurfacePresentModesKHR(m_physicalDevice, m_surface, &modeCount, nullptr) !=
+            VK_SUCCESS ||
+        !modeCount) {
+      return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+    }
+    std::vector<VkPresentModeKHR> modes(modeCount);
+    if (modeCount != 0) {
+      if (vkGetPhysicalDeviceSurfacePresentModesKHR(m_physicalDevice, m_surface, &modeCount, modes.data()) !=
+          VK_SUCCESS) {
+        return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+      }
+      modes.resize(modeCount);
+    }
+
+    remixapi_WindowState windowState = {};
+    remixapi_ErrorCode status = m_window.getWindowState(windowState);
+    if (status != REMIXAPI_ERROR_CODE_SUCCESS) {
+      return status;
+    }
+
+    VkExtent2D extent = capabilities.currentExtent;
+    if (extent.width == std::numeric_limits<uint32_t>::max()) {
+      extent.width = std::clamp(windowState.drawableWidth, capabilities.minImageExtent.width,
+                                capabilities.maxImageExtent.width);
+      extent.height = std::clamp(windowState.drawableHeight, capabilities.minImageExtent.height,
+                                 capabilities.maxImageExtent.height);
+    }
+    if (extent.width == 0 || extent.height == 0) {
+      return REMIXAPI_ERROR_CODE_SUCCESS;
+    }
+
+    uint32_t imageCount = std::max(2u, capabilities.minImageCount + 1);
+    if (capabilities.maxImageCount != 0) {
+      imageCount = std::min(imageCount, capabilities.maxImageCount);
+    }
+    if (imageCount < 2 || !(capabilities.supportedUsageFlags & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)) {
+      return REMIXAPI_ERROR_CODE_FEATURE_UNAVAILABLE;
+    }
+    const VkSurfaceFormatKHR format = chooseSurfaceFormat(formats);
+    m_screenshotSupported =
+        (capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) &&
+        (format.format == VK_FORMAT_B8G8R8A8_SRGB || format.format == VK_FORMAT_B8G8R8A8_UNORM ||
+         format.format == VK_FORMAT_R8G8B8A8_SRGB || format.format == VK_FORMAT_R8G8B8A8_UNORM);
+    VkCompositeAlphaFlagBitsKHR compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    if ((capabilities.supportedCompositeAlpha & compositeAlpha) == 0) {
+      constexpr std::array<VkCompositeAlphaFlagBitsKHR, 3> kFallbackAlphaModes = {
+          VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR,
+          VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR,
+          VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR,
+      };
+      for (VkCompositeAlphaFlagBitsKHR mode : kFallbackAlphaModes) {
+        if ((capabilities.supportedCompositeAlpha & mode) != 0) {
+          compositeAlpha = mode;
+          break;
+        }
+      }
+    }
+
+    const VkSwapchainCreateInfoKHR createInfo = {
+        .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+        .surface = m_surface,
+        .minImageCount = imageCount,
+        .imageFormat = format.format,
+        .imageColorSpace = format.colorSpace,
+        .imageExtent = extent,
+        .imageArrayLayers = 1,
+        .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                      (m_screenshotSupported ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0u),
+        .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .preTransform = capabilities.currentTransform,
+        .compositeAlpha = compositeAlpha,
+        .presentMode = choosePresentMode(modes),
+        .clipped = VK_TRUE,
+    };
+    if (!succeeded(vkCreateSwapchainKHR(m_device, &createInfo, nullptr, &m_swapchain))) {
+      return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+    }
+
+    m_presenterVsync = m_vsync;
+    m_swapchainFormat = format.format;
+    m_swapchainExtent = extent;
+    if (vkGetSwapchainImagesKHR(m_device, m_swapchain, &imageCount, nullptr) != VK_SUCCESS ||
+        imageCount < 2) {
+      return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+    }
+    m_swapchainImages.resize(imageCount);
+    if (!succeeded(vkGetSwapchainImagesKHR(m_device, m_swapchain, &imageCount, m_swapchainImages.data()))) {
+      return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+    }
+    m_swapchainImages.resize(imageCount);
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  }
+
+  remixapi_ErrorCode RemixNativeRuntime::recreateSwapchain() {
+    VkResult result = vkDeviceWaitIdle(m_device);
+    if (result != VK_SUCCESS) {
+      return fail(result);
+    }
+    destroySwapchain();
+    if (m_recreateSurface) {
+      if (m_surface) {
+        vkDestroySurfaceKHR(m_instance, m_surface, nullptr);
+      }
+      m_surface = VK_NULL_HANDLE;
+      auto status = m_window.createVulkanSurface(m_instance, nullptr, m_surface);
+      if (status != REMIXAPI_ERROR_CODE_SUCCESS) {
+        return status;
+      }
+      VkBool32 supported = VK_FALSE;
+      result = vkGetPhysicalDeviceSurfaceSupportKHR(m_physicalDevice, m_queueFamily, m_surface, &supported);
+      if (result != VK_SUCCESS || !supported) {
+        return fail(result);
+      }
+      m_recreateSurface = false;
+    }
+    m_rebuild = false;
+    auto status = createSwapchain();
+    if (status != REMIXAPI_ERROR_CODE_SUCCESS || !m_swapchain) {
+      return status;
+    }
+    status = createAttachments();
+    if (status != REMIXAPI_ERROR_CODE_SUCCESS) {
+      return status;
+    }
+    return initializeUiVulkan() ? REMIXAPI_ERROR_CODE_SUCCESS : REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+  }
+
+  remixapi_ErrorCode RemixNativeRuntime::createAttachments() {
+    const VkAttachmentDescription attachments[] = {
+        {
+            .format = m_swapchainFormat,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+            .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        },
+        {
+            .format = m_raster.depthFormat(),
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+            .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        }};
+    const VkAttachmentReference color = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    const VkAttachmentReference depth = {1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+    const VkSubpassDescription subpass = {
+        .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+        .colorAttachmentCount = 1,
+        .pColorAttachments = &color,
+        .pDepthStencilAttachment = &depth,
+    };
+    const VkSubpassDependency dependency = {
+        .srcSubpass = VK_SUBPASS_EXTERNAL,
+        .dstSubpass = 0,
+        .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                        VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                        VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                         VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+    };
+    const VkRenderPassCreateInfo pass = {
+        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+        .attachmentCount = 2,
+        .pAttachments = attachments,
+        .subpassCount = 1,
+        .pSubpasses = &subpass,
+        .dependencyCount = 1,
+        .pDependencies = &dependency,
+    };
+    if (vkCreateRenderPass(m_device, &pass, nullptr, &m_renderPass) != VK_SUCCESS) {
+      return fail();
+    }
+    m_raster.configureTarget(m_renderPass, m_swapchainExtent,
+                             m_srgb && m_swapchainFormat != VK_FORMAT_R8G8B8A8_SRGB &&
+                                 m_swapchainFormat != VK_FORMAT_B8G8R8A8_SRGB);
+    if (m_pathTracer)
+      m_pathTracer->configureTarget(m_renderPass, m_swapchainExtent,
+                                    m_srgb && m_swapchainFormat != VK_FORMAT_R8G8B8A8_SRGB &&
+                                        m_swapchainFormat != VK_FORMAT_B8G8R8A8_SRGB,
+                                    m_raster.depthFormat(), m_raster.depthView());
+    const uint32_t count = static_cast<uint32_t>(m_swapchainImages.size());
+    m_imageViews.resize(count);
+    m_framebuffers.resize(count);
+    m_renderFinished.resize(count);
+    m_commandBuffers.resize(count);
+    const VkCommandBufferAllocateInfo allocate = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = m_commandPool,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = count,
+    };
+    if (vkAllocateCommandBuffers(m_device, &allocate, m_commandBuffers.data()) != VK_SUCCESS) {
+      m_commandBuffers.clear();
+      return fail();
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+      const VkImageViewCreateInfo view = {
+          .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+          .image = m_swapchainImages[i],
+          .viewType = VK_IMAGE_VIEW_TYPE_2D,
+          .format = m_swapchainFormat,
+          .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+      };
+      if (vkCreateImageView(m_device, &view, nullptr, &m_imageViews[i]) != VK_SUCCESS) {
+        return fail();
+      }
+      const VkImageView views[] = {m_imageViews[i], m_raster.depthView()};
+      const VkFramebufferCreateInfo framebuffer = {
+          .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+          .renderPass = m_renderPass,
+          .attachmentCount = 2,
+          .pAttachments = views,
+          .width = m_swapchainExtent.width,
+          .height = m_swapchainExtent.height,
+          .layers = 1,
+      };
+      if (vkCreateFramebuffer(m_device, &framebuffer, nullptr, &m_framebuffers[i]) != VK_SUCCESS) {
+        return fail();
+      }
+      const VkSemaphoreCreateInfo semaphore = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+      if (vkCreateSemaphore(m_device, &semaphore, nullptr, &m_renderFinished[i]) != VK_SUCCESS) {
+        return fail();
+      }
+    }
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  }
+
+  void RemixNativeRuntime::destroySwapchain() {
+    // Callers have waited for the device, except after device loss.
+    if (m_device && !m_deviceLost)
+      completeScreenshot();
+    m_screenshot.reset(m_device, true);
+    shutdownUiVulkan();
+    if (!m_commandBuffers.empty()) {
+      vkFreeCommandBuffers(m_device, m_commandPool, static_cast<uint32_t>(m_commandBuffers.size()),
+                           m_commandBuffers.data());
+    }
+    m_commandBuffers.clear();
+    for (auto handle : m_framebuffers) {
+      if (handle) {
+        vkDestroyFramebuffer(m_device, handle, nullptr);
+      }
+    }
+    for (auto handle : m_imageViews) {
+      if (handle) {
+        vkDestroyImageView(m_device, handle, nullptr);
+      }
+    }
+    for (auto handle : m_renderFinished) {
+      if (handle) {
+        vkDestroySemaphore(m_device, handle, nullptr);
+      }
+    }
+    m_framebuffers.clear();
+    m_imageViews.clear();
+    m_renderFinished.clear();
+    if (m_pathTracer)
+      m_pathTracer->destroyTarget();
+    m_raster.destroyTarget();
+    if (m_renderPass) {
+      vkDestroyRenderPass(m_device, m_renderPass, nullptr);
+    }
+    m_renderPass = VK_NULL_HANDLE;
+    if (m_swapchain) {
+      vkDestroySwapchainKHR(m_device, m_swapchain, nullptr);
+    }
+    m_swapchain = VK_NULL_HANDLE;
+    m_swapchainImages.clear();
+    m_swapchainExtent = {};
+  }
+
+  VkSurfaceFormatKHR
+  RemixNativeRuntime::chooseSurfaceFormat(const std::vector<VkSurfaceFormatKHR> &formats) const {
+    const std::array<VkFormat, 2> kPreferredFormats = {
+        m_srgb ? VK_FORMAT_B8G8R8A8_SRGB : VK_FORMAT_B8G8R8A8_UNORM,
+        m_srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM,
+    };
+    for (VkFormat preferred : kPreferredFormats) {
+      for (const VkSurfaceFormatKHR &available : formats) {
+        if (available.format == preferred && available.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+          return available;
+        }
+      }
+    }
+    if (formats.front().format == VK_FORMAT_UNDEFINED) {
+      return {kPreferredFormats[0], VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
+    }
+    return formats.front();
+  }
+
+  VkPresentModeKHR RemixNativeRuntime::choosePresentMode(const std::vector<VkPresentModeKHR> &modes) const {
+    if (!m_vsync) {
+      for (auto preferred : {VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_MAILBOX_KHR}) {
+        if (std::find(modes.begin(), modes.end(), preferred) != modes.end()) {
+          return preferred;
+        }
+      }
+    }
+    return VK_PRESENT_MODE_FIFO_KHR;
+  }
+} // namespace remix

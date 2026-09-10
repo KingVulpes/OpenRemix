@@ -1,0 +1,21 @@
+{
+  "instance": "/home/cr/.local/share/PrismLauncher/instances/BetaRT-Raster-Profile",
+  "files": {
+    "customjar-1.jar": {
+      "before": "7dc713032ba25d51f130360259e857003d6844f037edde94e458e26a1722e15a",
+      "after": "71c1b6413778adc367a4ffdbb7dd5b76e10f3a4b8bfb1f1833f30a6186d6e361"
+    },
+    "libmcrtx_jni.so": {
+      "before": "f53638206f7fe4f7a76ea77a3aadf5bd0eda6162a256546c636d2a8557f51d19",
+      "after": "40aefccf2c60b4179a50787b809b4c97dc1afe471bf38f72878cceca722c8c90"
+    },
+    "libremix.so.0.1003.0": {
+      "before": "df79bd3c9e95452f19a0451b974933bfb7d001584ff6b48add76a3c58413dfb2",
+      "after": "a32df5888a6b77399e37ed0b31bfe2fcdc18d092df74fde9b5ce2752f9764ed1"
+    },
+    "libSDL3.so.0.4.14": {
+      "before": "f4444de2ae3ec283450375896bdc19432426b5a28849235b6089494ec11bf784",
+      "after": "f4444de2ae3ec283450375896bdc19432426b5a28849235b6089494ec11bf784"
+    }
+  }
+}

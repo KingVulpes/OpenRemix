@@ -1,0 +1,244 @@
+#include "denoise/gpu.h"
+#ifdef REMIX_HAS_NRD
+#include "denoise/shaders/nrd_embedded.h"
+#include <algorithm>
+#include <cstring>
+#include <stdexcept>
+
+namespace remix::denoise {
+  namespace {
+    void require(nrd::Result r) {
+      if (r != nrd::Result::SUCCESS)
+        throw std::runtime_error("NRD API rejected diffuse SH configuration");
+    }
+    VkFormat format(nrd::Format value) {
+      switch (value) {
+      case nrd::Format::R8_UNORM:
+        return VK_FORMAT_R8_UNORM;
+      case nrd::Format::R8_UINT:
+        return VK_FORMAT_R8_UINT;
+      case nrd::Format::R16_UINT:
+        return VK_FORMAT_R16_UINT;
+      case nrd::Format::R16_SFLOAT:
+        return VK_FORMAT_R16_SFLOAT;
+      case nrd::Format::R32_SFLOAT:
+        return VK_FORMAT_R32_SFLOAT;
+      case nrd::Format::RGBA16_SFLOAT:
+        return VK_FORMAT_R16G16B16A16_SFLOAT;
+      case nrd::Format::R10_G10_B10_A2_UNORM:
+        return VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+      default:
+        throw std::runtime_error("Unexpected NRD diffuse SH texture format");
+      }
+    }
+  } // namespace
+  void Renderer::Gpu::initializeNrd() {
+    const nrd::DenoiserDesc denoiser{0, nrd::Denoiser::REBLUR_DIFFUSE_SH};
+    nrd::InstanceCreationDesc create{};
+    create.denoisers = &denoiser;
+    create.denoisersNum = 1;
+    require(nrd::CreateInstance(create, instance));
+    const auto &desc = *nrd::GetInstanceDesc(*instance);
+    const auto &offset = nrd::GetLibraryDesc()->spirvBindingOffsets;
+    if (desc.resourcesSpaceIndex != 0 || desc.constantBufferAndSamplersSpaceIndex != 1)
+      throw std::runtime_error("Unexpected NRD register spaces");
+    for (uint32_t i = 0; i < 2; ++i) {
+      VkSamplerCreateInfo ci{.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+                             .magFilter = i ? VK_FILTER_LINEAR : VK_FILTER_NEAREST,
+                             .minFilter = i ? VK_FILTER_LINEAR : VK_FILTER_NEAREST,
+                             .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+                             .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                             .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                             .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE};
+      check(vkCreateSampler(device, &ci, nullptr, &samplers[i]));
+    }
+    std::vector<VkDescriptorSetLayoutBinding> bindings;
+    for (uint32_t i = 0; i < desc.samplersNum; ++i)
+      bindings.push_back({offset.samplerOffset + desc.samplersBaseRegisterIndex + i,
+                          VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, &samplers[i]});
+    bindings.push_back({offset.constantBufferOffset + desc.constantBufferRegisterIndex,
+                        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr});
+    VkDescriptorSetLayoutCreateInfo ci{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                                       .bindingCount = uint32_t(bindings.size()),
+                                       .pBindings = bindings.data()};
+    check(vkCreateDescriptorSetLayout(device, &ci, nullptr, &commonLayout));
+    pipelines.resize(desc.pipelinesNum);
+    for (uint32_t i = 0; i < desc.pipelinesNum; ++i) {
+      const auto &source = desc.pipelines[i];
+      auto &p = pipelines[i];
+      // Reconstruction is unreachable with full-rate diffuse sampling. No unused
+      // permutation is compiled, and an unexpected dispatch fails explicitly.
+      const Shader *shader = nullptr;
+      for (const auto &s : shaders)
+        if (!std::strcmp(source.shaderIdentifier, s.identifier))
+          shader = &s;
+      if (!shader)
+        continue;
+      bindings.clear();
+      uint32_t t = 0, u = 0;
+      for (uint32_t r = 0; r < source.resourceRangesNum; ++r) {
+        const auto &range = source.resourceRanges[r];
+        const bool storage = range.descriptorType == nrd::DescriptorType::STORAGE_TEXTURE;
+        for (uint32_t k = 0; k < range.descriptorsNum; ++k)
+          bindings.push_back(
+              {desc.resourcesBaseRegisterIndex +
+                   (storage ? offset.storageTextureAndBufferOffset + u++ : offset.textureOffset + t++),
+               storage ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1,
+               VK_SHADER_STAGE_COMPUTE_BIT, nullptr});
+      }
+      ci.bindingCount = uint32_t(bindings.size());
+      ci.pBindings = bindings.data();
+      check(vkCreateDescriptorSetLayout(device, &ci, nullptr, &p.resources));
+      VkDescriptorSetLayout layouts[] = {p.resources, commonLayout};
+      VkPipelineLayoutCreateInfo li{.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                                    .setLayoutCount = 2,
+                                    .pSetLayouts = layouts};
+      check(vkCreatePipelineLayout(device, &li, nullptr, &p.layout));
+      p.pipeline = pipeline(p.layout, shader->code, shader->size);
+    }
+    const auto &pd = desc.descriptorPoolDesc;
+    VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, pd.totalTexturesNum},
+                                    {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, pd.totalStorageTexturesNum},
+                                    {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, pd.setsMaxNum},
+                                    {VK_DESCRIPTOR_TYPE_SAMPLER, pd.setsMaxNum * 2}};
+    VkDescriptorPoolCreateInfo pc{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+                                  .maxSets = pd.setsMaxNum * 2,
+                                  .poolSizeCount = 4,
+                                  .pPoolSizes = sizes};
+    check(vkCreateDescriptorPool(device, &pc, nullptr, &nrdPool));
+    const VkDeviceSize a = properties.limits.minUniformBufferOffsetAlignment;
+    constantStride = (desc.constantBufferMaxDataSize + a - 1) & ~(a - 1);
+    constants = buffer(constantStride * pd.setsMaxNum);
+    auto allocate = [&](auto &pool, const nrd::TextureDesc *textures, uint32_t count) {
+      for (uint32_t i = 0; i < count; ++i) {
+        uint32_t d = textures[i].downsampleFactor;
+        pool.push_back(
+            texture(format(textures[i].format), {(extent.width + d - 1) / d, (extent.height + d - 1) / d}));
+      }
+    };
+    allocate(permanent, desc.permanentPool, desc.permanentPoolSize);
+    allocate(transient, desc.transientPool, desc.transientPoolSize);
+  }
+  void Renderer::Gpu::prepareNrd(const scene::Matrix &projection, const scene::Matrix &previousProjection) {
+    nrd::CommonSettings common{};
+    std::copy(projection.begin(), projection.end(), common.viewToClipMatrix);
+    std::copy(previousProjection.begin(), previousProjection.end(), common.viewToClipMatrixPrev);
+    std::copy(frame.view.begin(), frame.view.end(), common.worldToViewMatrix);
+    std::copy(frame.previousView.begin(), frame.previousView.end(), common.worldToViewMatrixPrev);
+    for (int i = 0; i < 2; ++i) {
+      common.cameraJitter[i] = frame.jitter[i];
+      common.cameraJitterPrev[i] = frame.jitter[i + 2];
+      uint16_t size = uint16_t(i ? extent.height : extent.width);
+      common.resourceSize[i] = common.resourceSizePrev[i] = common.rectSize[i] = common.rectSizePrev[i] =
+          size;
+      common.motionVectorScale[i] = 1.f / size;
+    }
+    common.motionVectorScale[2] = 1;
+    common.timeDeltaBetweenFrames = frame.timing[0];
+    common.frameIndex = uint32_t(stats.renderedFrames);
+    common.accumulationMode =
+        frame.flags[0] ? nrd::AccumulationMode::CLEAR_AND_RESTART : nrd::AccumulationMode::CONTINUE;
+    common.isHistoryConfidenceAvailable = true;
+    common.enableValidation = frame.timing[1] != 0;
+    nrd::ReblurSettings settings{};
+    settings.hitDistanceReconstructionMode = nrd::HitDistanceReconstructionMode::OFF;
+    settings.hitDistanceParameters = {frame.hitDistance[0], frame.hitDistance[1], frame.hitDistance[2]};
+    settings.maxAccumulatedFrameNum =
+        std::clamp(nrd::GetMaxAccumulatedFrameNum(nrd::REBLUR_DEFAULT_ACCUMULATION_TIME,
+                                                  1000.f / std::max(frame.timing[0], 1.f)),
+                   1u, nrd::REBLUR_MAX_HISTORY_FRAME_NUM);
+    warmupFrames = std::max(32u, settings.maxAccumulatedFrameNum);
+    settings.maxFastAccumulatedFrameNum =
+        std::min(settings.maxFastAccumulatedFrameNum, settings.maxAccumulatedFrameNum);
+    require(nrd::SetCommonSettings(*instance, common));
+    require(nrd::SetDenoiserSettings(*instance, 0, &settings));
+    const nrd::Identifier id = 0;
+    require(nrd::GetComputeDispatches(*instance, &id, 1, dispatches, dispatchCount));
+    check(vkResetDescriptorPool(device, nrdPool, 0));
+  }
+  void Renderer::Gpu::recordNrd(VkCommandBuffer command) {
+    const auto &desc = *nrd::GetInstanceDesc(*instance);
+    const auto &offset = nrd::GetLibraryDesc()->spirvBindingOffsets;
+    if (dispatchCount > desc.descriptorPoolDesc.setsMaxNum)
+      throw std::runtime_error("NRD dispatch limit exceeded");
+    auto resolve = [&](const nrd::ResourceDesc &r) -> Texture & {
+      using R = nrd::ResourceType;
+      switch (r.type) {
+      case R::PERMANENT_POOL:
+        return *permanent.at(r.indexInPool);
+      case R::TRANSIENT_POOL:
+        return *transient.at(r.indexInPool);
+      case R::IN_MV:
+        return *images[Motion];
+      case R::IN_NORMAL_ROUGHNESS:
+        return *images[Normal];
+      case R::IN_VIEWZ:
+        return *images[Depth];
+      case R::IN_DIFF_SH0:
+        return *images[Sh0];
+      case R::IN_DIFF_SH1:
+        return *images[Sh1];
+      case R::IN_DIFF_CONFIDENCE:
+        return *images[Confidence];
+      case R::OUT_DIFF_SH0:
+        return *images[Out0];
+      case R::OUT_DIFF_SH1:
+        return *images[Out1];
+      case R::OUT_VALIDATION:
+        return *images[Validation];
+      default:
+        throw std::runtime_error("Unbound NRD resource");
+      }
+    };
+    for (uint32_t i = 0; i < dispatchCount; ++i) {
+      const auto &d = dispatches[i];
+      const auto &p = pipelines.at(d.pipelineIndex);
+      if (!p.pipeline)
+        throw std::runtime_error("Uncompiled NRD shader requested");
+      VkDescriptorSetLayout layouts[] = {p.resources, commonLayout};
+      VkDescriptorSet sets[2];
+      VkDescriptorSetAllocateInfo ai{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                                     .descriptorPool = nrdPool,
+                                     .descriptorSetCount = 2,
+                                     .pSetLayouts = layouts};
+      check(vkAllocateDescriptorSets(device, &ai, sets));
+      std::vector<VkDescriptorImageInfo> imagesInfo(d.resourcesNum);
+      std::vector<VkWriteDescriptorSet> writes;
+      uint32_t t = 0, u = 0;
+      for (uint32_t r = 0; r < d.resourcesNum; ++r) {
+        const auto &resource = d.resources[r];
+        const bool storage = resource.descriptorType == nrd::DescriptorType::STORAGE_TEXTURE;
+        imagesInfo[r] = {VK_NULL_HANDLE, resolve(resource).view, VK_IMAGE_LAYOUT_GENERAL};
+        writes.push_back(
+            {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+             .dstSet = sets[0],
+             .dstBinding =
+                 desc.resourcesBaseRegisterIndex +
+                 (storage ? offset.storageTextureAndBufferOffset + u++ : offset.textureOffset + t++),
+             .descriptorCount = 1,
+             .descriptorType = storage ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+             .pImageInfo = &imagesInfo[r]});
+      }
+      if (d.constantBufferDataSize > constantStride)
+        throw std::runtime_error("NRD constant limit exceeded");
+      const auto position = constantStride * i;
+      // Every dispatch has its own descriptors and constants until the frame fence.
+      if (d.constantBufferDataSize)
+        std::memcpy(static_cast<char *>(constants->mapped) + position, d.constantBufferData,
+                    d.constantBufferDataSize);
+      VkDescriptorBufferInfo bi{constants->buffer, position, desc.constantBufferMaxDataSize};
+      writes.push_back({.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                        .dstSet = sets[1],
+                        .dstBinding = offset.constantBufferOffset + desc.constantBufferRegisterIndex,
+                        .descriptorCount = 1,
+                        .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                        .pBufferInfo = &bi});
+      vkUpdateDescriptorSets(device, uint32_t(writes.size()), writes.data(), 0, nullptr);
+      synchronize(command);
+      vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, p.pipeline);
+      vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, p.layout, 0, 2, sets, 0, nullptr);
+      vkCmdDispatch(command, d.gridWidth, d.gridHeight, 1);
+    }
+  }
+} // namespace remix::denoise
+#endif

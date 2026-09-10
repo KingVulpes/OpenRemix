@@ -1,0 +1,248 @@
+#version 460
+#extension GL_EXT_ray_query : require
+#extension GL_EXT_buffer_reference2 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_GOOGLE_include_directive : require
+#ifdef TEMPORAL
+#include "../../denoise/shaders/inputs.glsl"
+#endif
+layout(local_size_x=8, local_size_y=8) in;
+#include "scene.glsl"
+layout(set=0,binding=0) uniform accelerationStructureEXT staticScene;
+layout(set=0,binding=1) uniform accelerationStructureEXT dynamicScene;
+layout(set=0,binding=4,rgba32f) uniform image2D worldColor;
+layout(set=0,binding=5,rgba32f) uniform image2D backgroundTransmission;
+layout(set=0,binding=7,rgba32f) readonly uniform image2D rawSky;
+
+layout(set=0,binding=8,rgba32f) readonly uniform image2D primaryPosition;
+layout(set=0,binding=9,rgba16f) readonly uniform image2D primaryNormal;
+layout(set=0,binding=10,rgba8) readonly uniform image2D primaryAlbedo;
+layout(set=0,binding=11,rgba32f) readonly uniform image2D primaryPrevious;
+layout(set=0,binding=12,r32f) readonly uniform image2D primaryDepth;
+
+uint rng;
+uint hash(uint x) { x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; return x ^ (x >> 16); }
+float random() { rng = hash(rng + 0x9e3779b9u); return float(rng >> 8) * (1.0 / 16777216.0); }
+vec4 albedo(Surface s, uint triangle, vec2 bary) {
+  uint base = triangle * 3;
+  Vertex a = s.vertices.v[s.indices.i[base]], b = s.vertices.v[s.indices.i[base+1]], c = s.vertices.v[s.indices.i[base+2]];
+  vec3 w = vec3(1-bary.x-bary.y, bary);
+  return materialColor(s, a.uv.xy*w.x + b.uv.xy*w.y + c.uv.xy*w.z, a.color*w.x + b.color*w.y + c.color*w.z);
+}
+struct Hit { float t; vec3 p; vec3 n; vec4 color; bool blended; vec3 previousPosition; bool historyValid; };
+void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, inout Hit hit) {
+  rayQueryEXT query;
+  rayQueryInitializeEXT(query, scene, gl_RayFlagsNoOpaqueEXT, 255, origin, 0.0, direction, hit.t);
+  while (rayQueryProceedEXT(query)) {
+    if (rayQueryGetIntersectionTypeEXT(query,false)!=gl_RayQueryCandidateIntersectionTriangleEXT) continue;
+    Surface s=surfaces[rayQueryGetIntersectionInstanceCustomIndexEXT(query,false)+rayQueryGetIntersectionGeometryIndexEXT(query,false)];
+    if ((s.state.w&4)==0 && !rayQueryGetIntersectionFrontFaceEXT(query,false)) continue;
+    vec4 color=albedo(s,rayQueryGetIntersectionPrimitiveIndexEXT(query,false),rayQueryGetIntersectionBarycentricsEXT(query,false));
+    if (alphaPass(s,color.a)) rayQueryConfirmIntersectionEXT(query);
+  }
+  if (rayQueryGetIntersectionTypeEXT(query,true)==gl_RayQueryCommittedIntersectionNoneEXT) return;
+  hit.t=rayQueryGetIntersectionTEXT(query,true);
+  Surface s=surfaces[rayQueryGetIntersectionInstanceCustomIndexEXT(query,true)+rayQueryGetIntersectionGeometryIndexEXT(query,true)];
+  uint tri=rayQueryGetIntersectionPrimitiveIndexEXT(query,true)*3;
+  vec3 a=s.vertices.v[s.indices.i[tri]].position.xyz;
+  vec3 b=s.vertices.v[s.indices.i[tri+1]].position.xyz;
+  vec3 c=s.vertices.v[s.indices.i[tri+2]].position.xyz;
+  vec2 bary=rayQueryGetIntersectionBarycentricsEXT(query,true);
+  mat4x3 model=rayQueryGetIntersectionObjectToWorldEXT(query,true);
+  // Reconstruct on the triangle, then transform; see Ray Tracing Gems chapter 6.
+  hit.p=model*vec4(a + bary.x*(b-a) + bary.y*(c-a),1);
+  hit.n=normalize(cross(model*vec4(b-a,0),model*vec4(c-a,0)));
+  if (dot(hit.n,direction)>0) hit.n=-hit.n;
+  hit.color=albedo(s,tri/3,bary);
+  hit.blended=(s.state.w&2)!=0;
+  hit.previousPosition=hit.p;hit.historyValid=false;
+#ifdef TEMPORAL
+  if(s.previousVertices!=0) {
+    Vertices previous=Vertices(s.previousVertices);
+    vec3 pa=previous.v[s.indices.i[tri]].position.xyz;
+    vec3 pb=previous.v[s.indices.i[tri+1]].position.xyz;
+    vec3 pc=previous.v[s.indices.i[tri+2]].position.xyz;
+    hit.previousPosition=(s.previousModel*vec4(pa+bary.x*(pb-pa)+bary.y*(pc-pa),1)).xyz;
+    hit.historyValid=true;
+  }
+#endif
+}
+Hit closest(vec3 origin,vec3 direction) {
+  Hit hit; hit.t=1e30; hit.p=vec3(0);hit.n=vec3(0);hit.color=vec4(0);hit.blended=false;hit.previousPosition=vec3(0);hit.historyValid=false;
+  if ((frame.target.z&1)!=0) queryScene(staticScene,origin,direction,hit);
+  if ((frame.target.z&2)!=0) queryScene(dynamicScene,origin,direction,hit);
+  return hit;
+}
+// First visibility comes from rasterization; secondary rays still query the full scene.
+Hit rasterPrimary(ivec2 pixel, vec3 origin) {
+  vec4 position=imageLoad(primaryPosition,pixel), normal=imageLoad(primaryNormal,pixel);
+  vec4 previous=imageLoad(primaryPrevious,pixel);
+  Hit hit;
+  hit.t=normal.w==0?1e30:length(position.xyz-origin);
+  hit.p=position.xyz;hit.n=normal.w==0?vec3(0):normalize(normal.xyz);
+  hit.color=imageLoad(primaryAlbedo,pixel);hit.blended=normal.w==2;
+  hit.previousPosition=previous.xyz;hit.historyValid=previous.w!=0;
+  return hit;
+}
+// Scale-aware integer ULP offset with a near-origin fallback (RT Gems, ch. 6).
+vec3 offsetRay(vec3 p,vec3 n) {
+  ivec3 step=ivec3(256.0*n);
+  vec3 shifted=intBitsToFloat(floatBitsToInt(p)+mix(step,-step,lessThan(p,vec3(0))));
+  return mix(shifted,p+n*(1.0/65536.0),lessThan(abs(p),vec3(1.0/32.0)));
+}
+// Cosine-weighted hemisphere: disk projection, pdf = cos(theta)/pi (ch. 15-16).
+vec3 diffuseDirection(vec3 n) {
+  float u=random(), angle=6.28318530718*random();
+  vec3 t=normalize(cross(abs(n.z)<0.999 ? vec3(0,0,1) : vec3(0,1,0),n));
+  return normalize(t*(sqrt(u)*cos(angle))+cross(n,t)*(sqrt(u)*sin(angle))+n*sqrt(1-u));
+}
+vec3 shadow(vec3 origin,vec3 direction) {
+  vec3 transmission=vec3(1);
+  for (uint layer=0;layer<32;++layer) {
+    Hit hit=closest(origin,direction);
+    if (hit.t==1e30) return transmission;
+    if (!hit.blended) return vec3(0);
+    transmission*=hit.color.rgb*(1-hit.color.a);
+    origin=offsetRay(hit.p,-hit.n);
+  }
+  return vec3(0); // Conservative bound, independent of diffuse bounce depth.
+}
+vec3 direct(Hit hit) {
+  vec3 toLight=-frame.lightDirection.xyz;
+  float cosine=max(0,dot(hit.n,toLight));
+  return cosine>0?hit.color.rgb*(cosine/3.14159265359)*frame.lightRadiance.rgb*shadow(offsetRay(hit.p,hit.n),toLight):vec3(0);
+}
+vec3 continuation(Hit primary,out vec3 firstDirection,out float firstDistance) {
+  firstDirection=diffuseDirection(primary.n);firstDistance=0;
+  vec3 direction=firstDirection,origin=offsetRay(primary.p,primary.n),throughput=vec3(1),result=vec3(0);
+  uint bounce=0,layers=0;
+  for(uint step=0;step<164&&bounce<frame.config.y;++step) {
+    Hit hit=closest(origin,direction);
+    if(bounce==0)firstDistance+=hit.t;
+    if(hit.t==1e30)break;
+    if(hit.blended&&random()>=hit.color.a) {
+      if(++layers>=32)break;
+      throughput*=hit.color.rgb;origin=offsetRay(hit.p,-hit.n);continue;
+    }
+    result+=throughput*direct(hit);
+    if(++bounce>=frame.config.y)break;
+    throughput*=hit.color.rgb;direction=diffuseDirection(hit.n);origin=offsetRay(hit.p,hit.n);layers=0;
+  }
+  return result;
+}
+void ray(vec2 ndc,mat4 inverseCamera,out vec3 origin,out vec3 direction) {
+  vec4 nearPoint=inverseCamera*vec4(ndc,0,1),farPoint=inverseCamera*vec4(ndc,.99999,1);
+  origin=nearPoint.xyz/nearPoint.w;direction=normalize(farPoint.xyz/farPoint.w-origin);
+}
+void main() {
+  ivec2 pixel=ivec2(gl_GlobalInvocationID.xy);
+#ifdef CONFIDENCE_PASS
+  if(any(greaterThanEqual(pixel,imageSize(gradientA))))return;
+  ivec2 fullPixel=min(pixel*5+2,ivec2(frame.target.xy)-1);
+  vec3 origin,direction;
+  ray((vec2(fullPixel)+.5+temporal.jitter.zw)/vec2(frame.target.xy)*2-1,temporal.previousInverseCamera,origin,direction);
+  rng=hash(uint(fullPixel.x)+uint(fullPixel.y)*frame.target.x+hash(temporal.target.z));
+  Hit hit=closest(origin,direction);
+  for(uint layer=0;layer<32&&hit.blended;++layer){origin=offsetRay(hit.p,-hit.n);hit=closest(origin,direction);}
+  vec3 current=vec3(0);vec3 firstDir;float firstDist;
+  if(hit.t<1e30)for(uint i=0;i<frame.config.x;++i)current+=continuation(hit,firstDir,firstDist)/float(frame.config.x);
+  vec3 old=imageLoad(previousLighting,fullPixel).rgb;
+  float delta=dot(abs(current-old),vec3(.2126,.7152,.0722));
+  float z=hit.t<1e30?abs((temporal.previousView*vec4(hit.p,1)).z):65000;
+  float prevZ=imageLoad(previousDepth,fullPixel).x;
+  vec3 normal=hit.t<1e30?normalize(mat3(temporal.previousView)*hit.n):vec3(0,0,1);
+  if(temporal.flags.x!=0||abs(z-prevZ)>max(.02*z,.01))delta=0;
+  imageStore(gradientA,pixel,vec4(delta,encodeNormal(normal),min(z,65000)));return;
+#else
+  if (any(greaterThanEqual(pixel,ivec2(frame.target.xy)))) return;
+  rng=hash(uint(pixel.x)+uint(pixel.y)*frame.target.x+hash(frame.config.z));
+  vec2 jitter=vec2(0);
+#ifdef TEMPORAL
+  jitter=temporal.jitter.xy;
+#else
+  // One camera sample shared by all pixels; only diffuse continuations are independent.
+  uint sequence=frame.config.z%16u+1u;float base=0.5;
+  for(uint n=sequence;n>0;n/=2u){jitter.x+=float(n%2u)*base;base*=.5;}
+  base=1.0/3.0;for(uint n=sequence;n>0;n/=3u){jitter.y+=float(n%3u)*base;base/=3;}
+  jitter-=.5;
+#endif
+  vec3 origin,direction;ray((vec2(pixel)+.5+jitter)/vec2(frame.target.xy)*2-1,frame.inverseCamera,origin,direction);
+  Hit primary=frame.target.w!=0?rasterPrimary(pixel,origin):closest(origin,direction);
+  vec3 tint=vec3(1),transparent=vec3(0);float opacityProduct=1;
+  // Bounded straight-through primary composition. Blended surfaces never supply NRD guides.
+  // Shade sheets after the opaque sample below so confidence retracing uses the same seeds.
+  Hit sheets[32];uint sheetCount=0;
+  while(primary.blended&&sheetCount<32) {
+    sheets[sheetCount++]=primary;origin=offsetRay(primary.p,-primary.n);primary=closest(origin,direction);
+  }
+  vec3 indirect=vec3(0),primaryDirect=vec3(0);vec4 packed0=vec4(0),packed1=vec4(0);
+  if(primary.t<1e30&&!primary.blended) {
+    primaryDirect=direct(primary);
+    for(uint i=0;i<frame.config.x;++i) {
+      vec3 firstDir;float firstDist;vec3 sampleLight=continuation(primary,firstDir,firstDist);
+      indirect+=sampleLight/float(frame.config.x);
+#ifdef TEMPORAL
+      float z=abs((temporal.view*vec4(primary.p,1)).z);
+      vec4 one;packed0+=REBLUR_FrontEnd_PackSh(sampleLight,REBLUR_FrontEnd_GetNormHitDist(firstDist,z,temporal.hitDistance.xyz,1),firstDir,one,true)/float(frame.config.x);
+      packed1+=one/float(frame.config.x);
+#endif
+    }
+  }
+  for(uint layer=0;layer<sheetCount;++layer) {
+    Hit hit=sheets[layer];vec3 surfaceLight=direct(hit);
+    for(uint i=0;i<frame.config.x;++i){vec3 d;float t;surfaceLight+=hit.color.rgb*continuation(hit,d,t)/float(frame.config.x);}
+    transparent+=tint*hit.color.a*surfaceLight;tint*=hit.color.rgb*(1-hit.color.a);opacityProduct*=1-hit.color.a;
+  }
+  bool opaque=primary.t<1e30&&!primary.blended;
+  vec3 color=transparent+tint*(opaque?primaryDirect+primary.color.rgb*indirect:imageLoad(rawSky,pixel).rgb);
+  if(primary.blended)color=transparent; // Layer bound: unresolved background is blocked.
+#ifdef TEMPORAL
+  float z=opaque?abs((temporal.view*vec4(primary.p,1)).z):1e10;
+  vec4 mv=vec4(0);vec3 N=opaque?primary.n:vec3(0,0,1);
+  if(opaque&&primary.historyValid&&temporal.flags.x==0) {
+    vec4 clip=frame.camera*vec4(primary.p,1),prev=temporal.previousCamera*vec4(primary.previousPosition,1);
+    if(prev.w>0&&clip.w>0)mv=vec4((prev.xy/prev.w-clip.xy/clip.w)*.5*vec2(frame.target.xy),abs((temporal.previousView*vec4(primary.previousPosition,1)).z)-z,1);
+  }
+  if(!opaque&&!primary.blended&&temporal.flags.x==0) {
+    vec4 clip=frame.camera*vec4(direction,0),prev=temporal.previousCamera*vec4(direction,0);
+    if(prev.w>0&&clip.w>0)mv=vec4((prev.xy/prev.w-clip.xy/clip.w)*.5*vec2(frame.target.xy),0,1);
+  }
+  imageStore(guideMotion,pixel,mv);imageStore(guideDepth,pixel,vec4(z));
+  imageStore(guideNormal,pixel,NRD_FrontEnd_PackNormalAndRoughness(N,1,0));
+  imageStore(guideAlbedo,pixel,opaque?vec4(primary.color.rgb,1):vec4(0));
+  imageStore(sh0,pixel,packed0);imageStore(sh1,pixel,packed1);
+  imageStore(directLight,pixel,vec4(safeRadiance(primaryDirect),1));imageStore(lighting,pixel,vec4(safeRadiance(indirect),1));
+  imageStore(transparentLight,pixel,vec4(safeRadiance(transparent),1));imageStore(transmittance,pixel,vec4(primary.blended?vec3(0):tint,opacityProduct));
+#endif
+  float depth=1;
+  if(frame.target.w!=0) {
+    depth=imageLoad(primaryDepth,pixel).x;
+  } else {
+    // Stable center-ray depth for raster feedback; blended sheets do not write
+    // depth, matching the raster material contract. This ray adds no illumination.
+    vec2 centerNdc=(vec2(pixel)+vec2(0.5))/vec2(frame.target.xy)*2-1;
+    vec4 centerNear=frame.inverseCamera*vec4(centerNdc,0,1);
+    vec4 centerFar=frame.inverseCamera*vec4(centerNdc,0.99999,1);
+    vec3 depthOrigin=centerNear.xyz/centerNear.w;
+    vec3 depthDirection=normalize(centerFar.xyz/centerFar.w-depthOrigin);
+    for (uint layer=0;layer<32;++layer) {
+      Hit hit=closest(depthOrigin,depthDirection);
+      if (hit.t==1e30) break;
+      if (!hit.blended) {
+        vec4 clip=frame.camera*vec4(hit.p,1);
+        depth=clamp(clip.z/clip.w,0,1);break;
+      }
+      depthOrigin=offsetRay(hit.p,-hit.n);
+    }
+  }
+  float count=float(frame.config.w);
+  vec3 transmission=vec3(0);
+  if (count>0) {
+    color=(imageLoad(worldColor,pixel).rgb*count+color)/(count+1);
+    transmission=(imageLoad(backgroundTransmission,pixel).rgb*count+transmission)/(count+1);
+  }
+  imageStore(worldColor,pixel,vec4(color,depth));
+  imageStore(backgroundTransmission,pixel,vec4(transmission,1));
+#endif
+}

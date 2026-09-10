@@ -28,7 +28,7 @@ int main() {
               offset.storageTextureAndBufferOffset == 3 && offset.textureOffset == 20,
           "SPIR-V binding contract changed");
   std::set<std::string> reached;
-  for (auto kind : {nrd::Denoiser::REBLUR_DIFFUSE_SH, nrd::Denoiser::SIGMA_SHADOW_TRANSLUCENCY}) {
+  for (auto kind : {nrd::Denoiser::REBLUR_DIFFUSE_SH, nrd::Denoiser::SIGMA_SHADOW_TRANSLUCENCY, nrd::Denoiser::REBLUR_DIFFUSE}) {
     nrd::DenoiserDesc denoiser{0, kind};
     nrd::InstanceCreationDesc create{};
     create.denoisers = &denoiser;
@@ -91,5 +91,5 @@ int main() {
   }
   require(reached.size() == sizeof(remix::denoise::shaders) / sizeof(remix::denoise::shaders[0]),
           "A compiled permutation was not exercised");
-  std::printf("All %zu pinned diffuse SH, SIGMA, clear and validation permutations exercised\n", reached.size());
+  std::printf("All %zu pinned diffuse SH/radiance, SIGMA, clear and validation permutations exercised\n", reached.size());
 }

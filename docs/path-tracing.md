@@ -51,7 +51,9 @@ opaque sun visibility is filtered separately by [SIGMA](features/sigma.md), whil
 REBLUR diffuse SH retains indirect lighting. Zero diameter retains hard shadows.
 No submitted distant light means no direct sunlight. The sample draws white daylight;
 BetaRT updates its white distant light from the visible sun each world frame. The debug panel can override its normalized
-direction, color and intensity. Other light types and automatic persistent-light
+direction, color and intensity. [Analytic sphere lights](features/local-lights.md)
+provide local illumination through a persistent LightBVH, with separate radiance
+denoising. Other light types and automatic persistent-light
 submission retain their compatibility no-op behavior.
 
 ## Shared ownership and scene identity

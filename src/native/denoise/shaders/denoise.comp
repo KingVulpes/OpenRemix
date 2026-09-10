@@ -82,7 +82,12 @@ void main() {
 #ifdef SIGMA_PASS
       direct*=SIGMA_BackEnd_UnpackShadow(imageLoad(shadowOutput,p)).yzw;
 #endif
-      color=direct+safeRadiance(indirect)*material.rgb;
+      vec3 local=vec3(0);
+#ifdef LOCAL_PASS
+      if(temporal.local.y!=0)
+        local=REBLUR_BackEnd_UnpackRadianceAndNormHitDist(temporal.local.x!=0?imageLoad(localOutput,p):imageLoad(localInput,p)).rgb;
+#endif
+      color=direct+safeRadiance(indirect+local)*material.rgb;
     }
     vec4 tr=imageLoad(transmittance,p);
     color=safeRadiance(imageLoad(transparentLight,p).rgb+tr.rgb*color);

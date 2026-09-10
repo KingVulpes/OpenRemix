@@ -54,6 +54,7 @@ namespace remix {
     remixapi_FeatureAvailability getFeatureAvailability() const;
     remixapi_DenoisingCapabilitiesEXT denoisingCapabilities() const { return m_denoiseCapabilities; }
     remixapi_ShadowStatisticsEXT shadowStatistics() const;
+    remixapi_LocalLightStatisticsEXT localLightStatistics() const;
     remixapi_DenoisingStatisticsEXT denoisingStatistics() const;
     remixapi_ErrorCode selectBackend(const char *value);
     remixapi_ErrorCode configureTracing(const char *key, const char *value);

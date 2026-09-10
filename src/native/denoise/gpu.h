@@ -55,7 +55,7 @@ namespace remix::denoise {
   // Each signal owns its dispatch descriptors, constants and temporal history.
   struct NrdPass {
     VkDevice device{};
-    bool sigma{};
+    bool sigma{}, local{}, wasActive{};
     nrd::Instance *instance{};
     std::vector<std::unique_ptr<Texture>> permanent, transient;
     struct Pipeline {
@@ -91,14 +91,14 @@ namespace remix::denoise {
     uint32_t timestampBits{};
     bool timingPending{}, initialized{}, submittedFrame{};
     Frame frame{};
-    bool sigma{};
-    float sigmaMilliseconds{};
+    bool sigma{}, local{};
+    float sigmaMilliseconds{}, localMilliseconds{};
     remixapi_ShadowStatisticsEXT shadowStats{.structSize = sizeof(shadowStats)};
     uint32_t quietFrames = 0, warmupFrames = 32;
     remixapi_DenoisingStatisticsEXT stats{.structSize = sizeof(stats)};
 #ifdef REMIX_HAS_NRD
-    std::unique_ptr<NrdPass> indirect, shadow;
-    void initializeNrd(NrdPass &pass, bool sigma);
+    std::unique_ptr<NrdPass> indirect, shadow, localDirect;
+    void initializeNrd(NrdPass &pass, bool sigma, bool local = false);
     void prepareNrd(NrdPass &pass, const scene::Matrix &projection, const scene::Matrix &previousProjection);
     void recordNrd(NrdPass &pass, VkCommandBuffer command);
 #endif

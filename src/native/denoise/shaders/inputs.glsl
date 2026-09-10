@@ -30,6 +30,10 @@ layout(set=1,binding=26,r16f) uniform image2D shadowPenumbra;
 layout(set=1,binding=27,rgba8) uniform image2D shadowInput;
 layout(set=1,binding=28,rgba8) uniform image2D shadowOutput;
 #endif
+#ifdef LOCAL_PASS
+layout(set=1,binding=29,rgba16f) uniform image2D localInput;
+layout(set=1,binding=30,rgba16f) uniform image2D localOutput;
+#endif
 layout(set=1,binding=25,std140) uniform TemporalFrame {
   mat4 view;
   mat4 previousView;
@@ -43,6 +47,7 @@ layout(set=1,binding=25,std140) uniform TemporalFrame {
   vec4 timing;
   vec4 sun;
   uvec4 shadow;
+  uvec4 local;
 } temporal;
 vec3 safeRadiance(vec3 v) { return any(isnan(v))||any(isinf(v))?vec3(0):clamp(v,vec3(0),vec3(65000)); }
 vec2 encodeNormal(vec3 n) {

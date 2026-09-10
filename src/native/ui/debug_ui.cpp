@@ -75,6 +75,21 @@ namespace remix {
                       denoising.gpuTaaMilliseconds, double(denoising.memoryBytes) / (1024 * 1024));
           ImGui::Checkbox("Force dynamic TLAS rebuild", &m_traceOptions.forceRebuild);
           ImGui::Checkbox("Sky illumination", &m_traceOptions.sky);
+          if (ImGui::CollapsingHeader("Torch lighting")) {
+            ImGui::Checkbox("Local lights", &m_traceOptions.localLights);
+            ImGui::Checkbox("Denoise local lighting", &m_traceOptions.localDenoiser);
+            int samples = int(m_traceOptions.localSamples);
+            if (ImGui::SliderInt("Local light samples", &samples, 1, 16))
+              m_traceOptions.localSamples = uint32_t(samples);
+            ImGui::SliderFloat("Local light strength", &m_traceOptions.localIntensity, 0.f, 4.f);
+            const auto local = localLightStatistics();
+            ImGui::Text("%u active / %u lights | tree depth %u", local.activeLights, local.lightCount, local.treeDepth);
+            ImGui::Text("BVH builds %llu / refits %llu | %.3f ms CPU", (unsigned long long)local.builds,
+                        (unsigned long long)local.refits, local.cpuUpdateMilliseconds);
+            if (local.denoiserActive && local.gpuTimingsAvailable)
+              ImGui::Text("Local light filter %.3f ms", local.gpuDenoiseMilliseconds);
+            if (local.unavailableReason[0]) ImGui::TextWrapped("%s", local.unavailableReason);
+          }
           if (ImGui::CollapsingHeader("SHARC radiance cache")) {
             ImGui::Checkbox("SHARC", &m_traceOptions.sharc);
             ImGui::Checkbox("Show cached radiance (raw)", &m_traceOptions.sharcDebug);

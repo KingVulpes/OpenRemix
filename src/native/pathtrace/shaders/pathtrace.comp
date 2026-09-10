@@ -32,6 +32,7 @@ layout(set=0,binding=10,rgba8) readonly uniform image2D primaryAlbedo;
 layout(set=0,binding=11,rgba32f) readonly uniform image2D primaryPrevious;
 layout(set=0,binding=12,r32f) readonly uniform image2D primaryDepth;
 
+layout(constant_id=0) const bool enableLocalLights=true;
 uint rng;
 uint hash(uint x) { x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; return x ^ (x >> 16); }
 float random() { rng = hash(rng + 0x9e3779b9u); return float(rng >> 8) * (1.0 / 16777216.0); }
@@ -80,12 +81,14 @@ void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, ino
   }
 #endif
 }
-Hit closest(vec3 origin,vec3 direction) {
-  Hit hit; hit.t=1e30; hit.p=vec3(0);hit.n=vec3(0);hit.color=vec4(0);hit.blended=false;hit.cacheable=false;hit.previousPosition=vec3(0);hit.historyValid=false;
+Hit closest(vec3 origin,vec3 direction,float maximum) {
+  Hit hit; hit.t=maximum; hit.p=vec3(0);hit.n=vec3(0);hit.color=vec4(0);hit.blended=false;hit.cacheable=false;hit.previousPosition=vec3(0);hit.historyValid=false;
   if ((frame.target.z&1)!=0) queryScene(staticScene,origin,direction,hit);
   if ((frame.target.z&2)!=0) queryScene(dynamicScene,origin,direction,hit);
+  if(hit.t==maximum)hit.t=1e30;
   return hit;
 }
+Hit closest(vec3 origin,vec3 direction) { return closest(origin,direction,1e30); }
 // First visibility comes from rasterization; secondary rays still query the full scene.
 Hit rasterPrimary(ivec2 pixel, vec3 origin) {
   vec4 position=imageLoad(primaryPosition,pixel), normal=imageLoad(primaryNormal,pixel);
@@ -151,10 +154,13 @@ vec3 sunVisibility(Hit receiver,ivec2 pixel,out float blockerDistance) {
   }
   blockerDistance=min(distance,65000);return vec3(0);
 }
+#include "light_bvh.glsl"
 vec3 direct(Hit hit) {
   vec3 toLight=-frame.lightDirection.xyz;
   float cosine=max(0,dot(hit.n,toLight));
-  return cosine>0?hit.color.rgb*(cosine/3.14159265359)*frame.lightRadiance.rgb*shadow(offsetRay(hit.p,hit.n),toLight):vec3(0);
+  float distance;
+  vec3 local=hit.color.rgb*localLighting(hit,rng,1u,distance);
+  return local+(cosine>0&&(!enableLocalLights||any(greaterThan(frame.lightRadiance.rgb,vec3(0))))?hit.color.rgb*(cosine/3.14159265359)*frame.lightRadiance.rgb*shadow(offsetRay(hit.p,hit.n),toLight):vec3(0));
 }
 #if defined(SHARC_QUERY) || defined(SHARC_UPDATE_PASS)
 SharcHitData cacheHit(Hit hit) {
@@ -288,12 +294,14 @@ void main() {
   while(sheetCount<32&&primary.blended) {
     ++sheetCount;origin=offsetRay(primary.p,-primary.n);primary=closest(origin,direction);
   }
+  vec3 local=vec3(0);float localDistance=0;
   vec3 indirect=vec3(0),primaryDirect=vec3(0);vec4 packed0=vec4(0),packed1=vec4(0);
   vec3 sunTransmittance=vec3(1),unshadowedDirect=vec3(0);float blockerDistance=65504;
   if(primary.t<1e30&&!primary.blended) {
     sunTransmittance=sunVisibility(primary,pixel,blockerDistance);
     unshadowedDirect=primary.color.rgb*(max(0,dot(primary.n,-frame.lightDirection.xyz))/3.14159265359)*frame.lightRadiance.rgb;
     primaryDirect=unshadowedDirect*sunTransmittance;
+    local=localLighting(primary,rng,frame.localConfig.y,localDistance);
     for(uint i=0;i<frame.config.x;++i) {
       vec3 firstDir;float firstDist;vec3 sampleLight=continuation(primary,firstDir,firstDist);
       indirect+=sampleLight/float(frame.config.x);
@@ -305,7 +313,7 @@ void main() {
     }
   }
   bool opaque=primary.t<1e30&&!primary.blended;
-  vec3 color=opaque?primaryDirect+primary.color.rgb*indirect:imageLoad(rawSky,pixel).rgb;
+  vec3 color=opaque?primaryDirect+primary.color.rgb*(indirect+local):imageLoad(rawSky,pixel).rgb;
   if(primary.blended)color=vec3(0);
 #ifdef SHARC_QUERY
   if(frame.sharcConfig.w!=0&&opaque) {
@@ -335,6 +343,12 @@ void main() {
   imageStore(shadowPenumbra,pixel,vec4(SIGMA_FrontEnd_PackPenumbra(blockerDistance,frame.sun.x)));
   imageStore(shadowInput,pixel,SIGMA_FrontEnd_PackTranslucency(blockerDistance,sunTransmittance));
   primaryDirect=unshadowedDirect;
+#endif
+#ifdef LOCAL_PASS
+  float normalizedDistance=opaque?REBLUR_FrontEnd_GetNormHitDist(localDistance,z,temporal.hitDistance.xyz,1):0;
+  imageStore(localInput,pixel,REBLUR_FrontEnd_PackRadianceAndNormHitDist(local,normalizedDistance,true));
+#else
+  primaryDirect+=opaque?primary.color.rgb*local:vec3(0);
 #endif
   imageStore(directLight,pixel,vec4(safeRadiance(primaryDirect),1));imageStore(lighting,pixel,vec4(safeRadiance(indirect),1));
 #endif

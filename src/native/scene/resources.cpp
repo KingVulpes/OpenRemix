@@ -32,6 +32,7 @@ namespace remix {
     m_skyRadiance = {};
     m_lights.clear();
     m_light = {};
+    m_frameLights.clear();
     for (auto &view : m_views)
       view = identity();
     for (auto &camera : m_cameras) {
@@ -45,5 +46,6 @@ namespace remix {
     m_frameIds.clear();
     m_uiDraws.clear();
     m_light = {};
+    m_frameLights.clear();
   }
 } // namespace remix

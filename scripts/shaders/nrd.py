@@ -21,6 +21,8 @@ IDENTIFIERS += [
     'SIGMA_TemporalStabilization.cs.hlsl|TRANSLUCENCY=1',
     'SIGMA_SplitScreen.cs.hlsl|TRANSLUCENCY=1']
 
+IDENTIFIERS += [s.replace("NRD_MODE_SH", "NRD_MODE_RADIANCE") for s in IDENTIFIERS if "NRD_MODE_SH" in s]
+
 def process(check=False, validate=False):
     target = ROOT / 'src/native/denoise/shaders/nrd_embedded.h'
     directory = ROOT / 'third_party/nrd'

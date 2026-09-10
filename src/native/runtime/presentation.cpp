@@ -214,7 +214,7 @@ namespace remix {
     }
     m_raster.setSkyTarget(m_pathTracer ? m_pathTracer->skyPass() : VK_NULL_HANDLE);
     if (m_pathTracer)
-      m_pathTracer->beginFrame(m_traceOptions);
+      m_pathTracer->beginFrame(m_traceOptions, m_raster.hasSphereLights());
     m_raster.prepare(buffer, m_backend != 0);
     if (m_pathTracer)
       m_pathTracer->prepare(buffer, m_raster, m_traceOptions);

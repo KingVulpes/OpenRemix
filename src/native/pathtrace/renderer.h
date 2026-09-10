@@ -10,6 +10,9 @@ namespace remix {
     bool accumulate = false, forceRebuild = false;
     bool denoiser = true, taa = true, validation = false;
     bool sigma = true;
+    bool localLights = true, localDenoiser = true;
+    uint32_t localSamples = 2;
+    float localIntensity = 1;
     uint32_t shadowDebug = 0;
     float sunAngularDiameter = -1; // -1 inherits the distant light's diameter.
     bool rasterPrimary = true;
@@ -32,9 +35,10 @@ namespace remix {
     void configureTarget(VkRenderPass pass, VkExtent2D extent, bool encodeOutput, VkFormat depthFormat,
                          VkImageView depthView);
     VkRenderPass skyPass() const;
-    void beginFrame(const TraceOptions &options);
+    void beginFrame(const TraceOptions &options, bool hasLocalLights = false);
     void submitted();
     remixapi_ShadowStatisticsEXT shadowStatistics() const;
+    remixapi_LocalLightStatisticsEXT localLightStatistics() const;
     remixapi_DenoisingStatisticsEXT denoisingStatistics() const;
     remixapi_SharcStatisticsEXT sharcStatistics() const;
     void destroyTarget();

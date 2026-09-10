@@ -20,10 +20,12 @@ namespace remix {
     const auto result = vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pi, nullptr, &out);
     vkDestroyShaderModule(device, shader, nullptr);
     check(result);
+    lightingPipelines[out] = {code, size, pipelineLayout};
   }
 
   void PathTracer::Gpu::destroySharc(bool temporalOnly) {
     for (auto *pipeline : {&sharc.temporal, &sharc.temporalTransparency, &sharc.confidence}) {
+      forgetLightingPipeline(*pipeline);
       if (*pipeline)
         vkDestroyPipeline(device, *pipeline, nullptr);
       *pipeline = VK_NULL_HANDLE;
@@ -31,6 +33,7 @@ namespace remix {
     if (temporalOnly)
       return;
     for (auto *pipeline : {&sharc.update, &sharc.resolve, &sharc.query, &sharc.transparency}) {
+      forgetLightingPipeline(*pipeline);
       if (*pipeline)
         vkDestroyPipeline(device, *pipeline, nullptr);
       *pipeline = VK_NULL_HANDLE;
@@ -129,7 +132,11 @@ namespace remix {
       sharcPipeline(trace::sharcQueryShader, sizeof(trace::sharcQueryShader), layout, sharc.query);
       sharcPipeline(trace::sharcTransparencyShader, sizeof(trace::sharcTransparencyShader), layout, sharc.transparency);
       if (denoiser) {
-        if (postSigma)
+        if (postLocal && postSigma)
+          sharcPipeline(trace::sharcLocalSigmaTemporalShader, sizeof(trace::sharcLocalSigmaTemporalShader), temporalLayout, sharc.temporal);
+        else if (postLocal)
+          sharcPipeline(trace::sharcLocalTemporalShader, sizeof(trace::sharcLocalTemporalShader), temporalLayout, sharc.temporal);
+        else if (postSigma)
           sharcPipeline(trace::sharcSigmaTemporalShader, sizeof(trace::sharcSigmaTemporalShader), temporalLayout, sharc.temporal);
         else
           sharcPipeline(trace::sharcTemporalShader, sizeof(trace::sharcTemporalShader), temporalLayout, sharc.temporal);
@@ -189,7 +196,16 @@ namespace remix {
     // Ordinary time/weather updates shorten only the cache's averaging window.
     sharc.clear |= difference > .25f * std::max(oldEnergy, newEnergy) ||
                    (std::max(oldEnergy, newEnergy) > 0 && angle < .999f);
-    if (difference > 1e-7f || angle < .9999999f || sharc.dynamicGeometry != dynamicGeometry)
+    const bool localChanged = !std::equal(std::begin(frame.localConfig), std::end(frame.localConfig), sharc.localConfig) ||
+                              frame.localScale[0] != sharc.localIntensity;
+    if (localChanged) {
+      sharc.warmFrames = 0;
+      // Complete darkness must not reuse cached torch radiance.
+      sharc.clear |= sharc.localConfig[0] != 0 && frame.localConfig[0] == 0;
+      std::copy_n(frame.localConfig, 4, sharc.localConfig);
+      sharc.localIntensity = frame.localScale[0];
+    }
+    if (localChanged || difference > 1e-7f || angle < .9999999f || sharc.dynamicGeometry != dynamicGeometry)
       sharc.responsiveFrames = 32;
     else if (sharc.responsiveFrames)
       --sharc.responsiveFrames;
@@ -239,7 +255,7 @@ namespace remix {
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, sharc.timestamps, 0);
     }
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &set, 0, nullptr);
-    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, sharc.update);
+    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, selectLightingPipeline(sharc.update));
     const uint32_t tile = options.sharcDownscale * 8;
     vkCmdDispatch(command, (extent.width + tile - 1) / tile, (extent.height + tile - 1) / tile, 1);
     if (sharc.timestamps)

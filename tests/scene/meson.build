@@ -5,3 +5,6 @@ test('Scene resources and image decoding', scene_test, args : [meson.current_bui
 temporal_test = executable('remix-temporal-test', 'temporal.cpp',
   include_directories : test_includes, link_with : scene_library)
 test('Temporal submitted-frame ownership and correspondence', temporal_test)
+light_bvh_test = executable('remix-light-bvh-test', 'light_bvh.cpp',
+  include_directories : test_includes, link_with : scene_library)
+test('Analytic lights and importance hierarchy', light_bvh_test)

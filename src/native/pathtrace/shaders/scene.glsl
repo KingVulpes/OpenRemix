@@ -29,6 +29,9 @@ layout(set=0,binding=3,std140) uniform Frame {
   vec4 sharcGrid; // scene scale, level bias, accumulation frames, stale frames
   vec4 sharcPreviousCamera;
   vec4 sun;
+  uint64_t lightNodes, lightEmitters;
+  uvec4 localConfig; // active lights, samples, generation low/high
+  vec4 localScale; // radiance multiplier, reserved
 } frame;
 layout(set=0,binding=6) uniform sampler2D textures[512];
 vec3 linearColor(vec3 c) {

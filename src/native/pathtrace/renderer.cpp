@@ -20,6 +20,8 @@ namespace remix {
       vkDestroyQueryPool(device, timestamps, nullptr);
     if (compaction)
       vkDestroyQueryPool(device, compaction, nullptr);
+    forgetLightingPipeline(transparencyCompute);
+    forgetLightingPipeline(compute);
     if (transparencyCompute)
       vkDestroyPipeline(device, transparencyCompute, nullptr);
     if (compute)
@@ -107,6 +109,8 @@ namespace remix {
     g.queueFamily = queueFamily;
     g.postCapabilities = denoise::capabilities(physical);
     g.sigmaCapable = denoise::sigmaSupported(physical);
+    g.localCapable[0] = denoise::localSupported(physical, false);
+    g.localCapable[1] = denoise::localSupported(physical, true);
     vkGetPhysicalDeviceMemoryProperties(physical, &g.memory);
     vkGetPhysicalDeviceProperties(physical, &g.properties);
     VkPhysicalDeviceProperties2 properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
@@ -183,6 +187,7 @@ namespace remix {
                   .pName = "main"},
         .layout = g.layout};
     check(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline, nullptr, &g.compute));
+    g.lightingPipelines[g.compute] = {trace::compShader, sizeof(trace::compShader), g.layout};
     VkShaderModuleCreateInfo transparencyInfo{
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
         .codeSize = sizeof(trace::transparencyShader),
@@ -194,6 +199,7 @@ namespace remix {
         vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline, nullptr, &g.transparencyCompute);
     vkDestroyShaderModule(device, transparencyShader, nullptr);
     check(transparencyResult);
+    g.lightingPipelines[g.transparencyCompute] = {trace::transparencyShader, sizeof(trace::transparencyShader), g.layout};
     uint32_t count = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(physical, &count, nullptr);
     std::vector<VkQueueFamilyProperties> families(count);

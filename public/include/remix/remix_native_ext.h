@@ -71,6 +71,17 @@ typedef struct remixapi_ShadowStatisticsEXT {
   char unavailableReason[256];
 } remixapi_ShadowStatisticsEXT;
 
+// Analytic local emitters and their persistent importance hierarchy. Sampling cost
+// is included in tracing time; gpuDenoiseMilliseconds measures only local NRD.
+typedef struct remixapi_LocalLightStatisticsEXT {
+  uint32_t structSize, enabled, lightCount, activeLights;
+  uint32_t nodeCount, treeDepth, samples, denoiserActive;
+  uint32_t gpuTimingsAvailable, reserved;
+  uint64_t generation, builds, refits, memoryBytes;
+  double cpuUpdateMilliseconds, gpuDenoiseMilliseconds;
+  char unavailableReason[256];
+} remixapi_LocalLightStatisticsEXT;
+
 typedef struct remixapi_SharcStatisticsEXT {
   uint32_t structSize, supported, requested, active;
   uint32_t capacity, occupiedEntries, updatePaths, queryAttempts, queryHits;
@@ -173,6 +184,8 @@ typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_GetPresentationCount)(uin
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetPresentationCount(uint64_t* out_count);
 
 typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_GetBackendCapabilitiesEXT)(remixapi_BackendCapabilitiesEXT* capabilities);
+typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_GetLocalLightStatisticsEXT)(remixapi_LocalLightStatisticsEXT* statistics);
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetLocalLightStatisticsEXT(remixapi_LocalLightStatisticsEXT* statistics);
 typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_GetShadowStatisticsEXT)(remixapi_ShadowStatisticsEXT* statistics);
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetShadowStatisticsEXT(remixapi_ShadowStatisticsEXT* statistics);
 

@@ -59,6 +59,15 @@ namespace remix {
       m_traceOptions.denoiser = !std::strcmp(value, "reblur-sh");
       return REMIXAPI_ERROR_CODE_SUCCESS;
     }
+    if (!std::strcmp(key, "localIntensity")) {
+      float intensity = 0;
+      const char *end = value + std::strlen(value);
+      auto parsed = std::from_chars(value, end, intensity);
+      if (parsed.ec != std::errc{} || parsed.ptr != end || !std::isfinite(intensity) || intensity < 0 || intensity > 100)
+        return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+      m_traceOptions.localIntensity = intensity;
+      return REMIXAPI_ERROR_CODE_SUCCESS;
+    }
     if (!std::strcmp(key, "sunAngularDiameter")) {
       float diameter = 0;
       const char *end = value + std::strlen(value);
@@ -88,6 +97,12 @@ namespace remix {
       m_traceOptions.accumulate = number != 0;
     else if (!std::strcmp(key, "sigma") && number <= 1)
       m_traceOptions.sigma = number != 0;
+    else if (!std::strcmp(key, "localLights") && number <= 1)
+      m_traceOptions.localLights = number != 0;
+    else if (!std::strcmp(key, "localDenoiser") && number <= 1)
+      m_traceOptions.localDenoiser = number != 0;
+    else if (!std::strcmp(key, "localSamples") && number >= 1 && number <= 16)
+      m_traceOptions.localSamples = number;
     else if (!std::strcmp(key, "shadowDebug") && number <= 2)
       m_traceOptions.shadowDebug = number;
     else if (!std::strcmp(key, "taa") && number <= 1)
@@ -143,6 +158,13 @@ namespace remix {
     if (!m_pathTracer)
       std::strncpy(result.unavailableReason, REMIX_HAS_SHARC ? "Path tracing is inactive" : "SHARC was disabled at build time",
                    sizeof(result.unavailableReason) - 1);
+    return result;
+  }
+  remixapi_LocalLightStatisticsEXT RemixNativeRuntime::localLightStatistics() const {
+    auto result = m_pathTracer ? m_pathTracer->localLightStatistics()
+        : remixapi_LocalLightStatisticsEXT{.structSize = sizeof(remixapi_LocalLightStatisticsEXT)};
+    result.enabled = m_traceOptions.localLights;
+    result.samples = m_traceOptions.localSamples;
     return result;
   }
   remixapi_ShadowStatisticsEXT RemixNativeRuntime::shadowStatistics() const {

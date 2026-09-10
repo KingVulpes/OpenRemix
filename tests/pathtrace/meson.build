@@ -2,11 +2,18 @@ policy_test = executable('remix-tlas-policy-test', 'tlas_policy.cpp',
   include_directories : test_includes, link_with : pathtrace_library)
 test('Tracing scene and TLAS policy', policy_test)
 if get_option('gpu_tests')
+  local_light_test = executable('remix-local-light-test', 'local_lights.cpp',
+    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
+  test('Local sphere lights and many-light hierarchy', local_light_test,
+    args : [meson.current_build_dir() / 'local-light-scenes'], timeout : 300)
   shadow_test = executable('remix-shadow-test', 'shadows.cpp',
     include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
   test('SIGMA sun penumbra and temporal separation', shadow_test,
     args : [meson.current_build_dir() / 'shadow-scenes'], timeout : 240)
   if system == 'linux'
+    test('Local light resource fallback', local_light_test,
+      args : [meson.current_build_dir() / 'local-fallback'],
+      env : ['LD_PRELOAD=' + faults.full_path(), 'REMIX_TEST_FAULT=local-descriptors'], timeout : 90)
     foreach fault : ['sigma-allocation', 'sigma-descriptor-limit', 'sigma-compute']
       test('SIGMA fallback ' + fault, shadow_test,
         args : [meson.current_build_dir() / fault],

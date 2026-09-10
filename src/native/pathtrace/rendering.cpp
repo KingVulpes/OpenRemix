@@ -218,7 +218,20 @@ namespace remix {
       append(&surface, offsetof(TraceSurface, previousVertices));
     hostBuffer(table, surfaces.data(), surfaces.size() * sizeof(surfaces[0]),
                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    const bool lightsChanged = lightBvh.update(resources.sphereLights());
+    if (lightsChanged && !lightBvh.nodes().empty()) {
+      hostBuffer(lightNodes, lightBvh.nodes().data(), lightBvh.nodes().size() * sizeof(scene::LightNode),
+                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+      hostBuffer(lightEmitters, lightBvh.emitters().data(), lightBvh.emitters().size() * sizeof(scene::LightEmitter),
+                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    }
     Frame frame = {};
+    frame.localConfig[0] = options.localLights && options.localIntensity > 0 ? lightBvh.active : 0;
+    localIlluminationActive = frame.localConfig[0] != 0;
+    frame.localConfig[1] = options.localSamples;
+    frame.localConfig[2] = uint32_t(lightBvh.generation);
+    frame.localConfig[3] = uint32_t(lightBvh.generation >> 32);
+    frame.localScale[0] = options.localIntensity;
     frame.camera = resources.camera();
     frame.inverseCamera = scene::inverse(frame.camera);
     const auto eye = scene::inverse(resources.view());
@@ -270,7 +283,18 @@ namespace remix {
       stats.accumulationCount = 0;
     if (!options.accumulate || stats.accumulationCount >= 1048576)
       stats.accumulationCount = 0;
+    if (lightBvh.generation != previousLocalGeneration || frame.localScale[0] != previousLocalIntensity ||
+        frame.localConfig[0] != previousLocalActive)
+      localResponsiveFrames = 8;
+    else if (localResponsiveFrames)
+      --localResponsiveFrames;
+    previousLocalGeneration = lightBvh.generation;
+    previousLocalIntensity = frame.localScale[0];
+    previousLocalActive = frame.localConfig[0];
     temporalFrame = {};
+    temporalFrame.local[0] = denoiser && postLocalDenoise;
+    temporalFrame.local[1] = frame.localConfig[0];
+    temporalFrame.local[2] = localResponsiveFrames;
     temporalFrame.view = resources.view();
     temporalFrame.inverseCamera = frame.inverseCamera;
     pendingProjection = scene::multiply(frame.camera, scene::inverse(resources.view()));
@@ -329,6 +353,8 @@ namespace remix {
     temporalFrame.shadow[0] = directionDelta > .01f || radianceDelta > std::max(.1f, previousRadiance * .5f) ||
                               diameter != previousSun[6];
     temporalFrame.shadow[1] = uint32_t(frame.sun[2]);
+    frame.lightNodes = lightNodes ? lightNodes->address : 0;
+    frame.lightEmitters = lightEmitters ? lightEmitters->address : 0;
     frame.config[2] = uint32_t(sequence++);
     frame.config[3] = uint32_t(stats.accumulationCount);
     hostBuffer(uniform, &frame, sizeof(frame), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
@@ -419,7 +445,7 @@ namespace remix {
       denoiser->begin(command, temporalFrame, pendingProjection,
                       history.reset() ? pendingProjection : previousProjection, world->view, sky->view);
     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE,
-        sharc.stats.active ? (denoiser ? sharc.temporal : sharc.query) : (denoiser ? temporalCompute : compute));
+        selectLightingPipeline(sharc.stats.active ? (denoiser ? sharc.temporal : sharc.query) : (denoiser ? temporalCompute : compute)));
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, denoiser ? temporalLayout : layout, 0, 1,
                             &set, 0, nullptr);
     if (denoiser) {
@@ -432,8 +458,8 @@ namespace remix {
     barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE,
-                      sharc.stats.active ? (denoiser ? sharc.temporalTransparency : sharc.transparency)
-                                         : (denoiser ? temporalTransparencyCompute : transparencyCompute));
+                      selectLightingPipeline(sharc.stats.active ? (denoiser ? sharc.temporalTransparency : sharc.transparency)
+                                         : (denoiser ? temporalTransparencyCompute : transparencyCompute)));
     vkCmdDispatch(command, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
     if (timestamps) {
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, timestamps, 3);
@@ -444,7 +470,7 @@ namespace remix {
       if (postReblur) {
         barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
-        vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, sharc.stats.active ? sharc.confidence : confidenceCompute);
+        vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, selectLightingPipeline(sharc.stats.active ? sharc.confidence : confidenceCompute));
         vkCmdDispatch(command, ((extent.width + 4) / 5 + 7) / 8, ((extent.height + 4) / 5 + 7) / 8, 1);
       }
       denoiser->record(command);

@@ -38,10 +38,11 @@ namespace remix::denoise {
       }
     }
   } // namespace
-  void Renderer::Gpu::initializeNrd(NrdPass &pass, bool sigma) {
+  void Renderer::Gpu::initializeNrd(NrdPass &pass, bool sigma, bool local) {
     pass.device = device;
     pass.sigma = sigma;
-    const nrd::DenoiserDesc denoiser{0, sigma ? nrd::Denoiser::SIGMA_SHADOW_TRANSLUCENCY : nrd::Denoiser::REBLUR_DIFFUSE_SH};
+    pass.local = local;
+    const nrd::DenoiserDesc denoiser{0, sigma ? nrd::Denoiser::SIGMA_SHADOW_TRANSLUCENCY : local ? nrd::Denoiser::REBLUR_DIFFUSE : nrd::Denoiser::REBLUR_DIFFUSE_SH};
     nrd::InstanceCreationDesc create{};
     create.denoisers = &denoiser;
     create.denoisersNum = 1;
@@ -145,12 +146,13 @@ namespace remix::denoise {
     common.timeDeltaBetweenFrames = frame.timing[0];
     common.frameIndex = uint32_t(stats.renderedFrames);
     common.accumulationMode =
-        (frame.flags[0] || (pass.sigma && frame.shadow[0]))
+        (frame.flags[0] || (pass.sigma && frame.shadow[0]) || (pass.local && !pass.wasActive))
             ? nrd::AccumulationMode::CLEAR_AND_RESTART : nrd::AccumulationMode::CONTINUE;
     common.enableValidation = frame.timing[1] != 0;
-    common.isHistoryConfidenceAvailable = !pass.sigma;
-    common.enableValidation &= !pass.sigma;
+    common.isHistoryConfidenceAvailable = !pass.sigma && !pass.local;
+    common.enableValidation &= !pass.sigma && !pass.local;
     require(nrd::SetCommonSettings(*pass.instance, common));
+    pass.wasActive = true;
     if (pass.sigma) {
       nrd::SigmaSettings settings{};
       std::copy_n(frame.sun, 3, settings.lightDirection);
@@ -167,7 +169,19 @@ namespace remix::denoise {
           std::clamp(nrd::GetMaxAccumulatedFrameNum(nrd::REBLUR_DEFAULT_ACCUMULATION_TIME,
                                                     1000.f / std::max(frame.timing[0], 1.f)),
                      1u, nrd::REBLUR_MAX_HISTORY_FRAME_NUM);
-      warmupFrames = std::max(32u, settings.maxAccumulatedFrameNum);
+      if (pass.local) {
+        // Direct-light discontinuities are sharper than diffuse GI. Large GI
+        // prepasses spread light across cast shadows on a single flat surface.
+        settings.diffusePrepassBlurRadius = 3.f;
+        settings.minBlurRadius = .5f;
+        settings.maxBlurRadius = 8.f;
+        settings.historyFixBasePixelStride = 2;
+        settings.historyFixFrameNum = 1;
+        settings.maxAccumulatedFrameNum = std::min(settings.maxAccumulatedFrameNum, frame.local[2] ? 2u : 16u);
+        settings.maxFastAccumulatedFrameNum = 2;
+        settings.maxStabilizedFrameNum = frame.local[2] ? 1u : 8u;
+      } else
+        warmupFrames = std::max(32u, settings.maxAccumulatedFrameNum);
       settings.maxFastAccumulatedFrameNum =
           std::min(settings.maxFastAccumulatedFrameNum, settings.maxAccumulatedFrameNum);
       require(nrd::SetDenoiserSettings(*pass.instance, 0, &settings));
@@ -200,6 +214,10 @@ namespace remix::denoise {
         return *images[Normal];
       case R::IN_VIEWZ:
         return *images[Depth];
+      case R::IN_DIFF_RADIANCE_HITDIST:
+        return *images[LocalInput];
+      case R::OUT_DIFF_RADIANCE_HITDIST:
+        return *images[LocalOutput];
       case R::IN_DIFF_SH0:
         return *images[Sh0];
       case R::IN_DIFF_SH1:

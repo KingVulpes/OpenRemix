@@ -12,4 +12,6 @@ _Static_assert(sizeof(remixapi_SharcStatisticsEXT) == 344, "SHARC statistics ABI
 _Static_assert(offsetof(remixapi_SharcStatisticsEXT, memoryBytes) == 48, "SHARC statistics alignment");
 _Static_assert(sizeof(remixapi_ShadowStatisticsEXT) == 312, "Shadow statistics ABI");
 _Static_assert(offsetof(remixapi_ShadowStatisticsEXT, renderedFrames) == 32, "Shadow statistics alignment");
+_Static_assert(sizeof(remixapi_LocalLightStatisticsEXT) == 344, "Local light statistics ABI");
+_Static_assert(offsetof(remixapi_LocalLightStatisticsEXT, generation) == 40, "Local light statistics alignment");
 int main(void) { return 0; }

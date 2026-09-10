@@ -57,6 +57,8 @@ namespace remix {
       return m_default;
     }
     const scene::DistantLight &light() const { return m_light; }
+    std::vector<scene::SphereLight> sphereLights() const;
+    bool hasSphereLights() const { return !m_frameLights.empty(); }
 
   protected:
     std::shared_ptr<scene::Texture> texturePath(remixapi_Path path);
@@ -67,7 +69,9 @@ namespace remix {
     std::unordered_map<uint64_t, std::shared_ptr<scene::Texture>> m_textures, m_uiTextures;
     std::unordered_map<std::filesystem::path, std::weak_ptr<scene::Texture>> m_paths;
     std::array<scene::Matrix, 3> m_cameras, m_views;
-    std::unordered_map<uint64_t, scene::DistantLight> m_lights;
+    struct LightDefinition { scene::DistantLight distant; scene::SphereLight sphere; };
+    std::unordered_map<uint64_t, LightDefinition> m_lights;
+    std::unordered_set<uint64_t> m_frameLights;
     scene::DistantLight m_light;
     std::array<bool, 3> m_cameraValid = {};
     scene::TemporalEpoch m_temporalEpoch;

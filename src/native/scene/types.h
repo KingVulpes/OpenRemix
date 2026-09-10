@@ -60,6 +60,12 @@ namespace remix {
       uint32_t alphaOpTexture = 1, alpha1 = 1, alpha2 = 0;
       uint32_t factor = 0xffffffff;
     };
+    struct SphereLight {
+      uint64_t id = 0;
+      float position[3] = {}, radius = 0;
+      float radiance[3] = {};
+      bool operator==(const SphereLight &) const = default;
+    };
     struct DistantLight {
       float direction[3] = {0, -1, 0}; // Direction in which light travels.
       float radiance[3] = {};

@@ -47,6 +47,16 @@ extern "C" VKAPI_ATTR VkResult VKAPI_CALL vkCreateFramebuffer(VkDevice device,
   return reinterpret_cast<PFN_vkCreateFramebuffer>(resolve("vkCreateFramebuffer"))(device, info, alloc,
                                                                                    output);
 }
+extern "C" VKAPI_ATTR VkResult VKAPI_CALL vkCreateDescriptorSetLayout(VkDevice device,
+    const VkDescriptorSetLayoutCreateInfo *info, const VkAllocationCallbacks *alloc, VkDescriptorSetLayout *output) {
+  if (fault("local-descriptors"))
+    for (uint32_t i = 0; i < info->bindingCount; ++i)
+      if (info->pBindings[i].binding == 29 && info->pBindings[i].descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) {
+        *output = VK_NULL_HANDLE;
+        return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+      }
+  return reinterpret_cast<PFN_vkCreateDescriptorSetLayout>(resolve("vkCreateDescriptorSetLayout"))(device, info, alloc, output);
+}
 extern "C" VKAPI_ATTR VkResult VKAPI_CALL vkCreateComputePipelines(VkDevice device, VkPipelineCache cache,
                                                                    uint32_t count,
                                                                    const VkComputePipelineCreateInfo *infos,

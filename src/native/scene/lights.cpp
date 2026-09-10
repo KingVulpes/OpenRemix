@@ -24,7 +24,8 @@ namespace remix {
       known |= extension(info.pNext, type) != nullptr;
     if (!known)
       throw invalid;
-    DistantLight light;
+    LightDefinition definition;
+    auto &light = definition.distant;
     const auto *distant = static_cast<const remixapi_LightInfoDistantEXT *>(
         extension(info.pNext, REMIXAPI_STRUCT_TYPE_LIGHT_INFO_DISTANT_EXT));
     // USD definitions retain their documented compatibility behavior.
@@ -48,7 +49,26 @@ namespace remix {
         light.radiance[i] = radiance[i];
       }
     }
-    m_lights[info.hash] = light;
+    const auto *sphere = static_cast<const remixapi_LightInfoSphereEXT *>(
+        extension(info.pNext, REMIXAPI_STRUCT_TYPE_LIGHT_INFO_SPHERE_EXT));
+    if (sphere && !distant && !extension(info.pNext, REMIXAPI_STRUCT_TYPE_LIGHT_INFO_USD_EXT)) {
+      const float position[] = {sphere->position.x, sphere->position.y, sphere->position.z};
+      const float radiance[] = {info.radiance.x, info.radiance.y, info.radiance.z};
+      finite(position, 3);
+      finite(radiance, 3);
+      if (!std::isfinite(sphere->radius) || sphere->radius < 0 || sphere->radius > 1.e6f ||
+          sphere->shaping_hasvalue)
+        throw invalid;
+      for (unsigned c = 0; c < 3; ++c)
+        if (std::abs(position[c]) > 1.e12f || radiance[c] < 0 || radiance[c] > 1.e12f)
+          throw invalid;
+      // Retain the SDK's zero-radius compatibility placeholder (zero area, no light).
+      definition.sphere.id = sphere->radius > 0 ? info.hash : 0;
+      definition.sphere.radius = sphere->radius;
+      std::copy_n(position, 3, definition.sphere.position);
+      std::copy_n(radiance, 3, definition.sphere.radiance);
+    }
+    m_lights[info.hash] = definition;
     handle = reinterpret_cast<remixapi_LightHandle>(uintptr_t(info.hash));
   }
 
@@ -67,7 +87,19 @@ namespace remix {
     if (it == m_lights.end())
       throw invalid;
     // Last distant light wins, including black lights; compatibility types do not deselect it.
-    if (it->second.isDistant)
-      m_light = it->second;
+    if (it->second.distant.isDistant)
+      m_light = it->second.distant;
+    if (it->second.sphere.id)
+      m_frameLights.insert(key(handle));
+  }
+  std::vector<SphereLight> NativeResources::sphereLights() const {
+    std::vector<SphereLight> result;
+    result.reserve(m_frameLights.size());
+    for (const auto id : m_frameLights) {
+      const auto it = m_lights.find(id);
+      if (it != m_lights.end() && it->second.sphere.id)
+        result.push_back(it->second.sphere);
+    }
+    return result;
   }
 } // namespace remix

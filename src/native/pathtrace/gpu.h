@@ -97,8 +97,9 @@ namespace remix::trace::detail {
     Matrix inverseCamera, camera;
     float eye[4] = {}, direction[4] = {}, radiance[4] = {};
     uint32_t config[4] = {}, target[4] = {};
+    float jitter[4] = {}; // primary sample offset in pixels; zw reserved
   };
-  static_assert(sizeof(Frame) == 208);
+  static_assert(sizeof(Frame) == 224);
   inline float linear(float c) { return c <= .04045f ? c / 12.92f : std::pow((c + .055f) / 1.055f, 2.4f); }
   inline void barrier(VkCommandBuffer command, VkPipelineStageFlags source, VkAccessFlags writes,
                       VkPipelineStageFlags destination, VkAccessFlags reads) {

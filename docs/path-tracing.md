@@ -171,8 +171,15 @@ rays. There is no ray bending, specular material model or environment illuminati
 
 Sky renders to linear HDR. Resolved opaque light, transparent light and native TAA
 compose there before raster particles, weather, labels, held items, selection and
-UI. TAA uses motion/depth/normal validity, neighborhood variance clipping and
-responsive transparent history. The existing display transfer runs once on world
+UI. Native-resolution TAA reconstructs the jittered samples at fixed display pixel
+centers and stores color history on that unjittered grid. Color reprojection uses
+nonjittered motion; depth/normal validation separately reprojects the selected
+guide with the current-minus-previous jitter offset and checks matching geometry
+within the bilinear footprint. It uses neighborhood variance
+clipping and responsive transparent history. This is TAA, not temporal upscaling
+(TAAU). Camera jitter is enabled only with an active TAA resolve or progressive
+accumulation; raw tracing, NRD-only rendering and temporal initialization failure
+use stable pixel centers. The existing display transfer runs once on world
 output; there is no new tone mapper. Stable unjittered raster depth respects
 cutouts and skips blended sheets for raster occlusion. The optional ray-primary
 reference mode obtains that depth from center rays. Coplanar feedback uses biased
@@ -182,8 +189,12 @@ LEQUAL; held items and UI retain their depth layers.
 
 History belongs to the last successfully submitted GPU frame, including retained
 previous deformation buffers through its fence. Persistent IDs provide transforms
-and barycentric vertex correspondence. New/frame-local instances, mesh replacements,
-material/alpha changes and changed atlas frames invalidate only affected surfaces.
+and barycentric vertex correspondence. New/frame-local instances and mesh replacements
+invalidate geometric correspondence. Material/alpha edits, texture uploads and sprite
+animation retain geometric motion: updating an animated tile in a shared terrain atlas
+must not discard history for every block using that atlas. Depth/normal rejection,
+lighting confidence and TAA color clipping handle changes in the visible pixels;
+transparent composition also uses responsive history blending.
 Reordered or identical draws, camera motion and ordinary animation preserve global
 history. Optional `remixapi_CameraTemporalEXT` supplies `worldEpoch` and
 `historyResetEpoch`; change the latter for explicit cuts and floating-origin rebases.
@@ -216,7 +227,7 @@ Counters are scoped to the current backend activation. Timings are from the prev
 completed frame and expose an availability flag.
 Acceleration bytes include AS arenas, scratch and TLAS instance buffers, not total
 texture, shading, framebuffer or driver memory. BetaRT can export per-presentation
-CSV with `MCRTX_PT_PROFILE`; see its profiling script and verification report.
+CSV with `MCRTX_PT_PROFILE`; see its profiling script.
 
 The tracer supports up to 512 distinct material texture/sampler descriptors in a
 frame, within the existing resource/draw input limits and the device's AS limits.
@@ -227,11 +238,16 @@ failure contract. Acceleration structures are not serialized to disk.
 motion, rigid/deformed animation, recovery policy, queued mesh replacement,
 UV-only changes, identity collisions, accumulation, light changes, offscreen
 shadows, alpha cutouts, tinted transmission, diffuse color transfer, large
-coordinates, raster depth, switching and resize. The lifecycle and submission-fault
-tests also run with tracing selected, and compute-pipeline initialization failure
+coordinates, raster depth, switching and resize. The dedicated TAA stability test
+measures stationary slanted-edge travel and intermediate coverage over every
+Halton phase, with raster/ray primary visibility and raw, NRD-only, TAA-only and
+combined modes. Its shared-atlas variant updates an unseen texture tile every frame
+while retaining the same visible edge. `REMIX_TEST_PRIMARY_VISIBILITY=ray` runs the general scene/quality
+tests with the reference primary path. The lifecycle and submission-fault tests
+also run with tracing selected, and compute-pipeline initialization failure
 checks raster fallback. Existing ABI/lifecycle and fault tests remain enabled.
-Hardware results and paired client benchmarks are recorded
-in [the tracing report](path-tracing-verification.md) and [SH/TAA verification](denoising-verification.md).
+Keep hardware results, paired client benchmarks and TAA edge measurements in
+local reports under `_work/reports/`.
 
 Build with `-Dnrd=false` to omit the static NRD CPU library and SH dispatches; native TAA remains available. All shader binaries are checked in. See [shader regeneration](shader-toolchain.md) for pinned DXC and validation commands.
 

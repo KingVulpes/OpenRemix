@@ -8,6 +8,11 @@ if get_option('gpu_tests')
     args : [meson.current_build_dir() / 'pathtrace-scenes'], timeout : 180)
   test('Diffuse SH convergence against raw reference', pathtrace_test,
     args : [meson.current_build_dir() / 'denoise-quality'], env : ['REMIX_TEST_DENOISE_QUALITY=1'], timeout : 240)
+  test('TAA stationary edge and disabled jitter', pathtrace_test,
+    args : [meson.current_build_dir() / 'taa-stability'], env : ['REMIX_TEST_TAA_STABILITY=1'], timeout : 180)
+  test('TAA stationary edge with shared atlas animation', pathtrace_test,
+    args : [meson.current_build_dir() / 'taa-atlas-stability'],
+    env : ['REMIX_TEST_TAA_STABILITY=1', 'REMIX_TEST_TAA_ATLAS=1'], timeout : 180)
   test('Tracing presentation and lifecycle', runtime_test, args : [remix.full_path(), 'gpu'],
     env : ['REMIX_TEST_BACKEND=pathtrace'], timeout : 180)
   if system != 'windows'

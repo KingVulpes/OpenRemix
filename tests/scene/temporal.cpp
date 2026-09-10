@@ -46,18 +46,35 @@ int main() {
   auto replaced = a;
   replaced.mesh = std::make_shared<Mesh>();
   require(!history.previous(replaced), "Replacement reused incompatible geometry");
+  require(!history.previousGeometry(replaced), "Replacement retained motion correspondence");
   auto changed = a;
   changed.material = std::make_shared<Material>(*a.material);
   changed.material->tint[0] = 0;
   require(!history.previous(changed) && !history.reset(), "Material edit was not rejected locally");
+  require(history.previousGeometry(changed), "Tint change discarded geometric motion history");
   changed.material = std::make_shared<Material>(*a.material);
   changed.material->texture = std::make_shared<Texture>(*a.material->texture);
   changed.material->texture->contentHash = 0;
   changed.material->texture->pixels.mips[0][3] = 0;
   require(!history.previous(changed) && !history.reset(), "Animated texture alpha retained stale history");
+  require(history.previousGeometry(changed), "Texture animation discarded geometric motion history");
+  changed.material->texture->pixels = {2, 1, true, {{255, 255, 255, 255, 0, 0, 0, 255}}};
+  changed.material->texture->contentHash = 0;
+  history.stage(changed, 4);
+  history.commit();
+  history.begin({1, 1}, 7, 1920, 1080);
+  auto animated = changed;
+  animated.material = std::make_shared<Material>(*changed.material);
+  animated.material->texture = std::make_shared<Texture>(*changed.material->texture);
+  animated.material->texture->pixels.mips[0][4] = 255;
+  animated.material->texture->contentHash = 0;
+  require(!history.previous(animated), "Changed atlas retained identical-shading history");
+  require(history.previousGeometry(animated) && history.previousGeometry(animated)->textureFrame == 4,
+          "An unrelated atlas tile discarded stable geometry history");
   auto local = a;
   local.instanceId = 0;
   require(!history.previous(local), "Frame-local instance gained history");
+  require(!history.previousGeometry(local), "Frame-local instance gained geometric history");
   history.stage(a);
   history.commit();
   history.begin({1, 1}, 7, 1920, 1080);
@@ -76,5 +93,5 @@ int main() {
   history.commit();
   history.begin({2, 2}, 8, 1280, 720);
   require(history.reset(), "Resize did not clear");
-  require(history.frames() == 6, "Only submitted frames should count");
+  require(history.frames() == 7, "Only submitted frames should count");
 }

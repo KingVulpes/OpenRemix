@@ -157,16 +157,8 @@ void main() {
 #else
   if (any(greaterThanEqual(pixel,ivec2(frame.target.xy)))) return;
   rng=hash(uint(pixel.x)+uint(pixel.y)*frame.target.x+hash(frame.config.z));
-  vec2 jitter=vec2(0);
-#ifdef TEMPORAL
-  jitter=temporal.jitter.xy;
-#else
-  // One camera sample shared by all pixels; only diffuse continuations are independent.
-  uint sequence=frame.config.z%16u+1u;float base=0.5;
-  for(uint n=sequence;n>0;n/=2u){jitter.x+=float(n%2u)*base;base*=.5;}
-  base=1.0/3.0;for(uint n=sequence;n>0;n/=3u){jitter.y+=float(n%3u)*base;base/=3;}
-  jitter-=.5;
-#endif
+  // Shared with raster visibility and sky; zero unless TAA or accumulation can resolve it.
+  vec2 jitter=frame.jitter.xy;
   vec3 origin,direction;ray((vec2(pixel)+.5+jitter)/vec2(frame.target.xy)*2-1,frame.inverseCamera,origin,direction);
   Hit primary=frame.target.w!=0?rasterPrimary(pixel,origin):closest(origin,direction);
   vec3 tint=vec3(1),transparent=vec3(0);float opacityProduct=1;

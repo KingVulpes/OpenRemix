@@ -62,6 +62,8 @@ int main(int argc, char **argv) {
     return 0;
   }
   ok(api.SetConfigVariable("rtx.native.backend", "pathtrace"));
+  if (const char *primary = std::getenv("REMIX_TEST_PRIMARY_VISIBILITY"))
+    ok(api.SetConfigVariable("rtx.native.pathtrace.primaryVisibility", primary));
   if (argc > 2 && std::string(argv[2]) == "init-failure") {
     ok(api.Present(nullptr));
     ok(remixapi_GetBackendCapabilitiesEXT(&caps));
@@ -268,6 +270,114 @@ int main(int argc, char **argv) {
     stbi_image_free(bytes);
     return color;
   };
+  if (std::getenv("REMIX_TEST_TAA_STABILITY")) {
+    // A stationary slanted silhouette has different coverage at each Halton
+    // phase. Its integrated edge position must stay fixed in display pixels.
+    // Moving the orthographic camera only along Z prevents convergence caching
+    // without changing the projected silhouette or its deterministic lighting.
+    require(denoiseCaps.taaSupported, "TAA stability test requires temporal support");
+    const bool animatedAtlas = std::getenv("REMIX_TEST_TAA_ATLAS") != nullptr;
+    uint8_t atlasPixels[] = {255, 255, 255, 255, 0, 0, 0, 255};
+    remixapi_TextureInfo atlas{};
+    atlas.sType = REMIXAPI_STRUCT_TYPE_TEXTURE_INFO;
+    atlas.hash = 40;
+    atlas.width = 2;
+    atlas.height = 1;
+    atlas.format = REMIXAPI_FORMAT_R8G8B8A8_SRGB;
+    atlas.data = atlasPixels;
+    atlas.dataSize = sizeof(atlasPixels);
+    remixapi_TextureHandle atlasHandle{};
+    if (animatedAtlas) {
+      ok(api.CreateTexture(&atlas, &atlasHandle));
+#if defined(_WIN32)
+      material.albedoTexture = L"0x28";
+#else
+      material.albedoTexture = "0x28";
+#endif
+      ok(api.CreateMaterial(&material, &mat));
+      for (auto &vertex : vertices) {
+        vertex.texcoord[0] = .25f;
+        vertex.texcoord[1] = .5f;
+      }
+    }
+    vertices[1].position[0] = -.45f;
+    vertices[2].position[0] = .55f;
+    ok(api.CreateMesh(&mesh, &geometry));
+    instance.mesh = geometry;
+    identity.classification = REMIXAPI_INSTANCE_STATIC_EXT;
+    ok(api.SetConfigVariable("rtx.native.vsync", "0"));
+    unsigned tick = 0;
+    extra = [&] {
+      camera.view[3][2] = (++tick % 2) ? .0001f : 0.f;
+      ok(api.SetupCamera(&camera));
+      if (animatedAtlas) {
+        // Only the unseen atlas tile changes. Every subsequent draw resolves
+        // the updated material, while the visible white edge remains fixed.
+        atlasPixels[4] = uint8_t(tick);
+        ok(api.CreateTexture(&atlas, &atlasHandle));
+        ok(api.CreateMaterial(&material, &mat));
+      }
+    };
+    bool passed = true;
+    for (const char *primary : {"raster", "ray"}) {
+      ok(api.SetConfigVariable("rtx.native.pathtrace.primaryVisibility", primary));
+      for (unsigned mode = 0; mode < 4; ++mode) {
+        const bool taa = (mode & 1) != 0, reblur = (mode & 2) != 0;
+        if (reblur && !denoiseCaps.reblurShSupported)
+          continue;
+        ok(api.SetConfigVariable("rtx.native.pathtrace.taa", taa ? "1" : "0"));
+        ok(api.SetConfigVariable("rtx.native.pathtrace.denoiser", reblur ? "reblur-sh" : "off"));
+        for (unsigned i = 0; i < 16; ++i)
+          frame();
+        double lo = 1e10, hi = -1e10;
+        unsigned coveragePixels = 0;
+        for (unsigned sample = 0; sample < 16; ++sample) {
+          // capture() presents twice; shift parity halfway through to cover all
+          // sixteen jitter phases, rather than repeating just the even phases.
+          if (sample == 8)
+            frame();
+          const auto name = std::string("taa-edge-") + primary + "-" + std::to_string(mode) + "-" +
+                            std::to_string(sample) + ".png";
+          capture(name.c_str());
+          int w, h, n;
+          auto bytes = stbi_load((path / name).string().c_str(), &w, &h, &n, 4);
+          require(bytes, "Read stationary edge frame");
+          double edge = 0;
+          unsigned rows = 0;
+          auto linear = [](unsigned char byte) {
+            const float value = byte / 255.f;
+            return value <= .04045f ? value / 12.92f : std::pow((value + .055f) / 1.055f, 2.4f);
+          };
+          for (int y = h / 4; y < 3 * h / 4; ++y) {
+            ++rows;
+            const float black = linear(bytes[(y * w + 3 * w / 4) * 4]);
+            const float white = linear(bytes[(y * w + w / 4) * 4]);
+            require(white - black > .8f, "Stationary edge lacks expected contrast");
+            for (int x = w / 4; x < 3 * w / 4; ++x) {
+              const float value = (linear(bytes[(y * w + x) * 4]) - black) / (white - black);
+              edge += value;
+              coveragePixels += value > .05f && value < .95f;
+            }
+          }
+          stbi_image_free(bytes);
+          edge /= rows;
+          lo = std::min(lo, edge);
+          hi = std::max(hi, edge);
+        }
+        const auto denoising = denoiseStats();
+        require(denoising.activeTaa == taa && denoising.activeDenoiser == reblur,
+                "Stationary edge did not exercise requested temporal modes");
+        std::printf("Stationary %s edge, TAA %u NRD %u: %.4f px travel, %u coverage pixels\n",
+                    primary, taa, reblur, hi - lo, coveragePixels);
+        passed &= hi - lo < (taa ? .08 : .001);
+        if (taa)
+          passed &= coveragePixels > 16 * 24;
+      }
+    }
+    ok(api.Shutdown());
+    require(passed, "Stationary silhouette follows camera jitter or lacks antialiased coverage");
+    return 0;
+  }
   instance.doubleSided = 0;
   auto facing = capture("single-sided.png");
   require(facing[0] > 240, "Ray-query front face disagrees with raster clockwise fronts");

@@ -20,6 +20,9 @@ namespace remix::scene {
     using Key = std::tuple<uint64_t, uint32_t, uint32_t>;
     void begin(TemporalEpoch epoch, uint64_t integrator, uint32_t width, uint32_t height);
     const SurfaceHistory *previous(const Draw &draw) const;
+    // Motion correspondence survives shading changes. Consumers must validate
+    // reprojected shading separately (depth/normal, radiance and color clipping).
+    const SurfaceHistory *previousGeometry(const Draw &draw) const;
     void stage(const Draw &draw, uint32_t textureFrame = 0);
     void commit();
     void clear();

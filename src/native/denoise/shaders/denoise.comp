@@ -20,6 +20,21 @@ vec4 historyFiltered(vec2 p) {
   ivec2 base=ivec2(floor(p));vec2 f=fract(p);
   return mix(mix(historyAt(base),historyAt(base+ivec2(1,0)),f.x),mix(historyAt(base+ivec2(0,1)),historyAt(base+1),f.x),f.y);
 }
+bool guideHistoryValid(vec2 p,float z,vec3 normal) {
+  ivec2 base=ivec2(floor(p));vec2 f=fract(p);float support=0;
+  // A subpixel silhouette can land on the other side of a point-sampled guide.
+  // Accept matching geometry within the reprojection footprint instead of
+  // dropping accumulated edge coverage whenever the nearest texel changes.
+  for(int y=0;y<2;++y)for(int x=0;x<2;++x) {
+    ivec2 q=base+ivec2(x,y);
+    if(any(lessThan(q,ivec2(0)))||any(greaterThanEqual(q,ivec2(temporal.target.xy))))continue;
+    float oldZ=imageLoad(previousDepth,q).x;
+    vec3 oldNormal=NRD_FrontEnd_UnpackNormalAndRoughness(imageLoad(previousNormal,q)).xyz;
+    if(abs(oldZ-z)<max(.02*z,.01)&&dot(normal,oldNormal)>.5)
+      support+=(x==0?1-f.x:f.x)*(y==0?1-f.y:f.y);
+  }
+  return support>.05;
+}
 void main() {
   ivec2 p=ivec2(gl_GlobalInvocationID.xy);ivec2 size=ivec2(temporal.target.xy);
   if(pass.mode==0) {
@@ -75,19 +90,30 @@ void main() {
     float rate=1;
     if(temporal.flags.z!=0) {
       vec3 m1=vec3(0),m2=vec3(0);float sum=0;
+      vec4 reconstructed=vec4(0);float reconstructionWeight=0;
       int radius=inputColor.a>0?2:1;ivec2 nearest=p;float minZ=depthAt(p);
       for(int y=-radius;y<=radius;++y)for(int x=-radius;x<=radius;++x) {
-        ivec2 q=bounded(p+ivec2(x,y));vec3 c=compressed(imageLoad(composed,q).rgb);float w=exp(-float(x*x+y*y)/4);
+        ivec2 q=bounded(p+ivec2(x,y));vec4 sampleColor=imageLoad(composed,q);
+        vec3 c=compressed(sampleColor.rgb);float w=exp(-float(x*x+y*y)/4);
         m1+=c*w;m2+=c*c*w;sum+=w;
+        // Input texel q samples q + jitter. Reconstruct at the fixed display
+        // pixel center, including when history is reset or rejected.
+        vec2 offset=vec2(x,y)+temporal.jitter.xy;
+        float weight=exp(-2.29*dot(offset,offset));
+        reconstructed+=vec4(c,sampleColor.a)*weight;reconstructionWeight+=weight;
         if(depthAt(q)<minZ){minZ=depthAt(q);nearest=q;}
       }
+      reconstructed/=reconstructionWeight;
+      current=reconstructed.rgb;result=current;inputColor.a=reconstructed.a;
       m1/=sum;m2/=sum;vec3 sigma=sqrt(max(m2-m1*m1,vec3(0)))*1.5;
       vec4 mv=imageLoad(guideMotion,nearest);
-      vec2 prev=vec2(p)+mv.xy+temporal.jitter.xy-temporal.jitter.zw;
-      ivec2 q=bounded(ivec2(floor(prev+.5)));float oldZ=imageLoad(previousDepth,q).x;
-      bool valid=temporal.flags.x==0&&mv.w>0&&all(greaterThanEqual(prev,vec2(0)))&&all(lessThan(prev,vec2(size)-1));
-      valid=valid&&abs(oldZ-(minZ+mv.z))<max(.02*minZ,.01);
-      valid=valid&&dot(normalAt(nearest),NRD_FrontEnd_UnpackNormalAndRoughness(imageLoad(previousNormal,q)).xyz)>.5;
+      // Color history is unjittered. Depth/normal history still uses the raw
+      // sampling grid; reproject the selected guide, not the output pixel.
+      vec2 prev=vec2(p)+mv.xy;
+      vec2 guidePrev=vec2(nearest)+mv.xy+temporal.jitter.xy-temporal.jitter.zw;
+      bool valid=temporal.flags.x==0&&mv.w>0&&all(greaterThanEqual(prev,vec2(0)))&&all(lessThanEqual(prev,vec2(size)-1));
+      valid=valid&&all(greaterThanEqual(guidePrev,vec2(-.5)))&&all(lessThan(guidePrev,vec2(size)-.5));
+      valid=valid&&guideHistoryValid(guidePrev,minZ+mv.z,normalAt(nearest));
       if(valid) {
         vec4 h=historyFiltered(prev);vec3 delta=h.rgb-m1;
         float scale=max(1,max(abs(delta.x)/max(sigma.x,1e-5),max(abs(delta.y)/max(sigma.y,1e-5),abs(delta.z)/max(sigma.z,1e-5))));

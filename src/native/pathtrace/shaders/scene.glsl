@@ -22,6 +22,7 @@ layout(set=0,binding=3,std140) uniform Frame {
   vec4 lightRadiance;
   uvec4 config; // samples, indirect bounces, random sequence, accumulated frames
   uvec4 target; // width, height, structure mask, raster primary visibility
+  vec4 jitter; // primary sample offset in pixels; zw reserved
 } frame;
 layout(set=0,binding=6) uniform sampler2D textures[512];
 vec3 linearColor(vec3 c) {

@@ -122,7 +122,11 @@ namespace remix {
           temporalDraw.instanceId = 0;
         const scene::TemporalHistory::Key temporalKey{temporalDraw.instanceId, temporalDraw.instanceIndex,
                                                       temporalDraw.surfaceIndex};
-        if (const auto *previous = history.previous(temporalDraw)) {
+        // A texture upload (including an unrelated animated tile in a shared
+        // terrain atlas) does not change vertex correspondence. Keep motion and
+        // let per-pixel depth/normal rejection, lighting confidence and TAA color
+        // clipping respond to the shading that actually changed on screen.
+        if (const auto *previous = history.previousGeometry(temporalDraw)) {
           const auto old = previousVertices.find(temporalKey);
           if (old != previousVertices.end()) {
             value.previousVertices = old->second->address;
@@ -136,11 +140,6 @@ namespace remix {
             std::chrono::duration<double>(std::chrono::steady_clock::now() - epoch).count();
         const uint32_t frame =
             uint32_t(std::fmod(seconds * material.fps, uint32_t(material.rows) * material.columns));
-        // Animated atlases retain geometric motion; shading confidence is reduced
-        // locally on animated materials, independently from global temporal epochs.
-        if (const auto *previous = history.previous(temporalDraw))
-          if (previous->textureFrame != frame)
-            value.previousVertices = 0;
         history.stage(temporalDraw, frame);
         value.uv[0] = 1.f / material.columns;
         value.uv[1] = 1.f / material.rows;
@@ -248,8 +247,13 @@ namespace remix {
       }
       return value - .5f;
     };
-    temporalFrame.jitter[0] = halton(uint32_t(sequence % 16) + 1, 2);
-    temporalFrame.jitter[1] = halton(uint32_t(sequence % 16) + 1, 3);
+    // Camera jitter needs a resolve. NRD filters indirect lighting, not primary
+    // coverage; raw and NRD-only rendering must use stable pixel centers.
+    if (options.accumulate || (denoiser && postTaa)) {
+      temporalFrame.jitter[0] = halton(uint32_t(sequence % 16) + 1, 2);
+      temporalFrame.jitter[1] = halton(uint32_t(sequence % 16) + 1, 3);
+    }
+    std::copy_n(temporalFrame.jitter, 2, frame.jitter);
     temporalFrame.jitter[2] = history.reset() ? temporalFrame.jitter[0] : previousJitter[0];
     temporalFrame.jitter[3] = history.reset() ? temporalFrame.jitter[1] : previousJitter[1];
     temporalFrame.flags[0] = history.reset();

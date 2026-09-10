@@ -80,11 +80,10 @@ SDL_VIDEODRIVER=offscreen REMIX_VULKAN_VALIDATION=1 \
 ```
 
 SDL offscreen Vulkan support depends on the installed loader/driver. A desktop session
-or Xvfb with a suitable Vulkan driver is another option. See [verification results](docs/verification.md)
-for the tested scope and the remaining device checks. The latest structural refactor
-is covered in [cleanup verification](docs/cleanup-verification.md).
-REBLUR SH/TAA quality, profiling, platform coverage and rollout are recorded in
-[denoising verification](docs/denoising-verification.md).
+or Xvfb with a suitable Vulkan driver is another option. Keep testing reports,
+benchmark results, screenshots and deployment records under ignored `_work/reports/`.
+Tracked documentation covers architecture and features; see the
+[documentation policy](docs/architecture.md#builds-and-generated-files).
 
 ## Optional driver tooling
 
@@ -100,7 +99,6 @@ see [the optional DXC toolchain](docs/shader-toolchain.md) for regeneration.
 Pinned experimental MoltenVK/SPIRV-Cross revisions and patches remain under
 `tools/moltenvk`. `build-moltenvk.py` builds that experimental driver separately.
 Normal macOS builds/packages use the SDK's MoltenVK.
-[Historical driver findings](docs/history/native-macos-blocker.md) describe the removed renderer.
 
 Original project licenses remain in `LICENSE` and `LICENSE-MIT`. Current dependency
 notices are in `ThirdPartyLicenses.txt`; removed dependency notices are archived under `docs/history`. ImGui's upstream license is in `third_party/imgui/LICENSE.txt`.

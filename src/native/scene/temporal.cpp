@@ -44,6 +44,10 @@ namespace remix::scene {
     return hash;
   }
   const TemporalHistory::SurfaceHistory *TemporalHistory::previous(const Draw &draw) const {
+    const auto *p = previousGeometry(draw);
+    return p && p->material == materialSignature(draw) ? p : nullptr;
+  }
+  const TemporalHistory::SurfaceHistory *TemporalHistory::previousGeometry(const Draw &draw) const {
     if (m_reset || !draw.instanceId)
       return nullptr;
     auto it = m_previous.find({draw.instanceId, draw.instanceIndex, draw.surfaceIndex});
@@ -53,7 +57,7 @@ namespace remix::scene {
     // Mesh replacement has no guaranteed vertex correspondence. A retained mesh
     // with changed bones does: the last submitted deformation is kept separately.
     if (p.draw.mesh != draw.mesh || p.draw.surface != draw.surface ||
-        p.draw.classification != draw.classification || p.material != materialSignature(draw))
+        p.draw.classification != draw.classification)
       return nullptr;
     return &p;
   }

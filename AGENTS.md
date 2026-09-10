@@ -32,5 +32,9 @@ Standalone driver probes in `tools/vulkan-probes` require `-Dvulkan_probes=true`
 Experimental MoltenVK tooling in `tools/moltenvk` remains separate from SDK-based platform builds.
 
 Preserve `ref/`, Git history, linked worktrees, and archived evidence. Do not discard ignored
-artifacts without an explicit cleanup scope from the user. Historical reports remain in `docs/history`
-and dated performance documents; their old paths describe the recorded revisions.
+artifacts without an explicit cleanup scope from the user. Track architecture and feature docs only;
+`.gitignore` allows the existing guides plus `docs/architecture/` and `docs/features/`.
+Add new standalone architecture/feature guides to that allowlist. Required license notices stay tracked.
+Write testing, verification, benchmark, and deployment reports under `_work/reports/`, not tracked docs.
+Legacy reports in `docs/` remain local and ignored. Do not force-add reports or link tracked guides
+to local testing evidence. Historical report paths describe the recorded revisions.

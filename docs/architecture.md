@@ -68,6 +68,14 @@ ignored. Meson's pinned SDL fallback additionally manages its source/cache under
 `subprojects`; retain the tracked `SDL3.wrap`. Explicit script output arguments
 continue to support external build directories.
 
+Track architecture and feature documentation only. `.gitignore` allows the existing
+guides and the `docs/architecture/` and `docs/features/` folders; add any new
+standalone architecture/feature guide to that allowlist. License notices stay
+tracked. Test results, verification reports, benchmark data, deployment records
+and screenshots belong under ignored `_work/reports/<run>`. Legacy reports under
+`docs/` remain local and ignored. Tracked guides should describe behavior and
+validation procedures without linking to local reports.
+
 Normal platform entry points live under `scripts/<platform>`. Shared dependency
 building and packaging live under `scripts/common`. These replace the former
 platform forwarding scripts. Build the shared library from `src/native/meson.build`
@@ -101,9 +109,9 @@ Use two-space indentation and attached braces. The repository `.clang-format` ap
 to maintained first-party C/C++ code; do not format public SDK baselines, vendor files,
 or generated shaders. Run the normal tests after changes and GPU/validation checks
 when lifecycle, uploads, synchronization, or rendering changes. Platform commands and
-limitations are described in [platforms](platforms.md) and [verification](verification.md).
+limitations are described in [platforms](platforms.md).
 
-Historical reports and checked-in evidence preserve their original measurements and
+Historical local reports and archived evidence preserve their original measurements and
 source-path references. Existing artifacts were archived outside this checkout during
 the organization change, with SHA-256 manifests and restoration instructions. Git
 history, linked worktrees, `ref/`, and external symlink targets were preserved. Restoring

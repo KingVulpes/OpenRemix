@@ -1,0 +1,19 @@
+# Local build outputs, dependencies, packages, and testing evidence.
+/_work/
+
+# Track architecture and feature documentation only. New standalone guides must
+# be listed here; new guides can also live in the architecture/features folders.
+# Testing, verification, benchmark, deployment, and historical reports stay local.
+/docs/*
+!/docs/api.md
+!/docs/architecture.md
+!/docs/path-tracing.md
+!/docs/platforms.md
+!/docs/shader-toolchain.md
+!/docs/architecture/
+!/docs/features/
+
+# License notices are not testing documentation and must remain available.
+!/docs/history/
+/docs/history/*
+!/docs/history/renderer-third-party-licenses.txt

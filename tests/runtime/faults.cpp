@@ -61,10 +61,12 @@ extern "C" VKAPI_ATTR VkResult VKAPI_CALL vkCreateComputePipelines(VkDevice devi
       device, cache, count, infos, alloc, outputs);
 }
 // The raw tracer pipeline exists before temporal images are allocated. Inject
-// failure there so fallback is tested independently from tracing support.
+// failure there so fallback is tested independently from tracing support. The
+// primary G-buffer also has an RGBA16F image, but it is a color attachment.
 extern "C" VKAPI_ATTR VkResult VKAPI_CALL vkCreateImage(VkDevice device, const VkImageCreateInfo *info,
                                                         const VkAllocationCallbacks *alloc, VkImage *output) {
-  if (computeCreated && fault("denoise-allocation") && info->format == VK_FORMAT_R16G16B16A16_SFLOAT) {
+  if (computeCreated && fault("denoise-allocation") && info->format == VK_FORMAT_R16G16B16A16_SFLOAT &&
+      !(info->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)) {
     *output = VK_NULL_HANDLE;
     return VK_ERROR_OUT_OF_DEVICE_MEMORY;
   }

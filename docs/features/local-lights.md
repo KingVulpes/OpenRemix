@@ -90,6 +90,13 @@ This is proposal guidance, not a reused radiance reservoir or visibility cache.
 
 Feedback is sampled at 1/64 of opaque primary light samples. Two 65536-slot buffers
 hold immutable previous-frame data and current atomic feedback, about 2 MiB total.
+The first trainer in an observed cell carries forward at most 32 base observations,
+rescaling their visibility sum to the retained count. Its previous preferred-light
+score decays by one quantization bin before competing with fresh visible samples.
+This avoids an oscillation in sparse cells: enabling guidance reduces base samples,
+which otherwise makes the cell lose its minimum evidence on the following frame.
+Initialization and training both use atomics, so simultaneous trainers cannot lose
+updates. Unobserved cells expire; no additional pass or history buffer is needed.
 Hash collisions or missing cells lose only guidance. Frame submission swaps the
 banks; fence completion owns readback and reuse. A light-definition change, range
 change or world/camera history discontinuity invalidates guidance. Geometry

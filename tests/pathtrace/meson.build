@@ -4,7 +4,7 @@ test('Tracing scene and TLAS policy', policy_test)
 if get_option('gpu_tests')
   guide_boundary_test = executable('remix-guide-boundary-test', 'guide_boundary.cpp',
     include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
-  test('Torch guide cell boundaries under translation', guide_boundary_test,
+  test('Torch guide translation and sparse stationary feedback', guide_boundary_test,
     args : [meson.current_build_dir() / 'guide-boundary-scenes'], timeout : 180)
   torch_stability_test = executable('remix-torch-stability-test', 'torch_stability.cpp',
     include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)

@@ -54,6 +54,22 @@ void trainLightGuide(uint key,uint leaf,bool guided,vec3 visibility,vec3 physica
   if(visible>0)atomicAdd(next.data[capacity].z,1u);
   uint slot=key&(capacity-1),owner=atomicCompSwap(next.data[slot].x,0u,key);
   if(owner!=0&&owner!=key)return; // A collision loses guidance, never energy.
+  // Carry a bounded amount of evidence into an observed cell. With only one
+  // frame of base feedback, enabling the guide removes most base observations
+  // and can disable the same guide on the next frame. Initialize through
+  // atomics: other trainers may already be adding to this newly claimed slot.
+  if(owner==0&&frame.lightGuideRead!=0) {
+    uvec4 previous=LightGuideCache(frame.lightGuideRead).data[slot];
+    if(previous.x==key) {
+      uint retained=min(previous.z,32u);
+      atomicAdd(next.data[slot].z,retained);
+      atomicAdd(next.data[slot].w,previous.z>0?uint(round(float(previous.w)*float(retained)/float(previous.z))):0u);
+      // Decay the old contribution score, so a newly visible emitter can
+      // replace it; cached visibility never substitutes for a shadow ray.
+      uint score=previous.y>>20;
+      if(score>1)atomicMax(next.data[slot].y,((score-1u)<<20)|(previous.y&0xfffffu));
+    }
+  }
   // Only base-distribution samples estimate the blocked fraction. Guided
   // successes must not feed back as an artificially unoccluded base proposal.
   if(!guided) {

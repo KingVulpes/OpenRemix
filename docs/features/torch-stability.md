@@ -45,11 +45,31 @@ samples, the complete mixture PDF and fresh visibility tests retain the original
 physical hit point and established ray-offset behavior. Guidance remains optional;
 no additional samples, history storage, passes or global history resets are used.
 
+## Sparse guide feedback
+
+A stationary receiver can wobble when its guide has only a few training samples.
+The guide favors a visible light and reduces base-distribution draws. If all prior
+evidence is discarded every frame, that reduction can leave too few observations
+to enable guidance in the next frame. Whole cells then alternate between two
+very different sampling distributions, overwhelming short temporal filters.
+
+Observed cells retain at most 32 prior base observations and their proportionate
+visibility sum. A decayed preferred-light score competes with new visible samples.
+The first trainer seeds this history through atomics, preserving concurrent updates;
+the read bank remains immutable. Unobserved cells expire, and existing light,
+range and world-history invalidation rules remain in force.
+
+This follows the temporal proposal-reuse principle discussed in *Ray Tracing Gems
+II*, section 23.4.1. It is bounded visibility guidance, not a ReSTIR radiance
+reservoir. Every draw retains its full mixture PDF and a fresh shadow query;
+previous visibility never supplies the displayed shadow. Ray budgets and the
+existing two-buffer storage layout are unchanged.
+
 ## Temporal sampling and filtering
 
 Diffuse directions and lighting-confidence retracing retain the existing random
-sequence and PDF. No new history buffer, longer history window, or extra pass is
-introduced. Public interfaces and the private CPU/GPU layout size are unchanged.
+sequence and PDF. The denoisers gain no new history buffer, longer history window,
+or extra pass. Public interfaces and the private CPU/GPU layout size are unchanged.
 
 REBLUR already enables anti-firefly processing. While local lights are active,
 the diffuse prepass is disabled for both direct local radiance and indirect SH.

@@ -123,7 +123,22 @@ int main(int argc, char **argv) {
     light.hash = next++;
     ok(api.CreateLight(&light, &handle));
   }
+  remixapi_LightInfoDistantEXT distant{};
+  distant.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_DISTANT_EXT;
+  distant.direction = {0, -1, 0};
+  remixapi_LightInfo zeroSun{};
+  zeroSun.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO;
+  zeroSun.pNext = &distant;
+  zeroSun.hash = next++;
+  remixapi_LightHandle sun{};
+  ok(api.CreateLight(&zeroSun, &sun));
+  unsigned renderSequence = 0;
   auto frame = [&] {
+    // Force fresh frames with an unlit sun; the camera and torch scene stay
+    // fixed.
+    distant.direction.x = (++renderSequence & 1) ? .001f : 0;
+    ok(api.UpdateLightDefinition(sun, &zeroSun));
+    ok(api.DrawLightInstance(sun));
     ok(api.PumpEvents());
     ok(api.SetupCamera(&camera));
     for (auto handle : lights)
@@ -149,7 +164,7 @@ int main(int argc, char **argv) {
     }
     ok(api.Present(nullptr));
   };
-  auto capture = [&](const std::string &name) {
+  auto capture = [&](const std::string &name, int radius = 12) {
     auto file = (directory / (name + ".png")).string();
     ok(api.RequestPresentedScreenshot(file.c_str()));
     frame();
@@ -162,8 +177,8 @@ int main(int argc, char **argv) {
     int px = int(
         (1 + (192.5f + camera.view[3][0]) * camera.projection[0][0] / depth) *
         .5f * w);
-    for (int y = h / 2 - 12; y < h / 2 + 12; ++y)
-      for (int x = px - 12; x < px + 12; ++x) {
+    for (int y = h / 2 - radius; y < h / 2 + radius; ++y)
+      for (int x = px - radius; x < px + radius; ++x) {
         std::array<float, 3> pixel{};
         for (int c = 0; c < 3; ++c) {
           float v = data[(y * w + x) * 4 + c] / 255.f;
@@ -252,9 +267,51 @@ int main(int argc, char **argv) {
             "Guide boundary receiver lost illumination");
     require(span < .15 * average,
             "Camera translation caused broad torch brightness pulses");
+
+    // A distant receiver supplies only a handful of base training samples per
+    // world cell. A one-frame guide alternately enables itself and then loses
+    // the four observations needed to stay enabled. The physical camera,
+    // receiver, blocker and all torch definitions remain exactly stationary.
+    camera.view[3][2] = -160.f;
+    for (int f = 0; f < 128; ++f)
+      frame();
+    ok(remixapi_GetDenoisingStatisticsEXT(&before));
+    ok(remixapi_GetLocalLightGuidingStatisticsEXT(&guide));
+    const auto guideFrames = guide.renderedFrames;
+    means.clear();
+    for (int f = 0; f < 160; ++f) {
+      auto img =
+          capture(std::string(primary) + "-stationary-" + std::to_string(f), 4);
+      double mean = 0;
+      for (auto p : img)
+        mean += .2126 * p[0] + .7152 * p[1] + .0722 * p[2];
+      mean /= img.size();
+      means.push_back(mean);
+      std::fprintf(csv, "%s-stationary,%d,%.8f,%.9f\n", primary, f,
+                   camera.view[3][2], mean);
+    }
+    ok(remixapi_GetDenoisingStatisticsEXT(&after));
+    ok(remixapi_GetLocalLightGuidingStatisticsEXT(&guide));
+    require(after.historyResets == before.historyResets &&
+                guide.renderedFrames >= guideFrames + 320,
+            "Stationary guide test reset history or reused a cached frame");
+    double stationaryMean = 0;
+    for (auto mean : means)
+      stationaryMean += mean / means.size();
+    const auto stationaryExtrema =
+        std::minmax_element(means.begin(), means.end());
+    const double stationarySpan =
+        *stationaryExtrema.second - *stationaryExtrema.first;
+    std::printf("%s stationary: mean %.6f, brightness span %.2f%%\n", primary,
+                stationaryMean, 100 * stationarySpan / stationaryMean);
+    require(stationaryMean > .025 && stationaryMean < .07,
+            "Sparse guide feedback lost receiver illumination");
+    require(
+        stationarySpan < .35 * stationaryMean,
+        "Sparse guide feedback caused stationary lighting patches to switch");
   }
   std::fclose(csv);
   ok(api.Shutdown());
-  std::puts(
-      "Grid-aligned torch receivers retain stable lighting under translation");
+  std::puts("Torch guidance stays stable under translation and sparse "
+            "stationary feedback");
 }

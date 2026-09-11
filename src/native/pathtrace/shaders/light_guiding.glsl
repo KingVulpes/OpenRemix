@@ -7,7 +7,12 @@ float lightSplit(float a,float b) {
   return a==0?0:b==0?1:clamp((a/scale)/(a/scale+b/scale),1e-6,1-1e-6);
 }
 uint lightGuideKey(Hit hit) {
-  uvec3 cell=floatBitsToUint(floor(hit.p*.5));
+  // Grid-aligned walls sit exactly on cell boundaries. Interpolation and
+  // intersection rounding can place the same plane on either side, changing
+  // a whole wall's proposal under camera motion. Use the same surface-safe
+  // position as the visibility ray for the guide lookup only; physical light
+  // evaluation and its PDF still use the original hit position.
+  uvec3 cell=floatBitsToUint(floor(offsetRay(hit.p,hit.n)*.5));
   vec3 a=abs(hit.n);
   uint axis=a.x>a.y?(a.x>a.z?0u:2u):(a.y>a.z?1u:2u);
   uint face=axis*2u+(hit.n[axis]>0?1u:0u);

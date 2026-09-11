@@ -30,6 +30,21 @@ specialization removes the small-set reservoir from their shaders, including whe
 local illumination is disabled. Variants follow the original pipeline's fence and destruction lifetime;
 initialization failure retains the ordinary unbiased LightBVH estimator.
 
+## Stable world-cell lookup
+
+Visibility guidance uses the surface-safe ray origin when identifying its world
+cell. Minecraft walls and floors often lie exactly on the two-unit cell grid.
+Small errors in raster interpolation or hit reconstruction can otherwise assign
+one physical plane to both neighboring cells. Camera translation then changes
+which proposal history large surface patches read, causing brightness pulses
+before indirect lighting or denoising is involved.
+
+The existing scale-aware outward offset gives those boundary surfaces a
+consistent cell. This changes only the guidance lookup. Light weights, sphere
+samples, the complete mixture PDF and fresh visibility tests retain the original
+physical hit point and established ray-offset behavior. Guidance remains optional;
+no additional samples, history storage, passes or global history resets are used.
+
 ## Temporal sampling and filtering
 
 Diffuse directions and lighting-confidence retracing retain the existing random

@@ -25,8 +25,18 @@ source pipeline’s layout and fence lifetime. Zero-power slots remain in the tr
 changes can use refits. GPU records use buffer device addresses and are replaced
 only after the previous frame fence.
 
-Each diffuse shading point stochastically descends the hierarchy. Node importance
+Each diffuse shading point stochastically descends the hierarchy. Sets of two
+to four submitted light slots use the [candidate reservoir](torch-stability.md)
+while retaining one visibility query. Node importance
 uses summed sphere flux and distance relative to the node's enclosing bounds.
+The squared distance used for importance is at least one percent of the squared
+bounding-sphere radius. Nearest-box distance alone becomes zero inside a cluster
+and can give its entire flux an emitter-sized denominator, starving sibling
+clusters and producing rare, enormous inverse-PDF samples. This distance floor
+regularizes only the selection estimate. Exact range attenuation, sphere radiance
+and the full selection PDF still determine the returned light energy. It adds no
+visibility rays or candidate traversals and applies consistently to primary,
+indirect, transparent, SHARC and confidence sampling.
 Only a bound wholly below the receiving plane can be culled. Nonzero children
 retain nonzero probabilities; the full traversal probability weights the sample.
 Selection requires logarithmic tree traversal, followed by one shadow sample,
@@ -107,6 +117,8 @@ SIGMA filters the sun only. Local primary radiance has its own REBLUR_DIFFUSE
 instance, packed and unpacked through NRD's radiance frontend/backend and
 remodulated by albedo at composition. Indirect REBLUR_DIFFUSE_SH remains separate.
 The local filter uses smaller spatial radii than GI to preserve cast shadows.
+[Torch stability](torch-stability.md) describes the candidate estimator and
+existing NRD outlier-suppression settings.
 Lighting changes shorten only the local filter's history and SHARC averaging;
 ordinary torch toggles do not reset global NRD/TAA history. Complete local-light
 extinction invalidates old torch radiance in SHARC. Local changes also invalidate

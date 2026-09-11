@@ -98,7 +98,7 @@ namespace remix::trace::detail {
     Matrix inverseCamera, camera;
     float eye[4] = {}, direction[4] = {}, radiance[4] = {};
     uint32_t config[4] = {}, target[4] = {};
-    float jitter[4] = {}; // primary sample offset in pixels; zw reserved
+    float jitter[4] = {}; // primary offset; z water reuse, w reserved
     float skyRadiance[4] = {}; // linear uniform environment; w reserved
     uint64_t sharcHash = 0, sharcAccumulation = 0, sharcResolved = 0, sharcCounters = 0;
     uint32_t sharcConfig[4] = {};
@@ -165,6 +165,8 @@ namespace remix {
       VkPipeline withGuiding = VK_NULL_HANDLE;
       bool attempted = false, guidingAttempted = false;
       bool supportsGuiding = true;
+      VkPipeline small[2] = {};
+      bool smallAttempted[2] = {};
     };
     std::unordered_map<VkPipeline, LightingPipeline> lightingPipelines;
     bool localIlluminationActive = false;

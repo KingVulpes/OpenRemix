@@ -163,6 +163,17 @@ namespace remix::denoise {
       require(nrd::SetDenoiserSettings(*pass.instance, 0, &settings));
     } else {
       nrd::ReblurSettings settings{};
+      if (frame.local[1]) {
+        // Sparse torch samples need stronger outlier rejection in both the
+        // direct signal and bounced SH, without increasing spatial blur.
+        settings.fireflySuppressorMinRelativeScale = 1.5f;
+        settings.fastHistoryClampingSigmaScale = 1.5f;
+        // Inverse-PDF light selection can produce isolated bright samples in
+        // both direct radiance and bounced SH. NRD's prepass must be disabled
+        // for this probabilistic signal: it otherwise expands outliers into
+        // blobs before temporal accumulation and anti-firefly processing.
+        settings.diffusePrepassBlurRadius = 0.f;
+      }
       settings.hitDistanceReconstructionMode = nrd::HitDistanceReconstructionMode::OFF;
       settings.hitDistanceParameters = {frame.hitDistance[0], frame.hitDistance[1], frame.hitDistance[2]};
       settings.maxAccumulatedFrameNum =
@@ -172,7 +183,7 @@ namespace remix::denoise {
       if (pass.local) {
         // Direct-light discontinuities are sharper than diffuse GI. Large GI
         // prepasses spread light across cast shadows on a single flat surface.
-        settings.diffusePrepassBlurRadius = 3.f;
+        settings.diffusePrepassBlurRadius = 0.f;
         settings.minBlurRadius = .5f;
         settings.maxBlurRadius = 8.f;
         settings.historyFixBasePixelStride = 2;

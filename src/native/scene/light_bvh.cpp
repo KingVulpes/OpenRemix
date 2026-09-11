@@ -152,6 +152,6 @@ double LightBvh::weight(const LightNode &node, const float position[3],
       std::min(1., (toward + std::sqrt(radius2)) /
                        std::sqrt(std::max({distance2, radius2, 1.e-12})));
   return falloff(nearest2, range) * node.minimumPower[3] * cosine /
-         std::max({nearest2, double(node.maximum[3]), 1.e-12});
+         std::max({nearest2, .01 * radius2, double(node.maximum[3]), 1.e-12});
 }
 } // namespace remix::scene

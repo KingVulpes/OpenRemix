@@ -8,16 +8,16 @@ using namespace trace::detail;
 // scenes. Variants are lazy, cached, and share the source pipeline's
 // fence/layout lifetime.
 VkPipeline PathTracer::Gpu::selectLightingPipeline(VkPipeline pipeline) {
-  if (localIlluminationActive && !localGuidingActive)
-    return pipeline;
   auto found = lightingPipelines.find(pipeline);
   if (found == lightingPipelines.end())
     return pipeline;
   auto &source = found->second;
-  if (localIlluminationActive && !source.supportsGuiding)
+  const bool small = localIlluminationActive && lightBvh.nodes().size() >= 3 && lightBvh.nodes().size() <= 7;
+  const bool guided = localGuidingActive && source.supportsGuiding;
+  if (localIlluminationActive && !guided && !small)
     return pipeline;
-  auto &variant = localIlluminationActive ? source.withGuiding : source.withoutLocal;
-  auto &attempted = localIlluminationActive ? source.guidingAttempted : source.attempted;
+  auto &variant = small ? source.small[guided] : localIlluminationActive ? source.withGuiding : source.withoutLocal;
+  auto &attempted = small ? source.smallAttempted[guided] : localIlluminationActive ? source.guidingAttempted : source.attempted;
   if (!attempted) {
     attempted = true;
     VkShaderModuleCreateInfo ci{.sType =
@@ -27,9 +27,10 @@ VkPipeline PathTracer::Gpu::selectLightingPipeline(VkPipeline pipeline) {
     VkShaderModule module{};
     auto result = vkCreateShaderModule(device, &ci, nullptr, &module);
     if (result == VK_SUCCESS) {
-      const VkBool32 enabled[] = {VkBool32(localIlluminationActive), VkBool32(localGuidingActive)};
-      const VkSpecializationMapEntry entries[] = {{0, 0, sizeof(VkBool32)}, {1, sizeof(VkBool32), sizeof(VkBool32)}};
-      const VkSpecializationInfo specialization{2, entries, sizeof(enabled), enabled};
+      const VkBool32 enabled[] = {VkBool32(localIlluminationActive), VkBool32(guided), VkBool32(small)};
+      const VkSpecializationMapEntry entries[] = {{0, 0, sizeof(VkBool32)}, {1, sizeof(VkBool32), sizeof(VkBool32)},
+                                                 {2, 2 * sizeof(VkBool32), sizeof(VkBool32)}};
+      const VkSpecializationInfo specialization{3, entries, sizeof(enabled), enabled};
       const VkComputePipelineCreateInfo create{
           .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
           .stage = {.sType =
@@ -48,7 +49,7 @@ VkPipeline PathTracer::Gpu::selectLightingPipeline(VkPipeline pipeline) {
     // or a black local signal when illumination is disabled.
     if (result == VK_ERROR_DEVICE_LOST)
       throw result;
-    if (result != VK_SUCCESS && localGuidingActive) {
+    if (result != VK_SUCCESS && guided) {
       lightGuiding.pipelineFailed = true;
       lightGuiding.valid = false;
       lightGuiding.stats.active = 0;
@@ -69,6 +70,9 @@ void PathTracer::Gpu::forgetLightingPipeline(VkPipeline pipeline) {
     vkDestroyPipeline(device, found->second.withoutLocal, nullptr);
   if (found->second.withGuiding)
     vkDestroyPipeline(device, found->second.withGuiding, nullptr);
+  for (auto variant : found->second.small)
+    if (variant)
+      vkDestroyPipeline(device, variant, nullptr);
   lightingPipelines.erase(found);
 }
 } // namespace remix

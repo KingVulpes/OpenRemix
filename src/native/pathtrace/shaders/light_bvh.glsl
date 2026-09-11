@@ -21,9 +21,13 @@ float lightWeight(LightNode node,vec3 p,vec3 n) {
   if(dot(delta,n)+sqrt(radius2)<=0)return 0;
   vec3 nearest=max(abs(delta)-halfSize,vec3(0));
   float cosine=min(1,(dot(delta,n)+sqrt(radius2))*inversesqrt(max(max(dot(delta,delta),radius2),1e-12)));
-  // Distance to the box prioritizes nearby clusters. Center/radius distance
-  // badly under-samples a dominant nearby torch in a large, flat light field.
-  return localFalloff(dot(nearest,nearest))*node.minimumPower.w*cosine/max(max(dot(nearest,nearest),node.maximum.w),1e-12);
+  // Nearest-box distance keeps nearby lights competitive, but becomes zero
+  // anywhere inside a cluster. Do not concentrate the entire cluster's flux
+  // into its smallest emitter-sized distance: that starves sibling clusters
+  // and produces enormous inverse-PDF samples. A tenth of the cluster radius
+  // regularizes this importance estimate; emitter radiance is unchanged.
+  float distance2=max(dot(nearest,nearest),.01*radius2);
+  return localFalloff(dot(nearest,nearest))*node.minimumPower.w*cosine/max(max(distance2,node.maximum.w),1e-12);
 }
 // Visibility needs the nearest transmitting sheet, but any accepted opaque
 // intersection blocks the whole segment. Avoid closest-hit shading (including
@@ -72,6 +76,70 @@ vec3 localVisibility(vec3 origin,vec3 endpoint) {
   return vec3(0);
 }
 #include "light_guiding.glsl"
+// A sphere candidate includes solid-angle weighting, but not discrete selection.
+struct LocalCandidate { vec3 physical; vec3 endpoint; float distance; };
+LocalCandidate localCandidate(LightEmitter light,Hit hit,inout uint state) {
+  LocalCandidate result;result.physical=vec3(0);result.endpoint=hit.p;result.distance=0;
+  vec3 delta=light.positionRadius.xyz-hit.p;
+  float distance2=dot(delta,delta),radius=light.positionRadius.w;
+  float attenuation=localFalloff(distance2);
+  if(attenuation==0)return result;
+  bool inside=distance2<=radius*radius;
+  vec3 axis=distance2>1e-20?delta*inversesqrt(distance2):hit.n;
+  float sinMax2=min(1,radius*radius/max(distance2,1e-20));
+  // Stable for small, distant lights: 1-sqrt(1-x) = x/(1+sqrt(1-x)).
+  float oneMinusCos=inside?2:sinMax2/(1+sqrt(max(0,1-sinMax2)));
+  float cosTheta=1-lightRandom(state)*oneMinusCos;
+  float sinTheta=sqrt(max(0,(1-cosTheta)*(1+cosTheta)));
+  float phi=6.28318530718*lightRandom(state);
+  vec3 tangent=normalize(cross(abs(axis.z)<.999?vec3(0,0,1):vec3(0,1,0),axis));
+  vec3 direction=normalize(axis*cosTheta+sinTheta*(cos(phi)*tangent+sin(phi)*cross(axis,tangent)));
+  float cosine=max(0,dot(hit.n,direction));
+  if(cosine==0)return result;
+  float projected=dot(delta,direction);
+  vec3 perpendicular=delta-direction*projected;
+  float root=sqrt(max(0,radius*radius-dot(perpendicular,perpendicular)));
+  float distance=max(0,inside?projected+root:projected-root);
+  result.physical=light.radiance.rgb*(2*oneMinusCos*cosine*attenuation)*frame.localScale.x;
+  result.endpoint=hit.p+direction*distance;result.distance=distance;
+  return result;
+}
+float localLuminance(vec3 value) { return dot(value,vec3(.2126,.7152,.0722)); }
+// Stratified light candidates for very small sets (RT Gems II, ch. 22-23).
+// One sphere direction per light, then a weighted reservoir and ONE visibility
+// query. E[physical / p] is the sum of these candidates; their expectation is
+// the original sphere integral. No radiance clamp or extra visibility samples.
+vec3 smallLocalLighting(LightNodes nodes,LightEmitters emitters,Hit hit,uint state,uint samples,
+                        uint guideKey,uint preferred,float guideMix,out float lightDistance) {
+  vec3 result=vec3(0);float distanceWeight=0;lightDistance=0;
+  for(uint sampleIndex=0;sampleIndex<samples;++sampleIndex) {
+    LocalCandidate selected,preferredSample;
+    selected.physical=vec3(0);selected.distance=0;selected.endpoint=hit.p;
+    preferredSample=selected;
+    uint selectedIndex=0;float total=0;
+    uint nodeCount=2*nodes.data[0].links.w-1;
+    for(uint index=0;index<nodeCount;++index) {
+      if(nodes.data[index].links.w!=1)continue;
+      LocalCandidate candidate=localCandidate(emitters.data[nodes.data[index].links.z],hit,state);
+      float weight=localLuminance(candidate.physical);total+=weight;
+      if(weight>0&&lightRandom(state)*total<weight) {selected=candidate;selectedIndex=index;}
+      if(index==preferred)preferredSample=candidate;
+    }
+    if(total<=0)continue;
+    bool guided=guideMix>0&&localLuminance(preferredSample.physical)>0&&lightRandom(state)<guideMix;
+    float mixWeight=localLuminance(preferredSample.physical)>0?guideMix:0;
+    if(guided) {selected=preferredSample;selectedIndex=preferred;}
+    float pdf=(1-mixWeight)*localLuminance(selected.physical)/total+(selectedIndex==preferred?mixWeight:0);
+    vec3 estimate=selected.physical/pdf;
+    vec3 visibility=localVisibility(offsetRay(hit.p,hit.n),selected.endpoint);
+    result+=estimate*visibility;
+    if(enableLocalGuiding&&guideKey!=0&&(hash(state^0xd1b54a35u)&63u)==0)
+      trainLightGuide(guideKey,selectedIndex,guided,visibility,selected.physical);
+    float weight=localLuminance(estimate);lightDistance+=selected.distance*weight;distanceWeight+=weight;
+  }
+  lightDistance=distanceWeight>0?lightDistance/distanceWeight:0;
+  return result/float(samples);
+}
 // Returns irradiance/pi, ready to multiply by the receiver's linear albedo.
 vec3 localLighting(Hit hit,uint state,uint samples,out float lightDistance,bool useGuiding) {
   lightDistance=0;
@@ -85,8 +153,10 @@ vec3 localLighting(Hit hit,uint state,uint samples,out float lightDistance,bool 
     guideKey=lightGuideKey(hit);
     guideMix=lightGuideProposal(nodes,hit,guideKey,preferred);
   }
-  vec3 result=vec3(0);float distanceWeight=0;
   state=hash(state^0x746f7263u);
+  if(enableSmallLights&&nodes.data[0].links.w<=4)
+    return smallLocalLighting(nodes,emitters,hit,state,samples,guideKey,preferred,guideMix,lightDistance);
+  vec3 result=vec3(0);float distanceWeight=0;
   for(uint sampleIndex=0;sampleIndex<samples;++sampleIndex) {
     bool guided=guideMix>0&&lightRandom(state)<guideMix;
     uint index=0;float selectionPdf=1,u=lightRandom(state);
@@ -107,6 +177,9 @@ vec3 localLighting(Hit hit,uint state,uint samples,out float lightDistance,bool 
     selectionPdf=(1-guideMix)*selectionPdf+(index==preferred?guideMix:0);
     if(selectionPdf<=0)continue;
     LightEmitter light=emitters.data[nodes.data[index].links.z];
+    // Keep the established sphere math in this fast path. Factoring its
+    // early-outs through a candidate return changes the driver's generated
+    // control flow at every secondary vertex in large-light scenes.
     vec3 delta=light.positionRadius.xyz-hit.p;
     float distance2=dot(delta,delta),radius=light.positionRadius.w;
     float attenuation=localFalloff(distance2);

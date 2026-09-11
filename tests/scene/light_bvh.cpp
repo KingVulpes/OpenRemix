@@ -179,4 +179,78 @@ int main() {
                 "removal passed\n",
                 count);
   }
+  // A receiver inside a volume of lights must not almost exclusively sample
+  // whichever internal bounding box contains it. Measure the full discrete
+  // estimator against the analytic sphere integral, before visibility or NRD.
+  {
+    std::vector<SphereLight> lights;
+    for (int x = -5; x <= 5; ++x)
+      for (int y = -5; y <= 5; ++y)
+        for (int z = -5; z <= 5; ++z) {
+          SphereLight light{};
+          light.id = lights.size() + 1;
+          light.radius = .08f;
+          light.position[0] = 2 * x + .5f;
+          light.position[1] = 2 * y + .75f;
+          light.position[2] = 2 * z + .25f;
+          light.radiance[0] = 200;
+          light.radiance[1] = 110;
+          light.radiance[2] = 44;
+          lights.push_back(light);
+        }
+    LightBvh bvh;
+    bvh.update(lights);
+    for (float offset : {0.f, .5f, 1.f, 2.f}) {
+      const float p[] = {offset, 0, 0}, n[] = {0, 0, 1};
+      std::vector<double> pdf(lights.size());
+      std::function<void(uint32_t, double)> visit = [&](uint32_t i,
+                                                        double probability) {
+        const auto &node = bvh.nodes()[i];
+        if (node.links[3] == 1) {
+          pdf[node.links[2]] = probability;
+          return;
+        }
+        const double a = LightBvh::weight(bvh.nodes()[node.links[0]], p, n, 16);
+        const double b = LightBvh::weight(bvh.nodes()[node.links[1]], p, n, 16);
+        const double split = a == 0 ? 0
+                             : b == 0
+                                 ? 1
+                                 : std::clamp(a / (a + b), 1.e-6, 1. - 1.e-6);
+        visit(node.links[0], probability * split);
+        visit(node.links[1], probability * (1 - split));
+      };
+      visit(0, 1);
+      double reference = 0, expectation = 0, secondMoment = 0, maximum = 0,
+             totalPdf = 0;
+      for (size_t i = 0; i < lights.size(); ++i) {
+        const auto &light = lights[i];
+        double distance2 = 0;
+        for (unsigned c = 0; c < 3; ++c)
+          distance2 += std::pow(double(light.position[c]) - p[c], 2);
+        // These spheres are entirely above or below the receiving plane.
+        const double contribution =
+            (.2126 * 200 + .7152 * 110 + .0722 * 44) * double(light.radius) *
+            light.radius * std::max(light.position[2], 0.f) /
+            std::pow(distance2, 1.5) * LightBvh::falloff(distance2, 16);
+        totalPdf += pdf[i];
+        reference += contribution;
+        if (contribution == 0)
+          continue;
+        require(pdf[i] > 0, "Interior receiver lost a contributing light");
+        const double estimate = contribution / pdf[i];
+        expectation += pdf[i] * estimate;
+        secondMoment += pdf[i] * estimate * estimate;
+        maximum = std::max(maximum, estimate);
+      }
+      require(std::abs(totalPdf - 1) < 1.e-10 &&
+                  std::abs(expectation - reference) < 1.e-10,
+              "Interior light selection changed the sphere integral");
+      const double relativeDeviation =
+          std::sqrt(secondMoment - reference * reference) / reference;
+      require(relativeDeviation < 4 && maximum / reference < 80,
+              "Interior light cluster produced excessive inverse-PDF outliers");
+    }
+    std::puts(
+        "1331 torches: interior receiver energy and selection variance passed");
+  }
 }

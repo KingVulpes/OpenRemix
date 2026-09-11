@@ -2,6 +2,10 @@ policy_test = executable('remix-tlas-policy-test', 'tlas_policy.cpp',
   include_directories : test_includes, link_with : pathtrace_library)
 test('Tracing scene and TLAS policy', policy_test)
 if get_option('gpu_tests')
+  torch_stability_test = executable('remix-torch-stability-test', 'torch_stability.cpp',
+    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
+  test('Four torches and motion stability', torch_stability_test,
+    args : [meson.current_build_dir() / 'torch-stability-scenes'], timeout : 300)
   water_indirect_test = executable('remix-water-indirect-test', 'water_indirect.cpp',
     include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
   test('Water indirect reuse and reference energy', water_indirect_test,

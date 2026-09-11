@@ -15,6 +15,8 @@ namespace remix::scene {
     uint64_t hash = m.texture->fingerprint();
     auto add = [&](const auto &v) { hash = hashBytes(&v, sizeof(v), hash); };
     add(m.tint);
+    add(m.emission);
+    if (m.emissionTexture) add(m.emissionTexture->fingerprint());
     add(m.compare);
     add(m.reference);
     add(m.drawAlpha);

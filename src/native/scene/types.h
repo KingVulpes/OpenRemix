@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <memory>
 #include <vector>
+#include <unordered_map>
 #include <remix/remix_c.h>
 
 namespace remix {
@@ -32,6 +33,9 @@ namespace remix {
     };
     struct Material {
       std::shared_ptr<Texture> texture;
+      std::shared_ptr<Texture> emissionTexture;
+      float emission[3] = {};
+      mutable std::unordered_map<uint64_t, std::array<float, 3>> emissionCache;
       float tint[4] = {1, 1, 1, 1};
       uint32_t compare = 7;
       float reference = 0;
@@ -64,6 +68,9 @@ namespace remix {
       uint64_t id = 0;
       float position[3] = {}, radius = 0;
       float radiance[3] = {};
+      // Triangle area emitters share the light hierarchy and stable identity path.
+      uint32_t triangle = 0; // 0 sphere, 1 one-sided, 2 two-sided
+      float corners[3][3] = {};
       bool operator==(const SphereLight &) const = default;
     };
     struct DistantLight {

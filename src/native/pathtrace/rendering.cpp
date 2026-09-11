@@ -1,4 +1,5 @@
 #include "pathtrace/gpu.h"
+#include "scene/emission.h"
 
 namespace remix {
   using namespace scene;
@@ -59,9 +60,12 @@ namespace remix {
     }
     std::vector<trace::InstanceInput> inputs[2];
     std::vector<TraceSurface> surfaces;
+    std::vector<std::array<float, 4>> emissions(1); // zero is non-emissive
+    auto lights = resources.sphereLights();
     primaryDraws.clear();
     std::vector<VkDescriptorImageInfo> textures;
     std::unordered_map<const Material *, uint32_t> textureIndices;
+    std::unordered_map<const Material *, uint32_t> emissionTextures;
     std::vector<uint8_t> scene, staticGeometry, dynamicGeometry;
     auto appendStatic = [&](const void *data, size_t size) {
       const auto *bytes = static_cast<const uint8_t *>(data);
@@ -140,6 +144,17 @@ namespace remix {
           append(sampler, sizeof(sampler));
         }
         TraceSurface value;
+        std::copy_n(material.emission, 3, value.emission);
+        if (material.emissionTexture && (material.emission[0] > 0 || material.emission[1] > 0 || material.emission[2] > 0)) {
+          auto [emitter, newTexture] = emissionTextures.emplace(surface.material.get(), uint32_t(textures.size()));
+          if (newTexture) {
+            if (textures.size() >= PathTracer::textureLimit) throw VK_ERROR_TOO_MANY_OBJECTS;
+            textures.push_back(resources.sampledEmission(surface.material, command));
+            auto fingerprint = material.emissionTexture->fingerprint();
+            append(&fingerprint, sizeof(fingerprint));
+          }
+          value.textureState[2] = emitter->second + 1;
+        }
         value.vertices = view.vertices.at(surface.surfaceIndex)->address;
         value.indices = geometry.input->address + geometry.indexOffsets.at(surface.surfaceIndex);
         auto temporalDraw = surface;
@@ -170,6 +185,16 @@ namespace remix {
         value.uv[1] = 1.f / material.rows;
         value.uv[2] = float(frame % material.columns) / material.columns;
         value.uv[3] = float(frame / material.columns) / material.rows;
+        if (material.emission[0] > 0 || material.emission[1] > 0 || material.emission[2] > 0) {
+          for (uint32_t triangle = 0; triangle < surface.surface->indices.size() / 3; ++triangle) {
+            auto emission = scene::triangleEmission(surface, triangle, value.uv);
+            emissions.push_back({emission[0], emission[1], emission[2], 0});
+            if (emission[0] > 0 || emission[1] > 0 || emission[2] > 0) {
+              auto emitter = scene::triangleEmitter(surface, triangle, emission);
+              if (emitter.radius > 1e-8f) lights.push_back(emitter);
+            }
+          }
+        }
         const auto &b = surface.blend;
         value.factor[0] = linear(float((b.factor >> 16) & 255) / 255);
         value.factor[1] = linear(float((b.factor >> 8) & 255) / 255);
@@ -220,7 +245,8 @@ namespace remix {
       append(&surface, offsetof(TraceSurface, previousVertices));
     hostBuffer(table, surfaces.data(), surfaces.size() * sizeof(surfaces[0]),
                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-    const bool lightsChanged = lightBvh.update(resources.sphereLights());
+    append(emissions.data(), emissions.size() * sizeof(emissions[0]));
+    const bool lightsChanged = lightBvh.update(std::move(lights));
     if (lightsChanged && !lightBvh.nodes().empty()) {
       hostBuffer(lightNodes, lightBvh.nodes().data(), lightBvh.nodes().size() * sizeof(scene::LightNode),
                  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
@@ -392,10 +418,11 @@ namespace remix {
                                       {VK_NULL_HANDLE, primary[1]->view, VK_IMAGE_LAYOUT_GENERAL},
                                       {VK_NULL_HANDLE, primary[2]->view, VK_IMAGE_LAYOUT_GENERAL},
                                       {VK_NULL_HANDLE, primary[3]->view, VK_IMAGE_LAYOUT_GENERAL},
-                                      {VK_NULL_HANDLE, primary[4]->view, VK_IMAGE_LAYOUT_GENERAL}};
+                                      {VK_NULL_HANDLE, primary[4]->view, VK_IMAGE_LAYOUT_GENERAL},
+                                      {VK_NULL_HANDLE, primary[5]->view, VK_IMAGE_LAYOUT_GENERAL}};
     VkWriteDescriptorSetAccelerationStructureKHR structures[2] = {};
-    VkWriteDescriptorSet writes[13] = {};
-    for (unsigned i = 0; i < 13; ++i) {
+    VkWriteDescriptorSet writes[14] = {};
+    for (unsigned i = 0; i < 14; ++i) {
       writes[i] = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                    .dstSet = set,
                    .dstBinding = i,
@@ -418,7 +445,7 @@ namespace remix {
           writes[i].descriptorCount = PathTracer::textureLimit;
       }
     }
-    vkUpdateDescriptorSets(device, 13, writes, 0, nullptr);
+    vkUpdateDescriptorSets(device, 14, writes, 0, nullptr);
     if (!imagesInitialized) {
       VkImageMemoryBarrier barriers[2] = {};
       for (unsigned i = 0; i < 2; ++i)

@@ -20,12 +20,12 @@ namespace remix::denoise {
     };
     require(p.apiVersion >= VK_API_VERSION_1_2, "Vulkan 1.2");
     require(f.shaderStorageImageExtendedFormats, "extended storage-image formats");
-    // The temporal set is used alongside the tracer set (eight storage images,
+    // The temporal set is used alongside the tracer set (nine storage images,
     // 512 textures, two acceleration structures, a storage buffer and a UBO).
-    require(p.limits.maxPerStageDescriptorStorageImages >= BaseImageCount + 11 &&
-                p.limits.maxDescriptorSetStorageImages >= BaseImageCount + 11,
+    require(p.limits.maxPerStageDescriptorStorageImages >= BaseImageCount + 12 &&
+                p.limits.maxDescriptorSetStorageImages >= BaseImageCount + 12,
             "temporal storage-image descriptor limit");
-    require(p.limits.maxPerStageResources >= 512 + BaseImageCount + 16, "temporal per-stage resource limit");
+    require(p.limits.maxPerStageResources >= 512 + BaseImageCount + 17, "temporal per-stage resource limit");
     const VkFormat formats[] = {VK_FORMAT_R16G16B16A16_SFLOAT,
                                 VK_FORMAT_R32G32B32A32_SFLOAT,
                                 VK_FORMAT_R32_SFLOAT,
@@ -64,9 +64,9 @@ namespace remix::denoise {
       return false;
     VkPhysicalDeviceProperties p;
     vkGetPhysicalDeviceProperties(physical, &p);
-    if (p.limits.maxPerStageDescriptorStorageImages < SigmaImageCount + 11 ||
-        p.limits.maxDescriptorSetStorageImages < SigmaImageCount + 11 ||
-        p.limits.maxPerStageResources < 512 + SigmaImageCount + 16)
+    if (p.limits.maxPerStageDescriptorStorageImages < SigmaImageCount + 12 ||
+        p.limits.maxDescriptorSetStorageImages < SigmaImageCount + 12 ||
+        p.limits.maxPerStageResources < 512 + SigmaImageCount + 17)
       return false;
     for (auto format : {VK_FORMAT_R32_UINT, VK_FORMAT_R8G8_UNORM, VK_FORMAT_R8G8B8A8_UNORM}) {
       VkFormatProperties fp;
@@ -85,9 +85,9 @@ namespace remix::denoise {
     VkPhysicalDeviceProperties p;
     vkGetPhysicalDeviceProperties(physical, &p);
     const uint32_t count = BaseImageCount + (sigma ? 3 : 0) + 2;
-    return p.limits.maxPerStageDescriptorStorageImages >= count + 11 &&
-           p.limits.maxDescriptorSetStorageImages >= count + 11 &&
-           p.limits.maxPerStageResources >= 512 + count + 16;
+    return p.limits.maxPerStageDescriptorStorageImages >= count + 12 &&
+           p.limits.maxDescriptorSetStorageImages >= count + 12 &&
+           p.limits.maxPerStageResources >= 512 + count + 17;
   }
   uint32_t Renderer::Gpu::memoryType(uint32_t bits, VkMemoryPropertyFlags flags) {
     for (uint32_t i = 0; i < memory.memoryTypeCount; ++i)

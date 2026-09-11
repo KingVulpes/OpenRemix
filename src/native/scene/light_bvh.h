@@ -8,13 +8,14 @@ namespace remix::scene {
 struct LightEmitter {
   float positionRadius[4] = {};
   float radiance[4] = {};
+  float corners[3][4] = {};
 };
 struct LightNode {
   float minimumPower[4] = {};
   float maximum[4] = {};  // xyz bounds; w largest emitter radius squared
   uint32_t links[4] = {}; // left, right, emitter, leaf count
 };
-static_assert(sizeof(LightEmitter) == 32 && sizeof(LightNode) == 48);
+static_assert(sizeof(LightEmitter) == 80 && sizeof(LightNode) == 48);
 class LightBvh {
 public:
   bool update(std::vector<SphereLight> lights);

@@ -64,9 +64,25 @@ namespace remix {
     material->columns = std::max(uint8_t(1), info.spriteSheetCol);
     material->fps = info.spriteSheetFps;
     material->texture = texturePath(texture);
+    finite(&info.emissiveColorConstant.x, 3);
+    finite(&info.emissiveIntensity, 1);
+    if (info.emissiveIntensity < 0 || info.emissiveColorConstant.x < 0 ||
+        info.emissiveColorConstant.y < 0 || info.emissiveColorConstant.z < 0)
+      throw invalid;
+    for (unsigned c = 0; c < 3; ++c)
+      material->emission[c] = (&info.emissiveColorConstant.x)[c] * info.emissiveIntensity;
+    finite(material->emission, 3);
+    if (info.emissiveTexture && *info.emissiveTexture)
+      material->emissionTexture = texturePath(info.emissiveTexture);
     auto previous = m_materials.find(info.hash);
+    if (previous != m_materials.end() && previous->second->emissionTexture == material->emissionTexture &&
+        std::equal(material->emission, material->emission + 3, previous->second->emission) &&
+        material->wrapU == previous->second->wrapU && material->wrapV == previous->second->wrapV)
+      material->emissionCache = previous->second->emissionCache;
     auto equal = [&](const Material &a, const Material &b) {
-      return a.texture == b.texture && std::equal(a.tint, a.tint + 4, b.tint) && a.compare == b.compare &&
+      return a.texture == b.texture && a.emissionTexture == b.emissionTexture &&
+             std::equal(a.emission, a.emission + 3, b.emission) &&
+             std::equal(a.tint, a.tint + 4, b.tint) && a.compare == b.compare &&
              a.reference == b.reference && a.drawAlpha == b.drawAlpha && a.translucent == b.translucent &&
              a.transmission == b.transmission && a.filter == b.filter && a.wrapU == b.wrapU &&
              a.wrapV == b.wrapV && a.rows == b.rows && a.columns == b.columns && a.fps == b.fps;

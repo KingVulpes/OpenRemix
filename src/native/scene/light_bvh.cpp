@@ -8,7 +8,7 @@ namespace remix::scene {
 bool LightBvh::update(std::vector<SphereLight> lights) {
   const auto start = std::chrono::steady_clock::now();
   std::sort(lights.begin(), lights.end(),
-            [](const auto &a, const auto &b) { return a.id < b.id; });
+            [](const auto &a, const auto &b) { return a.triangle != b.triangle ? a.triangle < b.triangle : a.id < b.id; });
   if (lights == m_lights) {
     updateMilliseconds = std::chrono::duration<double, std::milli>(
                              std::chrono::steady_clock::now() - start)
@@ -18,7 +18,7 @@ bool LightBvh::update(std::vector<SphereLight> lights) {
   bool rebuild = lights.size() != m_lights.size();
   if (!rebuild)
     for (size_t i = 0; i < lights.size(); ++i)
-      rebuild |= lights[i].id != m_lights[i].id;
+      rebuild |= lights[i].id != m_lights[i].id || lights[i].triangle != m_lights[i].triangle;
   m_lights = std::move(lights);
   m_emitters.resize(m_lights.size());
   active = 0;
@@ -28,6 +28,8 @@ bool LightBvh::update(std::vector<SphereLight> lights) {
     std::copy_n(light.position, 3, emitter.positionRadius);
     emitter.positionRadius[3] = light.radius;
     std::copy_n(light.radiance, 3, emitter.radiance);
+    emitter.radiance[3] = float(light.triangle);
+    for (unsigned v = 0; v < 3; ++v) std::copy_n(light.corners[v], 3, emitter.corners[v]);
     active +=
         light.radiance[0] > 0 || light.radiance[1] > 0 || light.radiance[2] > 0;
   }
@@ -106,6 +108,16 @@ void LightBvh::bounds(uint32_t index) {
         float(double(light.radius) * light.radius *
               (.2126 * light.radiance[0] + .7152 * light.radiance[1] +
                .0722 * light.radiance[2]));
+    if (light.triangle) {
+      double a[3], b[3];
+      for (unsigned c = 0; c < 3; ++c) {
+        a[c] = double(light.corners[1][c]) - light.corners[0][c];
+        b[c] = double(light.corners[2][c]) - light.corners[0][c];
+      }
+      const double area = .5 * std::hypot(a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]);
+      node.minimumPower[3] = float(area * light.triangle / (4 * 3.141592653589793) *
+          (.2126 * light.radiance[0] + .7152 * light.radiance[1] + .0722 * light.radiance[2]));
+    }
   } else {
     const auto &a = m_nodes[node.links[0]], &b = m_nodes[node.links[1]];
     if (a.minimumPower[3] == 0 || b.minimumPower[3] == 0) {

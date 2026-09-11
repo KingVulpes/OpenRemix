@@ -12,6 +12,7 @@ struct Surface {
   uint64_t previousVertices;
   uvec2 padding;
   mat4 previousModel;
+  vec4 emission;
 };
 layout(set=0,binding=2,std430) readonly buffer Surfaces { Surface surfaces[]; };
 layout(set=0,binding=3,std140) uniform Frame {
@@ -36,6 +37,11 @@ layout(set=0,binding=3,std140) uniform Frame {
   uvec4 lightGuideConfig; // capacity, node count, reserved
 } frame;
 layout(set=0,binding=6) uniform sampler2D textures[512];
+vec3 materialEmission(Surface s,vec2 uv) {
+  if(!any(greaterThan(s.emission.rgb,vec3(0))))return vec3(0);
+  return s.emission.rgb*(s.textureState.z==0?vec3(1):
+      textureLod(textures[nonuniformEXT(s.textureState.z-1)],uv*s.uv.xy+s.uv.zw,0).rgb);
+}
 vec3 linearColor(vec3 c) {
   return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), greaterThan(c, vec3(0.04045)));
 }

@@ -92,8 +92,9 @@ namespace remix::trace::detail {
     uint32_t state[4] = {}, textureState[4] = {};
     uint64_t previousVertices = 0, padding = 0;
     Matrix previousModel{};
+    float emission[4] = {};
   };
-  static_assert(sizeof(TraceSurface) == 176 && sizeof(TraceVertex) == 48);
+  static_assert(sizeof(TraceSurface) == 192 && sizeof(TraceVertex) == 48);
   struct Frame {
     Matrix inverseCamera, camera;
     float eye[4] = {}, direction[4] = {}, radiance[4] = {};
@@ -200,7 +201,7 @@ namespace remix {
     };
     static_assert(sizeof(PrimaryPush) == 80);
     std::vector<PrimaryDraw> primaryDraws;
-    std::unique_ptr<Image> primary[5];
+    std::unique_ptr<Image> primary[6];
     VkRenderPass primaryPass[2] = {};
     VkFramebuffer primaryFramebuffer[2] = {};
     VkPipeline primaryPipeline[2] = {};

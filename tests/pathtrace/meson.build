@@ -68,6 +68,8 @@ if get_option('gpu_tests')
     include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
   test('Sky illumination and temporal changes', environment_test,
     args : [meson.current_build_dir() / 'sky-scenes'], timeout : 240)
+  test('Emissive maps and sampled area lights', environment_test,
+    args : [meson.current_build_dir() / 'emission-scenes'], env : ['REMIX_TEST_EMISSION=1'], timeout : 240)
   test('Prism and gamma display transfer', environment_test,
     args : [meson.current_build_dir() / 'prism-scenes'], env : ['REMIX_TEST_DISPLAY=1'], timeout : 240)
   if system == 'linux'

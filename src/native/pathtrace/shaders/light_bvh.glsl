@@ -1,6 +1,6 @@
 // Analytic sphere next-event estimation, RT Gems I chapter 18. The selection
 // PDF and solid-angle PDF both belong in the estimator. No light-count ray loop.
-struct LightEmitter { vec4 positionRadius; vec4 radiance; };
+struct LightEmitter { vec4 positionRadius; vec4 radiance; vec4 corners[3]; };
 struct LightNode { vec4 minimumPower; vec4 maximum; uvec4 links; };
 layout(buffer_reference,std430,buffer_reference_align=16) readonly buffer LightEmitters { LightEmitter data[]; };
 layout(buffer_reference,std430,buffer_reference_align=16) readonly buffer LightNodes { LightNode data[]; };
@@ -78,7 +78,29 @@ vec3 localVisibility(vec3 origin,vec3 endpoint) {
 #include "light_guiding.glsl"
 // A sphere candidate includes solid-angle weighting, but not discrete selection.
 struct LocalCandidate { vec3 physical; vec3 endpoint; float distance; };
+LocalCandidate triangleCandidate(LightEmitter light,Hit hit,inout uint state) {
+  LocalCandidate result;result.physical=vec3(0);result.endpoint=hit.p;result.distance=0;
+  vec3 a=light.corners[0].xyz,b=light.corners[1].xyz,c=light.corners[2].xyz;
+  vec3 normal=cross(b-a,c-a);float twiceArea=length(normal);
+  if(twiceArea<=1e-12)return result;
+  normal/=twiceArea;
+  float u=sqrt(lightRandom(state)),v=lightRandom(state);
+  vec3 endpoint=a+u*((1-v)*(b-a)+v*(c-a));
+  vec3 delta=endpoint-hit.p;float distance2=dot(delta,delta);
+  if(distance2<=1e-12)return result;
+  vec3 direction=delta*inversesqrt(distance2);
+  float emitterCosine=dot(normal,-direction);
+  if(light.radiance.w>1)emitterCosine=abs(emitterCosine);
+  float geometry=max(0,dot(hit.n,direction))*max(0,emitterCosine);
+  // Uniform area PDF 1/A, converted to solid angle: d^2/(A*cosEmitter).
+  result.physical=light.radiance.rgb*(.5*twiceArea*geometry/(3.14159265359*distance2))
+      *localFalloff(dot(light.positionRadius.xyz-hit.p,light.positionRadius.xyz-hit.p))*frame.localScale.x;
+  result.endpoint=offsetRay(endpoint,dot(normal,-direction)>0?normal:-normal);
+  result.distance=sqrt(distance2);
+  return result;
+}
 LocalCandidate localCandidate(LightEmitter light,Hit hit,inout uint state) {
+  if(light.radiance.w!=0)return triangleCandidate(light,hit,state);
   LocalCandidate result;result.physical=vec3(0);result.endpoint=hit.p;result.distance=0;
   vec3 delta=light.positionRadius.xyz-hit.p;
   float distance2=dot(delta,delta),radius=light.positionRadius.w;
@@ -177,6 +199,18 @@ vec3 localLighting(Hit hit,uint state,uint samples,out float lightDistance,bool 
     selectionPdf=(1-guideMix)*selectionPdf+(index==preferred?guideMix:0);
     if(selectionPdf<=0)continue;
     LightEmitter light=emitters.data[nodes.data[index].links.z];
+    if(light.radiance.w!=0) {
+      LocalCandidate candidate=triangleCandidate(light,hit,state);
+      if(localLuminance(candidate.physical)<=0)continue;
+      vec3 estimate=candidate.physical/selectionPdf;
+      vec3 visibility=localVisibility(offsetRay(hit.p,hit.n),candidate.endpoint);
+      result+=estimate*visibility;
+      if(enableLocalGuiding&&useGuiding&&guideKey!=0&&(hash(state^0xd1b54a35u)&63u)==0)
+        trainLightGuide(guideKey,index,guided,visibility,candidate.physical);
+      float weight=localLuminance(estimate);
+      lightDistance+=candidate.distance*weight;distanceWeight+=weight;
+      continue;
+    }
     // Keep the established sphere math in this fast path. Factoring its
     // early-outs through a candidate return changes the driver's generated
     // control flow at every secondary vertex in large-light scenes.

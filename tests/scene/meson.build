@@ -8,3 +8,6 @@ test('Temporal submitted-frame ownership and correspondence', temporal_test)
 light_bvh_test = executable('remix-light-bvh-test', 'light_bvh.cpp',
   include_directories : test_includes, link_with : scene_library)
 test('Analytic lights and importance hierarchy', light_bvh_test)
+emission_test = executable('remix-emission-test', 'emission.cpp',
+  include_directories : test_includes, link_with : scene_library)
+test('Emission reduction and area light ownership', emission_test)

@@ -145,8 +145,8 @@ namespace remix {
     LOAD(copyAs, vkCmdCopyAccelerationStructureKHR);
     LOAD(writeAsProperties, vkCmdWriteAccelerationStructuresPropertiesKHR);
 #undef LOAD
-    VkDescriptorSetLayoutBinding bindings[13] = {};
-    for (unsigned i = 0; i < 13; ++i) {
+    VkDescriptorSetLayoutBinding bindings[14] = {};
+    for (unsigned i = 0; i < 14; ++i) {
       bindings[i] = {.binding = i,
                      .descriptorCount = i == 6 ? textureLimit : 1u,
                      .stageFlags =
@@ -161,13 +161,13 @@ namespace remix {
                                             : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     }
     VkDescriptorSetLayoutCreateInfo setLayout = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-                                                 .bindingCount = 13,
+                                                 .bindingCount = 14,
                                                  .pBindings = bindings};
     check(vkCreateDescriptorSetLayout(device, &setLayout, nullptr, &g.setLayout));
     VkDescriptorPoolSize poolSizes[] = {{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 2},
                                         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
                                         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
-                                        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 8},
+                                        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 9},
                                         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, textureLimit}};
     VkDescriptorPoolCreateInfo pool = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
                                        .maxSets = 1,

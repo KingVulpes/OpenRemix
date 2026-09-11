@@ -153,6 +153,10 @@ namespace remix {
       else if (!perspective) g.fsrFailure = "FSR requires a finite perspective world camera; native resolution active";
     }
     m_gpu->localSeen |= resources.hasSphereLights();
+    m_gpu->localSeen |= std::any_of(resources.draws().begin(), resources.draws().end(), [](const auto &draw) {
+      const auto &e = draw.material->emission;
+      return draw.traced() && (e[0] > 0 || e[1] > 0 || e[2] > 0);
+    });
     m_gpu->beginFrame(options);
     if (g.upscaler && !g.denoiser) {
       const auto failure = g.postFailure;

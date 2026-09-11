@@ -21,6 +21,8 @@ namespace remix {
 
     VkDescriptorImageInfo sampledMaterial(const std::shared_ptr<scene::Material> &material,
                                           VkCommandBuffer command);
+    VkDescriptorImageInfo sampledEmission(const std::shared_ptr<scene::Material> &material,
+                                          VkCommandBuffer command);
 
   private:
     struct Gpu;

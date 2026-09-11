@@ -76,6 +76,8 @@ int main(int argc, char **argv) {
       vertices[i].position[(axis + 1) % 3] = i == 0 || i == 3 ? a0 : a1;
       vertices[i].position[(axis + 2) % 3] = i < 2 ? b0 : b1;
       vertices[i].color = 0xffffffff;
+      vertices[i].texcoord[0] = i == 0 || i == 3 ? 0.f : 1.f;
+      vertices[i].texcoord[1] = i < 2 ? 0.f : 1.f;
     }
     uint32_t indices[] = {0, 1, 2, 0, 2, 3};
     remixapi_MeshInfoSurfaceTriangles surface{};
@@ -170,6 +172,104 @@ int main(int argc, char **argv) {
     return readback(name);
   };
   remixapi_DenoisingCapabilitiesEXT denoiseCaps{};
+  if (std::getenv("REMIX_TEST_EMISSION")) {
+    auto config = [&](const char *key, const char *value) {
+      ok(api.SetConfigVariable((std::string("rtx.native.pathtrace.")+key).c_str(),value));
+    };
+    config("sky","0"); config("sharc","0"); config("bounces","0");
+    config("localRange","0"); config("localGuiding","0"); config("localSamples","4");
+    if (std::getenv("REMIX_TEST_EMISSION_FSR")) {
+      for (auto &row : camera.projection) for (float &v : row) v=0;
+      camera.projection[0][0]=camera.projection[1][1]=2;
+      camera.projection[2][2]=100.f/99.95f; camera.projection[2][3]=1;
+      camera.projection[3][2]=-5.f/99.95f;
+      config("upscaler","fsr31"); config("fsrQuality","native-aa");
+    }
+    uint8_t pixels[] = {128,0,0,255};
+    remixapi_TextureInfo tex{};
+    tex.sType=REMIXAPI_STRUCT_TYPE_TEXTURE_INFO; tex.hash=500; tex.width=tex.height=1;
+    tex.format=REMIXAPI_FORMAT_R8G8B8A8_SRGB; tex.data=pixels; tex.dataSize=4;
+    remixapi_TextureHandle textureHandle{}; ok(api.CreateTexture(&tex,&textureHandle));
+    remixapi_MaterialInfoOpaqueEXT opaque{};
+    opaque.sType=REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_EXT;
+    opaque.opacityConstant=1; opaque.alphaTestType=7;
+    remixapi_MaterialInfo info{};
+    info.sType=REMIXAPI_STRUCT_TYPE_MATERIAL_INFO; info.hash=501; info.pNext=&opaque;
+#if defined(_WIN32)
+    info.emissiveTexture=L"0x1f4";
+#else
+    info.emissiveTexture="0x1f4";
+#endif
+    info.emissiveIntensity=2; info.emissiveColorConstant={1,1,1};
+    remixapi_MaterialHandle emitterMaterial{}; ok(api.CreateMaterial(&info,&emitterMaterial));
+    auto emitter=quad(2,-1,-.5f,.5f,-.5f,.5f,emitterMaterial);
+    auto visible=quad(2,.25f,-1,1,-1,1,emitterMaterial);
+    auto blocker=quad(2,-.5f,-1,1,-1,1,black);
+    const double radiance=2*std::pow((128./255+.055)/1.055,2.4);
+    double expected=0;
+    for (int y=0;y<128;++y) for (int x=0;x<128;++x) {
+      double a=(x+.5)/128-.5,b=(y+.5)/128-.5,d2=a*a+b*b+2.25;
+      expected+=radiance*2.25/(3.141592653589793*d2*d2*128*128);
+    }
+    for (const char *primary : {"raster","ray"}) for (bool filtered : {false,true}) {
+      config("primaryVisibility",primary); config("accumulate",filtered?"0":"1");
+      std::string prefix=std::string(primary)+(filtered?"-filtered-":"-raw-");
+      enclosure={emitter};
+      auto lit=capture(prefix+"emission-light",filtered?80:32);
+      require(std::abs(lit[0]-expected)<.018 && lit[1]<.004 && lit[2]<.004,"Emissive-map irradiance/color incorrect");
+      remixapi_LocalLightStatisticsEXT stats{}; stats.structSize=sizeof(stats);
+      ok(remixapi_GetLocalLightStatisticsEXT(&stats));
+      require(stats.activeLights==2,"Emissive quad did not create two sampled triangles");
+      config("bounces","1");
+      auto bounced=capture(prefix+"emission-one-bounce",filtered?80:32);
+      require(std::abs(bounced[0]-expected)<.018,"Secondary emitter hit double-counted next-event lighting");
+      config("bounces","0");
+      enclosure.push_back(blocker);
+      auto blocked=capture(prefix+"emission-blocked",filtered?80:32);
+      require(blocked[0]<.004,"Opaque wall leaked emissive light");
+      enclosure={visible};
+      auto glow=capture(prefix+"emission-visible",filtered?80:32);
+      require(std::abs(glow[0]-radiance)<.015 && glow[1]<.004,"Visible emission lost energy or was shadowed");
+      config("localLights","0");
+      auto glowOff=capture(prefix+"emission-visible-local-off",8);
+      require(std::abs(glowOff[0]-radiance)<.015,"Local toggle disabled visible emission");
+      enclosure={emitter};
+      require(capture(prefix+"emission-local-off",16)[0]<.004,"Local toggle failed to disable emission lighting");
+      config("localLights","1");
+    }
+    // A visible red/black/green/black map must retain detail even though its
+    // emitter triangles still use CPU-averaged radiance.
+    uint8_t pattern[] = {128,0,0,255, 0,0,0,255, 0,128,0,255, 0,0,0,255};
+    tex.width=4; tex.data=pattern; tex.dataSize=sizeof(pattern);
+    ok(api.CreateTexture(&tex,&textureHandle)); ok(api.CreateMaterial(&info,&emitterMaterial));
+    auto patterned=quad(2,.25f,-.125f,.125f,-.125f,.125f,emitterMaterial);
+    for (auto &row : camera.projection) for (float &v : row) v=0;
+    camera.projection[0][0]=camera.projection[1][1]=2;
+    camera.projection[2][2]=100.f/99.95f; camera.projection[2][3]=1;
+    camera.projection[3][2]=-5.f/99.95f;
+    enclosure={patterned};
+    for (const char *primary : {"raster","ray"}) for (bool filtered : {false,true}) {
+      config("primaryVisibility",primary); config("accumulate",filtered?"0":"1");
+      auto name=std::string(primary)+(filtered?"-filtered-map-detail":"-raw-map-detail");
+      capture(name,filtered?80:32);
+      int w,h,n; auto data=stbi_load((directory/(name+".png")).string().c_str(),&w,&h,&n,4);
+      require(data,"Missing emission detail screenshot");
+      for (unsigned stripe=0;stripe<4;++stripe) for (unsigned c=0;c<3;++c) {
+        unsigned x=(2*stripe+1)*w/8;
+        float value=data[((h/2)*w+x)*4+c]/255.f;
+        value=value<=.04045f?value/12.92f:std::pow((value+.055f)/1.055f,2.4f);
+        double expectedPixel=(stripe==0&&c==0)||(stripe==2&&c==1)?radiance:0;
+        require(std::abs(value-expectedPixel)<.02,"Visible emissive map flattened or sampled incorrectly");
+      }
+      stbi_image_free(data);
+    }
+    tex.width=1; tex.data=pixels; tex.dataSize=sizeof(pixels);
+    pixels[0]=0; ok(api.CreateTexture(&tex,&textureHandle)); ok(api.CreateMaterial(&info,&emitterMaterial));
+    require(capture("emission-texture-removed",80)[0]<.004,"Updated black map retained stale light");
+    remixapi_LocalLightStatisticsEXT stats{}; stats.structSize=sizeof(stats);
+    ok(remixapi_GetLocalLightStatisticsEXT(&stats)); require(stats.activeLights==0,"Black map retained active emitters");
+    ok(api.Shutdown()); std::puts("Emissive map lighting, occlusion, visible glow, controls and updates passed"); return 0;
+  }
   if (displayTest) {
     for (auto &row : camera.projection) for (float &v : row) v = 0;
     camera.projection[0][0] = camera.projection[1][1] = 2;

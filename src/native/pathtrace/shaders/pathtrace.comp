@@ -29,8 +29,9 @@ layout(set=0,binding=7,rgba32f) readonly uniform image2D rawSky;
 layout(set=0,binding=8,rgba32f) readonly uniform image2D primaryPosition;
 layout(set=0,binding=9,rgba16f) readonly uniform image2D primaryNormal;
 layout(set=0,binding=10,rgba8) readonly uniform image2D primaryAlbedo;
-layout(set=0,binding=11,rgba32f) readonly uniform image2D primaryPrevious;
+layout(set=0,binding=11,rgba32f) uniform image2D primaryPrevious;
 layout(set=0,binding=12,r32f) readonly uniform image2D primaryDepth;
+layout(set=0,binding=13,rgba16f) readonly uniform image2D primaryEmission;
 
 layout(constant_id=0) const bool enableLocalLights=true;
 layout(constant_id=1) const bool enableLocalGuiding=true;
@@ -53,7 +54,7 @@ bool acceptCandidate(Surface s,uint triangle,vec2 bary) {
   vec3 w=vec3(1-bary.x-bary.y,bary);
   return alphaPass(s,materialAlpha(s,a.uv.xy*w.x+b.uv.xy*w.y+c.uv.xy*w.z,a.color.a*w.x+b.color.a*w.y+c.color.a*w.z));
 }
-struct Hit { float t; vec3 p; vec3 n; vec4 color; bool blended; bool cacheable; vec3 previousPosition; bool historyValid; };
+struct Hit { float t; vec3 p; vec3 n; vec4 color; bool blended; bool cacheable; vec3 previousPosition; bool historyValid; vec3 emission; };
 void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, inout Hit hit,bool motion) {
   rayQueryEXT query;
   rayQueryInitializeEXT(query, scene, gl_RayFlagsNoOpaqueEXT, 255, origin, 0.0, direction, hit.t);
@@ -77,6 +78,12 @@ void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, ino
   hit.n=normalize(cross(model*vec4(b-a,0),model*vec4(c-a,0)));
   if (dot(hit.n,direction)>0) hit.n=-hit.n;
   hit.color=albedo(s,tri/3,bary);
+  hit.emission=vec3(0);
+  if(motion) {
+    vec3 w=vec3(1-bary.x-bary.y,bary);
+    vec2 uv=s.vertices.v[s.indices.i[tri]].uv.xy*w.x+s.vertices.v[s.indices.i[tri+1]].uv.xy*w.y+s.vertices.v[s.indices.i[tri+2]].uv.xy*w.z;
+    hit.emission=materialEmission(s,uv);
+  }
   hit.blended=(s.state.w&2)!=0;hit.cacheable=(s.state.w&16)!=0;
   hit.previousPosition=hit.p;hit.historyValid=false;
 // Transparent sheets never provide motion or NRD guides.
@@ -93,6 +100,7 @@ void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, ino
 }
 Hit closest(vec3 origin,vec3 direction,float maximum,bool motion) {
   Hit hit; hit.t=maximum; hit.p=vec3(0);hit.n=vec3(0);hit.color=vec4(0);hit.blended=false;hit.cacheable=false;hit.previousPosition=vec3(0);hit.historyValid=false;
+  hit.emission=vec3(0);
   if ((frame.target.z&1)!=0) queryScene(staticScene,origin,direction,hit,motion);
   if ((frame.target.z&2)!=0) queryScene(dynamicScene,origin,direction,hit,motion);
   if(hit.t==maximum)hit.t=1e30;
@@ -109,6 +117,7 @@ Hit rasterPrimary(ivec2 pixel, vec3 origin) {
   hit.p=position.xyz;hit.n=normal.w==0?vec3(0):normalize(normal.xyz);
   hit.color=imageLoad(primaryAlbedo,pixel);hit.blended=normal.w==2;hit.cacheable=false;
   hit.previousPosition=previous.xyz;hit.historyValid=previous.w!=0;
+  hit.emission=imageLoad(primaryEmission,pixel).rgb;
   return hit;
 }
 // Scale-aware integer ULP offset with a near-origin fallback (RT Gems, ch. 6).
@@ -334,7 +343,8 @@ void main() {
     }
   }
   bool opaque=primary.t<1e30&&!primary.blended;
-  vec3 color=opaque?primaryDirect+primary.color.rgb*(indirect+local):imageLoad(rawSky,pixel).rgb;
+  vec3 emission=opaque?primary.emission:vec3(0);
+  vec3 color=opaque?emission+primaryDirect+primary.color.rgb*(indirect+local):imageLoad(rawSky,pixel).rgb;
   if(primary.blended)color=vec3(0);
 #ifdef SHARC_QUERY
   if(frame.sharcConfig.w!=0&&opaque) {
@@ -373,6 +383,9 @@ void main() {
 #endif
   imageStore(directLight,pixel,vec4(safeRadiance(primaryDirect),1));imageStore(lighting,pixel,vec4(safeRadiance(indirect),1));
 #endif
+  // Motion has been consumed above. Reuse its scratch image for deterministic
+  // visible emission so SIGMA/local filtering never shadows or blurs it.
+  imageStore(primaryPrevious,pixel,vec4(emission,0));
   // Integer storage preserves every RNG bit, including float NaN/subnormal patterns.
   imageStore(backgroundTransmission,pixel,uvec4(floatBitsToUint(color),rng));
   // Reuse depth as a signed sheet count until composition writes stable depth.
@@ -396,17 +409,17 @@ void main() {
   // Keep only shading fields, at most eight sheets at once. Separating these
   // batches from opaque/NRD work avoids the old 32-Hit array living across both.
   // Pretrace each batch before shading it; retain front-to-back RNG order.
-  struct Sheet { vec3 p;vec3 n;vec4 color; };
+  struct Sheet { vec3 p;vec3 n;vec4 color;vec3 emission; };
   Sheet sheets[8];
   for(uint batch=0;batch<sheetCount;batch+=8) {
     uint count=min(8,sheetCount-batch);
     for(uint layer=0;layer<count;++layer) {
-      sheets[layer]=Sheet(primary.p,primary.n,primary.color);
+      sheets[layer]=Sheet(primary.p,primary.n,primary.color,primary.emission);
       if(batch+layer+1<sheetCount)primary=closest(offsetRay(primary.p,-primary.n),direction);
     }
     for(uint layer=0;layer<count;++layer) {
       Hit hit;hit.p=sheets[layer].p;hit.n=sheets[layer].n;hit.color=sheets[layer].color;
-      vec3 surfaceLight=direct(hit);
+      vec3 surfaceLight=direct(hit)+sheets[layer].emission;
       if(sharedIndirect.a!=0)surfaceLight+=hit.color.rgb*sharedIndirect.rgb;
       else for(uint i=0;i<frame.config.x;++i){vec3 d;float t;surfaceLight+=hit.color.rgb*continuation(hit,d,t)/float(frame.config.x);}
       transparent+=tint*hit.color.a*surfaceLight;tint*=hit.color.rgb*(1-hit.color.a);opacityProduct*=1-hit.color.a;
@@ -414,7 +427,7 @@ void main() {
   }
   vec3 color=transparent+tint*uintBitsToFloat(background.rgb);
 #ifdef TEMPORAL
-  imageStore(transparentLight,pixel,vec4(safeRadiance(transparent),1));
+  imageStore(transparentLight,pixel,vec4(safeRadiance(transparent+tint*imageLoad(primaryPrevious,pixel).rgb),1));
   imageStore(transmittance,pixel,vec4(signedCount<0?vec3(0):tint,opacityProduct));
 #endif
   float depth=1;

@@ -22,6 +22,7 @@ layout(location=0) out vec4 outPosition;
 layout(location=1) out vec4 outNormal;
 layout(location=2) out vec4 outAlbedo;
 layout(location=3) out vec4 outPrevious;
+layout(location=4) out vec4 outEmission;
 #endif
 void main() {
   Surface s=surfaces[draw.surfaceIndex];
@@ -43,5 +44,6 @@ void main() {
   outNormal=vec4(n,(s.state.w&2)!=0?2:1);
   outAlbedo=albedo;
   outPrevious=vec4(previousPosition,s.previousVertices!=0?1:0);
+  outEmission=vec4(materialEmission(s,uv),0);
 #endif
 }

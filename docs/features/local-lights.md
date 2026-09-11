@@ -1,5 +1,8 @@
 # Analytic local lights
 
+[Emissive maps](emissive-maps.md) also contribute triangle area sources to this
+hierarchy. The sphere-specific transport described here remains the torch path.
+
 The ray-query backend accepts unshaped `remixapi_LightInfoSphereEXT` lights. Each
 sphere is an analytic, two-sided radiance source; it is not inserted into the
 geometry acceleration structures. A light contributes only in frames containing
@@ -54,8 +57,8 @@ transparent layers. Local visibility queries stop at any accepted opaque blocker
 and reconstruct only the nearest transmitting sheet across the static and dynamic
 scene structures. Unconditional opaque blockers need no texture lookup, and shadow
 queries do not compute surface motion/history data. There is no screen-space emitter extraction or per-light
-shadow map/pass. Proxies are the only explicit emission representation, so there
-is no duplicate mesh-emission contribution or competing BSDF emitter-hit PDF.
+shadow map/pass. Emissive triangle sources use area sampling in the same hierarchy;
+secondary emitter hits do not duplicate their next-event contribution.
 
 Local next-event estimation contributes at primary surfaces, ordinary diffuse
 continuation vertices, and SHARC update vertices. Zero indirect bounces disables
@@ -162,7 +165,9 @@ block 76 produces dimmer red radiance `(40,1,0.4)`; block 75 keeps an unlit slot
 Radius is 0.08 blocks. These are artistic strengths, not physical equivalents of
 vanilla's block-light levels. The center lies 0.12 blocks above the rendered cap,
 including the cap's wall-orientation offsets. Rasterized torch/flame artwork is
-unchanged. Other emissive blocks do not acquire lights through this feature.
+unchanged. Other intrinsically luminous blocks use the separate emissive-map
+material path. Torch material emission is disabled to keep a single source of
+torch lighting.
 
 Stable IDs belong to a cell within its accepted chunk/world lifetime. Stale worker
 results never publish light changes. All resident torches are submitted regardless

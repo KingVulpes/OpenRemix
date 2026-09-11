@@ -8,14 +8,18 @@ using namespace trace::detail;
 // scenes. Variants are lazy, cached, and share the source pipeline's
 // fence/layout lifetime.
 VkPipeline PathTracer::Gpu::selectLightingPipeline(VkPipeline pipeline) {
-  if (localIlluminationActive)
+  if (localIlluminationActive && !localGuidingActive)
     return pipeline;
   auto found = lightingPipelines.find(pipeline);
   if (found == lightingPipelines.end())
     return pipeline;
   auto &source = found->second;
-  if (!source.attempted) {
-    source.attempted = true;
+  if (localIlluminationActive && !source.supportsGuiding)
+    return pipeline;
+  auto &variant = localIlluminationActive ? source.withGuiding : source.withoutLocal;
+  auto &attempted = localIlluminationActive ? source.guidingAttempted : source.attempted;
+  if (!attempted) {
+    attempted = true;
     VkShaderModuleCreateInfo ci{.sType =
                                     VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
                                 .codeSize = source.bytes,
@@ -23,10 +27,9 @@ VkPipeline PathTracer::Gpu::selectLightingPipeline(VkPipeline pipeline) {
     VkShaderModule module{};
     auto result = vkCreateShaderModule(device, &ci, nullptr, &module);
     if (result == VK_SUCCESS) {
-      const VkBool32 enabled = VK_FALSE;
-      const VkSpecializationMapEntry entry{0, 0, sizeof(enabled)};
-      const VkSpecializationInfo specialization{1, &entry, sizeof(enabled),
-                                                &enabled};
+      const VkBool32 enabled[] = {VkBool32(localIlluminationActive), VkBool32(localGuidingActive)};
+      const VkSpecializationMapEntry entries[] = {{0, 0, sizeof(VkBool32)}, {1, sizeof(VkBool32), sizeof(VkBool32)}};
+      const VkSpecializationInfo specialization{2, entries, sizeof(enabled), enabled};
       const VkComputePipelineCreateInfo create{
           .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
           .stage = {.sType =
@@ -36,16 +39,26 @@ VkPipeline PathTracer::Gpu::selectLightingPipeline(VkPipeline pipeline) {
                     .pName = "main",
                     .pSpecializationInfo = &specialization},
           .layout = source.layout};
-      result = vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &create,
-                                        nullptr, &source.withoutLocal);
+      result = vkCreateComputePipelines(device, pipelineCache, 1, &create,
+                                        nullptr, &variant);
       vkDestroyShaderModule(device, module, nullptr);
     }
     // This specialization only improves performance. The ordinary pipeline
-    // produces the same black local signal if a variant cannot be allocated.
+    // retains ordinary LightBVH sampling if guidance cannot be allocated,
+    // or a black local signal when illumination is disabled.
     if (result == VK_ERROR_DEVICE_LOST)
       throw result;
+    if (result != VK_SUCCESS && localGuidingActive) {
+      lightGuiding.pipelineFailed = true;
+      lightGuiding.valid = false;
+      lightGuiding.stats.active = 0;
+      localGuidingActive = false;
+      std::strncpy(lightGuiding.stats.unavailableReason,
+                   "Guided shader initialization failed; using LightBVH sampling",
+                   sizeof(lightGuiding.stats.unavailableReason) - 1);
+    }
   }
-  return source.withoutLocal ? source.withoutLocal : pipeline;
+  return variant ? variant : pipeline;
 }
 
 void PathTracer::Gpu::forgetLightingPipeline(VkPipeline pipeline) {
@@ -54,6 +67,8 @@ void PathTracer::Gpu::forgetLightingPipeline(VkPipeline pipeline) {
     return;
   if (found->second.withoutLocal)
     vkDestroyPipeline(device, found->second.withoutLocal, nullptr);
+  if (found->second.withGuiding)
+    vkDestroyPipeline(device, found->second.withGuiding, nullptr);
   lightingPipelines.erase(found);
 }
 } // namespace remix

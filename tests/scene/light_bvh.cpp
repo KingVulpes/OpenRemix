@@ -18,6 +18,32 @@ void require(bool value, const char *message) {
 } // namespace
 int main() {
   using namespace remix::scene;
+  require(LightBvh::falloff(1.e12, 0) == 1 && LightBvh::falloff(144, 16) == 1 &&
+              LightBvh::falloff(256, 16) == 0 && LightBvh::falloff(400, 16) == 0,
+          "Influence bound changed inner light or failed to reach black");
+  double previousFalloff = 1;
+  for (unsigned i = 0; i <= 1000; ++i) {
+    const double distance = 12 + i * .004;
+    const double fade = LightBvh::falloff(distance * distance, 16);
+    require(fade >= 0 && fade <= previousFalloff, "Influence fade is not monotonic");
+    previousFalloff = fade;
+  }
+  require(1 - LightBvh::falloff(12.001 * 12.001, 16) < 1.e-6 &&
+              LightBvh::falloff(15.999 * 15.999, 16) < 1.e-6,
+          "Influence fade has an endpoint discontinuity");
+  {
+    SphereLight live{}, unlit{};
+    live.id = 1; live.radius = .08f; live.radiance[0] = 1;
+    unlit.id = 2; unlit.radius = .08f; unlit.position[0] = 100;
+    LightBvh bounds;
+    bounds.update({live, unlit});
+    require(bounds.nodes()[0].maximum[0] < .1f,
+            "Unlit slots expanded the live influence bound");
+    unlit.radiance[0] = 1;
+    bounds.update({live, unlit});
+    require(bounds.builds == 1 && bounds.refits == 1 && bounds.nodes()[0].maximum[0] > 100,
+            "Reactivated emitter did not restore its bound by refitting");
+  }
   remix::NativeResources resources;
   remixapi_LightInfoSphereEXT sphere{};
   sphere.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_SPHERE_EXT;
@@ -107,6 +133,24 @@ int main() {
       visit(value.links[1], probability * (1 - split));
     };
     visit(0, 1);
+    // Any leaf with positive physical attenuation must keep nonzero sampling
+    // support at every enclosing node, including nodes near a range boundary.
+    std::function<void(uint32_t, bool)> bounded = [&](uint32_t node, bool supported) {
+      const auto &value = bvh.nodes()[node];
+      supported &= LightBvh::weight(value, p, n, 16) > 0;
+      if (value.links[3] == 1) {
+        const auto &emitter = bvh.emitters()[value.links[2]];
+        double d2 = 0;
+        for (unsigned c = 0; c < 3; ++c)
+          d2 += double(emitter.positionRadius[c]) * emitter.positionRadius[c];
+        require(LightBvh::falloff(d2, 16) == 0 || supported,
+                "Influence bounds culled a contributing emitter");
+      } else {
+        bounded(value.links[0], supported);
+        bounded(value.links[1], supported);
+      }
+    };
+    bounded(0, true);
     double sum = 0;
     for (unsigned i = 0; i < count; ++i) {
       require(pdf[i] > 0 && std::isfinite(pdf[i]),

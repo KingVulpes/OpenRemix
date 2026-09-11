@@ -59,13 +59,15 @@ namespace remix {
       m_traceOptions.denoiser = !std::strcmp(value, "reblur-sh");
       return REMIXAPI_ERROR_CODE_SUCCESS;
     }
-    if (!std::strcmp(key, "localIntensity")) {
+    if (!std::strcmp(key, "localIntensity") || !std::strcmp(key, "localRange")) {
+      const bool range = !std::strcmp(key, "localRange");
       float intensity = 0;
       const char *end = value + std::strlen(value);
       auto parsed = std::from_chars(value, end, intensity);
-      if (parsed.ec != std::errc{} || parsed.ptr != end || !std::isfinite(intensity) || intensity < 0 || intensity > 100)
+      if (parsed.ec != std::errc{} || parsed.ptr != end || !std::isfinite(intensity) || intensity < 0 || intensity > (range ? 1024 : 100) ||
+          (range && intensity > 0 && intensity < .01f))
         return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
-      m_traceOptions.localIntensity = intensity;
+      (range ? m_traceOptions.localRange : m_traceOptions.localIntensity) = intensity;
       return REMIXAPI_ERROR_CODE_SUCCESS;
     }
     if (!std::strcmp(key, "sunAngularDiameter")) {
@@ -101,12 +103,16 @@ namespace remix {
       m_traceOptions.localLights = number != 0;
     else if (!std::strcmp(key, "localDenoiser") && number <= 1)
       m_traceOptions.localDenoiser = number != 0;
+    else if (!std::strcmp(key, "localGuiding") && number <= 1)
+      m_traceOptions.localGuiding = number != 0;
     else if (!std::strcmp(key, "localSamples") && number >= 1 && number <= 16)
       m_traceOptions.localSamples = number;
     else if (!std::strcmp(key, "shadowDebug") && number <= 2)
       m_traceOptions.shadowDebug = number;
     else if (!std::strcmp(key, "taa") && number <= 1)
       m_traceOptions.taa = number != 0;
+    else if (!std::strcmp(key, "waterIndirectReuse") && number <= 1)
+      m_traceOptions.waterIndirectReuse = number != 0;
     else if (!std::strcmp(key, "validation") && number <= 1)
       m_traceOptions.validation = number != 0;
     else if (!std::strcmp(key, "sharc") && number <= 1)
@@ -158,6 +164,13 @@ namespace remix {
     if (!m_pathTracer)
       std::strncpy(result.unavailableReason, REMIX_HAS_SHARC ? "Path tracing is inactive" : "SHARC was disabled at build time",
                    sizeof(result.unavailableReason) - 1);
+    return result;
+  }
+  remixapi_LocalLightGuidingStatisticsEXT RemixNativeRuntime::localLightGuidingStatistics() const {
+    auto result = m_pathTracer ? m_pathTracer->localLightGuidingStatistics()
+        : remixapi_LocalLightGuidingStatisticsEXT{.structSize = sizeof(remixapi_LocalLightGuidingStatisticsEXT)};
+    result.requested = m_traceOptions.localGuiding;
+    result.influenceRange = m_traceOptions.localRange;
     return result;
   }
   remixapi_LocalLightStatisticsEXT RemixNativeRuntime::localLightStatistics() const {

@@ -107,8 +107,10 @@ namespace remix::trace::detail {
     uint64_t lightNodes = 0, lightEmitters = 0;
     uint32_t localConfig[4] = {};
     float localScale[4] = {};
+    uint64_t lightGuideRead = 0, lightGuideWrite = 0;
+    uint32_t lightGuideConfig[4] = {}; // capacity, node count, reserved
   };
-  static_assert(sizeof(Frame) == 384 && offsetof(Frame, lightNodes) == 336 && offsetof(Frame, localConfig) == 352 && offsetof(Frame, localScale) == 368 && offsetof(Frame, skyRadiance) == 224 &&
+  static_assert(sizeof(Frame) == 416 && offsetof(Frame, lightGuideRead) == 384 && offsetof(Frame, lightGuideConfig) == 400 && offsetof(Frame, lightNodes) == 336 && offsetof(Frame, localConfig) == 352 && offsetof(Frame, localScale) == 368 && offsetof(Frame, skyRadiance) == 224 &&
                 offsetof(Frame, sharcHash) == 240 && offsetof(Frame, sharcConfig) == 272 &&
                 offsetof(Frame, sharcGrid) == 288 && offsetof(Frame, sharcPreviousCamera) == 304 && offsetof(Frame, sun) == 320);
   inline float linear(float c) { return c <= .04045f ? c / 12.92f : std::pow((c + .055f) / 1.055f, 2.4f); }
@@ -152,6 +154,7 @@ namespace remix {
     VkDescriptorPool pool = VK_NULL_HANDLE;
     VkDescriptorSet set = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
+    VkPipelineCache pipelineCache = VK_NULL_HANDLE;
     VkPipeline transparencyCompute{}, temporalTransparencyCompute{};
     VkPipeline compute = VK_NULL_HANDLE, composite[2] = {};
     struct LightingPipeline {
@@ -159,10 +162,13 @@ namespace remix {
       size_t bytes = 0;
       VkPipelineLayout layout = VK_NULL_HANDLE;
       VkPipeline withoutLocal = VK_NULL_HANDLE;
-      bool attempted = false;
+      VkPipeline withGuiding = VK_NULL_HANDLE;
+      bool attempted = false, guidingAttempted = false;
+      bool supportsGuiding = true;
     };
     std::unordered_map<VkPipeline, LightingPipeline> lightingPipelines;
     bool localIlluminationActive = false;
+    bool localGuidingActive = false;
     VkPipeline selectLightingPipeline(VkPipeline pipeline);
     void forgetLightingPipeline(VkPipeline pipeline);
     VkShaderModule shaders[3] = {};
@@ -204,7 +210,7 @@ namespace remix {
     bool localSeen = false, postLocal = false, postLocalRequested = false;
     bool postLocalDenoise = false, postLocalDenoiseRequested = false;
     uint64_t previousLocalGeneration = 0;
-    float previousLocalIntensity = 0;
+    float previousLocalIntensity = 0, previousLocalRange = 0;
     uint32_t previousLocalActive = 0, localResponsiveFrames = 0;
     float previousSun[8] = {}, pendingSun[8] = {};
     bool postReblur = false, postTaa = false, postAttempted = false, rendered = false;
@@ -223,6 +229,19 @@ namespace remix {
     std::unique_ptr<Buffer> scratch, table, uniform;
     scene::LightBvh lightBvh;
     std::unique_ptr<Buffer> lightNodes, lightEmitters;
+    struct LightGuiding {
+      static constexpr uint32_t capacity = 65536;
+      std::unique_ptr<Buffer> history[2], readback;
+      uint32_t writeIndex = 0;
+      bool valid = false, pending = false, attempted = false, pipelineFailed = false;
+      uint64_t generation = 0;
+      float range = 0;
+      remixapi_LocalLightGuidingStatisticsEXT stats{.structSize = sizeof(remixapi_LocalLightGuidingStatisticsEXT)};
+    } lightGuiding;
+    void configureLightGuiding(Frame &frame, const TraceOptions &options);
+    void beginLightGuiding(VkCommandBuffer command);
+    void finishLightGuiding(VkCommandBuffer command);
+    void completeLightGuiding();
     std::vector<std::unique_ptr<Buffer>> uploads;
     std::vector<std::shared_ptr<Accel>> retired;
     struct Geometry {
@@ -263,7 +282,7 @@ namespace remix {
       uint64_t reset = 0, warmFrames = 0;
       uint32_t scale = 0, bounces = 0, responsiveFrames = 0, warmTarget = 64;
       uint32_t localConfig[4] = {};
-      float localIntensity = 0;
+      float localIntensity = 0, localRange = 0;
       float previousEye[3] = {}, light[9] = {};
       std::vector<uint8_t> geometry, dynamicGeometry;
       remixapi_SharcStatisticsEXT stats{.structSize = sizeof(remixapi_SharcStatisticsEXT)};

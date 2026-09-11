@@ -18,7 +18,7 @@ runtime = ctypes.CDLL(str(library), **({'winmode': 0} if sys.platform == 'win32'
 for name in (root / 'tests/abi/exports.txt').read_text().splitlines():
     assert getattr(runtime, name), name
 for name in ('remixapi_GetBackendCapabilitiesEXT', 'remixapi_GetTracingStatisticsEXT',
-             'remixapi_GetLocalLightStatisticsEXT', 'remixapi_GetShadowStatisticsEXT', 'remixapi_GetSharcStatisticsEXT', 'remixapi_GetDenoisingCapabilitiesEXT', 'remixapi_GetDenoisingStatisticsEXT'):
+             'remixapi_GetLocalLightGuidingStatisticsEXT', 'remixapi_GetLocalLightStatisticsEXT', 'remixapi_GetShadowStatisticsEXT', 'remixapi_GetSharcStatisticsEXT', 'remixapi_GetDenoisingCapabilitiesEXT', 'remixapi_GetDenoisingStatisticsEXT'):
     assert getattr(runtime, name), name
 assert runtime.remixapi_imgui_Begin(None, None, 0) == 0
 value = ctypes.c_float(12)

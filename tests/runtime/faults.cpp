@@ -63,6 +63,25 @@ extern "C" VKAPI_ATTR VkResult VKAPI_CALL vkCreateComputePipelines(VkDevice devi
                                                                    const VkAllocationCallbacks *alloc,
                                                                    VkPipeline *outputs) {
   ++computeAttempts;
+  if (fault("light-guiding-compute")) {
+    for (uint32_t i = 0; i < count; ++i) {
+      const auto *specialization = infos[i].stage.pSpecializationInfo;
+      if (!specialization)
+        continue;
+      for (uint32_t j = 0; j < specialization->mapEntryCount; ++j) {
+        const auto &entry = specialization->pMapEntries[j];
+        VkBool32 enabled = VK_FALSE;
+        if (entry.constantID != 1 || entry.size != sizeof(enabled))
+          continue;
+        std::memcpy(&enabled, static_cast<const char *>(specialization->pData) + entry.offset, sizeof(enabled));
+        if (enabled) {
+          for (uint32_t k = 0; k < count; ++k)
+            outputs[k] = VK_NULL_HANDLE;
+          return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+        }
+      }
+    }
+  }
   if (fault("compute") || (fault("transparency-compute") && computeAttempts == 2) ||
       ((fault("sharc-compute") || fault("sigma-compute")) && computeAttempts == 3)) {
     for (uint32_t i = 0; i < count; ++i)
@@ -157,7 +176,12 @@ extern "C" VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceFeatures2(VkPhysicalDev
 }
 
 extern "C" VKAPI_ATTR VkResult VKAPI_CALL vkCreateBuffer(VkDevice device, const VkBufferCreateInfo *info,
-                                                         const VkAllocationCallbacks *alloc, VkBuffer *output) {
+                                                        const VkAllocationCallbacks *alloc, VkBuffer *output) {
+  if (fault("light-guiding-allocation") && info->size == 1052672 &&
+      (info->usage & VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) {
+    *output = VK_NULL_HANDLE;
+    return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+  }
   // The focused cache fixture uses 2^18 entries: fail its 16-byte accumulation
   // buffer after the hash buffer was allocated, exercising partial cleanup.
   if (fault("sharc-allocation") && info->size == (uint64_t(1) << 18) * 16 &&

@@ -7,6 +7,13 @@ layout(buffer_reference,std430,buffer_reference_align=16) readonly buffer LightN
 float lightRandom(inout uint state) {
   state=hash(state+0x9e3779b9u);return float(state>>8)*(1.0/16777216.0);
 }
+float localFalloff(float distance2) {
+  float reach=frame.localScale.y;
+  if(reach<=0)return 1;
+  // Preserve the inner 75%; a C1 fade reaches exactly zero at the bound.
+  float t=clamp((distance2*frame.localScale.w-.5625)*(16.0/7.0),0,1);
+  return (1-t)*(1-t)*(1+2*t);
+}
 float lightWeight(LightNode node,vec3 p,vec3 n) {
   vec3 halfSize=.5*(node.maximum.xyz-node.minimumPower.xyz);
   vec3 delta=.5*(node.maximum.xyz+node.minimumPower.xyz)-p;
@@ -16,46 +23,94 @@ float lightWeight(LightNode node,vec3 p,vec3 n) {
   float cosine=min(1,(dot(delta,n)+sqrt(radius2))*inversesqrt(max(max(dot(delta,delta),radius2),1e-12)));
   // Distance to the box prioritizes nearby clusters. Center/radius distance
   // badly under-samples a dominant nearby torch in a large, flat light field.
-  return node.minimumPower.w*cosine/max(max(dot(nearest,nearest),node.maximum.w),1e-12);
+  return localFalloff(dot(nearest,nearest))*node.minimumPower.w*cosine/max(max(dot(nearest,nearest),node.maximum.w),1e-12);
+}
+// Visibility needs the nearest transmitting sheet, but any accepted opaque
+// intersection blocks the whole segment. Avoid closest-hit shading (including
+// motion/previous vertices) and texture fetches for unconditional opaque hits.
+struct LightOccluder { float t; vec3 p; vec3 n; vec3 transmission; };
+bool localOccluder(accelerationStructureEXT scene,vec3 origin,vec3 direction,inout LightOccluder hit) {
+  rayQueryEXT query;
+  rayQueryInitializeEXT(query,scene,gl_RayFlagsNoOpaqueEXT,255,origin,0,direction,hit.t);
+  while(rayQueryProceedEXT(query)) {
+    if(rayQueryGetIntersectionTypeEXT(query,false)!=gl_RayQueryCandidateIntersectionTriangleEXT)continue;
+    Surface s=surfaces[rayQueryGetIntersectionInstanceCustomIndexEXT(query,false)+rayQueryGetIntersectionGeometryIndexEXT(query,false)];
+    if((s.state.w&4)==0&&!rayQueryGetIntersectionFrontFaceEXT(query,false))continue;
+    if(!acceptCandidate(s,rayQueryGetIntersectionPrimitiveIndexEXT(query,false),rayQueryGetIntersectionBarycentricsEXT(query,false)))continue;
+    if((s.state.w&2)==0) {rayQueryTerminateEXT(query);return true;}
+    rayQueryConfirmIntersectionEXT(query);
+  }
+  if(rayQueryGetIntersectionTypeEXT(query,true)==gl_RayQueryCommittedIntersectionNoneEXT)return false;
+  hit.t=rayQueryGetIntersectionTEXT(query,true);
+  Surface s=surfaces[rayQueryGetIntersectionInstanceCustomIndexEXT(query,true)+rayQueryGetIntersectionGeometryIndexEXT(query,true)];
+  uint tri=rayQueryGetIntersectionPrimitiveIndexEXT(query,true)*3;
+  vec3 a=s.vertices.v[s.indices.i[tri]].position.xyz;
+  vec3 b=s.vertices.v[s.indices.i[tri+1]].position.xyz;
+  vec3 c=s.vertices.v[s.indices.i[tri+2]].position.xyz;
+  vec2 bary=rayQueryGetIntersectionBarycentricsEXT(query,true);
+  mat4x3 model=rayQueryGetIntersectionObjectToWorldEXT(query,true);
+  hit.p=model*vec4(a+bary.x*(b-a)+bary.y*(c-a),1);
+  hit.n=normalize(cross(model*vec4(b-a,0),model*vec4(c-a,0)));
+  if(dot(hit.n,direction)>0)hit.n=-hit.n;
+  vec4 color=albedo(s,tri/3,bary);
+  hit.transmission=color.rgb*(1-color.a);
+  return false;
 }
 vec3 localVisibility(vec3 origin,vec3 endpoint) {
   vec3 transmission=vec3(1);
   for(uint layer=0;layer<32;++layer) {
     vec3 delta=endpoint-origin;float distance=length(delta);
     if(distance<=1e-6)return transmission;
-    Hit hit=closest(origin,delta/distance,distance);
-    if(hit.t==1e30)return transmission;
-    if(!hit.blended)return vec3(0);
-    transmission*=hit.color.rgb*(1-hit.color.a);
+    vec3 direction=delta/distance;
+    LightOccluder hit;hit.t=distance;
+    if((frame.target.z&1)!=0&&localOccluder(staticScene,origin,direction,hit))return vec3(0);
+    if((frame.target.z&2)!=0&&localOccluder(dynamicScene,origin,direction,hit))return vec3(0);
+    if(hit.t==distance)return transmission;
+    transmission*=hit.transmission;
     origin=offsetRay(hit.p,-hit.n);
   }
   return vec3(0);
 }
+#include "light_guiding.glsl"
 // Returns irradiance/pi, ready to multiply by the receiver's linear albedo.
-vec3 localLighting(Hit hit,uint state,uint samples,out float lightDistance) {
+vec3 localLighting(Hit hit,uint state,uint samples,out float lightDistance,bool useGuiding) {
   lightDistance=0;
   if(!enableLocalLights||frame.localConfig.x==0||samples==0)return vec3(0);
   LightNodes nodes=LightNodes(frame.lightNodes);
   LightEmitters emitters=LightEmitters(frame.lightEmitters);
+  if(lightWeight(nodes.data[0],hit.p,hit.n)<=0)return vec3(0);
+  uint guideKey=0,preferred=0;
+  float guideMix=0,preferredPdf=-1;
+  if(enableLocalGuiding&&useGuiding&&frame.lightGuideWrite!=0) {
+    guideKey=lightGuideKey(hit);
+    guideMix=lightGuideProposal(nodes,hit,guideKey,preferred);
+  }
   vec3 result=vec3(0);float distanceWeight=0;
   state=hash(state^0x746f7263u);
   for(uint sampleIndex=0;sampleIndex<samples;++sampleIndex) {
+    bool guided=guideMix>0&&lightRandom(state)<guideMix;
     uint index=0;float selectionPdf=1,u=lightRandom(state);
-    if(lightWeight(nodes.data[0],hit.p,hit.n)<=0)continue;
-    while(nodes.data[index].links.w>1) {
+    if(guided) {
+      if(preferredPdf<0)preferredPdf=lightBasePdf(nodes,hit,preferred);
+      index=preferred;selectionPdf=preferredPdf;
+    }
+    else while(nodes.data[index].links.w>1) {
       uvec4 links=nodes.data[index].links;
       float a=lightWeight(nodes.data[links.x],hit.p,hit.n),b=lightWeight(nodes.data[links.y],hit.p,hit.n);
       if(a==0&&b==0){selectionPdf=0;break;}
-      float scale=max(a,b);
-      float probability=a==0?0:b==0?1:clamp((a/scale)/(a/scale+b/scale),1e-6,1-1e-6);
+      float probability=lightSplit(a,b);
       if(u<probability) {index=links.x;selectionPdf*=probability;u/=probability;}
       else {index=links.y;selectionPdf*=1-probability;u=(u-probability)/(1-probability);}
       u=min(u,0.99999994);
     }
+    // Full mixture PDF, including the BVH component even for a guided draw.
+    selectionPdf=(1-guideMix)*selectionPdf+(index==preferred?guideMix:0);
     if(selectionPdf<=0)continue;
     LightEmitter light=emitters.data[nodes.data[index].links.z];
     vec3 delta=light.positionRadius.xyz-hit.p;
     float distance2=dot(delta,delta),radius=light.positionRadius.w;
+    float attenuation=localFalloff(distance2);
+    if(attenuation==0)continue;
     bool inside=distance2<=radius*radius;
     vec3 axis=distance2>1e-20?delta*inversesqrt(distance2):hit.n;
     float sinMax2=min(1,radius*radius/max(distance2,1e-20));
@@ -68,17 +123,22 @@ vec3 localLighting(Hit hit,uint state,uint samples,out float lightDistance) {
     vec3 direction=normalize(axis*cosTheta+sinTheta*(cos(phi)*tangent+sin(phi)*cross(axis,tangent)));
     float cosine=max(0,dot(hit.n,direction));
     if(cosine==0)continue;
-    // Solve from the angular offset to avoid cancellation of large squared distances.
     float projected=dot(delta,direction);
     vec3 perpendicular=delta-direction*projected;
     float root=sqrt(max(0,radius*radius-dot(perpendicular,perpendicular)));
     float distance=max(0,inside?projected+root:projected-root);
-    vec3 estimate=light.radiance.rgb*(2*oneMinusCos*cosine/selectionPdf)*frame.localScale.x;
+    vec3 physical=light.radiance.rgb*(2*oneMinusCos*cosine*attenuation)*frame.localScale.x;
+    vec3 estimate=physical/selectionPdf;
     vec3 visibility=localVisibility(offsetRay(hit.p,hit.n),hit.p+direction*distance);
     result+=estimate*visibility;
+    if(enableLocalGuiding&&useGuiding&&guideKey!=0&&(hash(state^0xd1b54a35u)&63u)==0)
+      trainLightGuide(guideKey,index,guided,visibility,physical);
     float weight=dot(estimate,vec3(.2126,.7152,.0722));
     lightDistance+=distance*weight;distanceWeight+=weight;
   }
   lightDistance=distanceWeight>0?lightDistance/distanceWeight:0;
   return result/float(samples);
+}
+vec3 localLighting(Hit hit,uint state,uint samples,out float lightDistance) {
+  return localLighting(hit,state,samples,lightDistance,false);
 }

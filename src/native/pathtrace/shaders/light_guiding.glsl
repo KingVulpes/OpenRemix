@@ -1,0 +1,63 @@
+// Previous-frame world-cell feedback changes only the proposal. Every selected
+// light gets a fresh visibility ray and the complete mixture PDF. The read bank
+// stays immutable during the frame, including across all samples at a pixel.
+layout(buffer_reference,std430,buffer_reference_align=16) buffer LightGuideCache { uvec4 data[]; };
+float lightSplit(float a,float b) {
+  float scale=max(a,b);
+  return a==0?0:b==0?1:clamp((a/scale)/(a/scale+b/scale),1e-6,1-1e-6);
+}
+uint lightGuideKey(Hit hit) {
+  uvec3 cell=floatBitsToUint(floor(hit.p*.5));
+  vec3 a=abs(hit.n);
+  uint axis=a.x>a.y?(a.x>a.z?0u:2u):(a.y>a.z?1u:2u);
+  uint face=axis*2u+(hit.n[axis]>0?1u:0u);
+  return max(1u,hash(hash(cell.x)^hash(cell.y+0x9e3779b9u)^hash(cell.z+face*0x85ebca6bu)));
+}
+float lightGuideProposal(LightNodes nodes,Hit hit,uint key,out uint preferred) {
+  preferred=0;
+  if(frame.lightGuideRead==0)return 0;
+  uvec4 previous=LightGuideCache(frame.lightGuideRead).data[key&(frame.lightGuideConfig.x-1)];
+  if(previous.x!=key||previous.y==0||previous.z<4)return 0;
+  float mixWeight=.75*clamp(1-float(previous.w)/(255*float(previous.z)),0,1);
+  if(mixWeight<.05)return 0;
+  preferred=(previous.y&0xfffffu)-1u;
+  if(preferred>=frame.lightGuideConfig.y||nodes.data[preferred].links.w!=1||
+     lightWeight(nodes.data[preferred],hit.p,hit.n)<=0)return 0;
+  return mixWeight;
+}
+float lightBasePdf(LightNodes nodes,Hit hit,uint preferred) {
+  // Preorder subtrees occupy contiguous node ranges; no extra emitter path or
+  // parent buffer is needed to evaluate the base PDF of a cached leaf.
+  uint index=0;float pdf=1;
+  while(nodes.data[index].links.w>1) {
+    uvec4 links=nodes.data[index].links;
+    float a=lightWeight(nodes.data[links.x],hit.p,hit.n),b=lightWeight(nodes.data[links.y],hit.p,hit.n);
+    if(a==0&&b==0)return 0;
+    float split=lightSplit(a,b);
+    bool right=preferred>=links.y;
+    pdf*=right?1-split:split;
+    index=right?links.y:links.x;
+  }
+  return index==preferred?pdf:0;
+}
+void trainLightGuide(uint key,uint leaf,bool guided,vec3 visibility,vec3 physical) {
+  LightGuideCache next=LightGuideCache(frame.lightGuideWrite);
+  uint capacity=frame.lightGuideConfig.x;
+  float visible=clamp(dot(visibility,vec3(.2126,.7152,.0722)),0,1);
+  atomicAdd(next.data[capacity].x,1u);
+  if(guided)atomicAdd(next.data[capacity].y,1u);
+  if(visible>0)atomicAdd(next.data[capacity].z,1u);
+  uint slot=key&(capacity-1),owner=atomicCompSwap(next.data[slot].x,0u,key);
+  if(owner!=0&&owner!=key)return; // A collision loses guidance, never energy.
+  // Only base-distribution samples estimate the blocked fraction. Guided
+  // successes must not feed back as an artificially unoccluded base proposal.
+  if(!guided) {
+    atomicAdd(next.data[slot].z,1u);
+    atomicAdd(next.data[slot].w,uint(round(visible*255)));
+  }
+  float contribution=dot(physical*visibility,vec3(.2126,.7152,.0722));
+  if(contribution>0) {
+    uint score=min(floatBitsToUint(contribution)>>20,0xfffu);
+    atomicMax(next.data[slot].y,(score<<20)|(leaf+1u));
+  }
+}

@@ -26,7 +26,8 @@ public:
   // Same bounded-distance importance estimate as the shader; useful for PDF
   // validation.
   static double weight(const LightNode &node, const float position[3],
-                       const float normal[3]);
+                       const float normal[3], double range = 0);
+  static double falloff(double distanceSquared, double range);
 
 private:
   uint32_t build(std::vector<uint32_t> &order, uint32_t begin, uint32_t end,

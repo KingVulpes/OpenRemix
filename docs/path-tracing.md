@@ -39,6 +39,7 @@ only its previous Vulkan 1.1 graphics/presentation capabilities.
 | `accumulate` | `0`, `1`, `false`, `true` | false |
 | `denoiser` | `off`, `reblur-sh` | reblur-sh |
 | `taa` | `0`, `1`, `false`, `true` | true |
+| `waterIndirectReuse` | Same booleans; [flat water indirect reconstruction](features/water-indirect.md) with TAA | true |
 | `validation` | Same booleans; NRD validation overlay | false |
 | `forceRebuild` | Same booleans; rebuild dynamic TLAS for profiling | false |
 | `sky` | Same booleans; indirect environment illumination | true |

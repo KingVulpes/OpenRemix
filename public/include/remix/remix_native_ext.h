@@ -82,6 +82,16 @@ typedef struct remixapi_LocalLightStatisticsEXT {
   char unavailableReason[256];
 } remixapi_LocalLightStatisticsEXT;
 
+// Optional visibility-guided local-light diagnostics. Query counters are sampled
+// at 1/64 of opaque-primary light samples; they are not full ray counts.
+typedef struct remixapi_LocalLightGuidingStatisticsEXT {
+  uint32_t structSize, requested, active, capacity;
+  uint32_t sampledQueries, sampledGuided, sampledVisible, reserved;
+  uint64_t renderedFrames, historyResets, memoryBytes;
+  float influenceRange, cellSize;
+  char unavailableReason[256];
+} remixapi_LocalLightGuidingStatisticsEXT;
+
 typedef struct remixapi_SharcStatisticsEXT {
   uint32_t structSize, supported, requested, active;
   uint32_t capacity, occupiedEntries, updatePaths, queryAttempts, queryHits;
@@ -186,6 +196,8 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetPresentationCount(uint64_t
 typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_GetBackendCapabilitiesEXT)(remixapi_BackendCapabilitiesEXT* capabilities);
 typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_GetLocalLightStatisticsEXT)(remixapi_LocalLightStatisticsEXT* statistics);
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetLocalLightStatisticsEXT(remixapi_LocalLightStatisticsEXT* statistics);
+typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_GetLocalLightGuidingStatisticsEXT)(remixapi_LocalLightGuidingStatisticsEXT* statistics);
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetLocalLightGuidingStatisticsEXT(remixapi_LocalLightGuidingStatisticsEXT* statistics);
 typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_GetShadowStatisticsEXT)(remixapi_ShadowStatisticsEXT* statistics);
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetShadowStatisticsEXT(remixapi_ShadowStatisticsEXT* statistics);
 

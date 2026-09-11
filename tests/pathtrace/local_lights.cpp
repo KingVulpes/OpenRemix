@@ -103,6 +103,8 @@ int main(int argc, char **argv) {
   const auto blocker = quad(0, .25f, -2, 2, -2, .7f, black);
   const auto holes = quad(0, .25f, -2, 2, -2, .7f, cutout);
   const auto glass = quad(0, .25f, -2, 2, -2, .7f, tint);
+  const auto secondGlass = quad(0, .375f, -2, 2, -2, .7f, tint);
+  const auto farBlocker = quad(0, .375f, -2, 2, -2, .7f, black);
   const auto beyond = quad(0, .9f, -2, 2, -2, 2, black);
   remixapi_CameraTemporalEXT epoch{};
   epoch.sType = REMIXAPI_STRUCT_TYPE_CAMERA_TEMPORAL_EXT;
@@ -125,6 +127,7 @@ int main(int argc, char **argv) {
   ok(api.CreateLight(&light, &torch));
   std::vector<remixapi_LightHandle> lights{torch};
   std::vector<remixapi_MeshHandle> occluders;
+  remixapi_MeshHandle dynamicOccluder{};
   auto config = [&](const char *key, const char *value) {
     ok(api.SetConfigVariable(
         (std::string("rtx.native.pathtrace.") + key).c_str(), value));
@@ -134,11 +137,13 @@ int main(int argc, char **argv) {
     identity.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_IDENTITY_EXT;
     identity.instanceId = reinterpret_cast<uintptr_t>(mesh);
     identity.rasterVisible = 1;
-    identity.classification = REMIXAPI_INSTANCE_STATIC_EXT;
+    identity.classification = mesh == dynamicOccluder
+                                  ? REMIXAPI_INSTANCE_DYNAMIC_EXT
+                                  : REMIXAPI_INSTANCE_STATIC_EXT;
     remixapi_InstanceInfoBlendEXT blend{};
     blend.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_BLEND_EXT;
     blend.pNext = &identity;
-    blend.alphaBlendEnabled = mesh == glass;
+    blend.alphaBlendEnabled = mesh == glass || mesh == secondGlass;
     remixapi_InstanceInfo instance{};
     instance.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO;
     instance.pNext = &blend;
@@ -148,7 +153,11 @@ int main(int argc, char **argv) {
       instance.transform.matrix[i][i] = 1;
     ok(api.DrawInstance(&instance));
   };
+  bool varyCamera = false;
+  unsigned cameraSequence = 0;
   auto frame = [&] {
+    if (varyCamera)
+      camera.view[0][3] = ++cameraSequence % 2 ? .00001f : 0;
     ok(api.PumpEvents());
     ok(api.SetupCamera(&camera));
     for (auto emitter : lights)
@@ -170,12 +179,19 @@ int main(int argc, char **argv) {
     ok(remixapi_GetLocalLightStatisticsEXT(&stats));
     return stats;
   };
+  auto guiding = [&] {
+    remixapi_LocalLightGuidingStatisticsEXT stats{};
+    stats.structSize = sizeof(stats);
+    ok(remixapi_GetLocalLightGuidingStatisticsEXT(&stats));
+    return stats;
+  };
   auto tracing = [&] {
     remixapi_TracingStatisticsEXT stats{};
     stats.structSize = sizeof(stats);
     ok(remixapi_GetTracingStatisticsEXT(&stats));
     return stats;
   };
+  double redError = 0;
   auto readback = [&](const std::string &name) {
     const auto file = (directory / (name + ".png")).string();
     ok(api.RequestPresentedScreenshot(file.c_str()));
@@ -185,13 +201,15 @@ int main(int argc, char **argv) {
     auto pixels = stbi_load(file.c_str(), &width, &height, &channels, 4);
     require(pixels, "Missing local-light screenshot");
     std::array<float, 3> average{};
+    redError = 0;
     for (int y = height / 2 - 4; y < height / 2 + 4; ++y)
       for (int x = width / 2 - 4; x < width / 2 + 4; ++x)
         for (int c = 0; c < 3; ++c) {
           float v = pixels[(y * width + x) * 4 + c] / 255.f;
-          average[c] += (v <= .04045f ? v / 12.92f
-                                      : std::pow((v + .055f) / 1.055f, 2.4f)) /
-                        64;
+          const float linear = v <= .04045f ? v / 12.92f : std::pow((v + .055f) / 1.055f, 2.4f);
+          average[c] += linear / 64;
+          if (c == 0)
+            redError += (linear - .1407) * (linear - .1407) / 64;
         }
     stbi_image_free(pixels);
     std::printf("%s linear RGB: %.5f %.5f %.5f\n", name.c_str(), average[0],
@@ -205,6 +223,21 @@ int main(int argc, char **argv) {
       frame();
     return readback(name);
   };
+  if (const char *fault = std::getenv("REMIX_TEST_FAULT"); fault &&
+      (std::string(fault) == "light-guiding-allocation" || std::string(fault) == "light-guiding-compute")) {
+    config("accumulate", "0");
+    light.radiance = {.01f, .01f, .01f};
+    light.hash = next++;
+    remixapi_LightHandle extra{};
+    ok(api.CreateLight(&light, &extra));
+    lights.push_back(extra);
+    const auto value = capture("guiding-fallback", 48);
+    require(value[0] > .1f && !guiding().active && guiding().unavailableReason[0] &&
+                local().denoiserActive && temporal().activeTaa,
+            "Guiding failure did not retain ordinary local lighting and denoising");
+    ok(api.Shutdown());
+    return 0;
+  }
   if (std::getenv("REMIX_TEST_FAULT")) {
     config("accumulate", "0");
     const auto value = capture("fallback", 48);
@@ -281,6 +314,15 @@ int main(int argc, char **argv) {
     return 0;
   }
   remixapi_LocalLightStatisticsEXT invalid{};
+  remixapi_LocalLightGuidingStatisticsEXT invalidGuide{};
+  require(remixapi_GetLocalLightGuidingStatisticsEXT(nullptr) == REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS &&
+              remixapi_GetLocalLightGuidingStatisticsEXT(&invalidGuide) == REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS,
+          "Malformed guiding diagnostics accepted");
+  for (const char *range : {"-1", "nan", "inf", "0.001", "1025", "1junk"})
+    require(api.SetConfigVariable("rtx.native.pathtrace.localRange", range) == REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS,
+            "Invalid influence range accepted");
+  require(api.SetConfigVariable("rtx.native.pathtrace.localGuiding", "2") == REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS,
+          "Invalid guiding toggle accepted");
   require(remixapi_GetLocalLightStatisticsEXT(nullptr) ==
                   REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS &&
               remixapi_GetLocalLightStatisticsEXT(&invalid) ==
@@ -330,6 +372,23 @@ int main(int argc, char **argv) {
       require(tinted[1] > .015 && tinted[1] < open[1] * .8 &&
                   tinted[0] < tinted[1] * .3,
               "Tinted transparent torch shadows lost color/attenuation");
+      // Visibility may terminate at any opaque hit, but transmitting sheets
+      // must still be visited in order across the static and dynamic TLASes.
+      for (auto moving : {glass, secondGlass}) {
+        dynamicOccluder = moving;
+        occluders = {glass, secondGlass};
+        const auto layers = capture(prefix + (moving == glass ? "near-dynamic" : "far-dynamic"), frames);
+        require(std::abs(layers[1] - tinted[1] * .5) < .007 &&
+                    layers[0] < tinted[0],
+                "Mixed static/dynamic transmission lost a sheet");
+      }
+      for (auto moving : {glass, farBlocker}) {
+        dynamicOccluder = moving;
+        occluders = {glass, farBlocker};
+        require(capture(prefix + (moving == glass ? "static-blocker" : "dynamic-blocker"), frames)[0] < .005,
+                "Opaque blocker behind tinted sheet leaked torch light");
+      }
+      dynamicOccluder = {};
       occluders = {beyond};
       auto behind = capture(prefix + "beyond-light", frames);
       require(std::abs(behind[0] - open[0]) < .015,
@@ -370,6 +429,21 @@ int main(int argc, char **argv) {
       light.radiance = {20, 10, 4};
       ok(api.UpdateLightDefinition(torch, &light));
     }
+  config("accumulate", "1");
+  occluders.clear();
+  const auto unlimited = capture("range-unlimited-near", 32);
+  config("localRange", "0.5");
+  require(capture("range-outside", 32)[0] < .005, "Light survived its influence bound");
+  config("localRange", "1");
+  const auto faded = capture("range-fade", 48);
+  const double t = (.74 - .5625) * (16. / 7.);
+  const double attenuation = (1 - t) * (1 - t) * (1 + 2 * t);
+  require(std::abs(faded[0] - unlimited[0] * attenuation) < .012,
+          "GPU influence fade disagrees with the bounded radiance model");
+  config("localRange", "0");
+  require(std::abs(capture("range-unlimited", 32)[0] - unlimited[0]) < .012,
+          "Unlimited reach did not restore legacy radiance");
+  config("localRange", "16");
   // The receiver is in direct shadow, while white side walls can receive torch
   // light around a short partition and return it through diffuse bounces.
   const auto partition = quad(0, .25f, -.3f, .3f, -2, .7f, black);
@@ -412,6 +486,75 @@ int main(int argc, char **argv) {
   config("bounces", "0");
   config("samples", "1");
   config("sharc", "0");
+  config("denoiser", "off");
+  config("taa", "0");
+  config("accumulate", "1");
+  const auto guideWall = quad(0, -.25f, -2, 2, -2, .7f, black);
+  occluders = {guideWall};
+  light.radiance = {20, 10, 4};
+  sphere.position = {.5f, 0, .1f};
+  ok(api.UpdateLightDefinition(torch, &light));
+  sphere.position.x = -.5f;
+  light.radiance = {1, 4, 1};
+  for (unsigned i = 0; i < 16; ++i) {
+    light.hash = next++;
+    remixapi_LightHandle emitter{};
+    ok(api.CreateLight(&light, &emitter));
+    lights.push_back(emitter);
+  }
+  config("localGuiding", "0");
+  const auto reference = capture("guiding-reference", 128);
+  require(std::abs(reference[0] - .1407f) < .025, "Blocked-light reference is incorrect");
+  config("localGuiding", "1");
+  config("localSamples", "1");
+  const auto guided = capture("guiding-occluded", 128);
+  const auto trained = guiding();
+  require(trained.active && trained.sampledQueries > 0 && trained.sampledGuided > trained.sampledQueries / 8,
+          "Recent visibility did not guide any meaningful fraction of samples");
+  require(std::abs(guided[0] - reference[0]) < .025 && std::abs(guided[1] - reference[1]) < .015,
+          "Guided mixture PDF changed expected radiance");
+  std::printf("guiding: %u / %u sampled rays guided, %u visible\n", trained.sampledGuided,
+              trained.sampledQueries, trained.sampledVisible);
+  // Tiny camera motion restarts only progressive accumulation. It produces
+  // independent one-sample images while retaining world-cell guide history.
+  varyCamera = true;
+  double errors[2] = {};
+  for (unsigned enabled = 0; enabled < 2; ++enabled) {
+    config("localGuiding", enabled ? "1" : "0");
+    for (unsigned i = 0; i < 32; ++i)
+      frame();
+    for (unsigned i = 0; i < 16; ++i) {
+      readback("noise-" + std::to_string(enabled) + "-" + std::to_string(i));
+      errors[enabled] += redError / 16;
+    }
+  }
+  varyCamera = false;
+  camera.view[0][3] = 0;
+  require(errors[1] < errors[0] * .8, "Guidance did not reduce blocked-room sampling error");
+  std::printf("one-sample image MSE: base %.6f, guided %.6f\n", errors[0], errors[1]);
+  const auto openingResets = guiding().historyResets;
+  occluders.clear();
+  for (unsigned i = 0; i < 24; ++i)
+    frame();
+  require(readback("guiding-opening")[1] > .3f && guiding().historyResets == openingResets,
+          "Visibility exploration failed to recover newly uncovered lights");
+  occluders = {guideWall};
+  config("denoiser", "reblur-sh");
+  config("taa", "1");
+  config("accumulate", "0");
+  const auto filteredGuide = capture("guiding-one-nrd", 64);
+  require(std::abs(filteredGuide[0] - reference[0]) < .025 && local().denoiserActive,
+          "One-sample guided local NRD disagrees with the reference");
+  const auto globalResets = temporal().historyResets, guideResets = guiding().historyResets;
+  light.radiance = {};
+  ok(api.UpdateLightDefinition(lights.back(), &light));
+  for (unsigned i = 0; i < 8; ++i)
+    frame();
+  require(temporal().historyResets == globalResets && guiding().historyResets > guideResets,
+          "A light update failed to invalidate guidance independently of global history");
+  occluders.clear();
+  config("localSamples", "2");
+  sphere.position = {.5f, 0, .1f};
   // Compare many-light estimates against the same sphere integral. Duplicate
   // analytic sources have fixed total power: selection count cannot change
   // energy.

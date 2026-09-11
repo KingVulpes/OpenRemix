@@ -84,16 +84,21 @@ namespace remix {
               .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = size, .pCode = code};
           VkShaderModule shader{};
           check(vkCreateShaderModule(device, &ci, nullptr, &shader));
+          // Compile ordinary local lighting first; guidance is a lazy variant.
+          const VkBool32 guidance = VK_FALSE;
+          const VkSpecializationMapEntry guideEntry{1, 0, sizeof(guidance)};
+          const VkSpecializationInfo noGuiding{1, &guideEntry, sizeof(guidance), &guidance};
           VkComputePipelineCreateInfo pi{.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
                                          .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                                                    .stage = VK_SHADER_STAGE_COMPUTE_BIT,
                                                    .module = shader,
-                                                   .pName = "main"},
+                                                   .pName = "main", .pSpecializationInfo = &noGuiding},
                                          .layout = temporalLayout};
-          auto result = vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pi, nullptr, &out);
+          auto result = vkCreateComputePipelines(device, pipelineCache, 1, &pi, nullptr, &out);
           vkDestroyShaderModule(device, shader, nullptr);
           check(result);
           lightingPipelines[out] = {code, size, temporalLayout};
+          lightingPipelines[out].supportsGuiding = &out == &temporalCompute;
         };
         if (postLocal && postSigma)
           make(trace::localSigmaTemporalShader, sizeof(trace::localSigmaTemporalShader), temporalCompute);
@@ -143,6 +148,11 @@ namespace remix {
     if (!g.rendered)
       return;
     g.rendered = false;
+    if (g.localGuidingActive) {
+      g.lightGuiding.writeIndex ^= 1;
+      g.lightGuiding.valid = true;
+      ++g.lightGuiding.stats.renderedFrames;
+    }
     g.history.commit();
     if (g.sharc.stats.active) {
       ++g.sharc.stats.renderedFrames;
@@ -179,6 +189,9 @@ namespace remix {
     }
     std::strncpy(result.unavailableReason, g.postFailure.c_str(), sizeof(result.unavailableReason) - 1);
     return result;
+  }
+  remixapi_LocalLightGuidingStatisticsEXT PathTracer::localLightGuidingStatistics() const {
+    return m_gpu->lightGuiding.stats;
   }
   remixapi_ShadowStatisticsEXT PathTracer::shadowStatistics() const {
     const auto &g = *m_gpu;

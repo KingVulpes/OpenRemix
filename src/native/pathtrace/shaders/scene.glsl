@@ -22,7 +22,7 @@ layout(set=0,binding=3,std140) uniform Frame {
   vec4 lightRadiance;
   uvec4 config; // samples, indirect bounces, random sequence, accumulated frames
   uvec4 target; // width, height, structure mask, raster primary visibility
-  vec4 jitter; // primary sample offset in pixels; zw reserved
+  vec4 jitter; // primary sample offset; z water indirect reuse; w reserved
   vec4 skyRadiance; // linear uniform environment; w reserved
   uint64_t sharcHash, sharcAccumulation, sharcResolved, sharcCounters;
   uvec4 sharcConfig; // active, capacity, update downscale, debug view
@@ -31,7 +31,9 @@ layout(set=0,binding=3,std140) uniform Frame {
   vec4 sun;
   uint64_t lightNodes, lightEmitters;
   uvec4 localConfig; // active lights, samples, generation low/high
-  vec4 localScale; // radiance multiplier, reserved
+  vec4 localScale; // radiance multiplier, reach, guiding requested, inverse reach squared
+  uint64_t lightGuideRead, lightGuideWrite;
+  uvec4 lightGuideConfig; // capacity, node count, reserved
 } frame;
 layout(set=0,binding=6) uniform sampler2D textures[512];
 vec3 linearColor(vec3 c) {
@@ -41,6 +43,20 @@ vec4 arg(uint index, vec4 texel, vec4 vertex, vec4 factor) {
   return index == 1 ? texel : index == 2 ? vertex : index == 3 ? factor : vec4(1);
 }
 vec4 combine(uint op, vec4 a, vec4 b) { return op == 1 ? a : op == 2 ? b : a * b; }
+// Candidate intersections need opacity only. In particular, do not linearize
+// vertex RGB or evaluate the color combiner before knowing the closest hit.
+float materialAlpha(Surface s, vec2 uv, float vertex) {
+  if ((s.state.w&1)!=0) return 1;
+  uint op=s.state.x;
+  float texel=textureLod(textures[nonuniformEXT(s.textureState.x)],uv*s.uv.xy+s.uv.zw,0).a;
+  uint first=(op>>8)&3,second=(op>>10)&3;
+  float a=first==1?texel:first==2?vertex:first==3?s.factor.a:1;
+  float b=second==1?texel:second==2?vertex:second==3?s.factor.a:1;
+  uint combineOp=(op>>6)&3;
+  float alpha=(combineOp==1?a:combineOp==2?b:a*b)*s.tint.a;
+  if ((s.state.w&8)!=0) alpha*=.2;
+  return clamp(alpha,0,1);
+}
 vec4 materialColor(Surface s, vec2 uv, vec4 vertex) {
   vec4 texel = textureLod(textures[nonuniformEXT(s.textureState.x)], uv * s.uv.xy + s.uv.zw, 0);
   vertex.rgb = linearColor(vertex.rgb);

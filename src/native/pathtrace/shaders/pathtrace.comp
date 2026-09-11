@@ -33,6 +33,7 @@ layout(set=0,binding=11,rgba32f) readonly uniform image2D primaryPrevious;
 layout(set=0,binding=12,r32f) readonly uniform image2D primaryDepth;
 
 layout(constant_id=0) const bool enableLocalLights=true;
+layout(constant_id=1) const bool enableLocalGuiding=true;
 uint rng;
 uint hash(uint x) { x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; return x ^ (x >> 16); }
 float random() { rng = hash(rng + 0x9e3779b9u); return float(rng >> 8) * (1.0 / 16777216.0); }
@@ -42,16 +43,24 @@ vec4 albedo(Surface s, uint triangle, vec2 bary) {
   vec3 w = vec3(1-bary.x-bary.y, bary);
   return materialColor(s, a.uv.xy*w.x + b.uv.xy*w.y + c.uv.xy*w.z, a.color*w.x + b.color*w.y + c.color*w.z);
 }
+bool acceptCandidate(Surface s,uint triangle,vec2 bary) {
+  if(s.state.y==7)return true;
+  if(s.state.y==0)return false;
+  if((s.state.w&1)!=0)return alphaPass(s,1);
+  uint base=triangle*3;
+  Vertex a=s.vertices.v[s.indices.i[base]],b=s.vertices.v[s.indices.i[base+1]],c=s.vertices.v[s.indices.i[base+2]];
+  vec3 w=vec3(1-bary.x-bary.y,bary);
+  return alphaPass(s,materialAlpha(s,a.uv.xy*w.x+b.uv.xy*w.y+c.uv.xy*w.z,a.color.a*w.x+b.color.a*w.y+c.color.a*w.z));
+}
 struct Hit { float t; vec3 p; vec3 n; vec4 color; bool blended; bool cacheable; vec3 previousPosition; bool historyValid; };
-void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, inout Hit hit) {
+void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, inout Hit hit,bool motion) {
   rayQueryEXT query;
   rayQueryInitializeEXT(query, scene, gl_RayFlagsNoOpaqueEXT, 255, origin, 0.0, direction, hit.t);
   while (rayQueryProceedEXT(query)) {
     if (rayQueryGetIntersectionTypeEXT(query,false)!=gl_RayQueryCandidateIntersectionTriangleEXT) continue;
     Surface s=surfaces[rayQueryGetIntersectionInstanceCustomIndexEXT(query,false)+rayQueryGetIntersectionGeometryIndexEXT(query,false)];
     if ((s.state.w&4)==0 && !rayQueryGetIntersectionFrontFaceEXT(query,false)) continue;
-    vec4 color=albedo(s,rayQueryGetIntersectionPrimitiveIndexEXT(query,false),rayQueryGetIntersectionBarycentricsEXT(query,false));
-    if (alphaPass(s,color.a)) rayQueryConfirmIntersectionEXT(query);
+    if (acceptCandidate(s,rayQueryGetIntersectionPrimitiveIndexEXT(query,false),rayQueryGetIntersectionBarycentricsEXT(query,false))) rayQueryConfirmIntersectionEXT(query);
   }
   if (rayQueryGetIntersectionTypeEXT(query,true)==gl_RayQueryCommittedIntersectionNoneEXT) return;
   hit.t=rayQueryGetIntersectionTEXT(query,true);
@@ -71,7 +80,7 @@ void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, ino
   hit.previousPosition=hit.p;hit.historyValid=false;
 // Transparent sheets never provide motion or NRD guides.
 #if defined(TEMPORAL) && !defined(TRANSPARENCY_PASS)
-  if(s.previousVertices!=0) {
+  if(motion&&s.previousVertices!=0) {
     Vertices previous=Vertices(s.previousVertices);
     vec3 pa=previous.v[s.indices.i[tri]].position.xyz;
     vec3 pb=previous.v[s.indices.i[tri+1]].position.xyz;
@@ -81,14 +90,15 @@ void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, ino
   }
 #endif
 }
-Hit closest(vec3 origin,vec3 direction,float maximum) {
+Hit closest(vec3 origin,vec3 direction,float maximum,bool motion) {
   Hit hit; hit.t=maximum; hit.p=vec3(0);hit.n=vec3(0);hit.color=vec4(0);hit.blended=false;hit.cacheable=false;hit.previousPosition=vec3(0);hit.historyValid=false;
-  if ((frame.target.z&1)!=0) queryScene(staticScene,origin,direction,hit);
-  if ((frame.target.z&2)!=0) queryScene(dynamicScene,origin,direction,hit);
+  if ((frame.target.z&1)!=0) queryScene(staticScene,origin,direction,hit,motion);
+  if ((frame.target.z&2)!=0) queryScene(dynamicScene,origin,direction,hit,motion);
   if(hit.t==maximum)hit.t=1e30;
   return hit;
 }
-Hit closest(vec3 origin,vec3 direction) { return closest(origin,direction,1e30); }
+Hit closest(vec3 origin,vec3 direction) { return closest(origin,direction,1e30,true); }
+Hit secondaryHit(vec3 origin,vec3 direction) { return closest(origin,direction,1e30,false); }
 // First visibility comes from rasterization; secondary rays still query the full scene.
 Hit rasterPrimary(ivec2 pixel, vec3 origin) {
   vec4 position=imageLoad(primaryPosition,pixel), normal=imageLoad(primaryNormal,pixel);
@@ -112,13 +122,14 @@ vec3 diffuseDirection(vec3 n) {
   vec3 t=normalize(cross(abs(n.z)<0.999 ? vec3(0,0,1) : vec3(0,1,0),n));
   return normalize(t*(sqrt(u)*cos(angle))+cross(n,t)*(sqrt(u)*sin(angle))+n*sqrt(1-u));
 }
+#include "visibility.glsl"
 vec3 shadow(vec3 origin,vec3 direction) {
   vec3 transmission=vec3(1);
   for (uint layer=0;layer<32;++layer) {
-    Hit hit=closest(origin,direction);
+    VisibilityHit hit=visibilityHit(origin,direction,true);
+    if (hit.blocked) return vec3(0);
     if (hit.t==1e30) return transmission;
-    if (!hit.blended) return vec3(0);
-    transmission*=hit.color.rgb*(1-hit.color.a);
+    transmission*=hit.transmission;
     origin=offsetRay(hit.p,-hit.n);
   }
   return vec3(0); // Conservative bound, independent of diffuse bounce depth.
@@ -143,11 +154,11 @@ vec3 sunVisibility(Hit receiver,ivec2 pixel,out float blockerDistance) {
   vec3 transmission=vec3(1),origin=offsetRay(receiver.p,receiver.n);
   float distance=0;blockerDistance=65504;
   for(uint layer=0;layer<32;++layer) {
-    Hit hit=closest(origin,direction);
+    VisibilityHit hit=visibilityHit(origin,direction,false);
     if(hit.t==1e30)return transmission;
     distance+=hit.t;
-    if(!hit.blended){blockerDistance=min(distance,65000);return vec3(0);}
-    vec3 tint=hit.color.rgb*(1-hit.color.a);
+    if(hit.blocked){blockerDistance=min(distance,65000);return vec3(0);}
+    vec3 tint=hit.transmission;
     if(any(lessThan(tint,vec3(.999))))blockerDistance=min(blockerDistance,min(distance,65000));
     transmission*=tint;
     origin=offsetRay(hit.p,-hit.n);
@@ -160,7 +171,7 @@ vec3 direct(Hit hit) {
   float cosine=max(0,dot(hit.n,toLight));
   float distance;
   vec3 local=hit.color.rgb*localLighting(hit,rng,1u,distance);
-  return local+(cosine>0&&(!enableLocalLights||any(greaterThan(frame.lightRadiance.rgb,vec3(0))))?hit.color.rgb*(cosine/3.14159265359)*frame.lightRadiance.rgb*shadow(offsetRay(hit.p,hit.n),toLight):vec3(0));
+  return local+(cosine>0&&any(greaterThan(frame.lightRadiance.rgb,vec3(0)))?hit.color.rgb*(cosine/3.14159265359)*frame.lightRadiance.rgb*shadow(offsetRay(hit.p,hit.n),toLight):vec3(0));
 }
 #if defined(SHARC_QUERY) || defined(SHARC_UPDATE_PASS)
 SharcHitData cacheHit(Hit hit) {
@@ -197,7 +208,7 @@ vec3 continuation(Hit primary,out vec3 firstDirection,out float firstDistance) {
   vec3 previousVertex=primary.p;
   uint bounce=0,layers=0;
   for(uint step=0;step<164&&bounce<frame.config.y;++step) {
-    Hit hit=closest(origin,direction);
+    Hit hit=secondaryHit(origin,direction);
     if(bounce==0)firstDistance+=hit.t;
     if(hit.t==1e30) { result+=throughput*frame.skyRadiance.rgb;break; }
     if(hit.blended&&random()>=hit.color.a) {
@@ -236,7 +247,7 @@ void updateCache(ivec2 pixel) {
   uint bounce=0,layers=0;
   atomicAdd(CacheCounters(frame.sharcCounters).data[0],1u);
   for(uint step=0;step<164&&bounce<=frame.config.y;++step) {
-    Hit hit=closest(origin,direction);
+    Hit hit=secondaryHit(origin,direction);
     if(hit.t==1e30) { SharcUpdateMiss(parameters,state,frame.skyRadiance.rgb);break; }
     // A sparse update chooses among the visible sheets and opaque background
     // stochastically. This also trains surfaces reached from water when the
@@ -260,6 +271,9 @@ void updateCache(ivec2 pixel) {
   }
 }
 #endif
+#ifdef TRANSPARENCY_PASS
+#include "water_indirect.glsl"
+#endif
 void main() {
   ivec2 pixel=ivec2(gl_GlobalInvocationID.xy);
 #ifdef SHARC_UPDATE_PASS
@@ -282,7 +296,13 @@ void main() {
   if(temporal.flags.x!=0||abs(z-prevZ)>max(.02*z,.01))delta=0;
   imageStore(gradientA,pixel,vec4(delta,encodeNormal(normal),min(z,65000)));return;
 #else
+#ifdef TRANSPARENCY_PASS
+  // All invocations, including partial edge groups, reach the shared barriers.
+  bool inBounds=all(lessThan(pixel,ivec2(frame.target.xy)));
+  pixel=min(pixel,ivec2(frame.target.xy)-1);
+#else
   if (any(greaterThanEqual(pixel,ivec2(frame.target.xy)))) return;
+#endif
   rng=hash(uint(pixel.x)+uint(pixel.y)*frame.target.x+hash(frame.config.z));
   // Shared with raster visibility and sky; zero unless TAA or accumulation can resolve it.
   vec2 jitter=frame.jitter.xy;
@@ -301,7 +321,7 @@ void main() {
     sunTransmittance=sunVisibility(primary,pixel,blockerDistance);
     unshadowedDirect=primary.color.rgb*(max(0,dot(primary.n,-frame.lightDirection.xyz))/3.14159265359)*frame.lightRadiance.rgb;
     primaryDirect=unshadowedDirect*sunTransmittance;
-    local=localLighting(primary,rng,frame.localConfig.y,localDistance);
+    local=localLighting(primary,rng,frame.localConfig.y,localDistance,true);
     for(uint i=0;i<frame.config.x;++i) {
       vec3 firstDir;float firstDist;vec3 sampleLight=continuation(primary,firstDir,firstDist);
       indirect+=sampleLight/float(frame.config.x);
@@ -364,8 +384,14 @@ void main() {
   vec3 tint=vec3(1),transparent=vec3(0);float opacityProduct=1;
   float signedCount=imageLoad(worldColor,pixel).a;
   uint sheetCount=uint(abs(signedCount));
-  Hit primary;
+  Hit primary;primary.p=vec3(0);primary.n=vec3(0);primary.blended=false;
   if(sheetCount!=0)primary=frame.target.w!=0?rasterPrimary(pixel,origin):closest(origin,direction);
+  vec4 sharedIndirect=vec4(0);
+  uint directSeed=rng;
+  if(frame.jitter.z!=0)
+    sharedIndirect=waterIndirect(primary,inBounds&&signedCount==1&&primary.blended,pixel);
+  rng=directSeed; // Reused GI must not change the full-resolution direct sample.
+  if(!inBounds)return;
   // Keep only shading fields, at most eight sheets at once. Separating these
   // batches from opaque/NRD work avoids the old 32-Hit array living across both.
   // Pretrace each batch before shading it; retain front-to-back RNG order.
@@ -380,7 +406,8 @@ void main() {
     for(uint layer=0;layer<count;++layer) {
       Hit hit;hit.p=sheets[layer].p;hit.n=sheets[layer].n;hit.color=sheets[layer].color;
       vec3 surfaceLight=direct(hit);
-      for(uint i=0;i<frame.config.x;++i){vec3 d;float t;surfaceLight+=hit.color.rgb*continuation(hit,d,t)/float(frame.config.x);}
+      if(sharedIndirect.a!=0)surfaceLight+=hit.color.rgb*sharedIndirect.rgb;
+      else for(uint i=0;i<frame.config.x;++i){vec3 d;float t;surfaceLight+=hit.color.rgb*continuation(hit,d,t)/float(frame.config.x);}
       transparent+=tint*hit.color.a*surfaceLight;tint*=hit.color.rgb*(1-hit.color.a);opacityProduct*=1-hit.color.a;
     }
   }

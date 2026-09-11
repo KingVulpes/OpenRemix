@@ -108,17 +108,32 @@ void LightBvh::bounds(uint32_t index) {
                .0722 * light.radiance[2]));
   } else {
     const auto &a = m_nodes[node.links[0]], &b = m_nodes[node.links[1]];
-    for (unsigned c = 0; c < 3; ++c) {
-      node.minimumPower[c] = std::min(a.minimumPower[c], b.minimumPower[c]);
-      node.maximum[c] = std::max(a.maximum[c], b.maximum[c]);
+    if (a.minimumPower[3] == 0 || b.minimumPower[3] == 0) {
+      // Keep zero-power slots for cheap refits without expanding the live
+      // influence bounds around distant unlit redstone torches.
+      const auto &live = a.minimumPower[3] > 0 ? a : b;
+      std::copy_n(live.minimumPower, 3, node.minimumPower);
+      std::copy_n(live.maximum, 4, node.maximum);
+    } else {
+      for (unsigned c = 0; c < 3; ++c) {
+        node.minimumPower[c] = std::min(a.minimumPower[c], b.minimumPower[c]);
+        node.maximum[c] = std::max(a.maximum[c], b.maximum[c]);
+      }
+      node.maximum[3] = std::max(a.maximum[3], b.maximum[3]);
     }
     node.minimumPower[3] = a.minimumPower[3] + b.minimumPower[3];
-    node.maximum[3] = std::max(a.maximum[3], b.maximum[3]);
   }
 }
 
+double LightBvh::falloff(double distanceSquared, double range) {
+  if (range <= 0)
+    return 1;
+  const auto t = std::clamp((distanceSquared / (range * range) - .5625) * (16. / 7.), 0., 1.);
+  return (1 - t) * (1 - t) * (1 + 2 * t);
+}
+
 double LightBvh::weight(const LightNode &node, const float position[3],
-                        const float normal[3]) {
+                        const float normal[3], double range) {
   double distance2 = 0, radius2 = 0, toward = 0, nearest2 = 0;
   for (unsigned c = 0; c < 3; ++c) {
     const double half = .5 * (node.maximum[c] - node.minimumPower[c]);
@@ -136,7 +151,7 @@ double LightBvh::weight(const LightNode &node, const float position[3],
   const double cosine =
       std::min(1., (toward + std::sqrt(radius2)) /
                        std::sqrt(std::max({distance2, radius2, 1.e-12})));
-  return node.minimumPower[3] * cosine /
+  return falloff(nearest2, range) * node.minimumPower[3] * cosine /
          std::max({nearest2, double(node.maximum[3]), 1.e-12});
 }
 } // namespace remix::scene

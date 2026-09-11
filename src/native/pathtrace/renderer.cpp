@@ -26,6 +26,8 @@ namespace remix {
       vkDestroyPipeline(device, transparencyCompute, nullptr);
     if (compute)
       vkDestroyPipeline(device, compute, nullptr);
+    if (pipelineCache)
+      vkDestroyPipelineCache(device, pipelineCache, nullptr);
     for (auto shader : shaders)
       if (shader)
         vkDestroyShaderModule(device, shader, nullptr);
@@ -70,6 +72,7 @@ namespace remix {
   }
 
   void PathTracer::Gpu::destroyTarget() {
+    lightGuiding.valid = false;
     destroyPost();
     sharc.clear = true;
     destroyPrimary();
@@ -107,6 +110,15 @@ namespace remix {
     g.physical = physical;
     g.device = device;
     g.queueFamily = queueFamily;
+    // Keep compiled shader data across target/filter recreation. Cache creation
+    // is optional; a null cache retains ordinary pipeline creation on failure.
+    const VkPipelineCacheCreateInfo cacheInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+    const auto cacheResult = vkCreatePipelineCache(device, &cacheInfo, nullptr, &g.pipelineCache);
+    if (cacheResult != VK_SUCCESS) {
+      g.pipelineCache = VK_NULL_HANDLE;
+      if (cacheResult == VK_ERROR_DEVICE_LOST)
+        throw cacheResult;
+    }
     g.postCapabilities = denoise::capabilities(physical);
     g.sigmaCapable = denoise::sigmaSupported(physical);
     g.localCapable[0] = denoise::localSupported(physical, false);
@@ -179,14 +191,18 @@ namespace remix {
           .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = sizes[i], .pCode = codes[i]};
       check(vkCreateShaderModule(device, &info, nullptr, &g.shaders[i]));
     }
+    // Compile ordinary local lighting first; guidance is a lazy variant.
+    const VkBool32 guidance = VK_FALSE;
+    const VkSpecializationMapEntry guideEntry{1, 0, sizeof(guidance)};
+    const VkSpecializationInfo noGuiding{1, &guideEntry, sizeof(guidance), &guidance};
     VkComputePipelineCreateInfo pipeline = {
         .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
         .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                   .stage = VK_SHADER_STAGE_COMPUTE_BIT,
                   .module = g.shaders[0],
-                  .pName = "main"},
+                  .pName = "main", .pSpecializationInfo = &noGuiding},
         .layout = g.layout};
-    check(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline, nullptr, &g.compute));
+    check(vkCreateComputePipelines(device, g.pipelineCache, 1, &pipeline, nullptr, &g.compute));
     g.lightingPipelines[g.compute] = {trace::compShader, sizeof(trace::compShader), g.layout};
     VkShaderModuleCreateInfo transparencyInfo{
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
@@ -196,10 +212,11 @@ namespace remix {
     check(vkCreateShaderModule(device, &transparencyInfo, nullptr, &transparencyShader));
     pipeline.stage.module = transparencyShader;
     auto transparencyResult =
-        vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline, nullptr, &g.transparencyCompute);
+        vkCreateComputePipelines(device, g.pipelineCache, 1, &pipeline, nullptr, &g.transparencyCompute);
     vkDestroyShaderModule(device, transparencyShader, nullptr);
     check(transparencyResult);
     g.lightingPipelines[g.transparencyCompute] = {trace::transparencyShader, sizeof(trace::transparencyShader), g.layout};
+    g.lightingPipelines[g.transparencyCompute].supportsGuiding = false;
     uint32_t count = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(physical, &count, nullptr);
     std::vector<VkQueueFamilyProperties> families(count);

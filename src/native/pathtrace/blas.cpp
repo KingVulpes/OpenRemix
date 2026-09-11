@@ -5,6 +5,7 @@ namespace remix {
   using namespace trace::detail;
 
   void PathTracer::Gpu::complete(VkCommandBuffer command) {
+    completeLightGuiding();
     uploads.clear();
     retired.clear();
     if (timingPending) {

@@ -11,11 +11,13 @@ namespace remix {
     bool denoiser = true, taa = true, validation = false;
     bool sigma = true;
     bool localLights = true, localDenoiser = true;
-    uint32_t localSamples = 2;
-    float localIntensity = 1;
+    uint32_t localSamples = 1;
+    float localIntensity = 1, localRange = 16;
+    bool localGuiding = true;
     uint32_t shadowDebug = 0;
     float sunAngularDiameter = -1; // -1 inherits the distant light's diameter.
     bool rasterPrimary = true;
+    bool waterIndirectReuse = true;
     bool sky = true;
     bool sharc = true, sharcDebug = false;
     uint32_t sharcCapacityLog2 = 22, sharcDownscale = 5, sharcSceneScale = 50;
@@ -39,6 +41,7 @@ namespace remix {
     void submitted();
     remixapi_ShadowStatisticsEXT shadowStatistics() const;
     remixapi_LocalLightStatisticsEXT localLightStatistics() const;
+    remixapi_LocalLightGuidingStatisticsEXT localLightGuidingStatistics() const;
     remixapi_DenoisingStatisticsEXT denoisingStatistics() const;
     remixapi_SharcStatisticsEXT sharcStatistics() const;
     void destroyTarget();

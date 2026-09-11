@@ -12,15 +12,20 @@ namespace remix {
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = size, .pCode = code};
     VkShaderModule shader{};
     check(vkCreateShaderModule(device, &ci, nullptr, &shader));
+    // Compile ordinary local lighting first; guidance is a lazy variant.
+    const VkBool32 guidance = VK_FALSE;
+    const VkSpecializationMapEntry guideEntry{1, 0, sizeof(guidance)};
+    const VkSpecializationInfo noGuiding{1, &guideEntry, sizeof(guidance), &guidance};
     VkComputePipelineCreateInfo pi{
         .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
         .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                  .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = shader, .pName = "main"},
+                  .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = shader, .pName = "main", .pSpecializationInfo = &noGuiding},
         .layout = pipelineLayout};
-    const auto result = vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pi, nullptr, &out);
+    const auto result = vkCreateComputePipelines(device, pipelineCache, 1, &pi, nullptr, &out);
     vkDestroyShaderModule(device, shader, nullptr);
     check(result);
     lightingPipelines[out] = {code, size, pipelineLayout};
+    lightingPipelines[out].supportsGuiding = &out == &sharc.query || &out == &sharc.temporal;
   }
 
   void PathTracer::Gpu::destroySharc(bool temporalOnly) {
@@ -197,13 +202,15 @@ namespace remix {
     sharc.clear |= difference > .25f * std::max(oldEnergy, newEnergy) ||
                    (std::max(oldEnergy, newEnergy) > 0 && angle < .999f);
     const bool localChanged = !std::equal(std::begin(frame.localConfig), std::end(frame.localConfig), sharc.localConfig) ||
-                              frame.localScale[0] != sharc.localIntensity;
+                              frame.localScale[0] != sharc.localIntensity || frame.localScale[1] != sharc.localRange;
     if (localChanged) {
       sharc.warmFrames = 0;
       // Complete darkness must not reuse cached torch radiance.
       sharc.clear |= sharc.localConfig[0] != 0 && frame.localConfig[0] == 0;
+      sharc.clear |= frame.localScale[1] != sharc.localRange;
       std::copy_n(frame.localConfig, 4, sharc.localConfig);
       sharc.localIntensity = frame.localScale[0];
+      sharc.localRange = frame.localScale[1];
     }
     if (localChanged || difference > 1e-7f || angle < .9999999f || sharc.dynamicGeometry != dynamicGeometry)
       sharc.responsiveFrames = 32;

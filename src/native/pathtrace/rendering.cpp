@@ -232,6 +232,9 @@ namespace remix {
     frame.localConfig[2] = uint32_t(lightBvh.generation);
     frame.localConfig[3] = uint32_t(lightBvh.generation >> 32);
     frame.localScale[0] = options.localIntensity;
+    frame.localScale[1] = options.localRange;
+    frame.localScale[2] = float(options.localGuiding);
+    frame.localScale[3] = options.localRange > 0 ? 1.f / (options.localRange * options.localRange) : 0;
     frame.camera = resources.camera();
     frame.inverseCamera = scene::inverse(frame.camera);
     const auto eye = scene::inverse(resources.view());
@@ -260,6 +263,10 @@ namespace remix {
     frame.target[1] = extent.height;
     frame.target[2] = uint32_t(!inputs[0].empty()) | uint32_t(!inputs[1].empty()) << 1;
     frame.target[3] = options.rasterPrimary;
+    // Reserved private word; included in scene-change detection. Raw/reference
+    // and multi-sample rendering retain one estimator at every surface pixel.
+    frame.jitter[2] = options.waterIndirectReuse && denoiser && postTaa && !options.accumulate &&
+                      options.samples == 1 && options.bounces > 0;
     append(&frame, sizeof(frame));
     append(&integrator, sizeof(integrator));
     append(&options.validation, sizeof(options.validation));
@@ -284,12 +291,14 @@ namespace remix {
     if (!options.accumulate || stats.accumulationCount >= 1048576)
       stats.accumulationCount = 0;
     if (lightBvh.generation != previousLocalGeneration || frame.localScale[0] != previousLocalIntensity ||
+        frame.localScale[1] != previousLocalRange ||
         frame.localConfig[0] != previousLocalActive)
       localResponsiveFrames = 8;
     else if (localResponsiveFrames)
       --localResponsiveFrames;
     previousLocalGeneration = lightBvh.generation;
     previousLocalIntensity = frame.localScale[0];
+    previousLocalRange = frame.localScale[1];
     previousLocalActive = frame.localConfig[0];
     temporalFrame = {};
     temporalFrame.local[0] = denoiser && postLocalDenoise;
@@ -355,6 +364,7 @@ namespace remix {
     temporalFrame.shadow[1] = uint32_t(frame.sun[2]);
     frame.lightNodes = lightNodes ? lightNodes->address : 0;
     frame.lightEmitters = lightEmitters ? lightEmitters->address : 0;
+    configureLightGuiding(frame, options);
     frame.config[2] = uint32_t(sequence++);
     frame.config[3] = uint32_t(stats.accumulationCount);
     hostBuffer(uniform, &frame, sizeof(frame), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
@@ -439,6 +449,7 @@ namespace remix {
     vkCmdEndRenderPass(command);
     if (timestamps)
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, timestamps, 2);
+    beginLightGuiding(command);
     recordPrimary(command, options.rasterPrimary);
     recordSharc(command, options);
     if (denoiser)
@@ -475,6 +486,7 @@ namespace remix {
       }
       denoiser->record(command);
     }
+    finishLightGuiding(command);
     finishSharc(command);
     rendered = true;
     barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,

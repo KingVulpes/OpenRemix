@@ -60,6 +60,9 @@ namespace remix {
           if (ImGui::Combo("Shadow view", &shadowView, "Final lighting\0Raw visibility\0SIGMA visibility\0"))
             m_traceOptions.shadowDebug = uint32_t(shadowView);
           ImGui::Checkbox("Native resolution TAA", &m_traceOptions.taa);
+          ImGui::Checkbox("Reuse water indirect samples", &m_traceOptions.waterIndirectReuse);
+          if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Shares diffuse lighting across small flat water patches with TAA.\nEdges, overlapping layers and raw reference rendering retain full sampling.");
           ImGui::Checkbox("NRD validation", &m_traceOptions.validation);
           ImGui::Checkbox("Progressive accumulation", &m_traceOptions.accumulate);
           if (m_traceOptions.accumulate)
@@ -82,6 +85,18 @@ namespace remix {
             if (ImGui::SliderInt("Local light samples", &samples, 1, 16))
               m_traceOptions.localSamples = uint32_t(samples);
             ImGui::SliderFloat("Local light strength", &m_traceOptions.localIntensity, 0.f, 4.f);
+            ImGui::SliderFloat("Light reach (0 = unlimited)", &m_traceOptions.localRange, 0.f, 64.f, "%.1f");
+            if (m_traceOptions.localRange > 0 && m_traceOptions.localRange < .01f)
+              m_traceOptions.localRange = .01f;
+            ImGui::Checkbox("Guide by recent visibility", &m_traceOptions.localGuiding);
+            if (ImGui::IsItemHovered())
+              ImGui::SetTooltip("Guides opaque direct-light samples while retaining exploration.\nOne active light needs no visibility history.");
+            const auto guiding = localLightGuidingStatistics();
+            if (guiding.active)
+              ImGui::Text("Guided %u / %u observed samples | %.1f MiB history", guiding.sampledGuided,
+                          guiding.sampledQueries, double(guiding.memoryBytes) / (1024 * 1024));
+            if (guiding.unavailableReason[0])
+              ImGui::TextWrapped("%s", guiding.unavailableReason);
             const auto local = localLightStatistics();
             ImGui::Text("%u active / %u lights | tree depth %u", local.activeLights, local.lightCount, local.treeDepth);
             ImGui::Text("BVH builds %llu / refits %llu | %.3f ms CPU", (unsigned long long)local.builds,
@@ -130,9 +145,12 @@ namespace remix {
           ImGui::Text("Rebuild reason: %u; refits since build: %u", s.dynamicRebuildReason,
                       s.dynamicRefitCount);
           ImGui::Text("Acceleration memory: %.1f MiB", double(s.accelerationBytes) / (1024 * 1024));
-          if (s.gpuTimingsAvailable)
+          if (s.gpuTimingsAvailable) {
             ImGui::Text("GPU builds %.3f ms; tracing %.3f ms", s.gpuBuildMilliseconds,
                         s.gpuTraceMilliseconds);
+            if (ImGui::IsItemHovered())
+              ImGui::SetTooltip("Tracing includes sun and local shadows, indirect rays, and transparent sheets.\nDenoiser timings are reported separately.");
+          }
         }
         ImGui::ColorEdit3("Clear color", m_clearColor);
         ImGui::Checkbox("VSync", &m_vsync);

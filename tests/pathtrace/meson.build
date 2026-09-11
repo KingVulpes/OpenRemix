@@ -2,6 +2,10 @@ policy_test = executable('remix-tlas-policy-test', 'tlas_policy.cpp',
   include_directories : test_includes, link_with : pathtrace_library)
 test('Tracing scene and TLAS policy', policy_test)
 if get_option('gpu_tests')
+  water_indirect_test = executable('remix-water-indirect-test', 'water_indirect.cpp',
+    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
+  test('Water indirect reuse and reference energy', water_indirect_test,
+    args : [meson.current_build_dir() / 'water-indirect-scenes'], timeout : 240)
   local_light_test = executable('remix-local-light-test', 'local_lights.cpp',
     include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
   test('Local sphere lights and many-light hierarchy', local_light_test,
@@ -11,6 +15,12 @@ if get_option('gpu_tests')
   test('SIGMA sun penumbra and temporal separation', shadow_test,
     args : [meson.current_build_dir() / 'shadow-scenes'], timeout : 240)
   if system == 'linux'
+    test('Local visibility guiding resource fallback', local_light_test,
+      args : [meson.current_build_dir() / 'guiding-fallback'],
+      env : ['LD_PRELOAD=' + faults.full_path(), 'REMIX_TEST_FAULT=light-guiding-allocation'], timeout : 90)
+    test('Local visibility guiding shader fallback', local_light_test,
+      args : [meson.current_build_dir() / 'guiding-shader-fallback'],
+      env : ['LD_PRELOAD=' + faults.full_path(), 'REMIX_TEST_FAULT=light-guiding-compute'], timeout : 90)
     test('Local light resource fallback', local_light_test,
       args : [meson.current_build_dir() / 'local-fallback'],
       env : ['LD_PRELOAD=' + faults.full_path(), 'REMIX_TEST_FAULT=local-descriptors'], timeout : 90)

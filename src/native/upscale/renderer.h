@@ -25,7 +25,7 @@ public:
   void initialize(VkPhysicalDevice physical, VkDevice device,
                   uint32_t queueFamily, VkExtent2D render, VkExtent2D display);
   void configureComposite(VkRenderPass pass, VkImageView stableDepth);
-  void composite(VkCommandBuffer command, bool encodeOutput);
+  void composite(VkCommandBuffer command, bool encodeOutput, bool prism, bool gamma22, bool hardwareSrgb);
   void record(VkCommandBuffer command, Input color, Input depth, Input motion,
               Input transmission, const scene::Matrix &projection,
               const float *jitter, float milliseconds, float sharpness,

@@ -124,6 +124,10 @@ namespace remix {
       m_traceOptions.accumulate = number != 0;
     else if (!std::strcmp(key, "sigma") && number <= 1)
       m_traceOptions.sigma = number != 0;
+    else if (!std::strcmp(key, "prism") && number <= 1)
+      m_traceOptions.prism = number != 0;
+    else if (!std::strcmp(key, "gamma22") && number <= 1)
+      m_traceOptions.gamma22 = number != 0;
     else if (!std::strcmp(key, "localLights") && number <= 1)
       m_traceOptions.localLights = number != 0;
     else if (!std::strcmp(key, "localDenoiser") && number <= 1)

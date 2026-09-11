@@ -68,6 +68,13 @@ if get_option('gpu_tests')
     include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
   test('Sky illumination and temporal changes', environment_test,
     args : [meson.current_build_dir() / 'sky-scenes'], timeout : 240)
+  test('Prism and gamma display transfer', environment_test,
+    args : [meson.current_build_dir() / 'prism-scenes'], env : ['REMIX_TEST_DISPLAY=1'], timeout : 240)
+  if system == 'linux'
+    test('Prism and gamma UNORM display transfer', environment_test,
+      args : [meson.current_build_dir() / 'prism-unorm-scenes'],
+      env : ['REMIX_TEST_DISPLAY=1', 'LD_PRELOAD=' + faults.full_path(), 'REMIX_TEST_FAULT=unorm-swapchain'], timeout : 240)
+  endif
   pathtrace_test = executable('remix-pathtrace-test', 'rendering.cpp',
     include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
   test('Path tracing capabilities and GPU scenes', pathtrace_test,

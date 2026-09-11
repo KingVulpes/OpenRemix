@@ -10,6 +10,7 @@ namespace remix {
     bool accumulate = false, forceRebuild = false;
     bool denoiser = true, taa = true, validation = false;
     bool fsr = false;
+    bool prism = true, gamma22 = true;
     uint32_t fsrQuality = 1;
     float fsrSharpness = 0.f;
     bool sigma = true;
@@ -38,7 +39,7 @@ namespace remix {
     ~PathTracer();
     void initialize(VkPhysicalDevice physical, VkDevice device, uint32_t queueFamily);
     void configureTarget(VkRenderPass pass, VkExtent2D extent, bool encodeOutput, VkFormat depthFormat,
-                         VkImageView depthView);
+                         VkImageView depthView, bool hardwareSrgb = false);
     VkRenderPass skyPass() const;
     upscale::Statistics upscalingStatistics() const;
     void beginFrame(const TraceOptions &options, const RasterRenderer& resources);

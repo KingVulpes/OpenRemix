@@ -179,7 +179,7 @@ namespace remix {
                                             .descriptorSetCount = 1,
                                             .pSetLayouts = &g.setLayout};
     check(vkAllocateDescriptorSets(device, &allocate, &g.set));
-    VkPushConstantRange push = {VK_SHADER_STAGE_FRAGMENT_BIT, 0, 8};
+    VkPushConstantRange push = {VK_SHADER_STAGE_FRAGMENT_BIT, 0, 20};
     VkPipelineLayoutCreateInfo layout = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                          .setLayoutCount = 1,
                                          .pSetLayouts = &g.setLayout,
@@ -233,13 +233,14 @@ namespace remix {
   }
 
   void PathTracer::configureTarget(VkRenderPass pass, VkExtent2D extent, bool encodeOutput,
-                                   VkFormat depthFormat, VkImageView depthView) {
+                                   VkFormat depthFormat, VkImageView depthView, bool hardwareSrgb) {
     auto &g = *m_gpu;
     g.displayPass = pass;
     g.displayExtent = extent;
     g.displayDepthFormat = depthFormat;
     g.displayDepth = depthView;
     g.encodeOutput = encodeOutput;
+    g.hardwareSrgb = hardwareSrgb;
     g.createTarget();
   }
   void PathTracer::Gpu::createTarget() {

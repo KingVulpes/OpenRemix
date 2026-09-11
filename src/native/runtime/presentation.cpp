@@ -90,7 +90,9 @@ namespace remix {
             tracer->configureTarget(m_renderPass, m_swapchainExtent,
                                     m_srgb && m_swapchainFormat != VK_FORMAT_R8G8B8A8_SRGB &&
                                         m_swapchainFormat != VK_FORMAT_B8G8R8A8_SRGB,
-                                    m_raster.depthFormat(), m_raster.depthView());
+                                    m_raster.depthFormat(), m_raster.depthView(),
+                                    m_swapchainFormat == VK_FORMAT_R8G8B8A8_SRGB ||
+                                        m_swapchainFormat == VK_FORMAT_B8G8R8A8_SRGB);
             m_pathTracer = std::move(tracer);
             m_backend = 1;
             m_traceUnavailable.clear();

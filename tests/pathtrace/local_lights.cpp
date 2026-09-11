@@ -47,6 +47,9 @@ int main(int argc, char **argv) {
     return 77;
   }
   ok(api.SetConfigVariable("rtx.native.backend", "pathtrace"));
+  // These radiometric checks decode the original sRGB output.
+  ok(api.SetConfigVariable("rtx.native.pathtrace.prism", "0"));
+  ok(api.SetConfigVariable("rtx.native.pathtrace.gamma22", "0"));
   ok(api.SetConfigVariable("rtx.native.pathtrace.samples", "1"));
   ok(api.SetConfigVariable("rtx.native.pathtrace.bounces", "0"));
   require(api.SetConfigVariable("rtx.native.pathtrace.sky", "2") ==

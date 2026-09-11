@@ -243,7 +243,9 @@ namespace remix {
       m_pathTracer->configureTarget(m_renderPass, m_swapchainExtent,
                                     m_srgb && m_swapchainFormat != VK_FORMAT_R8G8B8A8_SRGB &&
                                         m_swapchainFormat != VK_FORMAT_B8G8R8A8_SRGB,
-                                    m_raster.depthFormat(), m_raster.depthView());
+                                    m_raster.depthFormat(), m_raster.depthView(),
+                                    m_swapchainFormat == VK_FORMAT_R8G8B8A8_SRGB ||
+                                        m_swapchainFormat == VK_FORMAT_B8G8R8A8_SRGB);
     const uint32_t count = static_cast<uint32_t>(m_swapchainImages.size());
     m_imageViews.resize(count);
     m_framebuffers.resize(count);

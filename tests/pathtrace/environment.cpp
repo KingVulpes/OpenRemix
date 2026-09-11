@@ -41,6 +41,12 @@ int main(int argc, char **argv) {
     return 77;
   }
   ok(api.SetConfigVariable("rtx.native.backend", "pathtrace"));
+  const bool displayTest = std::getenv("REMIX_TEST_DISPLAY") != nullptr;
+  if (!displayTest) {
+    // Lighting energy assertions below operate before the display transform.
+    ok(api.SetConfigVariable("rtx.native.pathtrace.prism", "0"));
+    ok(api.SetConfigVariable("rtx.native.pathtrace.gamma22", "0"));
+  }
   ok(api.SetConfigVariable("rtx.native.pathtrace.samples", "16"));
   ok(api.SetConfigVariable("rtx.native.pathtrace.bounces", "1"));
   require(api.SetConfigVariable("rtx.native.pathtrace.sky", "2") == REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS,
@@ -150,10 +156,11 @@ int main(int argc, char **argv) {
       for (int x = width / 2 - 4; x < width / 2 + 4; ++x)
         for (int c = 0; c < 3; ++c) {
           float v = pixels[(y * width + x) * 4 + c] / 255.f;
-          average[c] += (v <= .04045f ? v / 12.92f : std::pow((v + .055f) / 1.055f, 2.4f)) / 64;
+          average[c] += (displayTest ? v : (v <= .04045f ? v / 12.92f : std::pow((v + .055f) / 1.055f, 2.4f))) / 64;
         }
     stbi_image_free(pixels);
-    std::printf("%s linear RGB: %.4f %.4f %.4f\n", name.c_str(), average[0], average[1], average[2]);
+    std::printf("%s %s RGB: %.4f %.4f %.4f\n", name.c_str(), displayTest ? "encoded" : "linear",
+                average[0], average[1], average[2]);
     return average;
   };
   auto capture = [&](const std::string &name, int frames) {
@@ -163,6 +170,72 @@ int main(int argc, char **argv) {
     return readback(name);
   };
   remixapi_DenoisingCapabilitiesEXT denoiseCaps{};
+  if (displayTest) {
+    for (auto &row : camera.projection) for (float &v : row) v = 0;
+    camera.projection[0][0] = camera.projection[1][1] = 2;
+    camera.projection[2][2] = 100.f / 99.95f;
+    camera.projection[2][3] = 1;
+    camera.projection[3][2] = -5.f / 99.95f;
+    auto config = [&](const char *key, const char *value) {
+      ok(api.SetConfigVariable((std::string("rtx.native.pathtrace.") + key).c_str(), value));
+    };
+    require(api.SetConfigVariable("rtx.native.pathtrace.prism", "2") == REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS,
+            "Invalid Prism toggle accepted");
+    require(api.SetConfigVariable("rtx.native.pathtrace.gamma22", "-1") == REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS,
+            "Invalid gamma toggle accepted");
+    config("sharc", "0");
+    config("denoiser", "off");
+    config("sigma", "0");
+    config("taa", "0");
+    for (const char *primary : {"raster", "ray"}) for (bool fsr : {false, true}) {
+      config("primaryVisibility", primary);
+      config("upscaler", fsr ? "fsr31" : "off");
+      config("taa", fsr ? "1" : "0");
+      config("fsrQuality", "native-aa");
+      for (float value : {0.f, .001f, .18f, 1.f, 8.f}) {
+        environment.radiance = {value, value, value};
+        for (bool prism : {false, true}) for (bool gamma : {false, true}) {
+          config("prism", prism ? "1" : "0");
+          config("gamma22", gamma ? "1" : "0");
+          auto name = std::string(primary) + (fsr ? "-fsr-" : "-native-") + std::to_string(value)
+                      + (prism ? "-prism" : "-clip") + (gamma ? "-gamma" : "-srgb");
+          auto pixel = capture(name, fsr ? 24 : 4);
+          double mapped = value;
+          if (prism && value > .18) {
+            double d = double(value) - .18;
+            mapped = .18 + .82 * d / (.82 + d * std::exp2(-.82 / (4 * d)));
+          }
+          mapped = std::clamp(mapped, 0.0, 1.0);
+          double expected = gamma ? std::pow(mapped, 1.0 / 2.2)
+              : (mapped <= .0031308 ? 12.92 * mapped : 1.055 * std::pow(mapped, 1.0 / 2.4) - .055);
+          for (float channel : pixel)
+            require(std::abs(channel - expected) < .012, "Prism/output transfer disagrees with reference");
+          if (fsr) {
+            require(!temporal().activeTaa, "Display test fell back from FSR to TAA");
+          }
+        }
+      }
+      config("prism", "1"); config("gamma22", "1");
+      const remixapi_Float3D colors[] = {{4,.1f,.02f}, {.1f,4,.1f}, {.02f,.1f,4}, {.25f,.5f,.75f}};
+      // Reference evaluated independently from the supplied chromaticities.
+      const float expectedColors[][3] = {{1,.4529035f,.23744207f}, {.48090665f,1,.2612223f},
+                                         {.31587038f,.49672162f,.93031669f}, {.27317359f,.44466433f,.55768182f}};
+      for (int i = 0; i < 4; ++i) {
+        environment.radiance = colors[i];
+        auto pixel = capture(std::string(primary) + (fsr ? "-fsr-color-" : "-native-color-") + std::to_string(i), fsr ? 24 : 4);
+        for (int c = 0; c < 3; ++c)
+          require(std::abs(pixel[c] - std::pow(expectedColors[i][c], 1.f / 2.2f)) < .012f,
+                  "Prism colored primary/reference mismatch");
+      }
+      frame(); frame();
+      const auto resets = temporal().historyResets;
+      config("prism", "0"); config("gamma22", "0"); frame(); frame();
+      require(temporal().historyResets == resets, "Display change reset linear history");
+    }
+    ok(api.Shutdown());
+    std::puts("Prism and gamma GPU reference values passed for native/FSR and both visibility paths");
+    return 0;
+  }
   denoiseCaps.structSize = sizeof(denoiseCaps);
   ok(remixapi_GetDenoisingCapabilitiesEXT(&denoiseCaps));
   for (const char *primary : {"raster", "ray"}) for (bool filtered : {false, true}) {

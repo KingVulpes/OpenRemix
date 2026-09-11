@@ -177,6 +177,7 @@ namespace remix {
     VkQueryPool compaction = VK_NULL_HANDLE, timestamps = VK_NULL_HANDLE;
     uint32_t timestampBits = 0;
     bool timingPending = false, imagesInitialized = false, encodeOutput = false;
+    bool prism = true, gamma22 = true, hardwareSrgb = false;
     VkExtent2D extent = {}, displayExtent = {};
     VkRenderPass displayPass{};
     VkFormat displayDepthFormat{};

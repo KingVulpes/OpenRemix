@@ -6,6 +6,8 @@ namespace remix {
 
   void PathTracer::Gpu::prepare(VkCommandBuffer command, RasterRenderer &resources,
                                 const TraceOptions &options) {
+    prism = options.prism;
+    gamma22 = options.gamma22;
     if (timestamps) {
       vkCmdResetQueryPool(command, timestamps, 0, 4);
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestamps, 0);
@@ -519,14 +521,15 @@ namespace remix {
 
   void PathTracer::record(VkCommandBuffer command) {
     auto &g = *m_gpu;
-    if (g.upscaler) { g.upscaler->composite(command, g.encodeOutput); return; }
+    if (g.upscaler) { g.upscaler->composite(command, g.encodeOutput, g.prism, g.gamma22, g.hardwareSrgb); return; }
     VkViewport viewport = {0, 0, float(g.displayExtent.width), float(g.displayExtent.height), 0, 1};
     VkRect2D scissor = {{0, 0}, g.displayExtent};
     vkCmdSetViewport(command, 0, 1, &viewport);
     vkCmdSetScissor(command, 0, 1, &scissor);
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, g.layout, 0, 1, &g.set, 0, nullptr);
     for (uint32_t i = 0; i < 2; ++i) {
-      const uint32_t push[] = {i, uint32_t(g.encodeOutput)};
+      const uint32_t push[] = {i, uint32_t(g.encodeOutput), uint32_t(g.prism),
+                               uint32_t(g.gamma22), uint32_t(g.hardwareSrgb)};
       vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, g.composite[i]);
       vkCmdPushConstants(command, g.layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), push);
       vkCmdDraw(command, 3, 1, 0, 0);

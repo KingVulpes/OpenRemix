@@ -1,6 +1,7 @@
 #include <cstdlib>
 #include <algorithm>
 #include <set>
+#include <vector>
 #include <cstring>
 #include <dlfcn.h>
 #include <vulkan/vulkan.h>
@@ -19,6 +20,26 @@ namespace {
     return value && std::strcmp(value, name) == 0;
   }
 } // namespace
+extern "C" VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceSurfaceFormatsKHR(
+    VkPhysicalDevice device, VkSurfaceKHR surface, uint32_t *count, VkSurfaceFormatKHR *formats) {
+  auto original = reinterpret_cast<PFN_vkGetPhysicalDeviceSurfaceFormatsKHR>(resolve("vkGetPhysicalDeviceSurfaceFormatsKHR"));
+  if (!fault("unorm-swapchain")) return original(device, surface, count, formats);
+  uint32_t available = 0;
+  auto status = original(device, surface, &available, nullptr);
+  if (status != VK_SUCCESS) return status;
+  std::vector<VkSurfaceFormatKHR> supported(available);
+  status = original(device, surface, &available, supported.data());
+  if (status != VK_SUCCESS) return status;
+  supported.resize(available);
+  std::erase_if(supported, [](const auto &format) {
+    return format.format != VK_FORMAT_R8G8B8A8_UNORM && format.format != VK_FORMAT_B8G8R8A8_UNORM;
+  });
+  if (!formats) { *count = uint32_t(supported.size()); return VK_SUCCESS; }
+  auto copied = std::min(*count, uint32_t(supported.size()));
+  std::copy_n(supported.data(), copied, formats);
+  *count = copied;
+  return copied == supported.size() ? VK_SUCCESS : VK_INCOMPLETE;
+}
 // Explicit signatures keep this loader independent of the shell implementation.
 extern "C" VKAPI_ATTR VkResult VKAPI_CALL vkCreateInstance(const VkInstanceCreateInfo *info,
                                                            const VkAllocationCallbacks *alloc,

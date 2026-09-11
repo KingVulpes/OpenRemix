@@ -62,6 +62,9 @@ int main(int argc, char **argv) {
     return 0;
   }
   ok(api.SetConfigVariable("rtx.native.backend", "pathtrace"));
+  // The baseline lighting/composition checks expect the original sRGB transfer.
+  ok(api.SetConfigVariable("rtx.native.pathtrace.prism", "0"));
+  ok(api.SetConfigVariable("rtx.native.pathtrace.gamma22", "0"));
   if (const char *primary = std::getenv("REMIX_TEST_PRIMARY_VISIBILITY"))
     ok(api.SetConfigVariable("rtx.native.pathtrace.primaryVisibility", primary));
   if (argc > 2 && std::string(argv[2]) == "init-failure") {

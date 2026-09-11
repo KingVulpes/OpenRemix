@@ -60,6 +60,8 @@ namespace remix {
           if (ImGui::Combo("Shadow view", &shadowView, "Final lighting\0Raw visibility\0SIGMA visibility\0"))
             m_traceOptions.shadowDebug = uint32_t(shadowView);
           int upscaler = m_traceOptions.fsr ? 1 : 0;
+          ImGui::Checkbox("Prism tonemapping", &m_traceOptions.prism);
+          ImGui::Checkbox("Gamma 2.2 output", &m_traceOptions.gamma22);
           if (ImGui::Combo("Upscaling", &upscaler, "Off\0FSR 3.1\0"))
             m_traceOptions.fsr = upscaler != 0;
           const auto fsr = m_pathTracer ? m_pathTracer->upscalingStatistics() : upscale::Statistics{};

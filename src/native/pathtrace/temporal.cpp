@@ -187,7 +187,10 @@ namespace remix {
     }
     g.retiredPreviousVertices = std::move(g.previousVertices);
     g.previousVertices = std::move(g.pendingVertices);
-    g.previousCamera = scene::inverse(g.temporalFrame.inverseCamera);
+    // Preserve the submitted transform exactly. Inverting its rounded inverse
+    // introduces false motion even for a stationary camera, especially far
+    // from the world origin.
+    g.previousCamera = g.pendingCamera;
     g.previousView = g.temporalFrame.view;
     g.previousProjection = g.pendingProjection;
     std::copy_n(g.temporalFrame.jitter, 2, g.previousJitter);

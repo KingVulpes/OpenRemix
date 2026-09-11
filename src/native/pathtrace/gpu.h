@@ -229,7 +229,7 @@ namespace remix {
     scene::TemporalHistory history;
     std::map<scene::TemporalHistory::Key, std::shared_ptr<Buffer>> previousVertices, pendingVertices,
         retiredPreviousVertices;
-    scene::Matrix previousCamera{}, previousView{}, previousProjection{}, pendingProjection{};
+    scene::Matrix previousCamera{}, pendingCamera{}, previousView{}, previousProjection{}, pendingProjection{};
     float previousJitter[2] = {};
     denoise::Frame temporalFrame{};
     uint32_t previousSeed{};

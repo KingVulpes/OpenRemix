@@ -2,6 +2,10 @@ policy_test = executable('remix-tlas-policy-test', 'tlas_policy.cpp',
   include_directories : test_includes, link_with : pathtrace_library)
 test('Tracing scene and TLAS policy', policy_test)
 if get_option('gpu_tests')
+  texture_history_test = executable('remix-texture-history-test', 'texture_history.cpp',
+    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
+  test('FSR texture history at translated world coordinates', texture_history_test,
+    args : [meson.current_build_dir() / 'texture-history-scenes'], timeout : 240)
   upscale_test = executable('remix-upscale-test', 'upscale.cpp',
     include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
   test('FSR 3.1 presets and temporal composition', upscale_test,

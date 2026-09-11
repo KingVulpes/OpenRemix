@@ -307,6 +307,7 @@ namespace remix {
     temporalFrame.local[2] = localResponsiveFrames;
     temporalFrame.view = resources.view();
     temporalFrame.inverseCamera = frame.inverseCamera;
+    pendingCamera = frame.camera;
     pendingProjection = scene::multiply(frame.camera, scene::inverse(resources.view()));
     temporalFrame.previousView = history.reset() ? resources.view() : previousView;
     temporalFrame.previousCamera = history.reset() ? frame.camera : previousCamera;

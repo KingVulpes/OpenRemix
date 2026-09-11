@@ -33,7 +33,10 @@ display resolution afterward. A separate, unjittered display-resolution depth pa
 keeps their occlusion independent of reconstructed color.
 
 Motion vectors are unjittered current-to-previous displacements in render pixels,
-with a dispatch scale of (1,1). The official FSR phase-count and Halton helpers
+with a dispatch scale of (1,1). Camera history retains the exact submitted
+view-projection matrix after the frame is submitted; reconstructing it from a
+rounded inverse would create false motion on stationary surfaces away from the
+world origin. The official FSR phase-count and Halton helpers
 provide subpixel offsets in render pixels. The dispatch negates the renderer's
 ray-sampling offset to match FSR's projected-geometry jitter convention.
 Device depth is reconstructed from the

@@ -177,7 +177,15 @@ namespace remix {
     VkQueryPool compaction = VK_NULL_HANDLE, timestamps = VK_NULL_HANDLE;
     uint32_t timestampBits = 0;
     bool timingPending = false, imagesInitialized = false, encodeOutput = false;
-    VkExtent2D extent = {};
+    VkExtent2D extent = {}, displayExtent = {};
+    VkRenderPass displayPass{};
+    VkFormat displayDepthFormat{};
+    VkImageView displayDepth{};
+    bool fsrRequested = false;
+    uint32_t fsrQuality = 1;
+    std::unique_ptr<upscale::Renderer> upscaler;
+    std::string fsrFailure;
+    void createTarget();
     std::unique_ptr<Image> world, transmission, sky;
     struct PrimaryDraw {
       scene::Matrix model;
@@ -315,7 +323,7 @@ namespace remix {
     std::unique_ptr<Buffer> topScratch;
     void buildTop(VkCommandBuffer command, const std::vector<trace::InstanceInput> inputs[2], bool force);
     std::unique_ptr<Image> image(bool colorAttachment = false,
-                                 VkFormat format = VK_FORMAT_R32G32B32A32_SFLOAT);
+                                 VkFormat format = VK_FORMAT_R32G32B32A32_SFLOAT, VkExtent2D size = {});
     void destroyPost();
     void beginFrame(const TraceOptions &options);
     void destroyTarget();

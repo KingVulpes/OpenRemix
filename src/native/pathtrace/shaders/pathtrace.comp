@@ -419,7 +419,7 @@ void main() {
 #endif
   float depth=1;
   if(frame.target.w!=0) {
-    depth=imageLoad(primaryDepth,pixel).x;
+    depth=imageLoad(primaryDepth,ivec2((vec2(pixel)+0.5)*vec2(imageSize(primaryDepth))/vec2(frame.target.xy))).x;
   } else {
     // Stable center-ray depth for raster feedback; blended sheets do not write
     // depth, matching the raster material contract. This ray adds no illumination.

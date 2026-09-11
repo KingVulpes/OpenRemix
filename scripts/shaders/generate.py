@@ -7,9 +7,11 @@ import struct
 import subprocess
 import tempfile
 import nrd
+import fsr31
 
 ROOT = Path(__file__).resolve().parents[2]
 BACKENDS = {
+    'upscale': ('upscale', 'vulkan1.2', ('comp', 'vert', 'frag')),
     'raster': ('raster', 'vulkan1.1', ('vert', 'frag')),
     'pathtrace': ('trace', 'vulkan1.2', ('vert', 'frag', 'comp', 'temporal', 'transparency', 'temporalTransparency', 'confidence', 'gbufferVert', 'gbufferFrag', 'depthFrag', 'sharcUpdate', 'sharcResolve', 'sharcQuery', 'sharcTransparency', 'sharcTemporal', 'sharcTemporalTransparency', 'sharcConfidence', 'sigmaTemporal', 'sharcSigmaTemporal', 'localTemporal', 'localSigmaTemporal', 'sharcLocalTemporal', 'sharcLocalSigmaTemporal')),
     'denoise': ('denoise', 'vulkan1.2', ('comp', 'sigma', 'local', 'localSigma')),
@@ -76,14 +78,14 @@ def process(backend, check, validate):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('backend', choices=['raster', 'pathtrace', 'denoise', 'nrd', 'all'])
+    parser.add_argument('backend', choices=['upscale', 'raster', 'pathtrace', 'denoise', 'nrd', 'fsr31', 'all'])
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--check', action='store_true', help='Compare generated output without modifying files')
     mode.add_argument('--validate', action='store_true', help='Validate checked-in SPIR-V using only spirv-val')
     args = parser.parse_args()
-    for backend in [*BACKENDS, 'nrd'] if args.backend == 'all' else [args.backend]:
-        if backend == 'nrd':
-            nrd.process(args.check, args.validate)
+    for backend in [*BACKENDS, 'nrd', 'fsr31'] if args.backend == 'all' else [args.backend]:
+        if backend in ('nrd', 'fsr31'):
+            (nrd if backend == 'nrd' else fsr31).process(args.check, args.validate)
         else:
             process(backend, args.check, args.validate)
 

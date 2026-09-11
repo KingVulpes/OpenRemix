@@ -32,7 +32,7 @@ namespace remix {
                                 VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R32G32B32A32_SFLOAT,
                                 VK_FORMAT_R32_SFLOAT};
     for (unsigned i = 0; i < 5; ++i)
-      primary[i] = image(true, formats[i]);
+      primary[i] = image(true, formats[i], i == 4 ? displayExtent : extent);
     VkPushConstantRange push{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                              sizeof(PrimaryPush)};
     VkPipelineLayoutCreateInfo li{.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
@@ -43,6 +43,7 @@ namespace remix {
     check(vkCreatePipelineLayout(device, &li, nullptr, &primaryLayout));
 
     for (unsigned pass = 0; pass < 2; ++pass) {
+      const VkExtent2D size = pass ? displayExtent : extent;
       const unsigned colors = pass ? 1 : 4;
       VkAttachmentDescription attachments[5] = {};
       VkAttachmentReference references[4] = {};
@@ -106,8 +107,8 @@ namespace remix {
                                  .renderPass = primaryPass[pass],
                                  .attachmentCount = colors + 1,
                                  .pAttachments = views,
-                                 .width = extent.width,
-                                 .height = extent.height,
+                                 .width = size.width,
+                                 .height = size.height,
                                  .layers = 1};
       check(vkCreateFramebuffer(device, &fb, nullptr, &primaryFramebuffer[pass]));
 
@@ -209,9 +210,10 @@ namespace remix {
                              0, 0, nullptr, 0, nullptr, 5, transitions);
         primaryInitialized = true;
       }
-      return;
+      if (!upscaler) return;
     }
-    for (unsigned pass = 0; pass < 2; ++pass) {
+    for (unsigned pass = rasterPrimary ? 0 : 1; pass < 2; ++pass) {
+      const VkExtent2D size = pass ? displayExtent : extent;
       const unsigned colors = pass ? 1 : 4;
       VkClearValue clear[5] = {};
       if (pass)
@@ -220,12 +222,12 @@ namespace remix {
       VkRenderPassBeginInfo begin{.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
                                   .renderPass = primaryPass[pass],
                                   .framebuffer = primaryFramebuffer[pass],
-                                  .renderArea = {{0, 0}, extent},
+                                  .renderArea = {{0, 0}, size},
                                   .clearValueCount = colors + 1,
                                   .pClearValues = clear};
       vkCmdBeginRenderPass(command, &begin, VK_SUBPASS_CONTENTS_INLINE);
-      VkViewport viewport{0, 0, float(extent.width), float(extent.height), 0, 1};
-      VkRect2D scissor{{0, 0}, extent};
+      VkViewport viewport{0, 0, float(size.width), float(size.height), 0, 1};
+      VkRect2D scissor{{0, 0}, size};
       vkCmdSetViewport(command, 0, 1, &viewport);
       vkCmdSetScissor(command, 0, 1, &scissor);
       vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, primaryPipeline[pass]);

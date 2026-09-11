@@ -2,6 +2,17 @@ policy_test = executable('remix-tlas-policy-test', 'tlas_policy.cpp',
   include_directories : test_includes, link_with : pathtrace_library)
 test('Tracing scene and TLAS policy', policy_test)
 if get_option('gpu_tests')
+  upscale_test = executable('remix-upscale-test', 'upscale.cpp',
+    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
+  test('FSR 3.1 presets and temporal composition', upscale_test,
+    args : [meson.current_build_dir() / 'fsr-scenes'], timeout : 300)
+  if system == 'linux'
+    foreach fault : ['fsr-allocation', 'fsr-pipeline']
+      test('FSR 3.1 fallback ' + fault, upscale_test,
+        args : [meson.current_build_dir() / fault],
+        env : ['LD_PRELOAD=' + faults.full_path(), 'REMIX_TEST_FAULT=' + fault], timeout : 90)
+    endforeach
+  endif
   guide_boundary_test = executable('remix-guide-boundary-test', 'guide_boundary.cpp',
     include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
   test('Torch guide translation and sparse stationary feedback', guide_boundary_test,
@@ -64,6 +75,11 @@ if get_option('gpu_tests')
   test('TAA stationary edge with shared atlas animation', pathtrace_test,
     args : [meson.current_build_dir() / 'taa-atlas-stability'],
     env : ['REMIX_TEST_TAA_STABILITY=1', 'REMIX_TEST_TAA_ATLAS=1'], timeout : 180)
+  test('FSR 3.1 stationary edge alignment', pathtrace_test,
+    args : [meson.current_build_dir() / 'fsr-edge'], env : ['REMIX_TEST_FSR_STABILITY=1'], timeout : 180)
+  test('FSR 3.1 stationary edge with shared atlas animation', pathtrace_test,
+    args : [meson.current_build_dir() / 'fsr-atlas-edge'],
+    env : ['REMIX_TEST_FSR_STABILITY=1', 'REMIX_TEST_TAA_ATLAS=1'], timeout : 180)
   test('Tracing presentation and lifecycle', runtime_test, args : [remix.full_path(), 'gpu'],
     env : ['REMIX_TEST_BACKEND=pathtrace'], timeout : 180)
   if system != 'windows'

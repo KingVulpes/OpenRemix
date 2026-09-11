@@ -17,7 +17,7 @@ namespace remix {
     void prepare(VkCommandBuffer command,
                  bool tracing = false); // After prior frame fence, outside render pass.
     void record(VkCommandBuffer command, bool skyOnly = false, bool skipSky = false,
-                const float *skyJitter = nullptr); // Inside render pass, before ImGui.
+                const float *skyJitter = nullptr, VkExtent2D skyExtent = {}); // Inside render pass, before ImGui.
 
     VkDescriptorImageInfo sampledMaterial(const std::shared_ptr<scene::Material> &material,
                                           VkCommandBuffer command);

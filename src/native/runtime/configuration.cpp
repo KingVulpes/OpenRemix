@@ -47,6 +47,31 @@ namespace remix {
   }
 
   remixapi_ErrorCode RemixNativeRuntime::configureTracing(const char *key, const char *value) {
+    if (!std::strcmp(key, "upscaler")) {
+      if (std::strcmp(value, "off") && std::strcmp(value, "fsr31"))
+        return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+      m_traceOptions.fsr = !std::strcmp(value, "fsr31");
+      return REMIXAPI_ERROR_CODE_SUCCESS;
+    }
+    if (!std::strcmp(key, "fsrQuality")) {
+      const char* modes[] = {"native-aa", "quality", "balanced", "performance", "ultra-performance"};
+      for (uint32_t i = 0; i < 5; ++i) {
+        if (!std::strcmp(value, modes[i])) {
+          m_traceOptions.fsrQuality = i;
+          return REMIXAPI_ERROR_CODE_SUCCESS;
+        }
+      }
+      return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+    }
+    if (!std::strcmp(key, "fsrSharpness")) {
+      float sharpness = 0;
+      const char* end = value + std::strlen(value);
+      auto parsed = std::from_chars(value, end, sharpness);
+      if (parsed.ec != std::errc{} || parsed.ptr != end || !std::isfinite(sharpness) || sharpness < 0 || sharpness > 1)
+        return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+      m_traceOptions.fsrSharpness = sharpness;
+      return REMIXAPI_ERROR_CODE_SUCCESS;
+    }
     if (!std::strcmp(key, "primaryVisibility")) {
       if (std::strcmp(value, "raster") && std::strcmp(value, "ray"))
         return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;

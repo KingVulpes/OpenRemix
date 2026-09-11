@@ -306,6 +306,10 @@ namespace remix::denoise {
     g.stats.peakMemoryBytes = g.stats.memoryBytes;
   }
   VkDescriptorSetLayout Renderer::inputLayout() const { return m_gpu->inputLayout; }
+  upscale::Input Renderer::image(ImageSlot slot) const {
+    const auto& image = *m_gpu->images.at(slot);
+    return {image.image, image.view};
+  }
   VkDescriptorSet Renderer::inputs() const { return m_gpu->inputs; }
   void Renderer::begin(VkCommandBuffer command, const Frame &frame, const scene::Matrix &projection,
                        const scene::Matrix &previousProjection, VkImageView world, VkImageView sky) {

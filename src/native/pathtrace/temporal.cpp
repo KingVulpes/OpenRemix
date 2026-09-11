@@ -36,10 +36,10 @@ namespace remix {
     retiredPreviousVertices.clear(); // beginFrame runs after the previous submission fence.
     const auto &caps = postCapabilities;
     const bool reblur = options.denoiser && !options.accumulate && !options.sharcDebug && caps.reblurShSupported;
-    const bool taa = options.taa && !options.accumulate && !options.sharcDebug && caps.taaSupported;
+    const bool taa = options.taa && !upscaler && !options.accumulate && !options.sharcDebug && caps.taaSupported;
     bool sigma = options.sigma && !options.accumulate && !options.sharcDebug &&
                        sigmaCapable;
-    bool local = localSeen && (reblur || taa || sigma);
+    bool local = localSeen && (reblur || taa || sigma || upscaler);
     const bool localLimited = local && !localCapable[sigma];
     if (localLimited) {
       // Raw local light must never be multiplied by the sun's shadow mask.
@@ -63,7 +63,7 @@ namespace remix {
       postFailure = "Insufficient descriptors for separate local and sun signals; SIGMA is disabled";
     if ((options.denoiser && !caps.reblurShSupported) || (options.taa && !caps.taaSupported))
       postFailure = caps.unavailableReason;
-    if ((!reblur && !taa && !sigma) || postAttempted)
+    if ((!reblur && !taa && !sigma && !upscaler) || postAttempted)
       return;
     postSigma = sigma;
     postLocal = local;
@@ -137,10 +137,37 @@ namespace remix {
     }
   }
 
-  void PathTracer::beginFrame(const TraceOptions &options, bool hasLocalLights) {
-    m_gpu->localSeen |= hasLocalLights;
+  void PathTracer::beginFrame(const TraceOptions &options, const RasterRenderer& resources) {
+    auto& g = *m_gpu;
+    const bool perspective = resources.cameraValid() && upscale::supportsCamera(
+        scene::multiply(resources.camera(), scene::inverse(resources.view())));
+    const bool fsr = options.fsr && !options.accumulate && !options.sharcDebug &&
+                     g.postCapabilities.taaSupported && perspective;
+    if (fsr != g.fsrRequested || (fsr && options.fsrQuality != g.fsrQuality)) {
+      g.fsrRequested = fsr;
+      g.fsrQuality = options.fsrQuality;
+      g.createTarget();
+    }
+    if (options.fsr && !options.accumulate && !options.sharcDebug) {
+      if (!g.postCapabilities.taaSupported) g.fsrFailure = g.postCapabilities.unavailableReason;
+      else if (!perspective) g.fsrFailure = "FSR requires a finite perspective world camera; native resolution active";
+    }
+    m_gpu->localSeen |= resources.hasSphereLights();
     m_gpu->beginFrame(options);
+    if (g.upscaler && !g.denoiser) {
+      const auto failure = g.postFailure;
+      g.fsrRequested = false;
+      g.createTarget();
+      g.fsrRequested = true; // Retry on the next explicit mode/preset change.
+      g.fsrFailure = failure + "; FSR requires temporal guide resources; native resolution active";
+      g.beginFrame(options);
+    }
     m_gpu->beginSharc(options);
+  }
+  upscale::Statistics PathTracer::upscalingStatistics() const {
+    auto result = m_gpu->upscaler ? m_gpu->upscaler->statistics() : upscale::Statistics{};
+    result.failure = m_gpu->fsrFailure;
+    return result;
   }
   VkRenderPass PathTracer::skyPass() const { return m_gpu->skyPass; }
   void PathTracer::submitted() {

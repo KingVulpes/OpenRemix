@@ -22,7 +22,7 @@ python3 scripts/shaders/generate.py all --check
 python3 scripts/shaders/generate.py all --validate
 ```
 
-Select `raster`, `pathtrace`, `denoise` or `nrd` for a focused update. `--check`
+Select `raster`, `pathtrace`, `denoise`, `nrd`, `upscale` or `fsr31` for a focused update. `--check`
 regenerates without changing files; `--validate` only needs `spirv-val`. Generated
 output depends on compiler versions; this revision was verified with glslang 16.4.0,
 SPIR-V Tools 2026.3 and DXC 1.9.0.5191. See `toolchain.lock.json` for DXC's release,
@@ -40,3 +40,9 @@ DXC emits some unknown-format float3 image writes against RGBA16F SH resources.
 before validation, satisfying Vulkan's storage-write component-count requirement
 (VUID-RuntimeSpirv-OpImageWrite-08795). The unused component is zero; upstream HLSL
 and RGB lighting semantics are unchanged.
+
+FSR 3.1.4 uses the pinned GLSL SDK sources under `third_party/fsr31`. The `fsr31`
+target compiles the supported HDR/FP32 permutations and reflects descriptor names,
+bindings, array counts and sets from SPIR-V. Both reproduction and SPIR-V validation
+are part of `all`. The `upscale` target builds input preparation and display
+composition. Normal builds require no FidelityFX shader compiler or runtime DLL.

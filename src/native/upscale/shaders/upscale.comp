@@ -1,0 +1,22 @@
+#version 450
+layout(local_size_x=8,local_size_y=8) in;
+layout(binding=0,r32f) readonly uniform image2D viewDepth;
+layout(binding=1,rgba16f) readonly uniform image2D transmission;
+layout(binding=2,r32f) writeonly uniform image2D deviceDepth;
+layout(binding=3,r8) writeonly uniform image2D reactive;
+layout(binding=4,r8) writeonly uniform image2D composition;
+layout(push_constant) uniform Frame { mat4 projection; } frame;
+void main() {
+  ivec2 p=ivec2(gl_GlobalInvocationID.xy);
+  if (any(greaterThanEqual(p,imageSize(viewDepth)))) return;
+  float z=imageLoad(viewDepth,p).r;
+  vec4 clip=frame.projection*vec4(0,0,z*(frame.projection[2][3]>=0 ? 1 : -1),1);
+  float depth=z>0 && z<1e7 ? clamp(clip.z/clip.w,0,1) : 1;
+  imageStore(deviceDepth,p,vec4(depth));
+  // Transparent radiance follows its opaque background's motion. Reduce history
+  // for water/glass coverage, including colored transmission and additive sheets.
+  vec4 tr=imageLoad(transmission,p);
+  float coverage=clamp(1-min(min(tr.r,tr.g),min(tr.b,tr.a)),0,1);
+  imageStore(reactive,p,vec4(min(coverage,0.9)));
+  imageStore(composition,p,vec4(coverage));
+}

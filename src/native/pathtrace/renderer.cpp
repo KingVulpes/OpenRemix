@@ -39,13 +39,14 @@ namespace remix {
       vkDestroyDescriptorSetLayout(device, setLayout, nullptr);
   }
 
-  std::unique_ptr<Image> PathTracer::Gpu::image(bool colorAttachment, VkFormat format) {
+  std::unique_ptr<Image> PathTracer::Gpu::image(bool colorAttachment, VkFormat format, VkExtent2D size) {
+    if (!size.width) size = extent;
     auto out = std::make_unique<Image>();
     out->device = device;
     VkImageCreateInfo info = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                               .imageType = VK_IMAGE_TYPE_2D,
                               .format = format,
-                              .extent = {extent.width, extent.height, 1},
+                              .extent = {size.width, size.height, 1},
                               .mipLevels = 1,
                               .arrayLayers = 1,
                               .samples = VK_SAMPLE_COUNT_1_BIT,
@@ -72,6 +73,7 @@ namespace remix {
   }
 
   void PathTracer::Gpu::destroyTarget() {
+    upscaler.reset();
     lightGuiding.valid = false;
     destroyPost();
     sharc.clear = true;
@@ -233,13 +235,53 @@ namespace remix {
   void PathTracer::configureTarget(VkRenderPass pass, VkExtent2D extent, bool encodeOutput,
                                    VkFormat depthFormat, VkImageView depthView) {
     auto &g = *m_gpu;
-    g.destroyTarget();
-    g.extent = extent;
+    g.displayPass = pass;
+    g.displayExtent = extent;
+    g.displayDepthFormat = depthFormat;
+    g.displayDepth = depthView;
     g.encodeOutput = encodeOutput;
+    g.createTarget();
+  }
+  void PathTracer::Gpu::createTarget() {
+    destroyTarget();
+    fsrFailure.clear();
+    extent = fsrRequested ? upscale::renderSize(displayExtent, fsrQuality) : displayExtent;
+    if (fsrRequested) {
+      try {
+        auto next = std::make_unique<upscale::Renderer>();
+        next->initialize(physical, device, queueFamily, extent, displayExtent);
+        upscaler = std::move(next);
+      } catch (VkResult result) {
+        if (result == VK_ERROR_DEVICE_LOST) throw;
+        fsrFailure = "FSR initialization failed (Vulkan " + std::to_string(result) + "); native resolution active";
+      } catch (const std::exception& e) {
+        fsrFailure = std::string(e.what()) + "; native resolution active";
+      }
+      if (!upscaler) extent = displayExtent;
+    }
+    auto& g = *this;
+    const auto pass = displayPass;
+    const auto depthFormat = displayDepthFormat;
+    const auto depthView = displayDepth;
     g.world = g.image();
     g.transmission = g.image(false, VK_FORMAT_R32G32B32A32_UINT);
     g.sky = g.image(true);
     g.createPrimary(depthFormat, depthView);
+    if (g.upscaler) {
+      std::string failure;
+      try { g.upscaler->configureComposite(pass, g.primary[4]->view); }
+      catch (VkResult result) {
+        if (result == VK_ERROR_DEVICE_LOST) throw;
+        failure = "FSR compositor initialization failed (Vulkan " + std::to_string(result) + ")";
+      }
+      if (!failure.empty()) {
+        fsrRequested = false;
+        createTarget();
+        fsrRequested = true;
+        fsrFailure = failure + "; native resolution active";
+        return;
+      }
+    }
     VkAttachmentDescription attachments[] = {
         {.format = VK_FORMAT_R32G32B32A32_SFLOAT,
          .samples = VK_SAMPLE_COUNT_1_BIT,
@@ -375,6 +417,7 @@ namespace remix {
   remixapi_TracingStatisticsEXT PathTracer::statistics() const {
     auto result = m_gpu->stats;
     result.redrawRequested = result.accumulationEnabled ||
+        (m_gpu->upscaler && m_gpu->upscaler->statistics().frames < 128) ||
         (m_gpu->sharc.stats.active && m_gpu->sharc.warmFrames < m_gpu->sharc.warmTarget);
     return result;
   }

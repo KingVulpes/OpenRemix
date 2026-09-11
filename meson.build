@@ -43,6 +43,7 @@ vulkan_dep = declare_dependency(dependencies : vulkan_dep,
   include_directories : include_directories('include/vulkan/include', is_system : true))
 subdir('third_party/imgui')
 subdir('third_party/nrd')
+subdir('third_party/fsr31')
 subdir('src/native')
 subdir('samples/remix-native')
 if get_option('enable_tests')

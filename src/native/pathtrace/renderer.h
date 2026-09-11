@@ -9,6 +9,9 @@ namespace remix {
     uint32_t samples = 1, bounces = 2;
     bool accumulate = false, forceRebuild = false;
     bool denoiser = true, taa = true, validation = false;
+    bool fsr = false;
+    uint32_t fsrQuality = 1;
+    float fsrSharpness = 0.f;
     bool sigma = true;
     bool localLights = true, localDenoiser = true;
     uint32_t localSamples = 1;
@@ -37,7 +40,8 @@ namespace remix {
     void configureTarget(VkRenderPass pass, VkExtent2D extent, bool encodeOutput, VkFormat depthFormat,
                          VkImageView depthView);
     VkRenderPass skyPass() const;
-    void beginFrame(const TraceOptions &options, bool hasLocalLights = false);
+    upscale::Statistics upscalingStatistics() const;
+    void beginFrame(const TraceOptions &options, const RasterRenderer& resources);
     void submitted();
     remixapi_ShadowStatisticsEXT shadowStatistics() const;
     remixapi_LocalLightStatisticsEXT localLightStatistics() const;

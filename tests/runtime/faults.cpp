@@ -1,9 +1,12 @@
 #include <cstdlib>
+#include <algorithm>
+#include <set>
 #include <cstring>
 #include <dlfcn.h>
 #include <vulkan/vulkan.h>
 
 namespace {
+  std::set<VkShaderModule> fsrModules;
   bool armed = false;
   bool computeCreated = false;
   uint32_t computeAttempts = 0;
@@ -57,12 +60,29 @@ extern "C" VKAPI_ATTR VkResult VKAPI_CALL vkCreateDescriptorSetLayout(VkDevice d
       }
   return reinterpret_cast<PFN_vkCreateDescriptorSetLayout>(resolve("vkCreateDescriptorSetLayout"))(device, info, alloc, output);
 }
+extern "C" VKAPI_ATTR VkResult VKAPI_CALL vkCreateShaderModule(VkDevice device,
+    const VkShaderModuleCreateInfo* info, const VkAllocationCallbacks* alloc, VkShaderModule* output) {
+  auto result = reinterpret_cast<PFN_vkCreateShaderModule>(resolve("vkCreateShaderModule"))(device,info,alloc,output);
+  const char marker[] = "cbFSR3Upscaler";
+  const auto* begin = reinterpret_cast<const char*>(info->pCode);
+  if(result == VK_SUCCESS && std::search(begin,begin+info->codeSize,marker,marker+sizeof(marker)-1)!=begin+info->codeSize)
+    fsrModules.insert(*output);
+  return result;
+}
+extern "C" VKAPI_ATTR void VKAPI_CALL vkDestroyShaderModule(VkDevice device,VkShaderModule module,const VkAllocationCallbacks* alloc) {
+  fsrModules.erase(module);
+  reinterpret_cast<PFN_vkDestroyShaderModule>(resolve("vkDestroyShaderModule"))(device,module,alloc);
+}
 extern "C" VKAPI_ATTR VkResult VKAPI_CALL vkCreateComputePipelines(VkDevice device, VkPipelineCache cache,
                                                                    uint32_t count,
                                                                    const VkComputePipelineCreateInfo *infos,
                                                                    const VkAllocationCallbacks *alloc,
                                                                    VkPipeline *outputs) {
   ++computeAttempts;
+  if (fault("fsr-pipeline")) for(uint32_t i=0;i<count;++i) if(fsrModules.count(infos[i].stage.module)) {
+    for(uint32_t j=0;j<count;++j)outputs[j]=VK_NULL_HANDLE;
+    return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+  }
   if (fault("light-guiding-compute")) {
     for (uint32_t i = 0; i < count; ++i) {
       const auto *specialization = infos[i].stage.pSpecializationInfo;
@@ -97,6 +117,10 @@ extern "C" VKAPI_ATTR VkResult VKAPI_CALL vkCreateComputePipelines(VkDevice devi
 // primary G-buffer also has an RGBA16F image, but it is a color attachment.
 extern "C" VKAPI_ATTR VkResult VKAPI_CALL vkCreateImage(VkDevice device, const VkImageCreateInfo *info,
                                                         const VkAllocationCallbacks *alloc, VkImage *output) {
+  if (fault("fsr-allocation") && info->format == VK_FORMAT_R16G16_SFLOAT && info->extent.width == 640) {
+    *output = VK_NULL_HANDLE;
+    return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+  }
   if (computeCreated && fault("denoise-allocation") && info->format == VK_FORMAT_R16G16B16A16_SFLOAT &&
       !(info->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)) {
     *output = VK_NULL_HANDLE;

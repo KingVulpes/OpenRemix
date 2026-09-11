@@ -270,7 +270,8 @@ int main(int argc, char **argv) {
     stbi_image_free(bytes);
     return color;
   };
-  if (std::getenv("REMIX_TEST_TAA_STABILITY")) {
+  if (std::getenv("REMIX_TEST_TAA_STABILITY") || std::getenv("REMIX_TEST_FSR_STABILITY")) {
+    const bool fsr = std::getenv("REMIX_TEST_FSR_STABILITY") != nullptr;
     // A stationary slanted silhouette has different coverage at each Halton
     // phase. Its integrated edge position must stay fixed in display pixels.
     // Moving the orthographic camera only along Z prevents convergence caching
@@ -300,6 +301,16 @@ int main(int argc, char **argv) {
         vertex.texcoord[1] = .5f;
       }
     }
+    if (fsr) {
+      // Preserve this fixture's projected geometry while using perspective depth.
+      camera.projection[0][0] = camera.projection[1][1] = .5f;
+      camera.projection[2][2] = 100.f / 99.95f;
+      camera.projection[2][3] = 1;
+      camera.projection[3][2] = -5.f / 99.95f;
+      camera.projection[3][3] = 0;
+      ok(api.SetConfigVariable("rtx.native.pathtrace.upscaler", "fsr31"));
+      ok(api.SetConfigVariable("rtx.native.pathtrace.fsrQuality", "quality"));
+    }
     vertices[1].position[0] = -.45f;
     vertices[2].position[0] = .55f;
     ok(api.CreateMesh(&mesh, &geometry));
@@ -308,7 +319,12 @@ int main(int argc, char **argv) {
     ok(api.SetConfigVariable("rtx.native.vsync", "0"));
     unsigned tick = 0;
     extra = [&] {
-      camera.view[3][2] = (++tick % 2) ? .0001f : 0.f;
+      ++tick;
+      if (fsr) {
+        // Change scene metadata to prevent frame caching without moving the edge.
+        distant.direction.x = (tick % 2) ? .0001f : 0.f;
+        ok(api.UpdateLightDefinition(sun, &light));
+      } else camera.view[3][2] = (tick % 2) ? .0001f : 0.f;
       ok(api.SetupCamera(&camera));
       if (animatedAtlas) {
         // Only the unseen atlas tile changes. Every subsequent draw resolves
@@ -323,11 +339,12 @@ int main(int argc, char **argv) {
       ok(api.SetConfigVariable("rtx.native.pathtrace.primaryVisibility", primary));
       for (unsigned mode = 0; mode < 4; ++mode) {
         const bool taa = (mode & 1) != 0, reblur = (mode & 2) != 0;
+        if (fsr && !taa) continue;
         if (reblur && !denoiseCaps.reblurShSupported)
           continue;
         ok(api.SetConfigVariable("rtx.native.pathtrace.taa", taa ? "1" : "0"));
         ok(api.SetConfigVariable("rtx.native.pathtrace.denoiser", reblur ? "reblur-sh" : "off"));
-        for (unsigned i = 0; i < 16; ++i)
+        for (unsigned i = 0; i < (fsr ? 64u : 16u); ++i)
           frame();
         double lo = 1e10, hi = -1e10;
         unsigned coveragePixels = 0;
@@ -365,7 +382,7 @@ int main(int argc, char **argv) {
           hi = std::max(hi, edge);
         }
         const auto denoising = denoiseStats();
-        require(denoising.activeTaa == taa && denoising.activeDenoiser == reblur,
+        require(denoising.activeTaa == (taa && !fsr) && denoising.activeDenoiser == reblur,
                 "Stationary edge did not exercise requested temporal modes");
         std::printf("Stationary %s edge, TAA %u NRD %u: %.4f px travel, %u coverage pixels\n",
                     primary, taa, reblur, hi - lo, coveragePixels);

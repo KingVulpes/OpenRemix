@@ -1,6 +1,6 @@
 native_include = include_directories('.')
 image_include = include_directories('../../third_party', is_system : true)
-shell_deps = [sdl3_dep, vulkan_dep, threads_dep, imgui_dep, nrd_dep]
+shell_deps = [sdl3_dep, vulkan_dep, threads_dep, imgui_dep, nrd_dep, fsr31_dep]
 shell_args = ['-DREMIX_LIBRARY_EXPORTS=1'] + cpp.get_supported_arguments('-Wno-missing-field-initializers', '-Wno-unused-parameter')
 subdir('platform')
 subdir('api')
@@ -11,6 +11,7 @@ filesystem_dep = cpp.find_library('stdc++fs', required : false)
 subdir('scene')
 subdir('raster')
 subdir('denoise')
+subdir('upscale')
 subdir('pathtrace')
 shell_link_args = []
 if system in ['linux', 'android']
@@ -24,7 +25,7 @@ elif system == 'linux'
 endif
 remix = shared_library('remix',
   api_sources + runtime_sources + ui_sources,
-  link_with : [shell_platform, imgui_vulkan, scene_library, raster_library, pathtrace_library, denoise_library], dependencies : shell_deps,
+  link_with : [shell_platform, imgui_vulkan, scene_library, raster_library, pathtrace_library, denoise_library, upscale_library], dependencies : shell_deps,
   include_directories : [remix_public_include, native_include, image_include], cpp_args : shell_args,
   link_args : shell_link_args, link_depends : 'api/remix.map',
   gnu_symbol_visibility : 'hidden',

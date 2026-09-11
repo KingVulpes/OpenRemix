@@ -265,11 +265,12 @@ namespace remix {
     frame.target[3] = options.rasterPrimary;
     // Reserved private word; included in scene-change detection. Raw/reference
     // and multi-sample rendering retain one estimator at every surface pixel.
-    frame.jitter[2] = options.waterIndirectReuse && denoiser && postTaa && !options.accumulate &&
+    frame.jitter[2] = options.waterIndirectReuse && denoiser && (postTaa || upscaler) && !options.accumulate &&
                       options.samples == 1 && options.bounces > 0;
     append(&frame, sizeof(frame));
     append(&integrator, sizeof(integrator));
     append(&options.validation, sizeof(options.validation));
+    append(&options.fsrSharpness, sizeof(options.fsrSharpness));
     const uint64_t cacheSettings[] = {options.sharcReset, options.sharcCapacityLog2, options.sharcSceneScale,
         options.sharcDownscale, options.sharcAccumulationFrames, options.sharcStaleFrames};
     append(cacheSettings, sizeof(cacheSettings));
@@ -278,7 +279,7 @@ namespace remix {
     configureSharc(frame, options, temporalEpoch, std::move(staticGeometry), std::move(dynamicGeometry));
     // An unchanged world can reuse its cached output once both histories are warm.
     if (scene == lastScene && !options.accumulate && denoiser && !denoiser->statistics().redrawRequested &&
-        !history.reset() && !(sharc.stats.active && sharc.warmFrames < 2 * options.sharcAccumulationFrames))
+        !history.reset() && !(upscaler && upscaler->statistics().frames < 128) && !(sharc.stats.active && sharc.warmFrames < 2 * options.sharcAccumulationFrames))
       return;
     const bool sceneChanged = scene != lastScene;
     if (sceneChanged) {
@@ -325,6 +326,7 @@ namespace remix {
       temporalFrame.jitter[0] = halton(uint32_t(sequence % 16) + 1, 2);
       temporalFrame.jitter[1] = halton(uint32_t(sequence % 16) + 1, 3);
     }
+    if (upscaler) upscale::jitter(temporalFrame.jitter, sequence, extent, displayExtent);
     std::copy_n(temporalFrame.jitter, 2, frame.jitter);
     temporalFrame.jitter[2] = history.reset() ? temporalFrame.jitter[0] : previousJitter[0];
     temporalFrame.jitter[3] = history.reset() ? temporalFrame.jitter[1] : previousJitter[1];
@@ -445,7 +447,7 @@ namespace remix {
                                    .clearValueCount = 2,
                                    .pClearValues = clear};
     vkCmdBeginRenderPass(command, &skyBegin, VK_SUBPASS_CONTENTS_INLINE);
-    resources.record(command, true, false, temporalFrame.jitter);
+    resources.record(command, true, false, temporalFrame.jitter, extent);
     vkCmdEndRenderPass(command);
     if (timestamps)
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, timestamps, 2);
@@ -486,6 +488,12 @@ namespace remix {
       }
       denoiser->record(command);
     }
+    if (upscaler) {
+      upscaler->record(command, denoiser->image(denoise::Composed), denoiser->image(denoise::Depth),
+                       denoiser->image(denoise::Motion), denoiser->image(denoise::Transmission),
+                       pendingProjection, temporalFrame.jitter, temporalFrame.timing[0],
+                       options.fsrSharpness, temporalFrame.flags[0]);
+    }
     finishLightGuiding(command);
     finishSharc(command);
     rendered = true;
@@ -510,8 +518,9 @@ namespace remix {
 
   void PathTracer::record(VkCommandBuffer command) {
     auto &g = *m_gpu;
-    VkViewport viewport = {0, 0, float(g.extent.width), float(g.extent.height), 0, 1};
-    VkRect2D scissor = {{0, 0}, g.extent};
+    if (g.upscaler) { g.upscaler->composite(command, g.encodeOutput); return; }
+    VkViewport viewport = {0, 0, float(g.displayExtent.width), float(g.displayExtent.height), 0, 1};
+    VkRect2D scissor = {{0, 0}, g.displayExtent};
     vkCmdSetViewport(command, 0, 1, &viewport);
     vkCmdSetScissor(command, 0, 1, &scissor);
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, g.layout, 0, 1, &g.set, 0, nullptr);

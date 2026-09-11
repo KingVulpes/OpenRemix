@@ -10,7 +10,8 @@ for manifest, base in [(root / 'tests/abi/headers.sha256', root),
                        (root / 'third_party/imgui/SHA256SUMS', root / 'third_party/imgui'),
                        (root / 'third_party/image/SHA256SUMS', root / 'third_party/image'),
                        (root / 'third_party/nrd/sources.sha256', root / 'third_party/nrd'),
-                       (root / 'third_party/sharc/sources.sha256', root / 'third_party/sharc')]:
+                       (root / 'third_party/sharc/sources.sha256', root / 'third_party/sharc'),
+                       (root / 'third_party/fsr31/sources.sha256', root / 'third_party/fsr31')]:
     for line in manifest.read_text().splitlines():
         checksum, filename = line.split('  ', 1)
         assert hashlib.sha256((base / filename).read_bytes()).hexdigest() == checksum, filename

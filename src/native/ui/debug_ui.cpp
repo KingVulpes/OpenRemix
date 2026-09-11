@@ -59,10 +59,26 @@ namespace remix {
           int shadowView = int(m_traceOptions.shadowDebug);
           if (ImGui::Combo("Shadow view", &shadowView, "Final lighting\0Raw visibility\0SIGMA visibility\0"))
             m_traceOptions.shadowDebug = uint32_t(shadowView);
+          int upscaler = m_traceOptions.fsr ? 1 : 0;
+          if (ImGui::Combo("Upscaling", &upscaler, "Off\0FSR 3.1\0"))
+            m_traceOptions.fsr = upscaler != 0;
+          const auto fsr = m_pathTracer ? m_pathTracer->upscalingStatistics() : upscale::Statistics{};
+          if (m_traceOptions.fsr) {
+            int quality = int(m_traceOptions.fsrQuality);
+            if (ImGui::Combo("FSR preset", &quality, "Native AA\0Quality\0Balanced\0Performance\0Ultra Performance\0"))
+              m_traceOptions.fsrQuality = uint32_t(quality);
+            ImGui::SliderFloat("FSR sharpening", &m_traceOptions.fsrSharpness, 0.f, 1.f, "%.2f");
+            if (fsr.active)
+              ImGui::Text("FSR: %ux%u -> %ux%u | %.2f ms", fsr.render.width, fsr.render.height,
+                          fsr.display.width, fsr.display.height, fsr.milliseconds);
+            if (!fsr.failure.empty()) ImGui::TextWrapped("%s", fsr.failure.c_str());
+          }
+          ImGui::BeginDisabled(fsr.active);
           ImGui::Checkbox("Native resolution TAA", &m_traceOptions.taa);
+          ImGui::EndDisabled();
           ImGui::Checkbox("Reuse water indirect samples", &m_traceOptions.waterIndirectReuse);
           if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Shares diffuse lighting across small flat water patches with TAA.\nEdges, overlapping layers and raw reference rendering retain full sampling.");
+            ImGui::SetTooltip("Shares diffuse lighting across small flat water patches with TAA or FSR.\nEdges, overlapping layers and raw reference rendering retain full sampling.");
           ImGui::Checkbox("NRD validation", &m_traceOptions.validation);
           ImGui::Checkbox("Progressive accumulation", &m_traceOptions.accumulate);
           if (m_traceOptions.accumulate)

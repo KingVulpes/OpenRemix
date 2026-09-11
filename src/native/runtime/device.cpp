@@ -245,8 +245,13 @@ namespace remix {
         vulkan12.shaderFloat16 = vulkan12.shaderBufferInt64Atomics = VK_TRUE;
       }
     }
-    if (m_denoiseCapabilities.taaSupported)
+    if (m_denoiseCapabilities.taaSupported) {
       features.features.shaderStorageImageExtendedFormats = VK_TRUE;
+      VkPhysicalDeviceFeatures available{};
+      vkGetPhysicalDeviceFeatures(selection.physicalDevice, &available);
+      // FSR's output shader uses unformatted writes, independently of NRD.
+      features.features.shaderStorageImageWriteWithoutFormat = available.shaderStorageImageWriteWithoutFormat;
+    }
     if (m_denoiseCapabilities.reblurShSupported) {
       features.features.shaderStorageImageReadWithoutFormat = VK_TRUE;
       features.features.shaderStorageImageWriteWithoutFormat = VK_TRUE;

@@ -34,3 +34,8 @@ NRD 4.18.0, MathLib v11, ShaderMake headers, and sse2neon v1.8.0
 
 NVIDIA SHARC 1.8.3.0 (optional): third_party/sharc/License.md.
 This software contains source code provided by NVIDIA Corporation.
+
+AMD FidelityFX Super Resolution 3.1.4 (upscaler, FidelityFX SDK v1.1.4)
+Copyright (C) 2024 Advanced Micro Devices, Inc.
+MIT license: third_party/fsr31/LICENSE.txt; distributed as FidelityFX.txt.
+Source revision and local portability patches: third_party/fsr31/upstream.json.

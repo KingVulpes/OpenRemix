@@ -19,6 +19,7 @@ and private headers together. Tests mirror these features under `tests`.
 | `raster` | GPU uploads and caches, allocation, pipelines, draw preparation, recording, and raster shaders |
 | `pathtrace` | Acceleration allocation, geometry cache, BLAS builds/compaction, TLAS builds/refits and policy, frame preparation/accumulation, rasterized primary G-buffer/depth passes, optional SHARC cache ownership/update/resolve/query, dispatch, and tracing shaders |
 | `denoise` | Independent REBLUR SH / local radiance / SIGMA instances, dispatch binding, texture pools, per-dispatch constants, confidence filtering, SH resolve, sun visibility resolve, TAA and temporal diagnostics |
+| `upscale` | FSR 3.1 Vulkan context, input preparation, reconstruction history, display composition and timing |
 | `platform` | SDL windows/surfaces, events, input state, and key/button translation |
 | `ui` | ImGui integration and the debug panel |
 
@@ -37,6 +38,7 @@ flowchart TD
   runtime --> raster[Raster]
   tracing --> denoise[NRD and temporal composition]
   tracing --> raster
+  tracing --> upscale[FSR 3.1]
   tracing --> scene[CPU scene resources]
   raster --> scene
 ```

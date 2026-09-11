@@ -1,5 +1,6 @@
 #pragma once
 #include "scene/types.h"
+#include "upscale/renderer.h"
 #include <remix/remix_native_ext.h>
 #include <vulkan/vulkan.h>
 #include <memory>
@@ -61,6 +62,7 @@ namespace remix::denoise {
                     uint32_t queueFamily, bool sigma = false, bool local = false, bool localDenoise = false);
     VkDescriptorSetLayout inputLayout() const;
     VkDescriptorSet inputs() const;
+    upscale::Input image(ImageSlot slot) const;
     void begin(VkCommandBuffer command, const Frame &frame, const scene::Matrix &projection,
                const scene::Matrix &previousProjection, VkImageView world, VkImageView sky);
     void beginConfidence(VkCommandBuffer command);

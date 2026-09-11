@@ -154,10 +154,11 @@ namespace remix {
     }
   }
 
-  void RasterRenderer::record(VkCommandBuffer command, bool skyOnly, bool skipSky, const float *skyJitter) {
+  void RasterRenderer::record(VkCommandBuffer command, bool skyOnly, bool skipSky, const float *skyJitter, VkExtent2D skyExtent) {
     auto &g = *m_gpu;
-    const VkViewport viewport = {0, 0, float(g.extent.width), float(g.extent.height), 0, 1};
-    const VkRect2D scissor = {{0, 0}, g.extent};
+    const auto extent = skyOnly && skyExtent.width ? skyExtent : g.extent;
+    const VkViewport viewport = {0, 0, float(extent.width), float(extent.height), 0, 1};
+    const VkRect2D scissor = {{0, 0}, extent};
     vkCmdSetViewport(command, 0, 1, &viewport);
     vkCmdSetScissor(command, 0, 1, &scissor);
     int previousLayer = -1;
@@ -182,8 +183,8 @@ namespace remix {
       if (skyJitter && draw.layer == 0) {
         // Match the primary ray sample; raster overlays keep their center sample.
         for (int column = 0; column < 4; ++column) {
-          push.mvp[column * 4] -= 2 * skyJitter[0] / g.extent.width * push.mvp[column * 4 + 3];
-          push.mvp[column * 4 + 1] -= 2 * skyJitter[1] / g.extent.height * push.mvp[column * 4 + 3];
+          push.mvp[column * 4] -= 2 * skyJitter[0] / extent.width * push.mvp[column * 4 + 3];
+          push.mvp[column * 4 + 1] -= 2 * skyJitter[1] / extent.height * push.mvp[column * 4 + 3];
         }
       }
       vkCmdPushConstants(command, g.layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,

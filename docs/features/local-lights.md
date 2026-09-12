@@ -152,10 +152,14 @@ active denoising.
 `localIntensity` to `1`, `localDenoiser` to `1`, `localRange` to `16`, and
 `localGuiding` to `1`. Samples accept 1–16 and
 intensity accepts 0–100. F12 exposes these controls under **Local lighting**.
-`adaptiveLocalSampling` defaults to `1`. It keeps `localSamples` as the baseline
-and raises primary opaque pixels to at most four samples near high-importance
-LightBVH nodes. For emissive candidate reservoirs it also lowers the candidate
-count in low-importance pixels. Disable it to use a uniform budget everywhere.
+`adaptiveLocalSampling` defaults to `1`. It keeps `localSamples` and
+`emissiveCandidates` as minimums and smoothly raises primary opaque pixels toward
+four samples near important light clusters. Settings above four are retained.
+The budget sums a fixed cut of at most sixteen LightBVH clusters and uses an
+independent random dimension to round fractional budgets. This avoids whole
+surface patches changing budget when nearly tied tree branches exchange order.
+Split lighting chooses its total budget before the sample loop; adaptation does
+not multiply each requested sample. Disable it to use a uniform budget everywhere.
 `torchLights` and `emissiveLights` independently control sphere and triangle
 casting beneath the existing master switch, both defaulting to `1`. Larger sets
 containing emissive triangles use the bounded [emissive candidate reservoir](emissive-maps.md);

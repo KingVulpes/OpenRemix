@@ -29,36 +29,44 @@ float lightWeight(LightNode node,vec3 p,vec3 n) {
   float distance2=max(dot(nearest,nearest),.01*radius2);
   return localFalloff(dot(nearest,nearest))*node.minimumPower.w*cosine/max(max(distance2,node.maximum.w),1e-12);
 }
-// Find a conservative importance estimate by following the most useful BVH
-// branch. This is intentionally bounded: it adds a few box tests to the
-// primary-light path while avoiding a scan of every emitter for every pixel.
+// A fixed topological cut keeps all nearby clusters in the budget estimate.
+// Following only the largest-weight child can abruptly choose an unrelated
+// leaf when animated emission or receiver motion changes a nearly tied split.
+// The resulting sample/candidate discontinuities look like flickering quads.
+// Sum at most sixteen cluster weights (four levels), with no visibility rays.
+// Saturation is safe because all terms are nonnegative and .06 already requests
+// the maximum adaptive budget. The cut depends on topology, not receiver data.
 float localImportance(LightNodes nodes,Hit hit) {
-  uint index=0;float importance=0;
-  for(uint depth=0;depth<24;++depth) {
-    LightNode node=nodes.data[index];
-    if(node.links.w<=1) {
-      importance=lightWeight(node,hit.p,hit.n);
-      break;
+  uint pending[5],levels[5];
+  pending[0]=0;levels[0]=0;
+  uint count=1;float importance=0;
+  for(uint visited=0;visited<31&&count>0;++visited) {
+    --count;
+    LightNode node=nodes.data[pending[count]];
+    uint level=levels[count];
+    if(node.links.w<=1||level==4) {
+      importance+=lightWeight(node,hit.p,hit.n)*max(frame.localScale.x,.25);
+      if(importance>=.06)return .06;
+    } else {
+      pending[count]=node.links.y;levels[count]=level+1;
+      pending[count+1]=node.links.x;levels[count+1]=level+1;
+      count+=2;
     }
-    float a=lightWeight(nodes.data[node.links.x],hit.p,hit.n);
-    float b=lightWeight(nodes.data[node.links.y],hit.p,hit.n);
-    if(a<=0&&b<=0)break;
-    index=a>=b?node.links.x:node.links.y;
   }
   return importance;
 }
-// Adaptive budgets retain the user's configured sample count as a floor and
-// cap the extra work at four samples. The thresholds are based on the same
-// unshadowed BVH importance used for light selection, so a bright nearby
-// emitter gets more candidates while distant/blocked pixels stay cheap.
-uint adaptiveLocalBudget(LightNodes nodes,Hit hit,uint samples,out uint candidates) {
+// The configured sample and candidate counts are floors. Smoothly allocate
+// one to four visibility samples using an independent random dimension; budget
+// contours become fine sampling noise instead of coherent brightness steps.
+// The budget is chosen before transport sampling and never uses its results.
+uint adaptiveLocalBudget(LightNodes nodes,Hit hit,uint samples,uint state,out uint candidates) {
   candidates=max(uint(frame.localScale.z),1u);
-  if((frame.localConfig.w&0x80000000u)==0)return samples;
-  float importance=localImportance(nodes,hit)*max(frame.localScale.x,.25);
-  uint target=importance>=.03?4u:importance>=.005?2u:1u;
-  if(candidates>1)
-    candidates=importance>=.03?candidates:importance>=.005?min(candidates,2u):1u;
-  return max(samples,target);
+  if((frame.localConfig.w&0x80000000u)==0||samples>=4)return samples;
+  float importance=localImportance(nodes,hit);
+  float target=1+smoothstep(.0025,.01,importance)+2*smoothstep(.015,.06,importance);
+  uint budgetState=hash(state^0x4b1d5a77u);
+  uint targetSamples=uint(floor(target))+uint(lightRandom(budgetState)<fract(target));
+  return max(samples,targetSamples);
 }
 // Visibility needs the nearest transmitting sheet, but any accepted opaque
 // intersection blocks the whole segment. Avoid closest-hit shading (including
@@ -275,11 +283,10 @@ vec3 resampledLocalLighting(LightNodes nodes,LightEmitters emitters,Hit hit,uint
 }
 vec3 familyLocalLighting(LightNodes nodes,LightEmitters emitters,Hit hit,uint state,
                          out float distance,bool guide) {
-  uint samples=1u,candidates=1u;
-  samples=adaptiveLocalBudget(nodes,hit,samples,candidates);
+  uint candidates=max(uint(frame.localScale.z),1u);
   if(nodes.data[0].links.w<=4)
-    return smallLocalLighting(nodes,emitters,hit,state,samples,0u,0u,0,distance,true);
-  return resampledLocalLighting(nodes,emitters,hit,state,samples,candidates,distance,guide);
+    return smallLocalLighting(nodes,emitters,hit,state,1u,0u,0u,0,distance,true);
+  return resampledLocalLighting(nodes,emitters,hit,state,1u,candidates,distance,guide);
 }
 // Separate direct signals. Equal-budget mode chooses a family with known
 // probability and writes zero to the other signal. Per-family mode samples
@@ -293,9 +300,16 @@ void splitLocalLighting(Hit hit,uint state,uint samples,out vec3 torch,out vec3 
     hasTorch=lightWeight(LightNodes(frame.torchNodes).data[0],hit.p,hit.n)>0;
   if(frame.splitLocal.z>0)
     hasEmission=lightWeight(LightNodes(frame.emissiveNodes).data[0],hit.p,hit.n)>0;
+  // Choose the total budget once. Adapting inside each requested sample would
+  // multiply a four-sample setting into as many as sixteen per family.
+  uint adaptiveSamples=samples,candidates;
+  if(hasTorch)
+    adaptiveSamples=max(adaptiveSamples,adaptiveLocalBudget(LightNodes(frame.torchNodes),hit,samples,state,candidates));
+  if(hasEmission)
+    adaptiveSamples=max(adaptiveSamples,adaptiveLocalBudget(LightNodes(frame.emissiveNodes),hit,samples,state,candidates));
   float torchWeight=0,emissionWeight=0;
   state=hash(state^0x931a4bf5u);
-  for(uint i=0;i<samples;++i) {
+  for(uint i=0;i<adaptiveSamples;++i) {
     bool both=hasTorch&&hasEmission;
     // Complementary pixels provide each history with nearby valid samples.
     // A frame-wide random phase avoids a persistent spatial selection bias.
@@ -316,7 +330,7 @@ void splitLocalLighting(Hit hit,uint state,uint samples,out vec3 torch,out vec3 
     }
     state=hash(state+0x9e3779b9u);
   }
-  torch/=float(samples);emission/=float(samples);
+  torch/=float(adaptiveSamples);emission/=float(adaptiveSamples);
   // Occlusion is a valid black sample, not a missing sample. Keep its distance
   // so the filter does not mistake blocked rays for skipped family selections.
   torchDistance=torchWeight>0?torchDistance/torchWeight:0;
@@ -331,7 +345,7 @@ vec3 localLighting(Hit hit,uint state,uint samples,out float lightDistance,bool 
   if(lightWeight(nodes.data[0],hit.p,hit.n)<=0)return vec3(0);
   uint adaptiveSamples=samples,adaptiveCandidates=uint(frame.localScale.z);
   if(useGuiding)
-    adaptiveSamples=adaptiveLocalBudget(nodes,hit,samples,adaptiveCandidates);
+    adaptiveSamples=adaptiveLocalBudget(nodes,hit,samples,state,adaptiveCandidates);
   // The opaque primary vertex has its own signal/filter. Keep the bounded
   // continuation and transparent-sheet stack on the established estimator.
   if(enableLightResampling&&useGuiding&&frame.localScale.z>1)

@@ -184,10 +184,12 @@ not add temporal reservoirs or reuse stale shadow visibility. NRD-Sample's
 radiance blue-noise and Russian-roulette switches are not enabled by this feature.
 
 Adaptive local-light sampling is enabled by default. The configured local-light
-sample count remains the baseline; primary opaque pixels whose BVH importance is
-high receive up to four samples, while low-contribution pixels use one or two.
-Large emissive sets similarly reduce their candidate count away from important
-emitters. This keeps ordinary pixels close to the one-sample cost without
-changing the estimator's expected radiance. The behavior can be disabled with
+sample count and emissive candidate count remain minimums. A bounded sum over
+light clusters smoothly raises primary opaque pixels toward four samples;
+dim receivers retain lower budgets. Independent stochastic rounding avoids
+coherent steps at budget thresholds. Budget selection happens before transport
+sampling and does not use its results, preserving the estimator's expected
+radiance. Dense emissive scenes can require the full four-sample cost.
+The behavior can be disabled with
 `rtx.native.pathtrace.adaptiveLocalSampling=0` or the **Adaptive local-light
 sampling** F12 control.

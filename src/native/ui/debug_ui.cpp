@@ -104,7 +104,7 @@ namespace remix {
               ImGui::SetTooltip("Controls light cast onto the world. Emissive textures remain visible.");
             ImGui::Checkbox("Adaptive local-light sampling", &m_traceOptions.adaptiveLocalSampling);
             if (ImGui::IsItemHovered())
-              ImGui::SetTooltip("Uses the configured local-light budget as a baseline and adds up to four samples near important lights. Emissive candidates are reduced in low-contribution pixels.");
+              ImGui::SetTooltip("Smoothly raises the local-light sample budget toward four near important light clusters. Configured sample and emissive candidate counts remain minimums.");
             ImGui::Checkbox("Stabilize animated emissive lighting", &m_traceOptions.stabilizeEmissiveLighting);
             if (ImGui::IsItemHovered())
               ImGui::SetTooltip("Experimental: smooths animation-driven cast light over half a second. Visible emissive textures keep animating.\nCombined lighting and the shadow-ray budget are preserved.");

@@ -383,8 +383,16 @@ void main() {
   vec3 color=opaque?emission+primaryDirect+primary.color.rgb*(indirect+local):imageLoad(rawSky,pixel).rgb;
   if(primary.blended)color=vec3(0);
 #ifndef TEMPORAL
-  // Diagnostic raw output: distance in world units / 16, before display transfer.
-  if(frame.sun.w!=0)color=opaque?vec3(localDistance/16):vec3(0);
+  // Raw diagnostics, before display transfer: distance / 16, or the combined
+  // sample and candidate budgets / 4 in red and green. Recreate the primary
+  // seed because continuation sampling may already have advanced rng.
+  if(frame.sun.w==1)color=opaque?vec3(localDistance/16):vec3(0);
+  if(frame.sun.w==2&&opaque&&frame.localConfig.x!=0) {
+    uint candidates;
+    uint state=hash(uint(pixel.x)+uint(pixel.y)*frame.target.x+hash(frame.config.z));
+    uint samples=adaptiveLocalBudget(LightNodes(frame.lightNodes),primary,frame.localConfig.y,state,candidates);
+    color=vec3(float(samples)/4,float(candidates)/4,0);
+  }
 #endif
 #ifdef SHARC_QUERY
   if(frame.sharcConfig.w!=0&&opaque) {

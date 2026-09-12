@@ -315,7 +315,8 @@ namespace remix {
     frame.sun[0] = std::tan(diameter * (3.14159265359f / 360.f));
     frame.sun[1] = denoiser && postSigma;
     frame.sun[2] = frame.sun[1] != 0 ? float(options.shadowDebug) : 0;
-    frame.sun[3] = std::getenv("REMIX_EMISSIVE_HIT_DISTANCE") ? 1.f : 0.f;
+    const char *localDebug = std::getenv("REMIX_EMISSIVE_HIT_DISTANCE");
+    frame.sun[3] = localDebug ? (std::strcmp(localDebug, "budget") == 0 ? 2.f : 1.f) : 0.f;
     std::copy_n(light.direction, 3, frame.direction);
     std::copy_n(light.radiance, 3, frame.radiance);
     if (options.sky)

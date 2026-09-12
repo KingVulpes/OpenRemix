@@ -64,7 +64,8 @@ int main(int argc, char **argv) {
   config("sigma", "0");
   config("localRange", "16");
   config("localIntensity", "1");
-  config("adaptiveLocalSampling", std::getenv("REMIX_TEST_ADAPTIVE_LOCAL") ? "1" : "0");
+  const char *adaptive = std::getenv("REMIX_TEST_ADAPTIVE_LOCAL");
+  config("adaptiveLocalSampling", adaptive ? adaptive : "0");
   if (const char *split = std::getenv("REMIX_TEST_SPLIT_LOCAL"))
     config("separateLocalLighting", split);
   const bool mixed = std::getenv("REMIX_TEST_MIXED_LIGHTS");

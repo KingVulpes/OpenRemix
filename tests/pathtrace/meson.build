@@ -2,6 +2,11 @@ policy_test = executable('remix-tlas-policy-test', 'tlas_policy.cpp',
   include_directories : test_includes, link_with : pathtrace_library)
 test('Tracing scene and TLAS policy', policy_test)
 if get_option('gpu_tests')
+  adaptive_sampling_test = executable('remix-adaptive-sampling-test', 'adaptive_sampling.cpp',
+    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
+  test('Adaptive light budget continuity and configured floors', adaptive_sampling_test,
+    args : [meson.current_build_dir() / 'adaptive-sampling-scenes'],
+    env : ['REMIX_EMISSIVE_HIT_DISTANCE=budget'], timeout : 180)
   texture_history_test = executable('remix-texture-history-test', 'texture_history.cpp',
     include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
   test('FSR texture history at translated world coordinates', texture_history_test,
@@ -42,7 +47,7 @@ if get_option('gpu_tests')
   foreach mode : ['1', '2']
     test('Separate direct histories mode ' + mode, torch_stability_test,
       args : [meson.current_build_dir() / ('separate-light-scenes-' + mode)],
-      env : ['REMIX_TEST_MIXED_LIGHTS=1', 'REMIX_TEST_SPLIT_LOCAL=' + mode], timeout : 360)
+      env : ['REMIX_TEST_MIXED_LIGHTS=1', 'REMIX_TEST_ADAPTIVE_LOCAL=1', 'REMIX_TEST_SPLIT_LOCAL=' + mode], timeout : 360)
   endforeach
   water_indirect_test = executable('remix-water-indirect-test', 'water_indirect.cpp',
     include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)

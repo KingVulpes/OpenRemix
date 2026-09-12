@@ -36,10 +36,16 @@ int main(int argc, char **argv) {
   remixapi_StartupInfo startup{};
   startup.sType = REMIXAPI_STRUCT_TYPE_STARTUP_INFO;
 #if !defined(_WIN32)
-  startup.windowWidth = 160;
-  startup.windowHeight = 128;
+  startup.windowWidth = std::getenv("REMIX_TEST_MIXED_PERF") ? 1920 : 160;
+  startup.windowHeight = std::getenv("REMIX_TEST_MIXED_PERF") ? 1080 : 128;
 #endif
   ok(api.Startup(&startup));
+  if (std::getenv("REMIX_TEST_MIXED_PERF")) {
+    remixapi_WindowMetrics metrics{};
+    ok(remixapi_GetWindowMetrics(&metrics));
+    require(metrics.drawableWidth == 1920 && metrics.drawableHeight == 1080,
+            "Mixed-light timing requires a 1920x1080 drawable");
+  }
   remixapi_BackendCapabilitiesEXT caps{};
   caps.structSize = sizeof(caps);
   ok(remixapi_GetBackendCapabilitiesEXT(&caps));
@@ -58,8 +64,15 @@ int main(int argc, char **argv) {
   config("sigma", "0");
   config("localRange", "16");
   config("localIntensity", "1");
+  if (const char *split = std::getenv("REMIX_TEST_SPLIT_LOCAL"))
+    config("separateLocalLighting", split);
+  const bool mixed = std::getenv("REMIX_TEST_MIXED_LIGHTS");
+  if (mixed) {
+    config("prism", "0");
+    config("gamma22", "0");
+  }
   uint64_t next = 1;
-  auto material = [&](remixapi_Float3D color, float alpha) {
+  auto material = [&](remixapi_Float3D color, float alpha, float emission = 0.f) {
     remixapi_MaterialInfoOpaqueEXT opaque{};
     opaque.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_EXT;
     opaque.albedoConstant = color;
@@ -69,6 +82,8 @@ int main(int argc, char **argv) {
     info.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO;
     info.pNext = &opaque;
     info.hash = next++;
+    info.emissiveIntensity = emission;
+    info.emissiveColorConstant = {1, .5f, .2f};
     remixapi_MaterialHandle result{};
     ok(api.CreateMaterial(&info, &result));
     return result;
@@ -107,6 +122,17 @@ int main(int argc, char **argv) {
   auto sideA = quad(1, 1, -1, .8f, -1, 1, white),
        sideB = quad(1, -1, -1, .8f, -1, 1, white);
   auto sideC = quad(0, -1, -1, 1, -1, .8f, white);
+  std::vector<remixapi_MeshHandle> emitters;
+  if (mixed) {
+    auto glowing = material({0, 0, 0}, 1, .3f);
+    const bool many = std::getenv("REMIX_TEST_MIXED_MANY") || std::getenv("REMIX_TEST_EMISSIVE_CLUSTERS");
+    for (int i = 0; i < (many ? 512 : 4); ++i) {
+      float x = -.8f + (many ? (i % 32) * .05f : i * .4f);
+      float y = many ? -.4f + (i / 32) * .05f : -.3f;
+      emitters.push_back(quad(2, -.25f, x, x + (many ? .04f : .2f),
+                              y, y + (many ? .04f : .6f), glowing));
+    }
+  }
   std::vector<remixapi_MeshHandle> meshes;
   remixapi_CameraTemporalEXT epoch{};
   epoch.sType = REMIXAPI_STRUCT_TYPE_CAMERA_TEMPORAL_EXT;
@@ -210,10 +236,12 @@ int main(int argc, char **argv) {
       continue;
     config("primaryVisibility", primary);
     for (int signal = 0; signal < 3; ++signal) {
+      config("torchLights", "1");
       meshes = signal == 2 ? std::vector<remixapi_MeshHandle>{background, water}
                            : std::vector<remixapi_MeshHandle>{receiver};
       if (signal == 1)
         meshes.insert(meshes.end(), {partition, sideA, sideB, sideC});
+      meshes.insert(meshes.end(), emitters.begin(), emitters.end());
       for (unsigned i = 0; i < lights.size(); ++i) {
         sphere.position = {.5f + float(i & 1) * .15f,
                            (float(i >> 1) - .5f) * .25f,
@@ -226,8 +254,58 @@ int main(int argc, char **argv) {
       const std::string prefix =
           std::string(primary) + "-" + std::to_string(signal);
       config("bounces", signal == 1 ? "1" : "0");
-      config("localGuiding", "1");
+      config("localGuiding", mixed ? "0" : "1");
+      config("emissiveCandidates", "1");
+      if (mixed) {
+        auto count = [&] {
+          frame();
+          remixapi_LocalLightStatisticsEXT s{};
+          s.structSize = sizeof(s);
+          ok(remixapi_GetLocalLightStatisticsEXT(&s));
+          return s.activeLights;
+        };
+        require(count() == 4 + 2 * emitters.size(), "Mixed fixture lost emitters");
+        config("torchLights", "0");
+        require(count() == 2 * emitters.size(), "Torch toggle removed emissive lights");
+        config("emissiveLights", "0");
+        require(count() == 0, "Casting toggles retained lights");
+        config("torchLights", "1");
+        require(count() == 4, "Emissive toggle removed torches");
+        config("emissiveLights", "1");
+      }
+      // Exercise a non-root area-light guide subtree without a brighter
+      // analytic torch winning every cached preference in this tiny fixture.
+      if (std::getenv("REMIX_TEST_EMISSIVE_CLUSTERS"))
+        config("torchLights", "0");
+      if (std::getenv("REMIX_TEST_MIXED_PERF")) {
+        config("accumulate", "0");
+        config("localSamples", "1");
+        config("samples", "1");
+        config("denoiser", "reblur-sh");
+        config("taa", "1");
+        config("localGuiding", "1");
+        for (const char *candidates : {"1", "4"}) {
+          config("emissiveCandidates", candidates);
+          ++epoch.historyResetEpoch;
+          for (int f = 0; f < 64; ++f) {
+            camera.view[3][0] = float(f % 16) * .006f;
+            frame();
+            if (f < 32) continue;
+            remixapi_TracingStatisticsEXT tracing{};
+            tracing.structSize = sizeof(tracing);
+            ok(remixapi_GetTracingStatisticsEXT(&tracing));
+            std::printf("PERF %s signal=%d emitters=%zu candidates=%s frame=%d trace_ms=%.6f\n",
+                        primary, signal, 4 + 2 * emitters.size(), candidates, f,
+                        tracing.gpuTraceMilliseconds);
+          }
+        }
+        continue;
+      }
       std::vector<Image> reference;
+      // Compare split estimators to the established combined-light integral,
+      // not to a reference produced by the same family-selection code.
+      if (std::getenv("REMIX_TEST_SPLIT_LOCAL"))
+        config("separateLocalLighting", "0");
       // References use exactly the camera poses later traversed by the moving
       // run.
       for (int pose = 0; pose < 16; ++pose) {
@@ -248,7 +326,13 @@ int main(int argc, char **argv) {
       }
       config("localSamples", "1");
       config("samples", "1");
-      for (int mode = 0; mode < 3; ++mode) {
+      if (const char *split = std::getenv("REMIX_TEST_SPLIT_LOCAL"))
+        config("separateLocalLighting", split);
+      double baselineError = 0;
+      for (int run = 0; run < (mixed ? 6 : 3); ++run) {
+        int mode = run % 3;
+        config("emissiveCandidates", run < 3 ? "1" : "4");
+        config("localGuiding", "1");
         config("accumulate", "0");
         config("denoiser", mode == 0 ? "off" : "reblur-sh");
         config("taa", mode == 0 ? "0" : "1");
@@ -261,7 +345,7 @@ int main(int argc, char **argv) {
         for (int sample = 0; sample < 16; ++sample) {
           int pose = mode == 2 ? sample : 0;
           camera.view[3][0] = float(pose) * .006f + (sample & 1) * .000001f;
-          auto image = capture(prefix + "-" + std::to_string(mode) + "-" +
+          auto image = capture(prefix + "-" + std::to_string(run) + "-" +
                                std::to_string(sample));
           auto e = error(image, reference[pose]);
           normalizedError += e[0] / std::max(e[2], .000001);
@@ -271,18 +355,35 @@ int main(int argc, char **argv) {
           tracing.structSize = sizeof(tracing);
           ok(remixapi_GetTracingStatisticsEXT(&tracing));
           std::fprintf(csv, "%s,%d,%d,%d,%.9f,%.9f,%.9f,%.9f,%.6f\n", primary,
-                       signal, mode, pose, e[0], e[1], e[2], e[3],
+                       signal, run, pose, e[0], e[1], e[2], e[3],
                        tracing.gpuTraceMilliseconds);
           require(e[1] < std::max(.01, e[2] * 2.5),
                   "Torch estimator produced excessive mean energy");
         }
         // At the visible opaque receiver the four-light candidate estimator
         // must converge within one ray/pixel, before any denoising can hide it.
-        if (mode == 0 && signal == 0 && !std::getenv("REMIX_TEST_BASELINE"))
+        if (mode == 0 && signal == 0 && !mixed && !std::getenv("REMIX_TEST_BASELINE"))
           require(normalizedError / 16 < .04,
                   "Four-light selection produced excessive one-sample error");
+        // With a shared family budget, category selection introduces variance
+        // independent of the candidate count. Compare quality in the saved
+        // scene; the split regressions enforce the combined reference energy.
+        if (mixed && mode == 0 && signal == 0 && !std::getenv("REMIX_TEST_SPLIT_LOCAL")) {
+          if (run == 0)
+            baselineError = normalizedError;
+          else
+            require(normalizedError < baselineError * .85,
+                    "Mixed-light RIS did not reduce raw one-ray error");
+        }
         require(std::abs(observed - expected) < std::max(.004, expected * .12),
                 "Torch filtering changed average scene energy");
+        if (std::getenv("REMIX_TEST_EMISSIVE_CLUSTERS") && run == 3 && signal == 1) {
+          remixapi_LocalLightGuidingStatisticsEXT guidance{};
+          guidance.structSize = sizeof(guidance);
+          ok(remixapi_GetLocalLightGuidingStatisticsEXT(&guidance));
+          require(guidance.active && guidance.sampledGuided > 0,
+                  "Area-light cluster PDF test did not exercise guided proposals");
+        }
         require(mode == 0 ||
                     (stats().activeTaa && stats().historyResets == resets),
                 "Camera motion reset torch temporal history");
@@ -292,5 +393,6 @@ int main(int argc, char **argv) {
   }
   std::fclose(csv);
   ok(api.Shutdown());
-  std::puts("Four-torch direct, bounced and water motion captures passed");
+  std::puts(mixed ? "Mixed torch/emissive sampling checks passed"
+                  : "Four-torch direct, bounced and water motion captures passed");
 }

@@ -96,9 +96,24 @@ namespace remix {
                       denoising.gpuTaaMilliseconds, double(denoising.memoryBytes) / (1024 * 1024));
           ImGui::Checkbox("Force dynamic TLAS rebuild", &m_traceOptions.forceRebuild);
           ImGui::Checkbox("Sky illumination", &m_traceOptions.sky);
-          if (ImGui::CollapsingHeader("Torch lighting")) {
+          if (ImGui::CollapsingHeader("Local lighting")) {
             ImGui::Checkbox("Local lights", &m_traceOptions.localLights);
+            ImGui::Checkbox("Torch lights", &m_traceOptions.torchLights);
+            ImGui::Checkbox("Emissive lighting", &m_traceOptions.emissiveLights);
+            if (ImGui::IsItemHovered())
+              ImGui::SetTooltip("Controls light cast onto the world. Emissive textures remain visible.");
+            int candidates = int(m_traceOptions.emissiveCandidates);
+            if (ImGui::SliderInt("Emissive candidates", &candidates, 1, 8))
+              m_traceOptions.emissiveCandidates = uint32_t(candidates);
+            if (ImGui::IsItemHovered())
+              ImGui::SetTooltip("Compares unshadowed candidates at opaque primary surfaces in larger emissive light sets.\nKeeps one shadow ray per local light sample; 1 restores basic BVH sampling.");
             ImGui::Checkbox("Denoise local lighting", &m_traceOptions.localDenoiser);
+            int separation = int(m_traceOptions.separateLocalLighting);
+            const char *separationModes[] = {"Combined", "Separate - shared ray budget", "Separate - samples per family"};
+            if (ImGui::Combo("Torch / emissive lighting", &separation, separationModes, 3))
+              m_traceOptions.separateLocalLighting = uint32_t(separation);
+            if (ImGui::IsItemHovered())
+              ImGui::SetTooltip("Separates direct torch and emissive sampling and denoiser histories.\nShared budget keeps the shadow-ray budget. Per-family mode can trace twice as many.\nIndirect lighting remains combined.");
             int samples = int(m_traceOptions.localSamples);
             if (ImGui::SliderInt("Local light samples", &samples, 1, 16))
               m_traceOptions.localSamples = uint32_t(samples);
@@ -108,7 +123,7 @@ namespace remix {
               m_traceOptions.localRange = .01f;
             ImGui::Checkbox("Guide by recent visibility", &m_traceOptions.localGuiding);
             if (ImGui::IsItemHovered())
-              ImGui::SetTooltip("Guides opaque direct-light samples while retaining exploration.\nOne active light needs no visibility history.");
+              ImGui::SetTooltip("Guides opaque direct-light samples while retaining exploration.\nOne active light needs no visibility history.\nEmissive reservoirs use visible groups while checking shadows afresh.");
             const auto guiding = localLightGuidingStatistics();
             if (guiding.active)
               ImGui::Text("Guided %u / %u observed samples | %.1f MiB history", guiding.sampledGuided,

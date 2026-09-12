@@ -90,6 +90,9 @@ the full mixture probability, `(1-g)*p_BVH(light) + g*[light == preferred]`, and
 its sphere solid-angle PDF. Previous visibility never directly supplies light or
 shadow intensity. Cached-leaf probabilities are evaluated at the current receiver.
 This is proposal guidance, not a reused radiance reservoir or visibility cache.
+The [emissive RIS sampler](emissive-maps.md) uses a separate interpretation of
+the same feedback storage: visible area-source subtrees and a bounded mixture,
+without treating resampled winners as base blocked-fraction observations.
 
 Feedback is sampled at 1/64 of opaque primary light samples. Two 65536-slot buffers
 hold immutable previous-frame data and current atomic feedback, about 2 MiB total.
@@ -101,8 +104,10 @@ which otherwise makes the cell lose its minimum evidence on the following frame.
 Initialization and training both use atomics, so simultaneous trainers cannot lose
 updates. Unobserved cells expire; no additional pass or history buffer is needed.
 Hash collisions or missing cells lose only guidance. Frame submission swaps the
-banks; fence completion owns readback and reuse. A light-definition change, range
-change or world/camera history discontinuity invalidates guidance. Geometry
+banks; fence completion owns readback and reuse. A light membership, position or
+shape change, range change or world/camera history discontinuity invalidates
+guidance. Radiance-only updates retain visibility evidence and still evaluate the
+current proposal PDF and a fresh shadow ray. Geometry
 visibility changes retain exploration and do not require global history resets.
 Only the base-distribution feedback estimates visibility, preventing guided
 successes from distorting that estimate. A single active light does not initialize
@@ -129,7 +134,7 @@ remodulated by albedo at composition. Indirect REBLUR_DIFFUSE_SH remains separat
 The local filter uses smaller spatial radii than GI to preserve cast shadows.
 [Torch stability](torch-stability.md) describes the candidate estimator and
 existing NRD outlier-suppression settings.
-Lighting changes shorten only the local filter's history and SHARC averaging;
+Significant lighting changes shorten only the local filter's history and SHARC averaging;
 ordinary torch toggles do not reset global NRD/TAA history. Complete local-light
 extinction invalidates old torch radiance in SHARC. Local changes also invalidate
 progressive accumulation and stationary-frame reuse.
@@ -145,7 +150,11 @@ active denoising.
 `rtx.native.pathtrace.localLights` defaults to `1`, `localSamples` to `1`,
 `localIntensity` to `1`, `localDenoiser` to `1`, `localRange` to `16`, and
 `localGuiding` to `1`. Samples accept 1–16 and
-intensity accepts 0–100. F12 exposes these controls under **Torch lighting**.
+intensity accepts 0–100. F12 exposes these controls under **Local lighting**.
+`torchLights` and `emissiveLights` independently control sphere and triangle
+casting beneath the existing master switch, both defaulting to `1`. Larger sets
+containing emissive triangles use the bounded [emissive candidate reservoir](emissive-maps.md);
+`emissiveCandidates=1` restores ordinary BVH sampling and visibility guidance.
 `remixapi_GetLocalLightStatisticsEXT` reports light/node counts, depth, builds,
 refits, buffer memory, CPU update time and the separate local NRD GPU time.
 Tracing time includes local sampling and visibility; no fabricated isolated

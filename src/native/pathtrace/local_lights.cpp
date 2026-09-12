@@ -14,10 +14,12 @@ VkPipeline PathTracer::Gpu::selectLightingPipeline(VkPipeline pipeline) {
   auto &source = found->second;
   const bool small = localIlluminationActive && lightBvh.nodes().size() >= 3 && lightBvh.nodes().size() <= 7;
   const bool guided = localGuidingActive && source.supportsGuiding;
-  if (localIlluminationActive && !guided && !small)
+  const bool resampling = localResamplingActive && source.supportsGuiding;
+  const bool split = splitLightingActive && source.supportsGuiding;
+  if (localIlluminationActive && !guided && !small && !resampling && !split)
     return pipeline;
-  auto &variant = small ? source.small[guided] : localIlluminationActive ? source.withGuiding : source.withoutLocal;
-  auto &attempted = small ? source.smallAttempted[guided] : localIlluminationActive ? source.guidingAttempted : source.attempted;
+  auto &variant = split ? source.withSplit[guided] : resampling ? source.withResampling[guided] : small ? source.small[guided] : localIlluminationActive ? source.withGuiding : source.withoutLocal;
+  auto &attempted = split ? source.splitAttempted[guided] : resampling ? source.resamplingAttempted[guided] : small ? source.smallAttempted[guided] : localIlluminationActive ? source.guidingAttempted : source.attempted;
   if (!attempted) {
     attempted = true;
     VkShaderModuleCreateInfo ci{.sType =
@@ -27,10 +29,12 @@ VkPipeline PathTracer::Gpu::selectLightingPipeline(VkPipeline pipeline) {
     VkShaderModule module{};
     auto result = vkCreateShaderModule(device, &ci, nullptr, &module);
     if (result == VK_SUCCESS) {
-      const VkBool32 enabled[] = {VkBool32(localIlluminationActive), VkBool32(guided), VkBool32(small)};
+      const VkBool32 enabled[] = {VkBool32(localIlluminationActive), VkBool32(guided), VkBool32(small), VkBool32(resampling), VkBool32(split)};
       const VkSpecializationMapEntry entries[] = {{0, 0, sizeof(VkBool32)}, {1, sizeof(VkBool32), sizeof(VkBool32)},
-                                                 {2, 2 * sizeof(VkBool32), sizeof(VkBool32)}};
-      const VkSpecializationInfo specialization{3, entries, sizeof(enabled), enabled};
+                                                 {2, 2 * sizeof(VkBool32), sizeof(VkBool32)},
+                                                 {3, 3 * sizeof(VkBool32), sizeof(VkBool32)},
+                                                 {4, 4 * sizeof(VkBool32), sizeof(VkBool32)}};
+      const VkSpecializationInfo specialization{5, entries, sizeof(enabled), enabled};
       const VkComputePipelineCreateInfo create{
           .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
           .stage = {.sType =
@@ -70,6 +74,12 @@ void PathTracer::Gpu::forgetLightingPipeline(VkPipeline pipeline) {
     vkDestroyPipeline(device, found->second.withoutLocal, nullptr);
   if (found->second.withGuiding)
     vkDestroyPipeline(device, found->second.withGuiding, nullptr);
+  for (auto variant : found->second.withResampling)
+    if (variant)
+      vkDestroyPipeline(device, variant, nullptr);
+  for (auto variant : found->second.withSplit)
+    if (variant)
+      vkDestroyPipeline(device, variant, nullptr);
   for (auto variant : found->second.small)
     if (variant)
       vkDestroyPipeline(device, variant, nullptr);

@@ -36,6 +36,12 @@ layout(set=0,binding=13,rgba16f) readonly uniform image2D primaryEmission;
 layout(constant_id=0) const bool enableLocalLights=true;
 layout(constant_id=1) const bool enableLocalGuiding=true;
 layout(constant_id=2) const bool enableSmallLights=false;
+layout(constant_id=3) const bool enableLightResampling=false;
+#ifdef SPLIT_LOCAL_PASS
+layout(constant_id=4) const bool enableSplitLighting=true;
+#else
+layout(constant_id=4) const bool enableSplitLighting=false;
+#endif
 uint rng;
 uint hash(uint x) { x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; return x ^ (x >> 16); }
 float random() { rng = hash(rng + 0x9e3779b9u); return float(rng >> 8) * (1.0 / 16777216.0); }
@@ -286,7 +292,24 @@ void updateCache(ivec2 pixel) {
 #endif
 void main() {
   ivec2 pixel=ivec2(gl_GlobalInvocationID.xy);
-#ifdef SHARC_UPDATE_PASS
+#ifdef SPLIT_LIGHTING_PASS
+  if(any(greaterThanEqual(pixel,ivec2(frame.target.xy))))return;
+  // The opaque pass preserves the exact hit position and normal in scratch
+  // images. Avoid another geometry query or depth reconstruction at edges.
+  vec4 normal=imageLoad(emissiveInput,pixel);
+  vec3 torch=vec3(0),emissive=vec3(0);float torchDistance=0,emissiveDistance=0;
+  if(normal.a>0) {
+    Hit hit;hit.p=imageLoad(worldColor,pixel).rgb;hit.n=normalize(normal.rgb);
+    uint state=hash(uint(pixel.x)+uint(pixel.y)*frame.target.x+hash(frame.config.z));
+    splitLocalLighting(hit,state,frame.localConfig.y,torch,emissive,torchDistance,emissiveDistance);
+  }
+  float z=imageLoad(guideDepth,pixel).x;
+  float td=normal.a>0?REBLUR_FrontEnd_GetNormHitDist(torchDistance,z,temporal.hitDistance.xyz,1):0;
+  float ed=normal.a>0?REBLUR_FrontEnd_GetNormHitDist(emissiveDistance,z,temporal.hitDistance.xyz,1):0;
+  imageStore(localInput,pixel,REBLUR_FrontEnd_PackRadianceAndNormHitDist(torch,td,true));
+  imageStore(emissiveInput,pixel,REBLUR_FrontEnd_PackRadianceAndNormHitDist(emissive,ed,true));
+  return;
+#elif defined(SHARC_UPDATE_PASS)
   updateCache(pixel);return;
 #elif defined(CONFIDENCE_PASS)
   if(any(greaterThanEqual(pixel,imageSize(gradientA))))return;
@@ -325,13 +348,25 @@ void main() {
     ++sheetCount;origin=offsetRay(primary.p,-primary.n);primary=closest(origin,direction);
   }
   vec3 local=vec3(0);float localDistance=0;
+  vec3 emissive=vec3(0);float emissiveDistance=0;
   vec3 indirect=vec3(0),primaryDirect=vec3(0);vec4 packed0=vec4(0),packed1=vec4(0);
   vec3 sunTransmittance=vec3(1),unshadowedDirect=vec3(0);float blockerDistance=65504;
   if(primary.t<1e30&&!primary.blended) {
     sunTransmittance=sunVisibility(primary,pixel,blockerDistance);
     unshadowedDirect=primary.color.rgb*(max(0,dot(primary.n,-frame.lightDirection.xyz))/3.14159265359)*frame.lightRadiance.rgb;
     primaryDirect=unshadowedDirect*sunTransmittance;
-    local=localLighting(primary,rng,frame.localConfig.y,localDistance,true);
+#ifdef SPLIT_LOCAL_PASS
+    // Split direct lighting runs separately to keep its reservoirs out of the
+    // opaque/indirect kernel's register footprint.
+    if(!(enableSplitLighting&&frame.splitLocal.x!=0))
+      local=localLighting(primary,rng,frame.localConfig.y,localDistance,true);
+#else
+    if(enableSplitLighting&&frame.splitLocal.x!=0)
+      splitLocalLighting(primary,rng,frame.localConfig.y,local,emissive,localDistance,emissiveDistance);
+    else
+      local=localLighting(primary,rng,frame.localConfig.y,localDistance,true);
+    local+=emissive;
+#endif
     for(uint i=0;i<frame.config.x;++i) {
       vec3 firstDir;float firstDist;vec3 sampleLight=continuation(primary,firstDir,firstDist);
       indirect+=sampleLight/float(frame.config.x);
@@ -378,6 +413,12 @@ void main() {
 #ifdef LOCAL_PASS
   float normalizedDistance=opaque?REBLUR_FrontEnd_GetNormHitDist(localDistance,z,temporal.hitDistance.xyz,1):0;
   imageStore(localInput,pixel,REBLUR_FrontEnd_PackRadianceAndNormHitDist(local,normalizedDistance,true));
+#ifdef SPLIT_LOCAL_PASS
+  float emissiveHitDistance=opaque?REBLUR_FrontEnd_GetNormHitDist(emissiveDistance,z,temporal.hitDistance.xyz,1):0;
+  imageStore(emissiveInput,pixel,REBLUR_FrontEnd_PackRadianceAndNormHitDist(emissive,emissiveHitDistance,true));
+  if(enableSplitLighting&&frame.splitLocal.x!=0)
+    imageStore(emissiveInput,pixel,vec4(N,opaque?1:0));
+#endif
 #else
   primaryDirect+=opaque?primary.color.rgb*local:vec3(0);
 #endif
@@ -391,6 +432,9 @@ void main() {
   // Reuse depth as a signed sheet count until composition writes stable depth.
   // Preserve accumulated RGB; a negative count marks a blocked layer-limit exit.
   vec3 previousColor=frame.config.w>0?imageLoad(worldColor,pixel).rgb:vec3(0);
+#ifdef SPLIT_LOCAL_PASS
+  if(enableSplitLighting&&frame.splitLocal.x!=0)previousColor=opaque?primary.p:vec3(0);
+#endif
   imageStore(worldColor,pixel,vec4(previousColor,primary.blended?-float(sheetCount):float(sheetCount)));
 #else
   uvec4 background=imageLoad(backgroundTransmission,pixel);

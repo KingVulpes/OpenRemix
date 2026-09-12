@@ -5,12 +5,14 @@ using namespace trace::detail;
 
 void PathTracer::Gpu::configureLightGuiding(Frame &frame, const TraceOptions &options) {
   auto &g = lightGuiding;
+  const bool split = frame.splitLocal[0] != 0;
+  const auto &tree = split ? emissiveBvh : lightBvh;
   g.stats.requested = options.localGuiding;
   g.stats.influenceRange = options.localRange;
   g.stats.cellSize = 2;
   localGuidingActive = false;
   g.stats.active = 0;
-  if (g.pipelineFailed || !options.localGuiding || frame.localConfig[0] < 2 || lightBvh.nodes().size() >= (1u << 20)) {
+  if (g.pipelineFailed || !options.localGuiding || (split ? frame.splitLocal[2] : frame.localConfig[0]) < 2 || tree.nodes().size() >= (1u << 20)) {
     g.valid = false;
     g.stats.sampledQueries = g.stats.sampledGuided = g.stats.sampledVisible = 0;
     return;
@@ -40,16 +42,19 @@ void PathTracer::Gpu::configureLightGuiding(Frame &frame, const TraceOptions &op
   }
   if (!g.history[0])
     return;
-  if (history.reset() || g.generation != lightBvh.generation || g.range != options.localRange) {
+  const bool resampled = split || frame.localScale[2] > 1;
+  if (history.reset() || g.generation != tree.visibilityGeneration || g.range != options.localRange || g.resampled != resampled || g.split != split) {
     g.valid = false;
     ++g.stats.historyResets;
   }
-  g.generation = lightBvh.generation;
+  g.generation = tree.visibilityGeneration;
+  g.split = split;
   g.range = options.localRange;
+  g.resampled = resampled;
   frame.lightGuideRead = g.valid ? g.history[g.writeIndex ^ 1]->address : 0;
   frame.lightGuideWrite = g.history[g.writeIndex]->address;
   frame.lightGuideConfig[0] = LightGuiding::capacity;
-  frame.lightGuideConfig[1] = uint32_t(lightBvh.nodes().size());
+  frame.lightGuideConfig[1] = uint32_t(tree.nodes().size());
   g.stats.active = 1;
   localGuidingActive = true;
 }

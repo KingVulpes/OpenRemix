@@ -25,7 +25,9 @@ contribute.
 
 This reduces discrete light-selection variance without tracing every light's
 shadow. It costs extra candidate arithmetic for small sets. Single-light and
-larger sets retain LightBVH traversal and visibility guidance. Lazy pipeline
+larger sphere-only sets retain LightBVH traversal and visibility guidance.
+Larger sets containing triangles use the bounded [emissive reservoir](emissive-maps.md).
+Lazy pipeline
 specialization removes the small-set reservoir from their shaders, including when
 local illumination is disabled. Variants follow the original pipeline's fence and destruction lifetime;
 initialization failure retains the ordinary unbiased LightBVH estimator.

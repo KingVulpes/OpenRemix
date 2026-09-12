@@ -25,6 +25,17 @@ if get_option('gpu_tests')
     include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
   test('Four torches and motion stability', torch_stability_test,
     args : [meson.current_build_dir() / 'torch-stability-scenes'], timeout : 300)
+  test('Mixed emissive and torch sampling stability', torch_stability_test,
+    args : [meson.current_build_dir() / 'mixed-light-scenes'],
+    env : ['REMIX_TEST_MIXED_LIGHTS=1'], timeout : 300)
+  test('Many emissive clusters and sampling stability', torch_stability_test,
+    args : [meson.current_build_dir() / 'emissive-cluster-scenes'],
+    env : ['REMIX_TEST_MIXED_LIGHTS=1', 'REMIX_TEST_EMISSIVE_CLUSTERS=1'], timeout : 300)
+  foreach mode : ['1', '2']
+    test('Separate direct histories mode ' + mode, torch_stability_test,
+      args : [meson.current_build_dir() / ('separate-light-scenes-' + mode)],
+      env : ['REMIX_TEST_MIXED_LIGHTS=1', 'REMIX_TEST_SPLIT_LOCAL=' + mode], timeout : 360)
+  endforeach
   water_indirect_test = executable('remix-water-indirect-test', 'water_indirect.cpp',
     include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
   test('Water indirect reuse and reference energy', water_indirect_test,

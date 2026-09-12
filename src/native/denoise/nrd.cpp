@@ -75,8 +75,10 @@ namespace remix::denoise {
     for (uint32_t i = 0; i < desc.pipelinesNum; ++i) {
       const auto &source = desc.pipelines[i];
       auto &p = pass.pipelines[i];
-      // Reconstruction is unreachable with full-rate diffuse sampling. No unused
-      // permutation is compiled, and an unexpected dispatch fails explicitly.
+      // Only split local histories need reconstruction for skipped samples.
+      // Keep that optional permutation out of ordinary startup.
+      if (std::strstr(source.shaderIdentifier, "HitDistReconstruction") && !(local && split))
+        continue;
       const Shader *shader = nullptr;
       for (const auto &s : shaders)
         if (!std::strcmp(source.shaderIdentifier, s.identifier))
@@ -181,6 +183,7 @@ namespace remix::denoise {
                                                     1000.f / std::max(frame.timing[0], 1.f)),
                      1u, nrd::REBLUR_MAX_HISTORY_FRAME_NUM);
       if (pass.local) {
+        const bool responsive = split ? frame.families[pass.emissive ? 3 : 2] != 0 : frame.local[2] != 0;
         // Direct-light discontinuities are sharper than diffuse GI. Large GI
         // prepasses spread light across cast shadows on a single flat surface.
         settings.diffusePrepassBlurRadius = 0.f;
@@ -188,9 +191,16 @@ namespace remix::denoise {
         settings.maxBlurRadius = 8.f;
         settings.historyFixBasePixelStride = 2;
         settings.historyFixFrameNum = 1;
-        settings.maxAccumulatedFrameNum = std::min(settings.maxAccumulatedFrameNum, frame.local[2] ? 2u : 16u);
+        settings.maxAccumulatedFrameNum = std::min(settings.maxAccumulatedFrameNum, responsive ? 2u : 16u);
         settings.maxFastAccumulatedFrameNum = 2;
-        settings.maxStabilizedFrameNum = frame.local[2] ? 1u : 8u;
+        settings.maxStabilizedFrameNum = responsive ? 1u : 8u;
+        if (split && frame.local[3] == 1) {
+          // Complementary family selection leaves unsampled pixels. NRD's
+          // probabilistic-sampling contract requires distance reconstruction
+          // and a prepass; keep its radius small to protect cast shadow edges.
+          settings.hitDistanceReconstructionMode = nrd::HitDistanceReconstructionMode::AREA_3X3;
+          settings.diffusePrepassBlurRadius = 4.f;
+        }
       } else
         warmupFrames = std::max(32u, settings.maxAccumulatedFrameNum);
       settings.maxFastAccumulatedFrameNum =
@@ -226,9 +236,9 @@ namespace remix::denoise {
       case R::IN_VIEWZ:
         return *images[Depth];
       case R::IN_DIFF_RADIANCE_HITDIST:
-        return *images[LocalInput];
+        return *images[pass.emissive ? EmissiveInput : LocalInput];
       case R::OUT_DIFF_RADIANCE_HITDIST:
-        return *images[LocalOutput];
+        return *images[pass.emissive ? EmissiveOutput : LocalOutput];
       case R::IN_DIFF_SH0:
         return *images[Sh0];
       case R::IN_DIFF_SH1:

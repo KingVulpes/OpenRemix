@@ -179,6 +179,60 @@ int main() {
                 "removal passed\n",
                 count);
   }
+  // Animated emission updates transport every tick without continually
+  // shortening global lighting history. Slow ramps compare to an anchor.
+  {
+    SphereLight triangle{};
+    triangle.id = 1;
+    triangle.triangle = 2;
+    triangle.radius = 4;
+    triangle.radiance[0] = 50;
+    triangle.position[2] = -.1f;
+    triangle.corners[0][0] = -2; triangle.corners[0][1] = -2;
+    triangle.corners[1][0] = 2; triangle.corners[1][1] = -2;
+    triangle.corners[2][1] = 2;
+    for (auto &corner : triangle.corners) corner[2] = -.1f;
+    LightBvh bvh;
+    bvh.update({triangle});
+    const auto stable = bvh.lightingGeneration;
+    const auto visibility = bvh.visibilityGeneration;
+    for (int frame = 0; frame < 100; ++frame) {
+      triangle.radiance[0] = frame & 1 ? 50.5f : 49.5f;
+      require(bvh.update({triangle}), "Animated radiance failed to update transport");
+      require(bvh.emitters()[0].radiance[0] == triangle.radiance[0] && bvh.lightingGeneration == stable,
+              "Small emission animation invalidated temporal lighting");
+    }
+    triangle.radiance[0] = 53;
+    bvh.update({triangle});
+    require(bvh.lightingGeneration == stable, "Small intensity step discarded history");
+    triangle.radiance[0] = 56;
+    bvh.update({triangle});
+    require(bvh.lightingGeneration == stable, "Modest animated variation discarded history");
+    triangle.radiance[0] = 68;
+    bvh.update({triangle});
+    require(bvh.lightingGeneration == stable + 1, "Gradual ramp never triggered lighting response");
+    require(bvh.visibilityGeneration == visibility, "Color animation discarded visibility evidence");
+    triangle.corners[0][2] += .01f;
+    bvh.update({triangle});
+    require(bvh.lightingGeneration == stable + 2, "Moving emitter retained stale temporal lighting");
+    require(bvh.visibilityGeneration == visibility + 1, "Moving emitter retained visibility history");
+    triangle.radiance[0] = 0;
+    bvh.update({triangle});
+    require(bvh.lightingGeneration == stable + 3, "Extinguished light retained history");
+    bvh.update({});
+    require(bvh.lightingGeneration == stable + 4, "Removed light retained temporal membership");
+    SphereLight dominant = triangle, animated = triangle;
+    dominant.id = 10; dominant.radiance[0] = 100;
+    animated.id = 11; animated.radiance[0] = 1;
+    bvh.update({dominant, animated});
+    const auto aggregate = bvh.lightingGeneration;
+    for (int frame = 0; frame < 20; ++frame) {
+      animated.radiance[0] = frame & 1 ? 2.f : 1.f;
+      bvh.update({dominant, animated});
+      require(bvh.lightingGeneration == aggregate,
+              "One animated emitter shortened the whole scene's history");
+    }
+  }
   // A receiver inside a volume of lights must not almost exclusively sample
   // whichever internal bounding box contains it. Measure the full discrete
   // estimator against the analytic sphere integral, before visibility or NRD.

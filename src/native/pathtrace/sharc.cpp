@@ -137,7 +137,11 @@ namespace remix {
       sharcPipeline(trace::sharcQueryShader, sizeof(trace::sharcQueryShader), layout, sharc.query);
       sharcPipeline(trace::sharcTransparencyShader, sizeof(trace::sharcTransparencyShader), layout, sharc.transparency);
       if (denoiser) {
-        if (postLocal && postSigma)
+        if (postSplit && postSigma)
+          sharcPipeline(trace::sharcSplitLocalSigmaTemporalShader, sizeof(trace::sharcSplitLocalSigmaTemporalShader), temporalLayout, sharc.temporal);
+        else if (postSplit)
+          sharcPipeline(trace::sharcSplitLocalTemporalShader, sizeof(trace::sharcSplitLocalTemporalShader), temporalLayout, sharc.temporal);
+        else if (postLocal && postSigma)
           sharcPipeline(trace::sharcLocalSigmaTemporalShader, sizeof(trace::sharcLocalSigmaTemporalShader), temporalLayout, sharc.temporal);
         else if (postLocal)
           sharcPipeline(trace::sharcLocalTemporalShader, sizeof(trace::sharcLocalTemporalShader), temporalLayout, sharc.temporal);

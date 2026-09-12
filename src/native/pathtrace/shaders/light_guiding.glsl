@@ -18,12 +18,16 @@ uint lightGuideKey(Hit hit) {
   uint face=axis*2u+(hit.n[axis]>0?1u:0u);
   return max(1u,hash(hash(cell.x)^hash(cell.y+0x9e3779b9u)^hash(cell.z+face*0x85ebca6bu)));
 }
-float lightGuideProposal(LightNodes nodes,Hit hit,uint key,out uint preferred) {
+float lightGuideProposal(LightNodes nodes,Hit hit,uint key,out uint preferred,bool resampled) {
   preferred=0;
   if(frame.lightGuideRead==0)return 0;
   uvec4 previous=LightGuideCache(frame.lightGuideRead).data[key&(frame.lightGuideConfig.x-1)];
   if(previous.x!=key||previous.y==0||previous.z<4)return 0;
-  float mixWeight=.75*clamp(1-float(previous.w)/(255*float(previous.z)),0,1);
+  float blocked=clamp(1-float(previous.w)/(255*float(previous.z)),0,1);
+  // RIS winner visibility is a heuristic for whether guiding is useful, not
+  // an estimate of base occlusion. Avoid concentrating proposals in fully
+  // visible scenes, where whole-tree stratification already has low variance.
+  float mixWeight=.75*(resampled?smoothstep(.02,.2,blocked):blocked);
   if(mixWeight<.05)return 0;
   preferred=(previous.y&0xfffffu)-1u;
   if(preferred>=frame.lightGuideConfig.y||nodes.data[preferred].links.w!=1||
@@ -45,7 +49,7 @@ float lightBasePdf(LightNodes nodes,Hit hit,uint preferred) {
   }
   return index==preferred?pdf:0;
 }
-void trainLightGuide(uint key,uint leaf,bool guided,vec3 visibility,vec3 physical) {
+void trainLightGuide(uint key,uint leaf,bool guided,vec3 visibility,vec3 physical,bool resampled) {
   LightGuideCache next=LightGuideCache(frame.lightGuideWrite);
   uint capacity=frame.lightGuideConfig.x;
   float visible=clamp(dot(visibility,vec3(.2126,.7152,.0722)),0,1);
@@ -61,7 +65,7 @@ void trainLightGuide(uint key,uint leaf,bool guided,vec3 visibility,vec3 physica
   if(owner==0&&frame.lightGuideRead!=0) {
     uvec4 previous=LightGuideCache(frame.lightGuideRead).data[slot];
     if(previous.x==key) {
-      uint retained=min(previous.z,32u);
+      uint retained=min(previous.z,resampled?256u:32u);
       atomicAdd(next.data[slot].z,retained);
       atomicAdd(next.data[slot].w,previous.z>0?uint(round(float(previous.w)*float(retained)/float(previous.z))):0u);
       // Decay the old contribution score, so a newly visible emitter can
@@ -70,9 +74,10 @@ void trainLightGuide(uint key,uint leaf,bool guided,vec3 visibility,vec3 physica
       if(score>1)atomicMax(next.data[slot].y,((score-1u)<<20)|(previous.y&0xfffffu));
     }
   }
-  // Only base-distribution samples estimate the blocked fraction. Guided
-  // successes must not feed back as an artificially unoccluded base proposal.
-  if(!guided) {
+  // Ordinary guiding estimates the blocked fraction only from base draws.
+  // RIS instead counts winner observations for confidence; its bounded mixture
+  // never interprets these visibility counts as base-distribution evidence.
+  if(!guided||resampled) {
     atomicAdd(next.data[slot].z,1u);
     atomicAdd(next.data[slot].w,uint(round(visible*255)));
   }

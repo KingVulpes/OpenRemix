@@ -236,6 +236,12 @@ int main(int argc, char **argv) {
       enclosure={emitter};
       require(capture(prefix+"emission-local-off",16)[0]<.004,"Local toggle failed to disable emission lighting");
       config("localLights","1");
+      config("emissiveLights","0");
+      require(capture(prefix+"emissive-casting-off",16)[0]<.004,"Emissive toggle retained cast light");
+      enclosure={visible};
+      require(std::abs(capture(prefix+"emissive-visible-casting-off",16)[0]-radiance)<.015,
+              "Emissive casting toggle hid the visible map");
+      config("emissiveLights","1");
     }
     // A visible red/black/green/black map must retain detail even though its
     // emitter triangles still use CPU-averaged radiance.

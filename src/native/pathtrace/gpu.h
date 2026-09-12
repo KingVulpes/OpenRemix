@@ -110,8 +110,10 @@ namespace remix::trace::detail {
     float localScale[4] = {};
     uint64_t lightGuideRead = 0, lightGuideWrite = 0;
     uint32_t lightGuideConfig[4] = {}; // capacity, node count, reserved
+    uint64_t torchNodes = 0, torchEmitters = 0, emissiveNodes = 0, emissiveEmitters = 0;
+    uint32_t splitLocal[4] = {}; // mode, torch count, emissive count, reserved
   };
-  static_assert(sizeof(Frame) == 416 && offsetof(Frame, lightGuideRead) == 384 && offsetof(Frame, lightGuideConfig) == 400 && offsetof(Frame, lightNodes) == 336 && offsetof(Frame, localConfig) == 352 && offsetof(Frame, localScale) == 368 && offsetof(Frame, skyRadiance) == 224 &&
+  static_assert(sizeof(Frame) == 464 && offsetof(Frame, lightGuideRead) == 384 && offsetof(Frame, lightGuideConfig) == 400 && offsetof(Frame, lightNodes) == 336 && offsetof(Frame, localConfig) == 352 && offsetof(Frame, localScale) == 368 && offsetof(Frame, skyRadiance) == 224 &&
                 offsetof(Frame, sharcHash) == 240 && offsetof(Frame, sharcConfig) == 272 &&
                 offsetof(Frame, sharcGrid) == 288 && offsetof(Frame, sharcPreviousCamera) == 304 && offsetof(Frame, sun) == 320);
   inline float linear(float c) { return c <= .04045f ? c / 12.92f : std::pow((c + .055f) / 1.055f, 2.4f); }
@@ -158,12 +160,17 @@ namespace remix {
     VkPipelineCache pipelineCache = VK_NULL_HANDLE;
     VkPipeline transparencyCompute{}, temporalTransparencyCompute{};
     VkPipeline compute = VK_NULL_HANDLE, composite[2] = {};
+    VkPipeline splitDirectCompute = VK_NULL_HANDLE;
     struct LightingPipeline {
       const uint32_t *code = nullptr;
       size_t bytes = 0;
       VkPipelineLayout layout = VK_NULL_HANDLE;
       VkPipeline withoutLocal = VK_NULL_HANDLE;
       VkPipeline withGuiding = VK_NULL_HANDLE;
+      VkPipeline withResampling[2] = {};
+      bool resamplingAttempted[2] = {};
+      VkPipeline withSplit[2] = {};
+      bool splitAttempted[2] = {};
       bool attempted = false, guidingAttempted = false;
       bool supportsGuiding = true;
       VkPipeline small[2] = {};
@@ -171,6 +178,7 @@ namespace remix {
     };
     std::unordered_map<VkPipeline, LightingPipeline> lightingPipelines;
     bool localIlluminationActive = false;
+    bool localResamplingActive = false;
     bool localGuidingActive = false;
     VkPipeline selectLightingPipeline(VkPipeline pipeline);
     void forgetLightingPipeline(VkPipeline pipeline);
@@ -240,6 +248,11 @@ namespace remix {
     std::vector<std::shared_ptr<Arena>> arenas;
     std::unique_ptr<Buffer> scratch, table, uniform;
     scene::LightBvh lightBvh;
+    scene::LightBvh torchBvh, emissiveBvh;
+    std::unique_ptr<Buffer> torchNodes, torchEmitters, emissiveNodes, emissiveEmitters;
+    uint64_t previousFamilyGeneration[2] = {};
+    uint32_t familyResponsive[2] = {};
+    bool splitLightingActive = false, postSplit = false, postSplitRequested = false;
     std::unique_ptr<Buffer> lightNodes, lightEmitters;
     struct LightGuiding {
       static constexpr uint32_t capacity = 65536;
@@ -248,6 +261,8 @@ namespace remix {
       bool valid = false, pending = false, attempted = false, pipelineFailed = false;
       uint64_t generation = 0;
       float range = 0;
+      bool resampled = false;
+      bool split = false;
       remixapi_LocalLightGuidingStatisticsEXT stats{.structSize = sizeof(remixapi_LocalLightGuidingStatisticsEXT)};
     } lightGuiding;
     void configureLightGuiding(Frame &frame, const TraceOptions &options);

@@ -22,6 +22,7 @@ IDENTIFIERS += [
     'SIGMA_SplitScreen.cs.hlsl|TRANSLUCENCY=1']
 
 IDENTIFIERS += [s.replace("NRD_MODE_SH", "NRD_MODE_RADIANCE") for s in IDENTIFIERS if "NRD_MODE_SH" in s]
+IDENTIFIERS += ['REBLUR_HitDistReconstruction.cs.hlsl|NRD_SIGNAL=NRD_SIGNAL_DIFF|NRD_MODE=NRD_MODE_RADIANCE|MODE_5X5=0']
 
 def process(check=False, validate=False):
     target = ROOT / 'src/native/denoise/shaders/nrd_embedded.h'

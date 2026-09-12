@@ -35,6 +35,8 @@ layout(set=0,binding=3,std140) uniform Frame {
   vec4 localScale; // radiance multiplier, reach, guiding requested, inverse reach squared
   uint64_t lightGuideRead, lightGuideWrite;
   uvec4 lightGuideConfig; // capacity, node count, reserved
+  uint64_t torchNodes, torchEmitters, emissiveNodes, emissiveEmitters;
+  uvec4 splitLocal;
 } frame;
 layout(set=0,binding=6) uniform sampler2D textures[512];
 vec3 materialEmission(Surface s,vec2 uv) {

@@ -22,6 +22,10 @@ public:
   const std::vector<LightEmitter> &emitters() const { return m_emitters; }
   const std::vector<LightNode> &nodes() const { return m_nodes; }
   uint64_t generation = 0, builds = 0, refits = 0;
+  // Separate transport updates, scene-wide temporal response and the spatial
+  // correspondence used by visibility guidance. Color animation changes only
+  // transport unless its aggregate power change is significant.
+  uint64_t lightingGeneration = 0, visibilityGeneration = 0;
   uint32_t active = 0, depth = 0;
   double updateMilliseconds = 0;
   // Same bounded-distance importance estimate as the shader; useful for PDF
@@ -35,6 +39,7 @@ private:
                  uint32_t level);
   void bounds(uint32_t index);
   std::vector<SphereLight> m_lights;
+  std::vector<SphereLight> m_temporalLights;
   std::vector<LightEmitter> m_emitters;
   std::vector<LightNode> m_nodes;
 };

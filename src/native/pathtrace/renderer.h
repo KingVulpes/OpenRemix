@@ -15,6 +15,9 @@ namespace remix {
     float fsrSharpness = 0.f;
     bool sigma = true;
     bool localLights = true, localDenoiser = true;
+    bool torchLights = true, emissiveLights = true;
+    uint32_t emissiveCandidates = 4;
+    uint32_t separateLocalLighting = 0; // combined, shared ray budget, one budget per family
     uint32_t localSamples = 1;
     float localIntensity = 1, localRange = 16;
     bool localGuiding = true;

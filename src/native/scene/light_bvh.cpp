@@ -5,6 +5,19 @@
 #include <limits>
 
 namespace remix::scene {
+namespace {
+double powerScale(const SphereLight &light) {
+  if (!light.triangle)
+    return double(light.radius) * light.radius;
+  double a[3], b[3];
+  for (unsigned c = 0; c < 3; ++c) {
+    a[c] = double(light.corners[1][c]) - light.corners[0][c];
+    b[c] = double(light.corners[2][c]) - light.corners[0][c];
+  }
+  const double area = .5 * std::hypot(a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]);
+  return area * light.triangle / (4 * 3.141592653589793);
+}
+}
 bool LightBvh::update(std::vector<SphereLight> lights) {
   const auto start = std::chrono::steady_clock::now();
   std::sort(lights.begin(), lights.end(),
@@ -19,6 +32,42 @@ bool LightBvh::update(std::vector<SphereLight> lights) {
   if (!rebuild)
     for (size_t i = 0; i < lights.size(); ++i)
       rebuild |= lights[i].id != m_lights[i].id || lights[i].triangle != m_lights[i].triangle;
+  bool geometryChanged = rebuild;
+  for (size_t i = 0; !geometryChanged && i < lights.size(); ++i) {
+    const auto &a = lights[i], &b = m_lights[i];
+    geometryChanged = a.radius != b.radius || !std::equal(a.position, a.position + 3, b.position);
+    for (unsigned v = 0; v < 3; ++v)
+      geometryChanged |= !std::equal(a.corners[v], a.corners[v] + 3, b.corners[v]);
+  }
+  if (geometryChanged)
+    ++visibilityGeneration;
+  // Tiny animated-emission fluctuations still update the GPU light data, but
+  // must not keep every local-light filter/cache permanently in fast response.
+  // Compare against the last significant snapshot, not the preceding frame,
+  // so gradual ramps eventually cross the threshold too.
+  bool significant = geometryChanged || lights.size() != m_temporalLights.size();
+  double totalDifference = 0, totalOldEnergy = 0, totalNewEnergy = 0;
+  for (size_t i = 0; !significant && i < lights.size(); ++i) {
+    const auto &a = lights[i], &b = m_temporalLights[i];
+    double difference = 0, oldEnergy = 0, newEnergy = 0;
+    for (unsigned c = 0; c < 3; ++c) {
+      difference += std::abs(double(a.radiance[c]) - b.radiance[c]);
+      oldEnergy += b.radiance[c]; newEnergy += a.radiance[c];
+    }
+    significant |= (oldEnergy == 0) != (newEnergy == 0);
+    const double scale = powerScale(a);
+    totalDifference += difference * scale;
+    totalOldEnergy += oldEnergy * scale;
+    totalNewEnergy += newEnergy * scale;
+  }
+  // This is a scene-wide fast-response switch, not a per-emitter filter.
+  // Small/local color changes use NRD's ordinary history and anti-lag, rather
+  // than forcing unrelated torches back to two accumulated frames.
+  significant |= totalDifference > .25 * std::max(totalOldEnergy, totalNewEnergy);
+  if (significant) {
+    ++lightingGeneration;
+    m_temporalLights = lights;
+  }
   m_lights = std::move(lights);
   m_emitters.resize(m_lights.size());
   active = 0;
@@ -104,20 +153,8 @@ void LightBvh::bounds(uint32_t index) {
     }
     node.maximum[3] = light.radius * light.radius;
     // Common 4*pi*pi cancels in every selection probability.
-    node.minimumPower[3] =
-        float(double(light.radius) * light.radius *
-              (.2126 * light.radiance[0] + .7152 * light.radiance[1] +
-               .0722 * light.radiance[2]));
-    if (light.triangle) {
-      double a[3], b[3];
-      for (unsigned c = 0; c < 3; ++c) {
-        a[c] = double(light.corners[1][c]) - light.corners[0][c];
-        b[c] = double(light.corners[2][c]) - light.corners[0][c];
-      }
-      const double area = .5 * std::hypot(a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]);
-      node.minimumPower[3] = float(area * light.triangle / (4 * 3.141592653589793) *
-          (.2126 * light.radiance[0] + .7152 * light.radiance[1] + .0722 * light.radiance[2]));
-    }
+    node.minimumPower[3] = float(powerScale(light) *
+        (.2126 * light.radiance[0] + .7152 * light.radiance[1] + .0722 * light.radiance[2]));
   } else {
     const auto &a = m_nodes[node.links[0]], &b = m_nodes[node.links[1]];
     if (a.minimumPower[3] == 0 || b.minimumPower[3] == 0) {

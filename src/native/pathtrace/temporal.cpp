@@ -17,6 +17,10 @@ namespace remix {
     forgetLightingPipeline(temporalTransparencyCompute);
     forgetLightingPipeline(temporalCompute);
     forgetLightingPipeline(confidenceCompute);
+    forgetLightingPipeline(splitDirectCompute);
+    if (splitDirectCompute)
+      vkDestroyPipeline(device, splitDirectCompute, nullptr);
+    splitDirectCompute = VK_NULL_HANDLE;
     if (temporalTransparencyCompute)
       vkDestroyPipeline(device, temporalTransparencyCompute, nullptr);
     temporalTransparencyCompute = VK_NULL_HANDLE;
@@ -47,20 +51,24 @@ namespace remix {
       local = localCapable[0];
     }
     const bool localDenoise = local && options.localDenoiser && reblur;
+    const bool split = local && options.separateLocalLighting != 0 && denoise::localSupported(physical, sigma, true);
     if (reblur != postReblur || taa != postTaa || sigma != postSigmaRequested ||
-        local != postLocalRequested || localDenoise != postLocalDenoiseRequested) {
+        local != postLocalRequested || localDenoise != postLocalDenoiseRequested || split != postSplitRequested) {
       destroyPost();
       postReblur = reblur;
       postTaa = taa;
       postSigma = postSigmaRequested = sigma;
       postLocal = postLocalRequested = local;
       postLocalDenoise = postLocalDenoiseRequested = localDenoise;
+      postSplit = postSplitRequested = split;
       history.clear();
     }
     if (!postAttempted)
       postFailure.clear();
     if (localLimited)
       postFailure = "Insufficient descriptors for separate local and sun signals; SIGMA is disabled";
+    if (local && options.separateLocalLighting && !split)
+      postFailure = "Insufficient descriptors for separate torch/emissive histories; combined local lighting active";
     if ((options.denoiser && !caps.reblurShSupported) || (options.taa && !caps.taaSupported))
       postFailure = caps.unavailableReason;
     if ((!reblur && !taa && !sigma && !upscaler) || postAttempted)
@@ -68,12 +76,13 @@ namespace remix {
     postSigma = sigma;
     postLocal = local;
     postLocalDenoise = localDenoise;
+    postSplit = split;
     for (unsigned attempt = 0; attempt < 4; ++attempt) {
       postAttempted = true;
       std::string failure;
       try {
         auto next = std::make_unique<denoise::Renderer>();
-        next->initialize(physical, device, extent, reblur, queueFamily, postSigma, postLocal, postLocalDenoise);
+        next->initialize(physical, device, extent, reblur, queueFamily, postSigma, postLocal, postLocalDenoise, postSplit);
         VkDescriptorSetLayout layouts[] = {setLayout, next->inputLayout()};
         VkPipelineLayoutCreateInfo li{.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                       .setLayoutCount = 2,
@@ -98,9 +107,13 @@ namespace remix {
           vkDestroyShaderModule(device, shader, nullptr);
           check(result);
           lightingPipelines[out] = {code, size, temporalLayout};
-          lightingPipelines[out].supportsGuiding = &out == &temporalCompute;
+          lightingPipelines[out].supportsGuiding = &out == &temporalCompute || &out == &splitDirectCompute;
         };
-        if (postLocal && postSigma)
+        if (postSplit && postSigma)
+          make(trace::splitLocalSigmaTemporalShader, sizeof(trace::splitLocalSigmaTemporalShader), temporalCompute);
+        else if (postSplit)
+          make(trace::splitLocalTemporalShader, sizeof(trace::splitLocalTemporalShader), temporalCompute);
+        else if (postLocal && postSigma)
           make(trace::localSigmaTemporalShader, sizeof(trace::localSigmaTemporalShader), temporalCompute);
         else if (postLocal)
           make(trace::localTemporalShader, sizeof(trace::localTemporalShader), temporalCompute);
@@ -110,6 +123,8 @@ namespace remix {
           make(trace::temporalShader, sizeof(trace::temporalShader), temporalCompute);
         make(trace::temporalTransparencyShader, sizeof(trace::temporalTransparencyShader),
              temporalTransparencyCompute);
+        if (postSplit)
+          make(trace::splitLocalDirectShader, sizeof(trace::splitLocalDirectShader), splitDirectCompute);
         if (reblur)
           make(trace::confidenceShader, sizeof(trace::confidenceShader), confidenceCompute);
         denoiser = std::move(next);
@@ -121,14 +136,19 @@ namespace remix {
       } catch (const std::exception &e) {
         failure = std::string("Temporal initialization failed: ") + e.what();
       }
-      const bool retry = postLocalDenoise || postLocal || postSigma;
+      const bool retry = postSplit || postLocalDenoise || postLocal || postSigma;
+      const bool dropSplit = postSplit;
       const bool dropDenoise = postLocalDenoise;
       destroyPost();
-      if (dropDenoise) {
+      if (dropSplit) {
+        postSplit = false;
+        postFailure = failure + "; combined local lighting active";
+      } else if (dropDenoise) {
         postLocalDenoise = false;
         postFailure = failure + "; local lights use unfiltered radiance";
       } else {
         postLocal = postSigma = false;
+        postSplit = false;
         postFailure = failure + (retry ? "; local and sun lighting are unfiltered" : "; raw tracing remains active");
       }
       postAttempted = true;
@@ -215,7 +235,11 @@ namespace remix {
     result.builds = g.lightBvh.builds;
     result.refits = g.lightBvh.refits;
     result.memoryBytes = (g.lightNodes ? g.lightNodes->size : 0) + (g.lightEmitters ? g.lightEmitters->size : 0);
+    for (auto *buffer : {g.torchNodes.get(), g.torchEmitters.get(), g.emissiveNodes.get(), g.emissiveEmitters.get()})
+      result.memoryBytes += buffer ? buffer->size : 0;
     result.cpuUpdateMilliseconds = g.lightBvh.updateMilliseconds;
+    if (g.splitLightingActive)
+      result.cpuUpdateMilliseconds += g.torchBvh.updateMilliseconds + g.emissiveBvh.updateMilliseconds;
     result.denoiserActive = g.denoiser && g.postLocalDenoise;
     if (g.denoiser) {
       result.gpuTimingsAvailable = g.denoiser->statistics().gpuTimingsAvailable;

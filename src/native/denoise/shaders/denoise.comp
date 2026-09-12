@@ -84,8 +84,12 @@ void main() {
 #endif
       vec3 local=vec3(0);
 #ifdef LOCAL_PASS
-      if(temporal.local.y!=0)
+      if(temporal.local.w!=0?temporal.families.x!=0:temporal.local.y!=0)
         local=REBLUR_BackEnd_UnpackRadianceAndNormHitDist(temporal.local.x!=0?imageLoad(localOutput,p):imageLoad(localInput,p)).rgb;
+#endif
+#ifdef SPLIT_LOCAL_PASS
+      if(temporal.families.y!=0)
+        local+=REBLUR_BackEnd_UnpackRadianceAndNormHitDist(temporal.local.x!=0?imageLoad(emissiveOutput,p):imageLoad(emissiveInput,p)).rgb;
 #endif
       color=direct+safeRadiance(indirect+local)*material.rgb;
     }

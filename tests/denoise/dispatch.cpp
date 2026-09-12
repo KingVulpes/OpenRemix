@@ -57,6 +57,10 @@ int main() {
       common.timeDeltaBetweenFrames = frame % 2 ? 33.f : 8.f;
       nrd::ReblurSettings settings{};
       settings.hitDistanceReconstructionMode = nrd::HitDistanceReconstructionMode::OFF;
+      if (kind == nrd::Denoiser::REBLUR_DIFFUSE && frame >= 2 && frame < 4) {
+        settings.hitDistanceReconstructionMode = nrd::HitDistanceReconstructionMode::AREA_3X3;
+        settings.diffusePrepassBlurRadius = 4.f;
+      }
       settings.maxStabilizedFrameNum = frame < 4 ? 0 : nrd::REBLUR_MAX_HISTORY_FRAME_NUM;
       ok(nrd::SetCommonSettings(*instance, common));
       if (kind == nrd::Denoiser::SIGMA_SHADOW_TRANSLUCENCY) {

@@ -62,6 +62,9 @@ namespace remix {
     std::vector<TraceSurface> surfaces;
     std::vector<std::array<float, 4>> emissions(1); // zero is non-emissive
     auto lights = resources.sphereLights();
+    if (!options.torchLights)
+      lights.clear();
+    const size_t sphereCount = lights.size();
     primaryDraws.clear();
     std::vector<VkDescriptorImageInfo> textures;
     std::unordered_map<const Material *, uint32_t> textureIndices;
@@ -191,7 +194,7 @@ namespace remix {
             emissions.push_back({emission[0], emission[1], emission[2], 0});
             if (emission[0] > 0 || emission[1] > 0 || emission[2] > 0) {
               auto emitter = scene::triangleEmitter(surface, triangle, emission);
-              if (emitter.radius > 1e-8f) lights.push_back(emitter);
+              if (options.emissiveLights && emitter.radius > 1e-8f) lights.push_back(emitter);
             }
           }
         }
@@ -246,6 +249,19 @@ namespace remix {
     hostBuffer(table, surfaces.data(), surfaces.size() * sizeof(surfaces[0]),
                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     append(emissions.data(), emissions.size() * sizeof(emissions[0]));
+    const bool hasEmissiveLights = lights.size() > sphereCount;
+    splitLightingActive = hasEmissiveLights && options.separateLocalLighting != 0 && (!denoiser || postSplit);
+    if (splitLightingActive) {
+      auto upload = [&](scene::LightBvh &bvh, std::unique_ptr<Buffer> &nodes,
+                        std::unique_ptr<Buffer> &emitters, std::vector<scene::SphereLight> values) {
+        if (bvh.update(std::move(values)) && !bvh.nodes().empty()) {
+          hostBuffer(nodes, bvh.nodes().data(), bvh.nodes().size() * sizeof(scene::LightNode), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+          hostBuffer(emitters, bvh.emitters().data(), bvh.emitters().size() * sizeof(scene::LightEmitter), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        }
+      };
+      upload(torchBvh, torchNodes, torchEmitters, {lights.begin(), lights.begin() + sphereCount});
+      upload(emissiveBvh, emissiveNodes, emissiveEmitters, {lights.begin() + sphereCount, lights.end()});
+    }
     const bool lightsChanged = lightBvh.update(std::move(lights));
     if (lightsChanged && !lightBvh.nodes().empty()) {
       hostBuffer(lightNodes, lightBvh.nodes().data(), lightBvh.nodes().size() * sizeof(scene::LightNode),
@@ -256,12 +272,19 @@ namespace remix {
     Frame frame = {};
     frame.localConfig[0] = options.localLights && options.localIntensity > 0 ? lightBvh.active : 0;
     localIlluminationActive = frame.localConfig[0] != 0;
+    frame.splitLocal[0] = splitLightingActive ? options.separateLocalLighting : 0;
+    frame.splitLocal[1] = localIlluminationActive && splitLightingActive ? torchBvh.active : 0;
+    frame.splitLocal[2] = localIlluminationActive && splitLightingActive ? emissiveBvh.active : 0;
     frame.localConfig[1] = options.localSamples;
-    frame.localConfig[2] = uint32_t(lightBvh.generation);
-    frame.localConfig[3] = uint32_t(lightBvh.generation >> 32);
+    frame.localConfig[2] = uint32_t(lightBvh.lightingGeneration);
+    frame.localConfig[3] = uint32_t(lightBvh.lightingGeneration >> 32);
     frame.localScale[0] = options.localIntensity;
     frame.localScale[1] = options.localRange;
-    frame.localScale[2] = float(options.localGuiding);
+    // Private, previously unused shader word: bounded candidate count. Keep
+    // the established one-/many-sphere and <=4-emitter estimators unchanged.
+    frame.localScale[2] = hasEmissiveLights && lightBvh.emitters().size() > 4
+                              ? float(options.emissiveCandidates) : 1.f;
+    localResamplingActive = localIlluminationActive && frame.localScale[2] > 1;
     frame.localScale[3] = options.localRange > 0 ? 1.f / (options.localRange * options.localRange) : 0;
     frame.camera = resources.camera();
     frame.inverseCamera = scene::inverse(frame.camera);
@@ -296,8 +319,10 @@ namespace remix {
     frame.jitter[2] = options.waterIndirectReuse && denoiser && (postTaa || upscaler) && !options.accumulate &&
                       options.samples == 1 && options.bounces > 0;
     append(&frame, sizeof(frame));
+    append(&lightBvh.generation, sizeof(lightBvh.generation));
     append(&integrator, sizeof(integrator));
     append(&options.validation, sizeof(options.validation));
+    append(&options.localGuiding, sizeof(options.localGuiding));
     append(&options.fsrSharpness, sizeof(options.fsrSharpness));
     const uint64_t cacheSettings[] = {options.sharcReset, options.sharcCapacityLog2, options.sharcSceneScale,
         options.sharcDownscale, options.sharcAccumulationFrames, options.sharcStaleFrames};
@@ -319,13 +344,13 @@ namespace remix {
       stats.accumulationCount = 0;
     if (!options.accumulate || stats.accumulationCount >= 1048576)
       stats.accumulationCount = 0;
-    if (lightBvh.generation != previousLocalGeneration || frame.localScale[0] != previousLocalIntensity ||
-        frame.localScale[1] != previousLocalRange ||
+    const bool localSettingsChanged = frame.localScale[0] != previousLocalIntensity || frame.localScale[1] != previousLocalRange;
+    if (lightBvh.lightingGeneration != previousLocalGeneration || localSettingsChanged ||
         frame.localConfig[0] != previousLocalActive)
       localResponsiveFrames = 8;
     else if (localResponsiveFrames)
       --localResponsiveFrames;
-    previousLocalGeneration = lightBvh.generation;
+    previousLocalGeneration = lightBvh.lightingGeneration;
     previousLocalIntensity = frame.localScale[0];
     previousLocalRange = frame.localScale[1];
     previousLocalActive = frame.localConfig[0];
@@ -333,6 +358,21 @@ namespace remix {
     temporalFrame.local[0] = denoiser && postLocalDenoise;
     temporalFrame.local[1] = frame.localConfig[0];
     temporalFrame.local[2] = localResponsiveFrames;
+    temporalFrame.local[3] = frame.splitLocal[0];
+    for (unsigned i = 0; i < 2; ++i) {
+      const auto &family = i ? emissiveBvh : torchBvh;
+      if (previousFamilyGeneration[i] != family.lightingGeneration || localSettingsChanged || history.reset())
+        familyResponsive[i] = 8;
+      else if (familyResponsive[i])
+        --familyResponsive[i];
+      previousFamilyGeneration[i] = family.lightingGeneration;
+      temporalFrame.families[i] = frame.splitLocal[i + 1];
+      temporalFrame.families[i + 2] = familyResponsive[i];
+    }
+    if (!splitLightingActive) {
+      temporalFrame.families[0] = frame.localConfig[0];
+      temporalFrame.families[2] = localResponsiveFrames;
+    }
     temporalFrame.view = resources.view();
     temporalFrame.inverseCamera = frame.inverseCamera;
     pendingCamera = frame.camera;
@@ -395,6 +435,10 @@ namespace remix {
     temporalFrame.shadow[1] = uint32_t(frame.sun[2]);
     frame.lightNodes = lightNodes ? lightNodes->address : 0;
     frame.lightEmitters = lightEmitters ? lightEmitters->address : 0;
+    frame.torchNodes = torchNodes ? torchNodes->address : 0;
+    frame.torchEmitters = torchEmitters ? torchEmitters->address : 0;
+    frame.emissiveNodes = emissiveNodes ? emissiveNodes->address : 0;
+    frame.emissiveEmitters = emissiveEmitters ? emissiveEmitters->address : 0;
     configureLightGuiding(frame, options);
     frame.config[2] = uint32_t(sequence++);
     frame.config[3] = uint32_t(stats.accumulationCount);
@@ -500,6 +544,12 @@ namespace remix {
     // Publish opaque lighting, RNG and sheet count to transparent composition.
     barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+    if (splitLightingActive && denoiser && postSplit) {
+      vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, selectLightingPipeline(splitDirectCompute));
+      vkCmdDispatch(command, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
+      barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+    }
     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE,
                       selectLightingPipeline(sharc.stats.active ? (denoiser ? sharc.temporalTransparency : sharc.transparency)
                                          : (denoiser ? temporalTransparencyCompute : transparencyCompute)));

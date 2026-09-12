@@ -36,6 +36,9 @@ namespace remix::denoise {
     SigmaImageCount,
     LocalInput = SigmaImageCount,
     LocalOutput,
+    LocalImageCount,
+    EmissiveInput = LocalImageCount,
+    EmissiveOutput,
     ImageCount
   };
   // Shared std140 constants. Matrices are nonjittered, in Vulkan framebuffer coordinates.
@@ -49,17 +52,18 @@ namespace remix::denoise {
     float sun[4] = {};       // direction toward sun, SIGMA active
     uint32_t shadow[4] = {}; // SIGMA reset, debug view, reserved
     uint32_t local[4] = {}; // denoise, active lights, responsive frames, reserved
+    uint32_t families[4] = {}; // torch/emissive counts, torch/emissive response frames
   };
-  static_assert(sizeof(Frame) == 448 && offsetof(Frame, local) == 432 && offsetof(Frame, sun) == 400 && offsetof(Frame, shadow) == 416);
+  static_assert(sizeof(Frame) == 464 && offsetof(Frame, families) == 448 && offsetof(Frame, local) == 432 && offsetof(Frame, sun) == 400 && offsetof(Frame, shadow) == 416);
   remixapi_DenoisingCapabilitiesEXT capabilities(VkPhysicalDevice physical);
   bool sigmaSupported(VkPhysicalDevice physical);
-  bool localSupported(VkPhysicalDevice physical, bool sigma);
+  bool localSupported(VkPhysicalDevice physical, bool sigma, bool split = false);
   class Renderer {
   public:
     Renderer();
     ~Renderer();
     void initialize(VkPhysicalDevice physical, VkDevice device, VkExtent2D extent, bool reblur,
-                    uint32_t queueFamily, bool sigma = false, bool local = false, bool localDenoise = false);
+                    uint32_t queueFamily, bool sigma = false, bool local = false, bool localDenoise = false, bool split = false);
     VkDescriptorSetLayout inputLayout() const;
     VkDescriptorSet inputs() const;
     upscale::Input image(ImageSlot slot) const;

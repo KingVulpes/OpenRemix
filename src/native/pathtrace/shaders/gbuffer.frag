@@ -15,6 +15,7 @@ layout(location=1) flat in vec3 normal;
 layout(location=2) in vec2 uv;
 layout(location=3) in vec4 color;
 layout(location=4) in vec3 previousPosition;
+layout(location=5) flat in float triangleIdentity;
 #ifdef STABLE_DEPTH
 layout(location=0) out float outDepth;
 #else
@@ -44,6 +45,6 @@ void main() {
   outNormal=vec4(n,(s.state.w&2)!=0?2:1);
   outAlbedo=albedo;
   outPrevious=vec4(previousPosition,s.previousVertices!=0?1:0);
-  outEmission=vec4(materialEmission(s,uv),0);
+  outEmission=vec4(materialEmission(s,uv),triangleIdentity);
 #endif
 }

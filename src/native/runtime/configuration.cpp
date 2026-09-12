@@ -154,6 +154,8 @@ namespace remix {
       m_traceOptions.localSamples = number;
     else if (!std::strcmp(key, "shadowDebug") && number <= 2)
       m_traceOptions.shadowDebug = number;
+    else if (!std::strcmp(key, "debugView") && number <= 11)
+      m_traceOptions.debugView = number;
     else if (!std::strcmp(key, "taa") && number <= 1)
       m_traceOptions.taa = number != 0;
     else if (!std::strcmp(key, "waterIndirectReuse") && number <= 1)

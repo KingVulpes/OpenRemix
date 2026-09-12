@@ -90,6 +90,21 @@ the full mixture probability, `(1-g)*p_BVH(light) + g*[light == preferred]`, and
 its sphere solid-angle PDF. Previous visibility never directly supplies light or
 shadow intensity. Cached-leaf probabilities are evaluated at the current receiver.
 This is proposal guidance, not a reused radiance reservoir or visibility cache.
+The lookup stochastically interpolates neighboring cell centers along the two
+tangential grid axes. Point lookup can give neighboring cells different sample
+colors and variances; tonemapping and temporal clipping then expose hard colored
+patches even when their linear expectations agree. Each pixel independently
+chooses one neighboring cell with bilinear weights, using a random dimension
+separate from light selection. Missing evidence uses the base proposal. The
+normal-axis layer and normal-direction bin retain their existing separation.
+Training remains in the receiver's canonical cell, so interpolation does not
+spread visibility observations to neighboring surfaces.
+
+Each selected cell defines a complete, conditionally unbiased light sampler:
+the existing mixture PDF is evaluated for that cell at the current receiver.
+Averaging over the independently selected cells therefore preserves the same
+lighting integral. This uses one cache lookup and the existing shadow-ray budget;
+it does not interpolate radiance, cache a shadow result, or reset temporal history.
 The [emissive RIS sampler](emissive-maps.md) uses a separate interpretation of
 the same feedback storage: visible area-source subtrees and a bounded mixture,
 without treating resampled winners as base blocked-fraction observations.

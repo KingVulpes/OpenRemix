@@ -10,7 +10,7 @@ struct Surface {
   uvec4 state; // texture operations, compare, reference bits, flags
   uvec4 textureState; // texture index
   uint64_t previousVertices;
-  uvec2 padding;
+  uvec2 debugIdentity;
   mat4 previousModel;
   vec4 emission;
 };

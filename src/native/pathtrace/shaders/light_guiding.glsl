@@ -6,21 +6,45 @@ float lightSplit(float a,float b) {
   float scale=max(a,b);
   return a==0?0:b==0?1:clamp((a/scale)/(a/scale+b/scale),1e-6,1-1e-6);
 }
+uint lightGuideFace(vec3 n) {
+  vec3 a=abs(n);
+  uint axis=a.x>a.y?(a.x>a.z?0u:2u):(a.y>a.z?1u:2u);
+  return axis*2u+(n[axis]>0?1u:0u);
+}
+uint lightGuideCellKey(vec3 cell,uint face) {
+  // Canonicalize signed zero before hashing integer-valued float coordinates.
+  uvec3 bits=mix(floatBitsToUint(cell),uvec3(0),equal(cell,vec3(0)));
+  return max(1u,hash(hash(bits.x)^hash(bits.y+0x9e3779b9u)^hash(bits.z+face*0x85ebca6bu)));
+}
 uint lightGuideKey(Hit hit) {
   // Grid-aligned walls sit exactly on cell boundaries. Interpolation and
   // intersection rounding can place the same plane on either side, changing
   // a whole wall's proposal under camera motion. Use the same surface-safe
   // position as the visibility ray for the guide lookup only; physical light
   // evaluation and its PDF still use the original hit position.
-  uvec3 cell=floatBitsToUint(floor(offsetRay(hit.p,hit.n)*.5));
-  vec3 a=abs(hit.n);
-  uint axis=a.x>a.y?(a.x>a.z?0u:2u):(a.y>a.z?1u:2u);
-  uint face=axis*2u+(hit.n[axis]>0?1u:0u);
-  return max(1u,hash(hash(cell.x)^hash(cell.y+0x9e3779b9u)^hash(cell.z+face*0x85ebca6bu)));
+  return lightGuideCellKey(floor(offsetRay(hit.p,hit.n)*.5),lightGuideFace(hit.n));
 }
-float lightGuideProposal(LightNodes nodes,Hit hit,uint key,out uint preferred,bool resampled) {
+uint lightGuideQueryKey(Hit hit,uint state) {
+  uint face=lightGuideFace(hit.n),axis=face/2;
+  vec3 grid=offsetRay(hit.p,hit.n)*.5,cell=floor(grid);
+  // Point lookup changes the entire proposal at two-block cell boundaries.
+  // Different proposal variances become colored patches after tonemapping
+  // and temporal clipping, even though their linear expectations agree.
+  // Stochastically interpolate neighboring cell centers in the tangent plane.
+  // Keep the normal-axis layer exact; never interpolate across parallel layers.
+  // This random dimension is independent of light selection and transport.
+  uint lookupState=hash(state^0xb5297a4du);
+  for(uint i=1;i<=2;++i) {
+    uint tangent=(axis+i)%3;
+    float coordinate=grid[tangent]-.5;
+    cell[tangent]=floor(coordinate)+float(lightRandom(lookupState)<fract(coordinate));
+  }
+  return lightGuideCellKey(cell,face);
+}
+float lightGuideProposal(LightNodes nodes,Hit hit,uint state,out uint preferred,bool resampled) {
   preferred=0;
   if(frame.lightGuideRead==0)return 0;
+  uint key=lightGuideQueryKey(hit,state);
   uvec4 previous=LightGuideCache(frame.lightGuideRead).data[key&(frame.lightGuideConfig.x-1)];
   if(previous.x!=key||previous.y==0||previous.z<4)return 0;
   float blocked=clamp(1-float(previous.w)/(255*float(previous.z)),0,1);

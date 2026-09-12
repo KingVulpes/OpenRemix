@@ -38,6 +38,33 @@ namespace remix {
           int primary = m_traceOptions.rasterPrimary ? 0 : 1;
           if (ImGui::Combo("Primary visibility", &primary, "Rasterized G-buffer\0Ray traced\0"))
             m_traceOptions.rasterPrimary = primary == 0;
+          if (ImGui::CollapsingHeader("Diagnostics")) {
+            int view = int(m_traceOptions.debugView);
+            if (ImGui::Combo("Debug view", &view,
+                "Final lighting\0Albedo\0Geometric normals\0Triangle IDs\0Depth bands\0World position grid\0"
+                "Raw local lighting\0Raw indirect lighting\0Motion vectors\0Motion validity\0"
+                "Indirect lighting confidence\0TAA current-frame weight\0"))
+              m_traceOptions.debugView = uint32_t(view);
+            static const char *help[] = {
+              "Start with Triangle IDs and Geometric normals at the problem angle, then compare Raw local lighting. Compare both Primary visibility options above.",
+              "Unlit base color of the first visible surface. Flicker here points to visibility or material data.",
+              "World-space geometric normals: RGB = XYZ mapped to 0..1. Flat faces should keep one color.",
+              "Colors identify submitted triangles. Coplanar surfaces swapping visibility change color. Remeshing can also change IDs; palette collisions are possible.",
+              "Distance from the camera, repeating black to white every 4 world units. Sudden patches can reveal visibility or position jumps.",
+              "World position as RGB, repeating every world unit. Look for moving discontinuities inside a flat face.",
+              "Unfiltered direct local illumination on opaque receivers, including torches and emissives, before albedo and transparent tint. Uses the current display tonemapper.",
+              "Unfiltered indirect illumination before albedo and transparent tint. Includes SHARC when enabled; zero bounces is black.",
+              "Opaque motion guides: red/green = horizontal/vertical pixels, gray = zero, full range = +/-16 pixels. Magenta = invalid motion.",
+              "Opaque motion correspondence: green = available, red = invalid/reset. This precedes per-pixel depth/normal history rejection.",
+              "REBLUR indirect confidence: white = high trust, black = low. This is not the local-light denoiser's history.",
+              "Actual native TAA blend weight: white = current frame only; darker = more history. Unavailable with FSR or TAA off."
+            };
+            ImGui::TextWrapped("%s", help[m_traceOptions.debugView]);
+            if (m_traceOptions.debugView) {
+              ImGui::TextWrapped("Diagnostics display live internal pixels without temporal filtering. Lighting histories and requested settings keep running. FSR pixels are enlarged without filtering.");
+              ImGui::TextWrapped("Purple checkerboard means the selected signal is unavailable. Normal subpixel jitter remains visible at edges.");
+            }
+          }
           int samples = int(m_traceOptions.samples), bounces = int(m_traceOptions.bounces);
           if (ImGui::SliderInt("Samples / pixel", &samples, 1, 16))
             m_traceOptions.samples = uint32_t(samples);

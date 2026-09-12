@@ -91,7 +91,7 @@ namespace remix::trace::detail {
     uint64_t vertices = 0, indices = 0;
     float tint[4] = {}, uv[4] = {}, factor[4] = {};
     uint32_t state[4] = {}, textureState[4] = {};
-    uint64_t previousVertices = 0, padding = 0;
+    uint64_t previousVertices = 0, debugIdentity = 0;
     Matrix previousModel{};
     float emission[4] = {};
   };
@@ -112,7 +112,7 @@ namespace remix::trace::detail {
     uint64_t lightGuideRead = 0, lightGuideWrite = 0;
     uint32_t lightGuideConfig[4] = {}; // capacity, node count, reserved
     uint64_t torchNodes = 0, torchEmitters = 0, emissiveNodes = 0, emissiveEmitters = 0;
-    uint32_t splitLocal[4] = {}; // mode, torch count, emissive count, reserved
+    uint32_t splitLocal[4] = {}; // mode, torch count, emissive count, debug view
   };
   static_assert(sizeof(Frame) == 464 && offsetof(Frame, lightGuideRead) == 384 && offsetof(Frame, lightGuideConfig) == 400 && offsetof(Frame, lightNodes) == 336 && offsetof(Frame, localConfig) == 352 && offsetof(Frame, localScale) == 368 && offsetof(Frame, skyRadiance) == 224 &&
                 offsetof(Frame, sharcHash) == 240 && offsetof(Frame, sharcConfig) == 272 &&
@@ -189,6 +189,7 @@ namespace remix {
     VkQueryPool compaction = VK_NULL_HANDLE, timestamps = VK_NULL_HANDLE;
     uint32_t timestampBits = 0;
     bool timingPending = false, imagesInitialized = false, encodeOutput = false;
+    uint32_t debugView = 0;
     bool prism = true, gamma22 = true, hardwareSrgb = false;
     VkExtent2D extent = {}, displayExtent = {};
     VkRenderPass displayPass{};

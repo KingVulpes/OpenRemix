@@ -2,6 +2,14 @@ policy_test = executable('remix-tlas-policy-test', 'tlas_policy.cpp',
   include_directories : test_includes, link_with : pathtrace_library)
 test('Tracing scene and TLAS policy', policy_test)
 if get_option('gpu_tests')
+  guide_cells_test = executable('remix-guide-cells-test', 'guide_cells.cpp',
+    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
+  test('Colored guide cells and linear lighting energy', guide_cells_test,
+    args : [meson.current_build_dir() / 'guide-cell-scenes'], timeout : 300)
+  debug_views_test = executable('remix-debug-views-test', 'debug_views.cpp',
+    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
+  test('Live diagnostics preserve lighting histories', debug_views_test,
+    args : [meson.current_build_dir() / 'debug-view-scenes'], timeout : 300)
   adaptive_sampling_test = executable('remix-adaptive-sampling-test', 'adaptive_sampling.cpp',
     include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
   test('Adaptive light budget continuity and configured floors', adaptive_sampling_test,

@@ -1,6 +1,7 @@
 #version 460
 #extension GL_GOOGLE_include_directive : require
 #include "inputs.glsl"
+#include "../../pathtrace/shaders/debug.glsl"
 layout(local_size_x=8,local_size_y=8) in;
 layout(push_constant) uniform Pass { uint mode; uint step; } pass;
 ivec2 bounded(ivec2 p) { return clamp(p,ivec2(0),ivec2(temporal.target.xy)-1); }
@@ -143,7 +144,18 @@ void main() {
     }
     vec4 history=vec4(result,rate);
     if(temporal.flags.w==0)imageStore(history1,p,history);else imageStore(history0,p,history);
-    vec4 world=imageLoad(finalWorld,p);world.rgb=temporal.flags.z!=0&&temporal.shadow.y==0?safeRadiance(expanded(result)):inputColor.rgb;
+    // Always update normal scene history. Diagnostics replace only presentation,
+    // after TAA; FSR continues to consume the normal composed image as well.
+    vec4 world=imageLoad(finalWorld,p);
+    uint view=uint(temporal.timing.w);
+    if(view==0)world.rgb=temporal.flags.z!=0&&temporal.shadow.y==0?safeRadiance(expanded(result)):inputColor.rgb;
+    if(view==8) {
+      vec4 mv=imageLoad(guideMotion,p);
+      world.rgb=mv.w>0?vec3(clamp(.5+mv.xy/32,0,1),.5):vec3(1,0,1);
+    }
+    if(view==9)world.rgb=imageLoad(guideMotion,p).w>0?vec3(0,1,0):vec3(1,0,0);
+    if(view==10)world.rgb=temporal.flags.y!=0?vec3(imageLoad(confidence,p).x):debugUnavailable(p);
+    if(view==11)world.rgb=temporal.flags.z!=0?vec3(rate):debugUnavailable(p);
     imageStore(finalWorld,p,world);return;
   }
   imageStore(previousDepth,p,imageLoad(guideDepth,p));imageStore(previousNormal,p,imageLoad(guideNormal,p));imageStore(previousLighting,p,imageLoad(lighting,p));

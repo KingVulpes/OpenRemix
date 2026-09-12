@@ -15,6 +15,7 @@
 #endif
 layout(local_size_x=8, local_size_y=8) in;
 #include "scene.glsl"
+#include "debug.glsl"
 #if defined(SHARC_QUERY) || defined(SHARC_UPDATE_PASS)
 #include "sharc.glsl"
 #endif
@@ -61,7 +62,7 @@ bool acceptCandidate(Surface s,uint triangle,vec2 bary) {
   vec3 w=vec3(1-bary.x-bary.y,bary);
   return alphaPass(s,materialAlpha(s,a.uv.xy*w.x+b.uv.xy*w.y+c.uv.xy*w.z,a.color.a*w.x+b.color.a*w.y+c.color.a*w.z));
 }
-struct Hit { float t; vec3 p; vec3 n; vec4 color; bool blended; bool cacheable; vec3 previousPosition; bool historyValid; vec3 emission; };
+struct Hit { float t; vec3 p; vec3 n; vec4 color; bool blended; bool cacheable; vec3 previousPosition; bool historyValid; vec3 emission; float identity; };
 void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, inout Hit hit,bool motion) {
   rayQueryEXT query;
   rayQueryInitializeEXT(query, scene, gl_RayFlagsNoOpaqueEXT, 255, origin, 0.0, direction, hit.t);
@@ -86,6 +87,7 @@ void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, ino
   if (dot(hit.n,direction)>0) hit.n=-hit.n;
   hit.color=albedo(s,tri/3,bary);
   hit.emission=vec3(0);
+  hit.identity=motion&&frame.splitLocal.w==3?debugTriangle(s.debugIdentity,tri/3):0;
   if(motion) {
     vec3 w=vec3(1-bary.x-bary.y,bary);
     vec2 uv=s.vertices.v[s.indices.i[tri]].uv.xy*w.x+s.vertices.v[s.indices.i[tri+1]].uv.xy*w.y+s.vertices.v[s.indices.i[tri+2]].uv.xy*w.z;
@@ -108,6 +110,7 @@ void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, ino
 Hit closest(vec3 origin,vec3 direction,float maximum,bool motion) {
   Hit hit; hit.t=maximum; hit.p=vec3(0);hit.n=vec3(0);hit.color=vec4(0);hit.blended=false;hit.cacheable=false;hit.previousPosition=vec3(0);hit.historyValid=false;
   hit.emission=vec3(0);
+  hit.identity=0;
   if ((frame.target.z&1)!=0) queryScene(staticScene,origin,direction,hit,motion);
   if ((frame.target.z&2)!=0) queryScene(dynamicScene,origin,direction,hit,motion);
   if(hit.t==maximum)hit.t=1e30;
@@ -125,7 +128,21 @@ Hit rasterPrimary(ivec2 pixel, vec3 origin) {
   hit.color=imageLoad(primaryAlbedo,pixel);hit.blended=normal.w==2;hit.cacheable=false;
   hit.previousPosition=previous.xyz;hit.historyValid=previous.w!=0;
   hit.emission=imageLoad(primaryEmission,pixel).rgb;
+  hit.identity=imageLoad(primaryEmission,pixel).a;
   return hit;
+}
+// Geometry diagnostics show the first visible sheet. Lighting and temporal
+// guides belong to the opaque receiver behind transparent sheets.
+vec3 debugGeometry(Hit hit,ivec2 pixel) {
+  uint view=frame.splitLocal.w;
+  if(view>=8)return debugUnavailable(pixel); // filled by temporal composition when available
+  if(hit.t==1e30)return vec3(0);
+  if(view==1)return hit.color.rgb;
+  if(view==2)return hit.n*.5+.5;
+  if(view==3)return debugPalette(hit.identity);
+  if(view==4)return vec3(fract(length(hit.p-frame.eye.xyz)/4));
+  if(view==5)return .15+.7*fract(hit.p); // one world unit per cell
+  return vec3(0);
 }
 // Scale-aware integer ULP offset with a near-origin fallback (RT Gems, ch. 6).
 vec3 offsetRay(vec3 p,vec3 n) {
@@ -309,6 +326,11 @@ void main() {
   float ed=normal.a>0?REBLUR_FrontEnd_GetNormHitDist(emissiveDistance,z,temporal.hitDistance.xyz,1):0;
   imageStore(localInput,pixel,REBLUR_FrontEnd_PackRadianceAndNormHitDist(torch,td,true));
   imageStore(emissiveInput,pixel,REBLUR_FrontEnd_PackRadianceAndNormHitDist(emissive,ed,true));
+  if(frame.splitLocal.w==6) {
+    uvec4 background=imageLoad(backgroundTransmission,pixel);
+    background.rgb=floatBitsToUint(torch+emissive);
+    imageStore(backgroundTransmission,pixel,background);
+  }
   return;
 #elif defined(SHARC_UPDATE_PASS)
   updateCache(pixel);return;
@@ -343,6 +365,7 @@ void main() {
   vec3 origin,direction;ray((vec2(pixel)+.5+jitter)/vec2(frame.target.xy)*2-1,frame.inverseCamera,origin,direction);
 #ifndef TRANSPARENCY_PASS
   Hit primary=frame.target.w!=0?rasterPrimary(pixel,origin):closest(origin,direction);
+  vec3 diagnostic=frame.splitLocal.w!=0?debugGeometry(primary,pixel):vec3(0);
   // Opaque lighting owns the initial random sequence used by confidence retracing.
   uint sheetCount=0;
   while(sheetCount<32&&primary.blended) {
@@ -440,6 +463,11 @@ void main() {
   // Motion has been consumed above. Reuse its scratch image for deterministic
   // visible emission so SIGMA/local filtering never shadows or blurs it.
   imageStore(primaryPrevious,pixel,vec4(emission,0));
+  if(frame.splitLocal.w!=0) {
+    if(frame.splitLocal.w==6)diagnostic=local;
+    if(frame.splitLocal.w==7)diagnostic=indirect;
+    color=diagnostic;
+  }
   // Integer storage preserves every RNG bit, including float NaN/subnormal patterns.
   imageStore(backgroundTransmission,pixel,uvec4(floatBitsToUint(color),rng));
   // Reuse depth as a signed sheet count until composition writes stable depth.
@@ -512,6 +540,7 @@ void main() {
   if (count>0) {
     color=(imageLoad(worldColor,pixel).rgb*count+color)/(count+1);
   }
+  if(frame.splitLocal.w!=0)color=uintBitsToFloat(background.rgb);
   imageStore(worldColor,pixel,vec4(color,depth));
   imageStore(backgroundTransmission,pixel,uvec4(0,0,0,floatBitsToUint(1.0)));
 #endif

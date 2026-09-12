@@ -153,6 +153,10 @@ the G-buffer and depth passes in raster-primary mode. The five extra attachments
 use 48 bytes per pixel, excluding depth, allocation padding and driver overhead.
 The existing depth attachment is reused between passes.
 
+F12 also exposes [live diagnostic views](features/debug-views.md) for geometry,
+raw lighting, motion, confidence, and TAA history weight. Selecting a diagnostic
+preserves the active lighting pipelines and their histories.
+
 The compute shader reconstructs secondary-hit triangle positions, UVs, vertex tints
 and geometric normals. Textures respect their linear/sRGB format, nearest/linear filtering and
 address modes; compute shading currently samples mip level zero. At each diffuse

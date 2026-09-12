@@ -223,7 +223,7 @@ vec3 resampledLocalLighting(LightNodes nodes,LightEmitters emitters,Hit hit,uint
   uint guideKey=0,preferred=0,guideRoot=0;float guideMix=0,rootPdf=1;
   if(enableLocalGuiding&&useGuide&&frame.lightGuideWrite!=0) {
     guideKey=lightGuideKey(hit);
-    guideMix=lightGuideProposal(nodes,hit,guideKey,preferred,true);
+    guideMix=lightGuideProposal(nodes,hit,state,preferred,true);
     // Keep the stratified whole-tree proposal on torch-dominated cells. A
     // single cached torch is a poor substitute for the other visible torches.
     if(guideMix>0&&emitters.data[nodes.data[preferred].links.z].radiance.w==0)guideMix=0;
@@ -355,7 +355,7 @@ vec3 localLighting(Hit hit,uint state,uint samples,out float lightDistance,bool 
   float guideMix=0,preferredPdf=-1;
   if(enableLocalGuiding&&useGuiding&&frame.lightGuideWrite!=0) {
     guideKey=lightGuideKey(hit);
-    guideMix=lightGuideProposal(nodes,hit,guideKey,preferred,false);
+    guideMix=lightGuideProposal(nodes,hit,state,preferred,false);
   }
   state=hash(state^0x746f7263u);
   if(enableSmallLights&&nodes.data[0].links.w<=4)

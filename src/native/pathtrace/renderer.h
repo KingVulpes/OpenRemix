@@ -25,6 +25,7 @@ namespace remix {
     float localIntensity = 1, localRange = 16;
     bool localGuiding = true;
     uint32_t shadowDebug = 0;
+    uint32_t debugView = 0; // display diagnostics; never selects an integrator
     float sunAngularDiameter = -1; // -1 inherits the distant light's diameter.
     bool rasterPrimary = true;
     bool waterIndirectReuse = true;

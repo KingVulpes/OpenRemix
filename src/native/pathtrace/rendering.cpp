@@ -9,8 +9,10 @@ namespace remix {
 
   void PathTracer::Gpu::prepare(VkCommandBuffer command, RasterRenderer &resources,
                                 const TraceOptions &options) {
-    prism = options.prism;
-    gamma22 = options.gamma22;
+    debugView = options.debugView;
+    const bool falseColor = debugView != 0 && debugView != 6 && debugView != 7;
+    prism = options.prism && !falseColor;
+    gamma22 = options.gamma22 && !falseColor;
     if (timestamps) {
       vkCmdResetQueryPool(command, timestamps, 0, 4);
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestamps, 0);
@@ -165,6 +167,8 @@ namespace remix {
           value.textureState[2] = emitter->second + 1;
         }
         value.vertices = view.vertices.at(surface.surfaceIndex)->address;
+        const uint64_t debugKey[] = {surface.instanceId, surface.instanceIndex, surface.surfaceIndex};
+        value.debugIdentity = hashBytes(debugKey, sizeof(debugKey));
         value.indices = geometry.input->address + geometry.indexOffsets.at(surface.surfaceIndex);
         auto temporalDraw = surface;
         if (!persistentIds.count(surface.instanceId))
@@ -285,6 +289,7 @@ namespace remix {
     frame.splitLocal[0] = splitLightingActive ? options.separateLocalLighting : 0;
     frame.splitLocal[1] = localIlluminationActive && splitLightingActive ? torchBvh.active : 0;
     frame.splitLocal[2] = localIlluminationActive && splitLightingActive ? emissiveBvh.active : 0;
+    frame.splitLocal[3] = debugView;
     frame.localConfig[1] = options.localSamples;
     frame.localConfig[2] = uint32_t(lightBvh.lightingGeneration);
     frame.localConfig[3] = uint32_t(lightBvh.lightingGeneration >> 32) |
@@ -346,7 +351,7 @@ namespace remix {
     append(&temporalEpoch, sizeof(temporalEpoch));
     configureSharc(frame, options, temporalEpoch, std::move(staticGeometry), std::move(dynamicGeometry));
     // An unchanged world can reuse its cached output once both histories are warm.
-    if (scene == lastScene && !options.accumulate && denoiser && !denoiser->statistics().redrawRequested &&
+    if (scene == lastScene && !options.accumulate && !debugView && denoiser && !denoiser->statistics().redrawRequested &&
         !history.reset() && !(upscaler && upscaler->statistics().frames < 128) && !(sharc.stats.active && sharc.warmFrames < 2 * options.sharcAccumulationFrames))
       return;
     const bool sceneChanged = scene != lastScene;
@@ -436,6 +441,7 @@ namespace remix {
             : 16.6667f;
     temporalFrame.timing[1] = options.validation;
     temporalFrame.timing[2] = sceneChanged;
+    temporalFrame.timing[3] = float(debugView);
     for (int i = 0; i < 3; ++i) {
       temporalFrame.sun[i] = -frame.direction[i];
       pendingSun[i] = frame.direction[i];
@@ -470,7 +476,7 @@ namespace remix {
     stats.accumulationEnabled = options.accumulate;
     ++stats.accumulationCount;
     stats.sampleSequence = sequence;
-    stats.redrawRequested = options.accumulate ||
+    stats.redrawRequested = options.accumulate || debugView ||
         (sharc.stats.active && sharc.warmFrames < 2 * options.sharcAccumulationFrames);
     if (textures.empty())
       textures.push_back(resources.sampledMaterial(resources.defaultMaterial(), command));
@@ -620,7 +626,7 @@ namespace remix {
 
   void PathTracer::record(VkCommandBuffer command) {
     auto &g = *m_gpu;
-    if (g.upscaler) { g.upscaler->composite(command, g.encodeOutput, g.prism, g.gamma22, g.hardwareSrgb); return; }
+    if (g.upscaler && !g.debugView) { g.upscaler->composite(command, g.encodeOutput, g.prism, g.gamma22, g.hardwareSrgb); return; }
     VkViewport viewport = {0, 0, float(g.displayExtent.width), float(g.displayExtent.height), 0, 1};
     VkRect2D scissor = {{0, 0}, g.displayExtent};
     vkCmdSetViewport(command, 0, 1, &viewport);
@@ -628,7 +634,8 @@ namespace remix {
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, g.layout, 0, 1, &g.set, 0, nullptr);
     for (uint32_t i = 0; i < 2; ++i) {
       const uint32_t push[] = {i, uint32_t(g.encodeOutput), uint32_t(g.prism),
-                               uint32_t(g.gamma22), uint32_t(g.hardwareSrgb)};
+                               uint32_t(g.gamma22), uint32_t(g.hardwareSrgb),
+                               g.displayExtent.width, g.displayExtent.height};
       vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, g.composite[i]);
       vkCmdPushConstants(command, g.layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), push);
       vkCmdDraw(command, 3, 1, 0, 0);

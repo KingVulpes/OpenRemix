@@ -96,5 +96,21 @@ int main() {
   rejected([&]{resources.createMaterial(info,handle);});
   resources.drawInstance(instance(mesh));
   require(resources.draws()[0].material->emission[0]==2, "Rejected material replaced accepted emission");
+  // Exercise every encoded channel, including both sides of the sRGB knee.
+  // Uniform texels have an analytic average independent of UV quadrature.
+  m.emissionTexture = std::make_shared<Texture>();
+  for (bool srgb : {false, true})
+    for (unsigned byte = 0; byte < 256; ++byte) {
+      m.emissionCache.clear();
+      m.emissionTexture->pixels = {1, 1, srgb, {{uint8_t(byte), uint8_t(byte), uint8_t(byte), 255}}};
+      const float encoded = byte / 255.f;
+      const float linear = !srgb                ? encoded
+                           : encoded <= .04045f ? encoded / 12.92f
+                                                : std::pow((encoded + .055f) / 1.055f, 2.4f);
+      const auto reduced = triangleEmission(draw, 0, uv);
+      for (unsigned c = 0; c < 3; ++c)
+        require(std::abs(reduced[c] - linear * m.emission[c]) < 1e-5f,
+                "Encoded emission channel conversion changed energy");
+    }
   std::puts("Emission color, atlas region, transforms, flux, caching and validation passed");
 }

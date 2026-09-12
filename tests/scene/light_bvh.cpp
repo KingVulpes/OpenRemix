@@ -4,8 +4,10 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <functional>
 #include <limits>
+#include <random>
 #include <remix/remix_native_ext.h>
 
 namespace {
@@ -18,6 +20,59 @@ void require(bool value, const char *message) {
 } // namespace
 int main() {
   using namespace remix::scene;
+  // Sparse animation and input reordering must produce the same GPU records
+  // as a fresh hierarchy, including when whole branches lose their power.
+  {
+    std::mt19937 random(2080);
+    std::vector<SphereLight> lights(101);
+    for (size_t i = 0; i < lights.size(); ++i) {
+      auto &light = lights[i];
+      light.id = i + 1;
+      light.triangle = uint32_t(i % 3);
+      light.radius = .1f + float(i % 7) * .05f;
+      for (unsigned c = 0; c < 3; ++c) {
+        light.position[c] = float(random() % 1000) / 10;
+        light.radiance[c] = float(random() % 100);
+        for (unsigned v = 0; v < 3; ++v)
+          light.corners[v][c] = light.position[c] + (v == c ? .5f : 0);
+      }
+    }
+    LightBvh cached;
+    for (unsigned frame = 0; frame < 256; ++frame) {
+      if (frame % 7 == 0)
+        std::shuffle(lights.begin(), lights.end(), random);
+      for (unsigned edit = 0; edit < 5; ++edit) {
+        auto &light = lights[random() % lights.size()];
+        for (auto &channel : light.radiance)
+          channel = frame % 4 ? float(random() % 100) : 0;
+      }
+      if (frame == 80)
+        for (auto &light : lights)
+          std::fill_n(light.radiance, 3, 0.f);
+      if (frame == 128)
+        for (auto &light : lights) {
+          light.radius *= 2;
+          light.corners[1][0] += .75f;
+        }
+      cached.update(lights);
+      LightBvh rebuilt;
+      rebuilt.update(lights);
+      require(cached.active == rebuilt.active && cached.nodes().size() == rebuilt.nodes().size(),
+              "Sparse light refit changed hierarchy membership");
+      require(std::memcmp(cached.nodes().data(), rebuilt.nodes().data(),
+                          cached.nodes().size() * sizeof(LightNode)) == 0,
+              "Sparse light refit changed bounds or sampling power");
+      require(std::memcmp(cached.emitters().data(), rebuilt.emitters().data(),
+                          cached.emitters().size() * sizeof(LightEmitter)) == 0,
+              "Cached light ordering changed emitter records");
+      const auto generation = cached.generation;
+      std::shuffle(lights.begin(), lights.end(), random);
+      require(!cached.update(lights) && cached.generation == generation,
+              "Reordered identical lights invalidated the hierarchy");
+    }
+    require(cached.builds == 1 && cached.refits > 200,
+            "Radiance animation unnecessarily rebuilt the hierarchy");
+  }
   require(LightBvh::falloff(1.e12, 0) == 1 && LightBvh::falloff(144, 16) == 1 &&
               LightBvh::falloff(256, 16) == 0 && LightBvh::falloff(400, 16) == 0,
           "Influence bound changed inner light or failed to reach black");

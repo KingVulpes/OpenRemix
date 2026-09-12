@@ -9,6 +9,8 @@ namespace remix {
   RasterRenderer::Gpu::~Gpu() {
     destroyTarget();
     commands.clear();
+    for (auto &frame : frames)
+      frame = {};
     materials.clear();
     textures.clear();
     meshes.clear();
@@ -44,6 +46,22 @@ namespace remix {
   RasterRenderer::RasterRenderer() { reset(); }
 
   RasterRenderer::~RasterRenderer() = default;
+
+  void RasterRenderer::selectFrame(uint32_t slot) {
+    auto &g = *m_gpu;
+    auto &previous = g.frames[g.frameIndex];
+    previous.uploads = std::move(g.uploads);
+    previous.skin = std::move(g.skin);
+    g.frameIndex = slot;
+    auto &next = g.frames[slot];
+    for (auto &buffer : next.retiredBuffers)
+      g.recycle(std::move(buffer));
+    next.retiredBuffers.clear();
+    next.retiredMaterials.clear();
+    next.retiredImages.clear();
+    g.uploads = std::move(next.uploads);
+    g.skin = std::move(next.skin);
+  }
 
   void RasterRenderer::initializeGpu(VkPhysicalDevice physical, VkDevice device) {
     m_gpu = std::make_unique<Gpu>();

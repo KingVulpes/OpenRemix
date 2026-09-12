@@ -69,6 +69,10 @@ namespace remix::denoise {
     VkDescriptorPool nrdPool{};
     VkSampler samplers[2]{};
     std::unique_ptr<Buffer> constants;
+    struct FrameResources {
+      VkDescriptorPool pool{};
+      std::unique_ptr<Buffer> constants;
+    } frames[gpuFrameCount];
     VkDeviceSize constantStride{};
     const nrd::DispatchDesc *dispatches{};
     uint32_t dispatchCount{};
@@ -91,6 +95,14 @@ namespace remix::denoise {
     VkQueryPool timestamps{};
     uint32_t timestampBits{};
     bool timingPending{}, initialized{}, submittedFrame{};
+    struct FrameResources {
+      std::unique_ptr<Buffer> uniform;
+      VkDescriptorSet inputs{};
+      VkQueryPool timestamps{};
+      bool timingPending{};
+    } frames[gpuFrameCount];
+    uint32_t frameIndex = 0;
+    void swapFrame(FrameResources &frame, uint32_t slot);
     Frame frame{};
     bool sigma{}, local{}, split{};
     float sigmaMilliseconds{}, localMilliseconds{};

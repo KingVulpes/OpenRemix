@@ -1,5 +1,6 @@
 #pragma once
 #include "scene/types.h"
+#include <utility>
 #include <vector>
 
 namespace remix::scene {
@@ -37,7 +38,12 @@ public:
 private:
   uint32_t build(std::vector<uint32_t> &order, uint32_t begin, uint32_t end,
                  uint32_t level);
-  void bounds(uint32_t index);
+  void bounds(uint32_t index, bool geometry = true);
+  // Input identity order and triangle areas survive radiance animation.
+  std::vector<std::pair<uint64_t, uint32_t>> m_sourceKeys;
+  std::vector<uint32_t> m_order, m_parents, m_leaves;
+  std::vector<double> m_powerScale;
+  std::vector<uint8_t> m_dirty;
   std::vector<SphereLight> m_lights;
   std::vector<SphereLight> m_temporalLights;
   std::vector<LightEmitter> m_emitters;

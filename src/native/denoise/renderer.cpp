@@ -176,6 +176,9 @@ namespace remix::denoise {
       if (p.resources)
         vkDestroyDescriptorSetLayout(device, p.resources, nullptr);
     }
+    for (auto &frame : frames)
+      if (frame.pool)
+        vkDestroyDescriptorPool(device, frame.pool, nullptr);
     if (nrdPool)
       vkDestroyDescriptorPool(device, nrdPool, nullptr);
     if (commonLayout)
@@ -188,6 +191,9 @@ namespace remix::denoise {
   }
 #endif
   Renderer::Gpu::~Gpu() {
+    for (auto &frame : frames)
+      if (frame.timestamps)
+        vkDestroyQueryPool(device, frame.timestamps, nullptr);
     if (timestamps)
       vkDestroyQueryPool(device, timestamps, nullptr);
     if (post)
@@ -237,6 +243,8 @@ namespace remix::denoise {
       g.images[i] = g.texture(format, size);
     }
     g.uniform = g.buffer(sizeof(Frame));
+    for (unsigned i = 1; i < gpuFrameCount; ++i)
+      g.frames[i].uniform = g.buffer(sizeof(Frame));
     std::vector<VkDescriptorSetLayoutBinding> bindings;
     for (uint32_t i = 0; i < BaseImageCount + 3; ++i)
       bindings.push_back({i, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr});
@@ -258,8 +266,10 @@ namespace remix::denoise {
     check(vkCreateDescriptorSetLayout(device, &ci, nullptr, &g.inputLayout));
     VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, BaseImageCount + 3 + (sigma ? 3u : 0u) + (local ? 2u : 0u) + (g.split ? 2u : 0u)},
                                     {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}};
+    for (auto &size : sizes)
+      size.descriptorCount *= gpuFrameCount;
     VkDescriptorPoolCreateInfo pc{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-                                  .maxSets = 1,
+                                  .maxSets = gpuFrameCount,
                                   .poolSizeCount = 2,
                                   .pPoolSizes = sizes};
     check(vkCreateDescriptorPool(device, &pc, nullptr, &g.pool));
@@ -268,6 +278,8 @@ namespace remix::denoise {
                                    .descriptorSetCount = 1,
                                    .pSetLayouts = &g.inputLayout};
     check(vkAllocateDescriptorSets(device, &ai, &g.inputs));
+    for (unsigned i = 1; i < gpuFrameCount; ++i)
+      check(vkAllocateDescriptorSets(device, &ai, &g.frames[i].inputs));
     VkDescriptorSetLayout layouts[] = {g.emptyLayout, g.inputLayout};
     VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, 8};
     VkPipelineLayoutCreateInfo li{.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
@@ -312,6 +324,8 @@ namespace remix::denoise {
                                .queryType = VK_QUERY_TYPE_TIMESTAMP,
                                .queryCount = 9};
       check(vkCreateQueryPool(device, &qi, nullptr, &g.timestamps));
+      for (unsigned i = 1; i < gpuFrameCount; ++i)
+        check(vkCreateQueryPool(device, &qi, nullptr, &g.frames[i].timestamps));
     }
     g.stats.peakMemoryBytes = g.stats.memoryBytes;
   }
@@ -319,6 +333,28 @@ namespace remix::denoise {
   upscale::Input Renderer::image(ImageSlot slot) const {
     const auto& image = *m_gpu->images.at(slot);
     return {image.image, image.view};
+  }
+  void Renderer::Gpu::swapFrame(FrameResources &next, uint32_t slot) {
+    using std::swap;
+    swap(uniform, next.uniform);
+    swap(inputs, next.inputs);
+    swap(timestamps, next.timestamps);
+    swap(timingPending, next.timingPending);
+#ifdef REMIX_HAS_NRD
+    for (auto *pass : {indirect.get(), shadow.get(), localDirect.get(), emissiveDirect.get()})
+      if (pass) {
+        swap(pass->nrdPool, pass->frames[slot].pool);
+        swap(pass->constants, pass->frames[slot].constants);
+      }
+#endif
+  }
+  void Renderer::selectFrame(uint32_t slot) {
+    auto &g = *m_gpu;
+    if (slot == g.frameIndex)
+      return;
+    g.swapFrame(g.frames[g.frameIndex], g.frameIndex);
+    g.frameIndex = slot;
+    g.swapFrame(g.frames[slot], slot);
   }
   VkDescriptorSet Renderer::inputs() const { return m_gpu->inputs; }
   void Renderer::begin(VkCommandBuffer command, const Frame &frame, const scene::Matrix &projection,

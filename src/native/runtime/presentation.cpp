@@ -28,6 +28,7 @@
 #include <cstring>
 #include <limits>
 #include <charconv>
+#include <optional>
 
 namespace remix {
   remixapi_ErrorCode RemixNativeRuntime::present(const remixapi_PresentInfo *info) {
@@ -74,8 +75,14 @@ namespace remix {
       if (!m_swapchain) {
         return REMIXAPI_ERROR_CODE_SUCCESS;
       }
+      // Scene snapshots, emission reduction and staged light hierarchies use
+      // no GPU resources. Prepare while submitted frames run; commit lighting,
+      // upload and retire resources only after the reused slot's fence.
+      std::optional<scene::TraceFrame> traceScene;
+      if (m_pathTracer && m_requestedBackend)
+        traceScene = m_pathTracer->prepareScene(m_raster, m_traceOptions);
       // Bounded waits keep unavailable surfaces and a stalled GPU from blocking the caller indefinitely.
-      VkResult result = vkWaitForFences(m_device, 1, &m_frameFence, VK_TRUE, 1000000000);
+      VkResult result = vkWaitForFences(m_device, 1, &m_frames[m_frameIndex].fence, VK_TRUE, 1000000000);
       if (result == VK_TIMEOUT) {
         return REMIXAPI_ERROR_CODE_SUCCESS;
       }
@@ -83,6 +90,9 @@ namespace remix {
         return fail(result);
       }
       if (m_backend != m_requestedBackend) {
+        result = vkDeviceWaitIdle(m_device);
+        if (result != VK_SUCCESS)
+          return fail(result);
         if (m_requestedBackend) {
           try {
             auto tracer = std::make_unique<PathTracer>();
@@ -112,10 +122,15 @@ namespace remix {
           m_backend = 0;
         }
       }
+      m_raster.selectFrame(m_frameIndex);
+      if (m_pathTracer)
+        m_pathTracer->selectFrame(m_frameIndex);
       uint32_t imageIndex = 0;
-      completeScreenshot();
-      result = vkAcquireNextImageKHR(m_device, m_swapchain, 1000000000, m_imageAvailable, VK_NULL_HANDLE,
-                                     &imageIndex);
+      // Preserve next-presentation capture completion. Event polling stays
+      // nonblocking; only a pending screenshot needs the preceding frame.
+      m_screenshot.complete(m_device, true);
+      result = vkAcquireNextImageKHR(m_device, m_swapchain, 1000000000,
+                                     m_frames[m_frameIndex].imageAvailable, VK_NULL_HANDLE, &imageIndex);
       if (result == VK_TIMEOUT || result == VK_NOT_READY) {
         return REMIXAPI_ERROR_CODE_SUCCESS;
       }
@@ -129,11 +144,11 @@ namespace remix {
       }
       m_rebuild |= result == VK_SUBOPTIMAL_KHR;
       m_frameStarted = true;
-      status = recordFrame(imageIndex);
+      status = recordFrame(imageIndex, traceScene ? &*traceScene : nullptr);
       if (status != REMIXAPI_ERROR_CODE_SUCCESS) {
         return fail();
       }
-      result = vkResetFences(m_device, 1, &m_frameFence);
+      result = vkResetFences(m_device, 1, &m_frames[m_frameIndex].fence);
       if (result != VK_SUCCESS) {
         return fail(result);
       }
@@ -141,17 +156,18 @@ namespace remix {
       const VkSubmitInfo submit = {
           .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
           .waitSemaphoreCount = 1,
-          .pWaitSemaphores = &m_imageAvailable,
+          .pWaitSemaphores = &m_frames[m_frameIndex].imageAvailable,
           .pWaitDstStageMask = &waitStage,
           .commandBufferCount = 1,
-          .pCommandBuffers = &m_commandBuffers[imageIndex],
+          .pCommandBuffers = &m_commandBuffers[m_frameIndex],
           .signalSemaphoreCount = 1,
           .pSignalSemaphores = &m_renderFinished[imageIndex],
       };
-      result = vkQueueSubmit(m_queue, 1, &submit, m_frameFence);
+      result = vkQueueSubmit(m_queue, 1, &submit, m_frames[m_frameIndex].fence);
       if (result != VK_SUCCESS) {
         return fail(result);
       }
+      m_screenshot.submitted(m_frames[m_frameIndex].fence);
       if (m_pathTracer)
         m_pathTracer->submitted();
       const VkPresentInfoKHR present = {
@@ -163,6 +179,7 @@ namespace remix {
           .pImageIndices = &imageIndex,
       };
       result = vkQueuePresentKHR(m_queue, &present);
+      m_frameIndex = (m_frameIndex + 1) % m_frameCount;
       if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR)
         ++m_presentationCount;
       if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
@@ -189,19 +206,24 @@ namespace remix {
       return fail();
     }
     const VkSemaphoreCreateInfo semaphore = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-    if (vkCreateSemaphore(m_device, &semaphore, nullptr, &m_imageAvailable) != VK_SUCCESS) {
-      return fail();
-    }
     const VkFenceCreateInfo fence = {
         .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
         .flags = VK_FENCE_CREATE_SIGNALED_BIT,
     };
-    return vkCreateFence(m_device, &fence, nullptr, &m_frameFence) == VK_SUCCESS ? REMIXAPI_ERROR_CODE_SUCCESS
-                                                                                 : fail();
+    for (auto &frame : m_frames) {
+      auto result = vkCreateSemaphore(m_device, &semaphore, nullptr, &frame.imageAvailable);
+      if (result != VK_SUCCESS)
+        return fail(result);
+      result = vkCreateFence(m_device, &fence, nullptr, &frame.fence);
+      if (result != VK_SUCCESS)
+        return fail(result);
+    }
+    return REMIXAPI_ERROR_CODE_SUCCESS;
   }
 
-  remixapi_ErrorCode RemixNativeRuntime::recordFrame(uint32_t imageIndex) {
-    auto buffer = m_commandBuffers[imageIndex];
+  remixapi_ErrorCode RemixNativeRuntime::recordFrame(uint32_t imageIndex,
+                                                     scene::TraceFrame *traceScene) {
+    auto buffer = m_commandBuffers[m_frameIndex];
     VkResult result = vkResetCommandBuffer(buffer, 0);
     if (result != VK_SUCCESS) {
       return fail(result);
@@ -214,12 +236,27 @@ namespace remix {
     if (result != VK_SUCCESS) {
       return fail(result);
     }
+    // GPU-only targets, histories and acceleration structures stay ordered on
+    // the queue. The CPU may record ahead using its completed submission slot.
+    const VkMemoryBarrier previousFrame{
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT};
+    vkCmdPipelineBarrier(buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                         0, 1, &previousFrame, 0, nullptr, 0, nullptr);
     if (m_pathTracer)
       m_pathTracer->beginFrame(m_traceOptions, m_raster);
     m_raster.setSkyTarget(m_pathTracer ? m_pathTracer->skyPass() : VK_NULL_HANDLE);
     m_raster.prepare(buffer, m_backend != 0);
-    if (m_pathTracer)
-      m_pathTracer->prepare(buffer, m_raster, m_traceOptions);
+    if (m_pathTracer) {
+      // A newly enabled tracer did not exist during CPU preparation.
+      std::optional<scene::TraceFrame> prepared;
+      if (!traceScene) {
+        prepared = m_pathTracer->prepareScene(m_raster, m_traceOptions);
+        traceScene = &*prepared;
+      }
+      m_pathTracer->prepare(buffer, m_raster, m_traceOptions, *traceScene);
+    }
     VkClearValue clear[2] = {};
     std::copy(std::begin(m_clearColor), std::end(m_clearColor), clear[0].color.float32);
     clear[1].depthStencil.depth = 1;
@@ -259,6 +296,6 @@ namespace remix {
 
   void RemixNativeRuntime::completeScreenshot() {
     if (m_initialized && !m_failed)
-      m_screenshot.complete(m_device, m_frameFence);
+      m_screenshot.complete(m_device);
   }
 } // namespace remix

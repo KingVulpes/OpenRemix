@@ -250,12 +250,12 @@ namespace remix {
     m_imageViews.resize(count);
     m_framebuffers.resize(count);
     m_renderFinished.resize(count);
-    m_commandBuffers.resize(count);
+    m_commandBuffers.resize(gpuFrameCount);
     const VkCommandBufferAllocateInfo allocate = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
         .commandPool = m_commandPool,
         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        .commandBufferCount = count,
+        .commandBufferCount = gpuFrameCount,
     };
     if (vkAllocateCommandBuffers(m_device, &allocate, m_commandBuffers.data()) != VK_SUCCESS) {
       m_commandBuffers.clear();

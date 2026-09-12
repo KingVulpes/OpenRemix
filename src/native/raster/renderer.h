@@ -1,6 +1,7 @@
 #pragma once
 #include <vulkan/vulkan.h>
 #include "scene/resources.h"
+#include "platform/gpu_frames.h"
 
 namespace remix {
   class RasterRenderer : public NativeResources {
@@ -12,6 +13,7 @@ namespace remix {
     void setSkyTarget(VkRenderPass pass);
     void destroyTarget(); // Caller has completed all submitted work.
     void shutdownGpu();
+    void selectFrame(uint32_t slot); // Caller has completed this slot's submission.
     VkFormat depthFormat() const;
     VkImageView depthView() const;
     void prepare(VkCommandBuffer command,

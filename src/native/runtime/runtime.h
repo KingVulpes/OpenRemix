@@ -26,6 +26,7 @@
 #include "pathtrace/renderer.h"
 #include "platform/window.h"
 #include "runtime/screenshot.h"
+#include "platform/gpu_frames.h"
 #include <remix/remix_c.h>
 #include <vector>
 #include <vulkan/vulkan.h>
@@ -82,7 +83,7 @@ namespace remix {
     remixapi_ErrorCode recreateSwapchain();
     remixapi_ErrorCode createFrameResources();
     remixapi_ErrorCode createAttachments();
-    remixapi_ErrorCode recordFrame(uint32_t imageIndex);
+    remixapi_ErrorCode recordFrame(uint32_t imageIndex, scene::TraceFrame *traceScene);
     remixapi_ErrorCode fail(VkResult result = VK_ERROR_UNKNOWN);
     void destroySwapchain();
     void destroyVulkan();
@@ -137,9 +138,12 @@ namespace remix {
     VkRenderPass m_renderPass = VK_NULL_HANDLE;
     VkCommandPool m_commandPool = VK_NULL_HANDLE;
     std::vector<VkCommandBuffer> m_commandBuffers;
-    VkSemaphore m_imageAvailable = VK_NULL_HANDLE;
+    struct FrameSync {
+      VkSemaphore imageAvailable = VK_NULL_HANDLE;
+      VkFence fence = VK_NULL_HANDLE;
+    } m_frames[gpuFrameCount];
+    uint32_t m_frameIndex = 0, m_frameCount = gpuFrameCount;
     // Presentation may still consume a semaphore after the submission fence signals.
     std::vector<VkSemaphore> m_renderFinished;
-    VkFence m_frameFence = VK_NULL_HANDLE;
   };
 } // namespace remix

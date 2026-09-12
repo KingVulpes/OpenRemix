@@ -54,6 +54,7 @@ namespace remix {
     const bool split = local && options.separateLocalLighting != 0 && denoise::localSupported(physical, sigma, true);
     if (reblur != postReblur || taa != postTaa || sigma != postSigmaRequested ||
         local != postLocalRequested || localDenoise != postLocalDenoiseRequested || split != postSplitRequested) {
+      check(vkDeviceWaitIdle(device));
       destroyPost();
       postReblur = reblur;
       postTaa = taa;
@@ -187,6 +188,10 @@ namespace remix {
       g.beginFrame(options);
     }
     m_gpu->beginSharc(options);
+    if (g.denoiser)
+      g.denoiser->selectFrame(g.frameIndex);
+    if (g.upscaler)
+      g.upscaler->selectFrame(g.frameIndex);
   }
   upscale::Statistics PathTracer::upscalingStatistics() const {
     auto result = m_gpu->upscaler ? m_gpu->upscaler->statistics() : upscale::Statistics{};

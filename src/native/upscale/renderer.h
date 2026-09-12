@@ -3,6 +3,7 @@
 #include <memory>
 #include <string>
 #include <vulkan/vulkan.h>
+#include "platform/gpu_frames.h"
 namespace remix::upscale {
 struct Input {
   VkImage image{};
@@ -25,6 +26,7 @@ public:
   void initialize(VkPhysicalDevice physical, VkDevice device,
                   uint32_t queueFamily, VkExtent2D render, VkExtent2D display);
   void configureComposite(VkRenderPass pass, VkImageView stableDepth);
+  void selectFrame(uint32_t slot);
   void composite(VkCommandBuffer command, bool encodeOutput, bool prism, bool gamma22, bool hardwareSrgb);
   void record(VkCommandBuffer command, Input color, Input depth, Input motion,
               Input transmission, const scene::Matrix &projection,

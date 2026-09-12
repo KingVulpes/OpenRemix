@@ -131,6 +131,13 @@ namespace remix {
     VkDeviceSize reusableBytes = 0;
     void recycle(std::unique_ptr<Buffer> buffer);
     std::unique_ptr<Buffer> skin;
+    struct FrameResources {
+      std::vector<std::unique_ptr<Buffer>> uploads, retiredBuffers;
+      std::vector<std::unique_ptr<Image>> retiredImages;
+      std::vector<std::unique_ptr<MaterialGpu>> retiredMaterials;
+      std::unique_ptr<Buffer> skin;
+    } frames[gpuFrameCount];
+    uint32_t frameIndex = 0;
     std::vector<Command> commands;
     std::chrono::steady_clock::time_point epoch = std::chrono::steady_clock::now();
 

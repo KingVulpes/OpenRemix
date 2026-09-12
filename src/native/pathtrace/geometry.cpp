@@ -85,6 +85,8 @@ namespace remix {
       g.fingerprint = scene::hashBytes(content.data(), content.size());
       ++g.revision;
       g.diagonal = std::hypot(high[0] - low[0], high[1] - low[1], high[2] - low[2]);
+      if (g.input)
+        retiredBuffers.push_back(std::move(g.input));
       g.input =
           upload(command, content.data(), content.size(), inputUsage | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
       g.geometries.clear();
@@ -117,6 +119,8 @@ namespace remix {
       if (!deform)
         geometryCache[content] = view.geometry;
     }
+    for (auto &vertices : view.vertices)
+      retiredBuffers.push_back(std::move(vertices));
     view.vertices.clear();
     view.fingerprint = view.geometry->fingerprint;
     for (const auto &vertices : shading) {
@@ -125,6 +129,8 @@ namespace remix {
       view.vertices.push_back(upload(command, vertices.data(), vertices.size() * sizeof(TraceVertex),
                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT));
     }
+    if (previousGeometry)
+      retiredGeometry.push_back(std::move(previousGeometry));
     return view;
   }
 

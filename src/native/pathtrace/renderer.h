@@ -2,6 +2,7 @@
 #include <vulkan/vulkan.h>
 #include "raster/renderer.h"
 #include "denoise/renderer.h"
+#include "scene/trace_frame.h"
 #include <remix/remix_native_ext.h>
 
 namespace remix {
@@ -50,6 +51,7 @@ namespace remix {
     VkRenderPass skyPass() const;
     upscale::Statistics upscalingStatistics() const;
     void beginFrame(const TraceOptions &options, const RasterRenderer& resources);
+    void selectFrame(uint32_t slot);
     void submitted();
     remixapi_ShadowStatisticsEXT shadowStatistics() const;
     remixapi_LocalLightStatisticsEXT localLightStatistics() const;
@@ -57,7 +59,9 @@ namespace remix {
     remixapi_DenoisingStatisticsEXT denoisingStatistics() const;
     remixapi_SharcStatisticsEXT sharcStatistics() const;
     void destroyTarget();
-    void prepare(VkCommandBuffer command, RasterRenderer &resources, const TraceOptions &options);
+    scene::TraceFrame prepareScene(const RasterRenderer &resources, const TraceOptions &options) const;
+    void prepare(VkCommandBuffer command, RasterRenderer &resources, const TraceOptions &options,
+                 scene::TraceFrame &scene);
     void record(VkCommandBuffer command);
     remixapi_TracingStatisticsEXT statistics() const;
 

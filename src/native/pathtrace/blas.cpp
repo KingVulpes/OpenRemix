@@ -7,6 +7,8 @@ namespace remix {
   void PathTracer::Gpu::complete(VkCommandBuffer command) {
     completeLightGuiding();
     uploads.clear();
+    retiredGeometry.clear();
+    retiredBuffers.clear();
     retired.clear();
     if (timingPending) {
       uint64_t times[4] = {};

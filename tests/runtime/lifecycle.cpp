@@ -230,7 +230,8 @@ int main(int argc, char **argv) {
     ok(api.GetFeatureAvailability(&features));
     require(!features.availableFeatures, "Shutdown retained device feature availability");
   } else {
-    for (int cycle = 0; cycle < 3; ++cycle) {
+    const bool frameChanges = std::getenv("REMIX_TEST_FRAME_CHANGES") != nullptr;
+    for (int cycle = 0; cycle < (frameChanges ? 1 : 3); ++cycle) {
       ok(api.Startup(&startup));
       selectBackend();
       require(api.Startup(&startup) == REMIXAPI_ERROR_CODE_ALREADY_EXISTS, "Duplicate startup");
@@ -263,6 +264,41 @@ int main(int argc, char **argv) {
       auto window = windows[0];
       SDL_free(windows);
       for (int frame = 0; frame < 90; ++frame) {
+        if (frameChanges) {
+          if (frame % 10 == 0)
+            std::fprintf(stderr, "Rendering resource replacement: frame %d\n", frame);
+          // Resource replacement must also work while the other submission
+          // slot still owns descriptors, uploads and readbacks.
+          auto config = [&](const char *key, const char *value) {
+            ok(api.SetConfigVariable((std::string("rtx.native.pathtrace.") + key).c_str(), value));
+          };
+          if (frame == 2)
+            config("upscaler", "fsr31");
+          if (frame == 6)
+            config("denoiser", "off");
+          if (frame == 12)
+            config("denoiser", "reblur-sh");
+          if (frame == 16)
+            config("sharcCapacityLog2", "16");
+          if (frame == 24)
+            config("sharcCapacityLog2", "18");
+          if (frame == 28)
+            config("upscaler", "off");
+          if (frame == 34)
+            ok(api.SetConfigVariable("rtx.native.backend", "raster"));
+          if (frame == 38)
+            ok(api.SetConfigVariable("rtx.native.backend", "pathtrace"));
+          if (frame == 48)
+            config("sigma", "0");
+          if (frame == 58)
+            config("sigma", "1");
+          if (frame == 64)
+            config("separateLocalLighting", "1");
+          if (frame == 72)
+            config("separateLocalLighting", "0");
+          if (frame == 80)
+            config("upscaler", "fsr31");
+        }
         if (frame == 10) {
           require(SDL_SetWindowSize(window, 800, 600), "Resize");
         }

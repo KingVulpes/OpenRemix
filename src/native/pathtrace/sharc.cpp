@@ -37,6 +37,13 @@ namespace remix {
     }
     if (temporalOnly)
       return;
+    for (auto &frame : frames) {
+      frame.sharcReadback.reset();
+      if (frame.sharcTimestamps)
+        vkDestroyQueryPool(device, frame.sharcTimestamps, nullptr);
+      frame.sharcTimestamps = VK_NULL_HANDLE;
+      frame.sharcPending = false;
+    }
     for (auto *pipeline : {&sharc.update, &sharc.resolve, &sharc.query, &sharc.transparency}) {
       forgetLightingPipeline(*pipeline);
       if (*pipeline)
@@ -64,7 +71,7 @@ namespace remix {
     s.debugView = options.sharcDebug;
     sharc.warmTarget = 2 * options.sharcAccumulationFrames;
     if (sharc.pending) {
-      // beginFrame runs only after the previous submission fence. Host memory
+      // beginFrame runs only after this slot's submission fence. Host memory
       // need not be coherent, so invalidate it after the GPU-to-host dependency.
       void *mapped{};
       check(vkMapMemory(device, sharc.readback->memory, 0, VK_WHOLE_SIZE, 0, &mapped));
@@ -121,6 +128,7 @@ namespace remix {
     try {
       const uint32_t capacity = 1u << options.sharcCapacityLog2;
       if (s.capacity != capacity) {
+        check(vkDeviceWaitIdle(device));
         destroySharc();
         constexpr auto usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
         sharc.hash = buffer(uint64_t(capacity) * 8, usage);
@@ -163,10 +171,12 @@ namespace remix {
     } catch (VkResult r) {
       if (r == VK_ERROR_DEVICE_LOST)
         throw;
+      check(vkDeviceWaitIdle(device));
       destroySharc();
       const auto reason = "SHARC initialization failed (Vulkan " + std::to_string(r) + "); uncached tracing is active";
       std::strncpy(s.unavailableReason, reason.c_str(), sizeof(s.unavailableReason) - 1);
     } catch (const std::exception &e) {
+      check(vkDeviceWaitIdle(device));
       destroySharc();
       const auto reason = std::string("SHARC initialization failed: ") + e.what();
       std::strncpy(s.unavailableReason, reason.c_str(), sizeof(s.unavailableReason) - 1);

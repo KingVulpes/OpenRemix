@@ -4,6 +4,7 @@
 #include <remix/remix_native_ext.h>
 #include <vulkan/vulkan.h>
 #include <memory>
+#include "platform/gpu_frames.h"
 
 namespace remix::denoise {
   enum ImageSlot : uint32_t {
@@ -66,6 +67,7 @@ namespace remix::denoise {
                     uint32_t queueFamily, bool sigma = false, bool local = false, bool localDenoise = false, bool split = false);
     VkDescriptorSetLayout inputLayout() const;
     VkDescriptorSet inputs() const;
+    void selectFrame(uint32_t slot);
     upscale::Input image(ImageSlot slot) const;
     void begin(VkCommandBuffer command, const Frame &frame, const scene::Matrix &projection,
                const scene::Matrix &previousProjection, VkImageView world, VkImageView sky);

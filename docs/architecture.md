@@ -56,11 +56,36 @@ invocation stays outside the API lock where the existing re-entry contract requi
 it. Device loss, process-exit cleanup, and resource teardown order remain centralized
 in the runtime lifecycle.
 
-GPU allocations and compaction copies retain their existing fence lifetimes. When
-changing tracing code, preserve the order of completed-frame retirement, BLAS work,
-TLAS work, ray queries, composition, and raster overlays. Capacity and active instance
-count are distinct. Reorganized files do not introduce new ownership boundaries or
-synchronization points.
+Presentation uses two submission slots, each with its own fence, acquire semaphore
+and command buffer. CPU-written buffers, mutable descriptor sets, query pools,
+readbacks, and retired resources follow the slot's fence. Removed meshes, materials
+and textures remain alive until pending submissions finish using them. Present
+semaphores remain associated with swapchain images. `REMIX_FRAMES_IN_FLIGHT=1`
+selects one active slot for diagnostic comparisons; the default is two.
+Presented screenshots retain their capture fence and complete by the following
+presentation when that fence becomes available within the bounded wait. Input
+event polling checks capture readiness without waiting.
+
+GPU-only targets, temporal images and acceleration structures stay shared. An
+execution and memory barrier orders successive submissions on the same queue, so
+the CPU can prepare the next frame while the GPU renders the current one. Preserve
+the order of completed-slot retirement, BLAS work, TLAS work, ray queries,
+composition, and raster overlays. Shared target, backend and post-processing
+replacement drains pending GPU work. NRD descriptors and constants follow the
+submission slot; FSR uses its SDK's internal frame resource ring.
+
+Tracing prepares CPU scene snapshots before waiting for the reused submission
+slot's fence. `scene/trace_frame` groups and validates instances, samples one animation
+time for the frame, reduces emissive textures, and constructs area emitters. Its
+snapshots own the referenced CPU resources and contain no GPU handles. Texture
+channel conversion and quadrature weights are shared immutable lookup tables;
+material reduction caches still follow texture snapshot lifetimes. Emission filtering
+and light hierarchy updates operate on staged copies before the fence. The hierarchy
+caches identity ordering and emitter area, then refits only branches affected by
+radiance animation. Each slot uploads a light family when its saved generation
+differs from the staged hierarchy. GPU uploads, resource retirement, and committing
+staged lighting remain after the fence. A skipped presentation discards its prepared
+snapshot; enabling tracing prepares the first snapshot after backend initialization.
 
 ## Builds and generated files
 

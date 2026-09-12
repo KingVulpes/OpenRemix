@@ -50,6 +50,9 @@ namespace remix {
     m_failed = false;
     m_deviceLost = false;
     m_presentationCount = 0;
+    m_frameIndex = 0;
+    const char *frames = std::getenv("REMIX_FRAMES_IN_FLIGHT");
+    m_frameCount = frames && std::strcmp(frames, "1") == 0 ? 1u : gpuFrameCount;
     m_srgb = !info.disableSrgbConversionForOutput;
     try {
       auto status = m_window.initialize(info);
@@ -141,11 +144,12 @@ namespace remix {
     m_pathTracer.reset();
     m_raster.shutdownGpu();
     if (m_device) {
-      if (m_frameFence) {
-        vkDestroyFence(m_device, m_frameFence, nullptr);
-      }
-      if (m_imageAvailable) {
-        vkDestroySemaphore(m_device, m_imageAvailable, nullptr);
+      for (auto &frame : m_frames) {
+        if (frame.fence)
+          vkDestroyFence(m_device, frame.fence, nullptr);
+        if (frame.imageAvailable)
+          vkDestroySemaphore(m_device, frame.imageAvailable, nullptr);
+        frame = {};
       }
       if (m_commandPool) {
         vkDestroyCommandPool(m_device, m_commandPool, nullptr);
@@ -158,8 +162,6 @@ namespace remix {
     if (m_instance) {
       vkDestroyInstance(m_instance, nullptr);
     }
-    m_frameFence = VK_NULL_HANDLE;
-    m_imageAvailable = VK_NULL_HANDLE;
     m_commandPool = VK_NULL_HANDLE;
     m_device = VK_NULL_HANDLE;
     m_queue = VK_NULL_HANDLE;

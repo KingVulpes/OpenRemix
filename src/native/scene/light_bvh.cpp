@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cmath>
 #include <limits>
+#include <numeric>
 
 namespace remix::scene {
 namespace {
@@ -20,8 +21,25 @@ double powerScale(const SphereLight &light) {
 }
 bool LightBvh::update(std::vector<SphereLight> lights) {
   const auto start = std::chrono::steady_clock::now();
-  std::sort(lights.begin(), lights.end(),
-            [](const auto &a, const auto &b) { return a.triangle != b.triangle ? a.triangle < b.triangle : a.id < b.id; });
+  bool orderChanged = lights.size() != m_sourceKeys.size();
+  for (size_t i = 0; !orderChanged && i < lights.size(); ++i)
+    orderChanged = m_sourceKeys[i] != std::pair{lights[i].id, lights[i].triangle};
+  if (orderChanged) {
+    m_sourceKeys.clear();
+    for (const auto &light : lights)
+      m_sourceKeys.emplace_back(light.id, light.triangle);
+    m_order.resize(lights.size());
+    std::iota(m_order.begin(), m_order.end(), 0u);
+    std::sort(m_order.begin(), m_order.end(), [&](uint32_t a, uint32_t b) {
+      return lights[a].triangle != lights[b].triangle ? lights[a].triangle < lights[b].triangle
+                                                      : lights[a].id < lights[b].id;
+    });
+  }
+  std::vector<SphereLight> ordered;
+  ordered.reserve(lights.size());
+  for (auto i : m_order)
+    ordered.push_back(lights[i]);
+  lights = std::move(ordered);
   if (lights == m_lights) {
     updateMilliseconds = std::chrono::duration<double, std::milli>(
                              std::chrono::steady_clock::now() - start)
@@ -41,6 +59,11 @@ bool LightBvh::update(std::vector<SphereLight> lights) {
   }
   if (geometryChanged)
     ++visibilityGeneration;
+  if (geometryChanged) {
+    m_powerScale.resize(lights.size());
+    for (size_t i = 0; i < lights.size(); ++i)
+      m_powerScale[i] = powerScale(lights[i]);
+  }
   // Tiny animated-emission fluctuations still update the GPU light data, but
   // must not keep every local-light filter/cache permanently in fast response.
   // Compare against the last significant snapshot, not the preceding frame,
@@ -55,7 +78,7 @@ bool LightBvh::update(std::vector<SphereLight> lights) {
       oldEnergy += b.radiance[c]; newEnergy += a.radiance[c];
     }
     significant |= (oldEnergy == 0) != (newEnergy == 0);
-    const double scale = powerScale(a);
+    const double scale = m_powerScale[i];
     totalDifference += difference * scale;
     totalOldEnergy += oldEnergy * scale;
     totalNewEnergy += newEnergy * scale;
@@ -68,22 +91,28 @@ bool LightBvh::update(std::vector<SphereLight> lights) {
     ++lightingGeneration;
     m_temporalLights = lights;
   }
-  m_lights = std::move(lights);
-  m_emitters.resize(m_lights.size());
+  m_emitters.resize(lights.size());
+  m_dirty.assign(m_nodes.size(), geometryChanged);
   active = 0;
-  for (size_t i = 0; i < m_lights.size(); ++i) {
-    const auto &light = m_lights[i];
+  for (size_t i = 0; i < lights.size(); ++i) {
+    const auto &light = lights[i];
+    active += light.radiance[0] > 0 || light.radiance[1] > 0 || light.radiance[2] > 0;
+    if (!geometryChanged && light == m_lights[i])
+      continue;
+    if (!rebuild)
+      m_dirty[m_leaves[i]] = 1;
     auto &emitter = m_emitters[i];
     std::copy_n(light.position, 3, emitter.positionRadius);
     emitter.positionRadius[3] = light.radius;
     std::copy_n(light.radiance, 3, emitter.radiance);
     emitter.radiance[3] = float(light.triangle);
     for (unsigned v = 0; v < 3; ++v) std::copy_n(light.corners[v], 3, emitter.corners[v]);
-    active +=
-        light.radiance[0] > 0 || light.radiance[1] > 0 || light.radiance[2] > 0;
   }
+  m_lights = std::move(lights);
   if (rebuild) {
     m_nodes.clear();
+    m_parents.clear();
+    m_leaves.resize(m_lights.size());
     depth = 0;
     if (!m_lights.empty()) {
       m_nodes.reserve(2 * m_lights.size() - 1);
@@ -95,7 +124,11 @@ bool LightBvh::update(std::vector<SphereLight> lights) {
     ++builds;
   } else {
     for (size_t i = m_nodes.size(); i-- > 0;)
-      bounds(uint32_t(i));
+      if (m_dirty[i]) {
+        bounds(uint32_t(i), geometryChanged);
+        if (i)
+          m_dirty[m_parents[i]] = 1;
+      }
     ++refits;
   }
   ++generation;
@@ -109,10 +142,12 @@ uint32_t LightBvh::build(std::vector<uint32_t> &order, uint32_t begin,
                          uint32_t end, uint32_t level) {
   const uint32_t index = uint32_t(m_nodes.size());
   m_nodes.emplace_back();
+  m_parents.push_back(0);
   depth = std::max(depth, level);
   m_nodes[index].links[3] = end - begin;
   if (end - begin == 1) {
     m_nodes[index].links[2] = order[begin];
+    m_leaves[order[begin]] = index;
   } else {
     float minimum[3], maximum[3];
     std::fill_n(minimum, 3, std::numeric_limits<float>::max());
@@ -138,23 +173,27 @@ uint32_t LightBvh::build(std::vector<uint32_t> &order, uint32_t begin,
     const auto right = build(order, middle, end, level + 1);
     m_nodes[index].links[0] = left;
     m_nodes[index].links[1] = right;
+    m_parents[left] = m_parents[right] = index;
   }
   bounds(index);
   return index;
 }
 
-void LightBvh::bounds(uint32_t index) {
+void LightBvh::bounds(uint32_t index, bool geometry) {
   auto &node = m_nodes[index];
   if (node.links[3] == 1) {
     const auto &light = m_lights[node.links[2]];
-    for (unsigned c = 0; c < 3; ++c) {
-      node.minimumPower[c] = light.position[c] - light.radius;
-      node.maximum[c] = light.position[c] + light.radius;
+    if (geometry) {
+      for (unsigned c = 0; c < 3; ++c) {
+        node.minimumPower[c] = light.position[c] - light.radius;
+        node.maximum[c] = light.position[c] + light.radius;
+      }
+      node.maximum[3] = light.radius * light.radius;
     }
-    node.maximum[3] = light.radius * light.radius;
     // Common 4*pi*pi cancels in every selection probability.
-    node.minimumPower[3] = float(powerScale(light) *
-        (.2126 * light.radiance[0] + .7152 * light.radiance[1] + .0722 * light.radiance[2]));
+    node.minimumPower[3] =
+        float(m_powerScale[node.links[2]] *
+              (.2126 * light.radiance[0] + .7152 * light.radiance[1] + .0722 * light.radiance[2]));
   } else {
     const auto &a = m_nodes[node.links[0]], &b = m_nodes[node.links[1]];
     if (a.minimumPower[3] == 0 || b.minimumPower[3] == 0) {

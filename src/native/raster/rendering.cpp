@@ -11,11 +11,24 @@ namespace remix {
       g.recycle(std::move(buffer));
     g.uploads.clear();
     g.recycle(std::move(g.skin));
-    prune(g.materials, [](const auto &entry) { return entry.second->owner.expired(); });
-    prune(g.textures, [](const auto &entry) { return entry.second.owner.expired(); });
+    auto &retired = g.frames[g.frameIndex];
+    for (auto it = g.materials.begin(); it != g.materials.end();) {
+      if (it->second->owner.expired()) {
+        retired.retiredMaterials.push_back(std::move(it->second));
+        it = g.materials.erase(it);
+      } else
+        ++it;
+    }
+    for (auto it = g.textures.begin(); it != g.textures.end();) {
+      if (it->second.owner.expired()) {
+        retired.retiredImages.push_back(std::move(it->second.data));
+        it = g.textures.erase(it);
+      } else
+        ++it;
+    }
     for (auto it = g.meshes.begin(); it != g.meshes.end();) {
       if (it->second.owner.expired()) {
-        g.recycle(std::move(it->second.data));
+        retired.retiredBuffers.push_back(std::move(it->second.data));
         it = g.meshes.erase(it);
       } else
         ++it;

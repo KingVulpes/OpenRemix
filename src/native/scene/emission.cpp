@@ -3,6 +3,28 @@
 #include <cmath>
 
 namespace remix::scene {
+namespace {
+// Texture channels have only 256 possible inputs. Animated texture snapshots
+// invalidate the reduction cache, but not this conversion or the quadrature.
+const auto linearChannels = [] {
+  std::array<std::array<float, 256>, 2> values{};
+  for (unsigned i = 0; i < 256; ++i) {
+    const float value = i / 255.f;
+    values[0][i] = value;
+    values[1][i] = value <= .04045f ? value / 12.92f : std::pow((value + .055f) / 1.055f, 2.4f);
+  }
+  return values;
+}();
+const auto emissionSamples = [] {
+  std::array<std::array<float, 3>, 256> weights{};
+  for (unsigned y = 0; y < 16; ++y)
+    for (unsigned x = 0; x < 16; ++x) {
+      const float a = std::sqrt((x + .5f) / 16), b = (y + .5f) / 16;
+      weights[y * 16 + x] = {1 - a, a * (1 - b), a * b};
+    }
+  return weights;
+}();
+} // namespace
 uint64_t emissionHistoryKey(const Draw &draw, uint32_t triangle) {
   const auto &m = *draw.material;
   std::array<uint8_t, 64> bytes{};
@@ -72,16 +94,14 @@ std::array<float, 3> triangleEmission(const Draw &draw, uint32_t triangle, const
   };
   // 16x16 stratified area samples, only on cache misses. Black texels count in
   // the average so small masks keep their coverage and do not gain energy.
-  for (unsigned y = 0; y < 16; ++y) for (unsigned x = 0; x < 16; ++x) {
-    float a = std::sqrt((x + .5f) / 16), b = (y + .5f) / 16;
-    float w[3] = {1-a, a*(1-b), a*b};
+  const auto &channels = linearChannels[p.srgb];
+  for (const auto &w : emissionSamples) {
     float u = 0, v = 0;
     for (unsigned i = 0; i < 3; ++i) { u += uv[i][0]*w[i]; v += uv[i][1]*w[i]; }
     if ((m.wrapU == 4 && (u < 0 || u > 1)) || (m.wrapV == 4 && (v < 0 || v > 1))) continue;
     const auto index = 4 * (size_t(coord(v, p.height, m.wrapV)) * p.width + coord(u, p.width, m.wrapU));
     for (unsigned c = 0; c < 3; ++c) {
-      float value = p.mips[0][index+c] / 255.f;
-      if (p.srgb) value = value <= .04045f ? value/12.92f : std::pow((value+.055f)/1.055f,2.4f);
+      const float value = channels[p.mips[0][index + c]];
       result[c] += value * m.emission[c] / 256;
     }
   }

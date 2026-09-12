@@ -5,9 +5,88 @@ namespace remix {
   using namespace scene;
   using namespace trace::detail;
 
+  void PathTracer::Gpu::swapFrame(FrameResources &frame) {
+    using std::swap;
+    swap(set, frame.set);
+    swap(timestamps, frame.timestamps);
+    swap(compaction, frame.compaction);
+    swap(timingPending, frame.timingPending);
+    swap(table, frame.table);
+    swap(uniform, frame.uniform);
+    swap(scratch, frame.scratch);
+    swap(topScratch, frame.topScratch);
+    swap(lightNodes, frame.lightNodes);
+    swap(lightEmitters, frame.lightEmitters);
+    swap(torchNodes, frame.torchNodes);
+    swap(torchEmitters, frame.torchEmitters);
+    swap(emissiveNodes, frame.emissiveNodes);
+    swap(emissiveEmitters, frame.emissiveEmitters);
+    swap(uploads, frame.uploads);
+    swap(retired, frame.retired);
+    swap(compactPending, frame.compactPending);
+    swap(retiredGeometry, frame.retiredGeometry);
+    swap(retiredBuffers, frame.retiredBuffers);
+    swap(sharc.timestamps, frame.sharcTimestamps);
+    swap(sharc.readback, frame.sharcReadback);
+    swap(sharc.pending, frame.sharcPending);
+    swap(lightGuiding.readback, frame.guidingReadback);
+    swap(lightGuiding.pending, frame.guidingPending);
+    swap(lightBufferGeneration, frame.lightGeneration);
+    swap(torchBufferGeneration, frame.torchGeneration);
+    swap(emissiveBufferGeneration, frame.emissiveGeneration);
+    swap(retiredPreviousVertices, frame.retiredVertices);
+    for (unsigned i = 0; i < 2; ++i)
+      swap(tlas[i].instances, frame.instances[i]);
+  }
+
+  void PathTracer::Gpu::selectFrame(uint32_t slot) {
+    if (slot != frameIndex) {
+      swapFrame(frames[frameIndex]);
+      frameIndex = slot;
+      swapFrame(frames[frameIndex]);
+    }
+    if (!set) {
+      const VkDescriptorSetAllocateInfo allocate{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                                                 .descriptorPool = pool,
+                                                 .descriptorSetCount = 1,
+                                                 .pSetLayouts = &setLayout};
+      check(vkAllocateDescriptorSets(device, &allocate, &set));
+    }
+    if (!timestamps && timestampBits && properties.limits.timestampComputeAndGraphics) {
+      const VkQueryPoolCreateInfo query{.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+                                        .queryType = VK_QUERY_TYPE_TIMESTAMP,
+                                        .queryCount = 4};
+      check(vkCreateQueryPool(device, &query, nullptr, &timestamps));
+    }
+    if (sharc.hash && !sharc.readback) {
+      sharc.readback = buffer(16, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true);
+      if (timestampBits) {
+        const VkQueryPoolCreateInfo query{.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+                                          .queryType = VK_QUERY_TYPE_TIMESTAMP,
+                                          .queryCount = 4};
+        check(vkCreateQueryPool(device, &query, nullptr, &sharc.timestamps));
+      }
+    }
+    if (lightGuiding.history[0] && !lightGuiding.readback)
+      lightGuiding.readback = buffer(16, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true);
+  }
+
+  void PathTracer::selectFrame(uint32_t slot) { m_gpu->selectFrame(slot); }
+
   PathTracer::Gpu::~Gpu() {
     destroyTarget();
     destroySharc();
+    for (auto &frame : frames) {
+      if (frame.timestamps)
+        vkDestroyQueryPool(device, frame.timestamps, nullptr);
+      if (frame.compaction)
+        vkDestroyQueryPool(device, frame.compaction, nullptr);
+      if (frame.sharcTimestamps)
+        vkDestroyQueryPool(device, frame.sharcTimestamps, nullptr);
+      frame = {};
+    }
+    retiredGeometry.clear();
+    retiredBuffers.clear();
     meshes.clear();
     compactPending.clear();
     retired.clear();
@@ -169,8 +248,10 @@ namespace remix {
                                         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
                                         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 9},
                                         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, textureLimit}};
+    for (auto &size : poolSizes)
+      size.descriptorCount *= gpuFrameCount;
     VkDescriptorPoolCreateInfo pool = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-                                       .maxSets = 1,
+                                       .maxSets = gpuFrameCount,
                                        .poolSizeCount = 5,
                                        .pPoolSizes = poolSizes};
     check(vkCreateDescriptorPool(device, &pool, nullptr, &g.pool));
@@ -244,6 +325,7 @@ namespace remix {
     g.createTarget();
   }
   void PathTracer::Gpu::createTarget() {
+    check(vkDeviceWaitIdle(device));
     destroyTarget();
     fsrFailure.clear();
     extent = fsrRequested ? upscale::renderSize(displayExtent, fsrQuality) : displayExtent;

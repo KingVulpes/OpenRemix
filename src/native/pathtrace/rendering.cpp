@@ -8,7 +8,7 @@ namespace remix {
   using namespace trace::detail;
 
   void PathTracer::Gpu::prepare(VkCommandBuffer command, RasterRenderer &resources,
-                                const TraceOptions &options) {
+                                const TraceOptions &options, scene::TraceFrame &prepared) {
     debugView = options.debugView;
     const bool falseColor = debugView != 0 && debugView != 6 && debugView != 7;
     prism = options.prism && !falseColor;
@@ -27,52 +27,10 @@ namespace remix {
         uint64_t(options.sharcDebug) << 21;
     history.begin(resources.temporalEpoch(), integrator, extent.width, extent.height);
     pendingVertices.clear();
-    // Group whole mesh submissions, then sort persistent identities so caller order is immaterial.
-    std::vector<std::vector<Draw>> instances;
-    std::unordered_set<uint64_t> persistentIds;
-    for (const auto &draw : resources.draws()) {
-      if (draw.instanceId)
-        persistentIds.insert(draw.instanceId);
-    }
-    uint64_t legacy = UINT64_MAX, legacyId = 0;
-    for (const auto &draw : resources.draws()) {
-      if (!draw.traced())
-        continue;
-      if (!draw.surfaceIndex)
-        instances.emplace_back();
-      if (instances.empty())
-        throw REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
-      auto copy = draw;
-      if (!draw.instanceId) {
-        if (!draw.surfaceIndex) {
-          while (persistentIds.count(legacy))
-            --legacy;
-          legacyId = legacy--;
-        }
-        copy.instanceId = legacyId;
-      }
-      instances.back().push_back(std::move(copy));
-    }
-    std::sort(instances.begin(), instances.end(), [](const auto &a, const auto &b) {
-      return std::tie(a[0].classification, a[0].instanceId, a[0].instanceIndex) <
-             std::tie(b[0].classification, b[0].instanceId, b[0].instanceIndex);
-    });
-    for (size_t i = 1; i < instances.size(); ++i) {
-      const auto &a = instances[i - 1][0], &b = instances[i][0];
-      if (a.instanceId == b.instanceId && a.instanceIndex == b.instanceIndex)
-        throw REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
-    }
     std::vector<trace::InstanceInput> inputs[2];
     std::vector<TraceSurface> surfaces;
-    std::vector<std::array<float, 4>> emissions(1); // zero is non-emissive
-    auto lights = resources.sphereLights();
-    if (!options.torchLights)
-      lights.clear();
-    const size_t sphereCount = lights.size();
+    const auto &emissions = prepared.emissions;
     const auto emissionMode = options.freezeEmissiveRadiance ? 2u : options.stabilizeEmissiveLighting ? 1u : 0u;
-    emissionHistory.begin(resources.temporalEpoch().world,
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - epoch).count(),
-        options.emissiveLights && options.localLights ? emissionMode : 0u);
     primaryDraws.clear();
     std::vector<VkDescriptorImageInfo> textures;
     std::unordered_map<const Material *, uint32_t> textureIndices;
@@ -96,23 +54,15 @@ namespace remix {
         const auto &camera = resources.camera(REMIXAPI_CAMERA_TYPE_SKY);
         append(camera.data(), sizeof(camera));
         if (draw.material->fps) {
-          auto animationFrame =
-              uint64_t(std::chrono::duration<double>(pendingTime - epoch).count() * draw.material->fps);
+          auto animationFrame = uint64_t(prepared.seconds * draw.material->fps);
           append(&animationFrame, sizeof(animationFrame));
         }
       }
-    for (const auto &instance : instances) {
-      const auto &draw = instance[0];
+    for (const auto &instance : prepared.instances) {
+      const auto &draw = instance[0].draw;
       auto &view = mesh(command, draw);
       const auto &geometry = *view.geometry;
       auto model = draw.model;
-      // Singular transforms cannot produce valid Vulkan instances; exclude them rather than refit
-      // active/inactive states.
-      const float det = model[0] * (model[5] * model[10] - model[9] * model[6]) -
-                        model[4] * (model[1] * model[10] - model[9] * model[2]) +
-                        model[8] * (model[1] * model[6] - model[5] * model[2]);
-      if (std::abs(det) < 1e-12f)
-        continue;
       if (draw.classification == 1) {
         auto appendDynamic = [&](const void *data, size_t size) {
           const auto *bytes = static_cast<const uint8_t *>(data);
@@ -142,7 +92,8 @@ namespace remix {
       append(&draw.instanceId, sizeof(draw.instanceId));
       append(&draw.instanceIndex, sizeof(draw.instanceIndex));
       append(&draw.classification, sizeof(draw.classification));
-      for (const auto &surface : instance) {
+      for (const auto &preparedSurface : instance) {
+        const auto &surface = preparedSurface.draw;
         const auto &material = *surface.material;
         auto [entry, inserted] = textureIndices.emplace(surface.material.get(), uint32_t(textures.size()));
         if (inserted) {
@@ -171,7 +122,7 @@ namespace remix {
         value.debugIdentity = hashBytes(debugKey, sizeof(debugKey));
         value.indices = geometry.input->address + geometry.indexOffsets.at(surface.surfaceIndex);
         auto temporalDraw = surface;
-        if (!persistentIds.count(surface.instanceId))
+        if (!prepared.persistentIds.count(surface.instanceId))
           temporalDraw.instanceId = 0;
         const scene::TemporalHistory::Key temporalKey{temporalDraw.instanceId, temporalDraw.instanceIndex,
                                                       temporalDraw.surfaceIndex};
@@ -189,27 +140,8 @@ namespace remix {
         if (temporalDraw.instanceId)
           pendingVertices[temporalKey] = view.vertices.at(surface.surfaceIndex);
         std::copy_n(material.tint, 4, value.tint);
-        const double seconds =
-            std::chrono::duration<double>(std::chrono::steady_clock::now() - epoch).count();
-        const uint32_t frame =
-            uint32_t(std::fmod(seconds * material.fps, uint32_t(material.rows) * material.columns));
-        history.stage(temporalDraw, frame);
-        value.uv[0] = 1.f / material.columns;
-        value.uv[1] = 1.f / material.rows;
-        value.uv[2] = float(frame % material.columns) / material.columns;
-        value.uv[3] = float(frame / material.columns) / material.rows;
-        if (material.emission[0] > 0 || material.emission[1] > 0 || material.emission[2] > 0) {
-          for (uint32_t triangle = 0; triangle < surface.surface->indices.size() / 3; ++triangle) {
-            auto emission = scene::triangleEmission(surface, triangle, value.uv);
-            emissions.push_back({emission[0], emission[1], emission[2], 0});
-            if (emission[0] > 0 || emission[1] > 0 || emission[2] > 0) {
-              auto emitter = scene::triangleEmitter(surface, triangle, emission);
-              if (material.emissionTexture && emissionMode && options.emissiveLights && options.localLights)
-                emissionHistory.apply(emitter, scene::emissionHistoryKey(surface, triangle));
-              if (options.emissiveLights && emitter.radius > 1e-8f) lights.push_back(emitter);
-            }
-          }
-        }
+        history.stage(temporalDraw, preparedSurface.animationFrame);
+        std::copy(preparedSurface.uv.begin(), preparedSurface.uv.end(), value.uv);
         const auto &b = surface.blend;
         value.factor[0] = linear(float((b.factor >> 16) & 255) / 255);
         value.factor[1] = linear(float((b.factor >> 8) & 255) / 255);
@@ -237,9 +169,12 @@ namespace remix {
     // Retire absent deformation instances after their last-use fence. Rigid
     // geometry remains cached for the lifetime of its shared CPU mesh.
     for (auto it = meshes.begin(); it != meshes.end();) {
-      if (it->second.owner.expired() || (std::get<1>(it->first) && it->second.lastUse != sequence))
+      if (it->second.owner.expired() || (std::get<1>(it->first) && it->second.lastUse != sequence)) {
+        retiredGeometry.push_back(std::move(it->second.geometry));
+        for (auto &vertices : it->second.vertices)
+          retiredBuffers.push_back(std::move(vertices));
         it = meshes.erase(it);
-      else
+      } else
         ++it;
     }
     // Geometry uploads feed both AS construction and BDA reads in the compute shader.
@@ -261,28 +196,29 @@ namespace remix {
     hostBuffer(table, surfaces.data(), surfaces.size() * sizeof(surfaces[0]),
                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     append(emissions.data(), emissions.size() * sizeof(emissions[0]));
-    const bool hasEmissiveLights = lights.size() > sphereCount;
-    emissionHistory.end();
+    auto &lighting = prepared.lighting;
+    const bool hasEmissiveLights = lighting.hasEmissive;
+    emissionHistory = std::move(lighting.history);
+    lightBvh = std::move(lighting.combined);
     localAngularActive = hasEmissiveLights && options.emissiveSolidAngleSampling;
     splitLightingActive = hasEmissiveLights && options.separateLocalLighting != 0 && (!denoiser || postSplit);
+    auto uploadLights = [&](scene::LightBvh &bvh, uint64_t &uploadedGeneration,
+                            std::unique_ptr<Buffer> &nodes, std::unique_ptr<Buffer> &emitters) {
+      if ((!nodes || uploadedGeneration != bvh.generation) && !bvh.nodes().empty()) {
+        uploadedGeneration = bvh.generation;
+        hostBuffer(nodes, bvh.nodes().data(), bvh.nodes().size() * sizeof(scene::LightNode),
+                   VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        hostBuffer(emitters, bvh.emitters().data(), bvh.emitters().size() * sizeof(scene::LightEmitter),
+                   VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+      }
+    };
     if (splitLightingActive) {
-      auto upload = [&](scene::LightBvh &bvh, std::unique_ptr<Buffer> &nodes,
-                        std::unique_ptr<Buffer> &emitters, std::vector<scene::SphereLight> values) {
-        if (bvh.update(std::move(values)) && !bvh.nodes().empty()) {
-          hostBuffer(nodes, bvh.nodes().data(), bvh.nodes().size() * sizeof(scene::LightNode), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-          hostBuffer(emitters, bvh.emitters().data(), bvh.emitters().size() * sizeof(scene::LightEmitter), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-        }
-      };
-      upload(torchBvh, torchNodes, torchEmitters, {lights.begin(), lights.begin() + sphereCount});
-      upload(emissiveBvh, emissiveNodes, emissiveEmitters, {lights.begin() + sphereCount, lights.end()});
+      torchBvh = std::move(lighting.torch);
+      emissiveBvh = std::move(lighting.emissive);
+      uploadLights(torchBvh, torchBufferGeneration, torchNodes, torchEmitters);
+      uploadLights(emissiveBvh, emissiveBufferGeneration, emissiveNodes, emissiveEmitters);
     }
-    const bool lightsChanged = lightBvh.update(std::move(lights));
-    if (lightsChanged && !lightBvh.nodes().empty()) {
-      hostBuffer(lightNodes, lightBvh.nodes().data(), lightBvh.nodes().size() * sizeof(scene::LightNode),
-                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-      hostBuffer(lightEmitters, lightBvh.emitters().data(), lightBvh.emitters().size() * sizeof(scene::LightEmitter),
-                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-    }
+    uploadLights(lightBvh, lightBufferGeneration, lightNodes, lightEmitters);
     Frame frame = {};
     frame.localConfig[0] = options.localLights && options.localIntensity > 0 ? lightBvh.active : 0;
     localIlluminationActive = frame.localConfig[0] != 0;
@@ -620,8 +556,43 @@ namespace remix {
     stats.peakAccelerationBytes = std::max(stats.accelerationBytes, stats.peakAccelerationBytes);
   }
 
-  void PathTracer::prepare(VkCommandBuffer command, RasterRenderer &resources, const TraceOptions &options) {
-    m_gpu->prepare(command, resources, options);
+  scene::TraceFrame PathTracer::prepareScene(const RasterRenderer &resources,
+                                             const TraceOptions &options) const {
+    auto frame = scene::prepareTraceFrame(
+        resources.draws(),
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - m_gpu->epoch).count(),
+        options.emissiveLights && options.localLights &&
+            (options.freezeEmissiveRadiance || options.stabilizeEmissiveLighting));
+    auto &staged = frame.lighting;
+    staged.combined = m_gpu->lightBvh;
+    staged.history = m_gpu->emissionHistory;
+    const auto mode = options.freezeEmissiveRadiance ? 2u : options.stabilizeEmissiveLighting ? 1u : 0u;
+    staged.history.begin(resources.temporalEpoch().world, frame.seconds,
+                         options.emissiveLights && options.localLights ? mode : 0u);
+    auto lights = options.torchLights ? resources.sphereLights() : std::vector<scene::SphereLight>{};
+    const auto sphereCount = lights.size();
+    for (const auto &source : frame.emitters) {
+      auto light = source.light;
+      if (source.animated)
+        staged.history.apply(light, source.layout);
+      if (options.emissiveLights && light.radius > 1e-8f)
+        lights.push_back(light);
+    }
+    staged.history.end();
+    staged.hasEmissive = lights.size() > sphereCount;
+    if (staged.hasEmissive && options.separateLocalLighting) {
+      staged.torch = m_gpu->torchBvh;
+      staged.emissive = m_gpu->emissiveBvh;
+      staged.torch.update({lights.begin(), lights.begin() + sphereCount});
+      staged.emissive.update({lights.begin() + sphereCount, lights.end()});
+    }
+    staged.combined.update(std::move(lights));
+    return frame;
+  }
+
+  void PathTracer::prepare(VkCommandBuffer command, RasterRenderer &resources,
+                           const TraceOptions &options, scene::TraceFrame &scene) {
+    m_gpu->prepare(command, resources, options, scene);
   }
 
   void PathTracer::record(VkCommandBuffer command) {

@@ -117,9 +117,13 @@ namespace remix::denoise {
                                   .poolSizeCount = 4,
                                   .pPoolSizes = sizes};
     check(vkCreateDescriptorPool(device, &pc, nullptr, &pass.nrdPool));
+    for (unsigned i = 1; i < gpuFrameCount; ++i)
+      check(vkCreateDescriptorPool(device, &pc, nullptr, &pass.frames[i].pool));
     const VkDeviceSize a = properties.limits.minUniformBufferOffsetAlignment;
     pass.constantStride = (desc.constantBufferMaxDataSize + a - 1) & ~(a - 1);
     pass.constants = buffer(pass.constantStride * pd.setsMaxNum);
+    for (unsigned i = 1; i < gpuFrameCount; ++i)
+      pass.frames[i].constants = buffer(pass.constantStride * pd.setsMaxNum);
     auto allocate = [&](auto &pool, const nrd::TextureDesc *textures, uint32_t count) {
       for (uint32_t i = 0; i < count; ++i) {
         uint32_t d = textures[i].downsampleFactor;

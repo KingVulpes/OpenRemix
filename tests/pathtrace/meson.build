@@ -130,6 +130,9 @@ if get_option('gpu_tests')
     env : ['REMIX_TEST_FSR_STABILITY=1', 'REMIX_TEST_TAA_ATLAS=1'], timeout : 180)
   test('Tracing presentation and lifecycle', runtime_test, args : [remix.full_path(), 'gpu'],
     env : ['REMIX_TEST_BACKEND=pathtrace'], timeout : 180)
+  test('Pending frames and rendering resource replacement', runtime_test,
+    args : [remix.full_path(), 'gpu'],
+    env : ['REMIX_TEST_BACKEND=pathtrace', 'REMIX_TEST_FRAME_CHANGES=1'], timeout : 600)
   if system != 'windows'
     test('Tracing live process exit cleanup', runtime_test, args : [remix.full_path(), 'exit'],
       env : ['REMIX_TEST_BACKEND=pathtrace'], timeout : 30)

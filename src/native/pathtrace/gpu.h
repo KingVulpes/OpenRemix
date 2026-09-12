@@ -259,6 +259,7 @@ namespace remix {
     uint32_t familyResponsive[2] = {};
     bool splitLightingActive = false, postSplit = false, postSplitRequested = false;
     std::unique_ptr<Buffer> lightNodes, lightEmitters;
+    uint64_t lightBufferGeneration = 0, torchBufferGeneration = 0, emissiveBufferGeneration = 0;
     struct LightGuiding {
       static constexpr uint32_t capacity = 65536;
       std::unique_ptr<Buffer> history[2], readback;
@@ -303,6 +304,8 @@ namespace remix {
     } tlas[2];
     std::unordered_map<std::string, std::weak_ptr<Geometry>> geometryCache;
     std::map<std::tuple<const scene::Mesh *, uint64_t, uint32_t>, MeshView> meshes;
+    std::vector<std::shared_ptr<Geometry>> retiredGeometry;
+    std::vector<std::shared_ptr<Buffer>> retiredBuffers;
     std::vector<std::shared_ptr<Geometry>> compactPending;
     remixapi_TracingStatisticsEXT stats = {.structSize = sizeof(remixapi_TracingStatisticsEXT)};
     struct Sharc {
@@ -319,6 +322,25 @@ namespace remix {
       std::vector<uint8_t> geometry, dynamicGeometry;
       remixapi_SharcStatisticsEXT stats{.structSize = sizeof(remixapi_SharcStatisticsEXT)};
     } sharc;
+    struct FrameResources {
+      VkDescriptorSet set = VK_NULL_HANDLE;
+      VkQueryPool timestamps = VK_NULL_HANDLE, compaction = VK_NULL_HANDLE,
+                  sharcTimestamps = VK_NULL_HANDLE;
+      bool timingPending = false, sharcPending = false, guidingPending = false;
+      std::unique_ptr<Buffer> table, uniform, scratch, topScratch, instances[2];
+      std::unique_ptr<Buffer> lightNodes, lightEmitters, torchNodes, torchEmitters, emissiveNodes,
+          emissiveEmitters;
+      std::unique_ptr<Buffer> sharcReadback, guidingReadback;
+      uint64_t lightGeneration = 0, torchGeneration = 0, emissiveGeneration = 0;
+      std::vector<std::unique_ptr<Buffer>> uploads;
+      std::vector<std::shared_ptr<Accel>> retired;
+      std::vector<std::shared_ptr<Geometry>> compactPending, retiredGeometry;
+      std::vector<std::shared_ptr<Buffer>> retiredBuffers;
+      std::map<scene::TemporalHistory::Key, std::shared_ptr<Buffer>> retiredVertices;
+    } frames[gpuFrameCount];
+    uint32_t frameIndex = 0;
+    void swapFrame(FrameResources &frame);
+    void selectFrame(uint32_t slot);
     void beginSharc(const TraceOptions &options);
     void destroySharc(bool temporalOnly = false);
     void configureSharc(Frame &frame, const TraceOptions &options, scene::TemporalEpoch epoch,
@@ -349,6 +371,7 @@ namespace remix {
     void destroyPost();
     void beginFrame(const TraceOptions &options);
     void destroyTarget();
-    void prepare(VkCommandBuffer command, RasterRenderer &resources, const TraceOptions &options);
+    void prepare(VkCommandBuffer command, RasterRenderer &resources, const TraceOptions &options,
+                 scene::TraceFrame &scene);
   };
 } // namespace remix

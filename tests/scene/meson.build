@@ -11,3 +11,6 @@ test('Analytic lights and importance hierarchy', light_bvh_test)
 emission_test = executable('remix-emission-test', 'emission.cpp',
   include_directories : test_includes, link_with : scene_library)
 test('Emission reduction and area light ownership', emission_test)
+trace_frame_test = executable('remix-trace-frame-test', 'trace_frame.cpp',
+  include_directories : test_includes, link_with : scene_library)
+test('CPU tracing preparation and snapshot ownership', trace_frame_test)

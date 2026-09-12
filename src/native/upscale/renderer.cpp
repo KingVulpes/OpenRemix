@@ -76,7 +76,7 @@ struct Renderer::Gpu {
       dilatedMotion, previousDepth;
   VkDescriptorSetLayout setLayout{};
   VkDescriptorPool pool{};
-  VkDescriptorSet set{};
+  VkDescriptorSet set{}, sets[gpuFrameCount]{};
   VkPipelineLayout layout{};
   VkPipeline prepare{};
   VkDescriptorSetLayout compositeSetLayout{};
@@ -84,7 +84,9 @@ struct Renderer::Gpu {
   VkDescriptorSet compositeSet{};
   VkPipelineLayout compositeLayout{};
   VkPipeline compositePipeline{};
-  VkQueryPool timestamps{};
+  VkQueryPool timestamps{}, frameTimestamps[gpuFrameCount]{};
+  bool timingPending[gpuFrameCount]{};
+  uint32_t frameIndex = 0;
   uint32_t timestampBits{};
   float timestampPeriod{};
   Statistics stats;
@@ -107,8 +109,9 @@ struct Renderer::Gpu {
       vkDestroyDescriptorPool(device, pool, nullptr);
     if (setLayout)
       vkDestroyDescriptorSetLayout(device, setLayout, nullptr);
-    if (timestamps)
-      vkDestroyQueryPool(device, timestamps, nullptr);
+    for (auto query : frameTimestamps)
+      if (query)
+        vkDestroyQueryPool(device, query, nullptr);
   }
   std::unique_ptr<Image> image(VkFormat format, VkExtent2D extent) {
     auto out = std::make_unique<Image>();
@@ -250,19 +253,20 @@ void Renderer::initialize(VkPhysicalDevice physical, VkDevice device,
       .bindingCount = 5,
       .pBindings = bindings};
   check(vkCreateDescriptorSetLayout(device, &si, nullptr, &g.setLayout));
-  VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 5};
-  VkDescriptorPoolCreateInfo pi{
-      .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-      .maxSets = 1,
-      .poolSizeCount = 1,
-      .pPoolSizes = &size};
+  VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 5 * gpuFrameCount};
+  VkDescriptorPoolCreateInfo pi{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+                                .maxSets = gpuFrameCount,
+                                .poolSizeCount = 1,
+                                .pPoolSizes = &size};
   check(vkCreateDescriptorPool(device, &pi, nullptr, &g.pool));
   VkDescriptorSetAllocateInfo ai{
       .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
       .descriptorPool = g.pool,
       .descriptorSetCount = 1,
       .pSetLayouts = &g.setLayout};
-  check(vkAllocateDescriptorSets(device, &ai, &g.set));
+  for (auto &set : g.sets)
+    check(vkAllocateDescriptorSets(device, &ai, &set));
+  g.set = g.sets[0];
   VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0,
                            sizeof(scene::Matrix)};
   VkPipelineLayoutCreateInfo li{
@@ -301,13 +305,20 @@ void Renderer::initialize(VkPhysicalDevice physical, VkDevice device,
     VkQueryPoolCreateInfo qi{.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
                              .queryType = VK_QUERY_TYPE_TIMESTAMP,
                              .queryCount = 2};
-    check(vkCreateQueryPool(device, &qi, nullptr, &g.timestamps));
+    for (auto &query : g.frameTimestamps)
+      check(vkCreateQueryPool(device, &qi, nullptr, &query));
+    g.timestamps = g.frameTimestamps[0];
   }
   g.stats.active = true;
   g.stats.render = render;
   g.stats.display = display;
 }
 
+void Renderer::selectFrame(uint32_t slot) {
+  m_gpu->frameIndex = slot;
+  m_gpu->set = m_gpu->sets[slot];
+  m_gpu->timestamps = m_gpu->frameTimestamps[slot];
+}
 Statistics Renderer::statistics() const { return m_gpu->stats; }
 void Renderer::record(VkCommandBuffer command, Input color, Input depth,
                       Input motion, Input transmission,
@@ -316,9 +327,9 @@ void Renderer::record(VkCommandBuffer command, Input color, Input depth,
   auto &g = *m_gpu;
   if (g.timestamps) {
     uint64_t times[2]{};
-    if (g.stats.frames &&
-        vkGetQueryPoolResults(g.device, g.timestamps, 0, 2, sizeof(times),
-                              times, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
+    if (g.timingPending[g.frameIndex] &&
+        vkGetQueryPoolResults(g.device, g.timestamps, 0, 2, sizeof(times), times, 8,
+                              VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
       uint64_t mask = g.timestampBits == 64
                           ? ~uint64_t(0)
                           : (uint64_t(1) << g.timestampBits) - 1;
@@ -407,6 +418,7 @@ void Renderer::record(VkCommandBuffer command, Input color, Input depth,
   if (g.timestamps)
     vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                         g.timestamps, 1);
+  g.timingPending[g.frameIndex] = true;
   ++g.stats.frames;
   if (desc.reset)
     ++g.stats.resets;

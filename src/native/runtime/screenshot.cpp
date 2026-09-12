@@ -101,8 +101,17 @@ namespace remix {
     m_captured = std::exchange(m_requested, {});
   }
 
-  void PresentedScreenshot::complete(VkDevice device, VkFence fence) {
-    if (m_captured.empty() || vkGetFenceStatus(device, fence) != VK_SUCCESS)
+  void PresentedScreenshot::submitted(VkFence fence) {
+    if (!m_captured.empty() && !m_fence)
+      m_fence = fence;
+  }
+
+  void PresentedScreenshot::complete(VkDevice device, bool wait) {
+    if (m_captured.empty() || !m_fence)
+      return;
+    const auto ready = wait ? vkWaitForFences(device, 1, &m_fence, VK_TRUE, 1000000000)
+                            : vkGetFenceStatus(device, m_fence);
+    if (ready != VK_SUCCESS)
       return;
     try {
       // Allocate before mapping, so allocation failure cannot leave memory mapped.
@@ -145,6 +154,7 @@ namespace remix {
       vkFreeMemory(device, m_memory, nullptr);
     m_buffer = VK_NULL_HANDLE;
     m_memory = VK_NULL_HANDLE;
+    m_fence = VK_NULL_HANDLE;
     if (!keepRequest)
       m_requested.clear();
     m_captured.clear();

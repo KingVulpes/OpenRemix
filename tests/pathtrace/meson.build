@@ -156,3 +156,6 @@ if get_option('gpu_tests')
       env : ['LD_PRELOAD=' + faults.full_path(), 'REMIX_TEST_FAULT=transparency-compute'], timeout : 30)
   endif
 endif
+buffer_cache_test = executable('remix-buffer-cache-test', 'buffer_cache.cpp',
+  include_directories : test_includes, dependencies : vulkan_dep, cpp_args : ['-UNDEBUG'])
+test('Upload buffer cache ownership and bounds', buffer_cache_test)

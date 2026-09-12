@@ -1,5 +1,6 @@
 #pragma once
 #include "pathtrace/renderer.h"
+#include "pathtrace/buffer_cache.h"
 #include "pathtrace/tlas_policy.h"
 #include "scene/light_bvh.h"
 #include "scene/emission.h"
@@ -21,19 +22,6 @@ namespace remix::trace::detail {
   inline VkDeviceSize align(VkDeviceSize value, VkDeviceSize alignment) {
     return (value + alignment - 1) & ~(alignment - 1);
   }
-  struct Buffer {
-    VkDevice device = VK_NULL_HANDLE;
-    VkBuffer handle = VK_NULL_HANDLE;
-    VkDeviceMemory memory = VK_NULL_HANDLE;
-    VkDeviceAddress address = 0;
-    VkDeviceSize size = 0;
-    ~Buffer() {
-      if (handle)
-        vkDestroyBuffer(device, handle, nullptr);
-      if (memory)
-        vkFreeMemory(device, memory, nullptr);
-    }
-  };
   struct Image {
     VkDevice device = VK_NULL_HANDLE;
     VkImage handle = VK_NULL_HANDLE;
@@ -353,8 +341,11 @@ namespace remix {
     std::chrono::steady_clock::time_point epoch = std::chrono::steady_clock::now();
 
     ~Gpu();
+    std::shared_ptr<trace::detail::BufferCache> bufferCache =
+        std::make_shared<trace::detail::BufferCache>();
     uint32_t memoryType(uint32_t bits, VkMemoryPropertyFlags flags);
-    std::unique_ptr<Buffer> buffer(VkDeviceSize size, VkBufferUsageFlags usage, bool host = false);
+    std::unique_ptr<Buffer> buffer(VkDeviceSize size, VkBufferUsageFlags usage, bool host = false,
+                                   bool reusable = false);
     void write(Buffer &buffer, const void *data, size_t size);
     void hostBuffer(std::unique_ptr<Buffer> &out, const void *data, size_t size, VkBufferUsageFlags usage);
     std::unique_ptr<Buffer> upload(VkCommandBuffer command, const void *data, size_t size,

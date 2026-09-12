@@ -62,6 +62,15 @@ readbacks, and retired resources follow the slot's fence. Removed meshes, materi
 and textures remain alive until pending submissions finish using them. Present
 semaphores remain associated with swapchain images. `REMIX_FRAMES_IN_FLIGHT=1`
 selects one active slot for diagnostic comparisons; the default is two.
+
+Path-tracing geometry and staging uploads recycle buffer allocations after their
+final owner releases them through the existing slot retirement. A per-tracer cache
+holds at most 512 idle buffers and 64 MiB of allocated memory, matching usage flags,
+host visibility and size before reuse. Cache overflow uses ordinary destruction;
+the last buffer owner also keeps the cache alive through tracer cleanup. Targets,
+acceleration-structure arenas and persistent per-slot buffers use their existing
+allocation paths.
+
 Presented screenshots retain their capture fence and complete by the following
 presentation when that fence becomes available within the bounded wait. Input
 event polling checks capture readiness without waiting.

@@ -11,17 +11,28 @@ namespace remix {
     throw VK_ERROR_FEATURE_NOT_PRESENT;
   }
 
-  std::unique_ptr<Buffer> PathTracer::Gpu::buffer(VkDeviceSize size, VkBufferUsageFlags usage, bool host) {
+  std::unique_ptr<Buffer> PathTracer::Gpu::buffer(VkDeviceSize size, VkBufferUsageFlags usage, bool host,
+                                                 bool reusable) {
     auto out = std::make_unique<Buffer>();
     out->device = device;
     out->size = align(std::max(size, VkDeviceSize(16)), 4096);
+    out->usage = usage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    out->host = host;
+    if (reusable) {
+      if (auto cached = bufferCache->take(out->size, out->usage, host)) {
+        static_cast<BufferAllocation &>(*out) = *cached;
+        out->cache = bufferCache;
+        return out;
+      }
+    }
     VkBufferCreateInfo info = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                                .size = out->size,
-                               .usage = usage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                               .usage = out->usage,
                                .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     check(vkCreateBuffer(device, &info, nullptr, &out->handle));
     VkMemoryRequirements requirements;
     vkGetBufferMemoryRequirements(device, out->handle, &requirements);
+    out->allocationSize = requirements.size;
     VkMemoryAllocateFlagsInfo flags = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO,
                                        .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT};
     VkMemoryAllocateInfo allocate = {
@@ -36,6 +47,9 @@ namespace remix {
     VkBufferDeviceAddressInfo address = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
                                          .buffer = out->handle};
     out->address = getBufferAddress(device, &address);
+    // Failed or partially initialized allocations always take the ordinary destruction path.
+    if (reusable)
+      out->cache = bufferCache;
     return out;
   }
 
@@ -61,9 +75,9 @@ namespace remix {
 
   std::unique_ptr<Buffer> PathTracer::Gpu::upload(VkCommandBuffer command, const void *data, size_t size,
                                                   VkBufferUsageFlags usage) {
-    auto staging = buffer(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true);
+    auto staging = buffer(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true, true);
     write(*staging, data, size);
-    auto out = buffer(size, usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    auto out = buffer(size, usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false, true);
     VkBufferCopy copy = {.size = size};
     vkCmdCopyBuffer(command, staging->handle, out->handle, 1, &copy);
     uploads.push_back(std::move(staging));

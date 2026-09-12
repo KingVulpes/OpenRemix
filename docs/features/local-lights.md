@@ -136,7 +136,8 @@ The local filter uses smaller spatial radii than GI to preserve cast shadows.
 existing NRD outlier-suppression settings.
 Significant lighting changes shorten only the local filter's history and SHARC averaging;
 ordinary torch toggles do not reset global NRD/TAA history. Complete local-light
-extinction invalidates old torch radiance in SHARC. Local changes also invalidate
+extinction invalidates old torch radiance in SHARC and clears visibility guidance.
+Small radiance animation retains guide correspondence. Local changes also invalidate
 progressive accumulation and stationary-frame reuse.
 
 The local signal is allocated lazily on first local-light submission and retained
@@ -151,6 +152,10 @@ active denoising.
 `localIntensity` to `1`, `localDenoiser` to `1`, `localRange` to `16`, and
 `localGuiding` to `1`. Samples accept 1–16 and
 intensity accepts 0–100. F12 exposes these controls under **Local lighting**.
+`adaptiveLocalSampling` defaults to `1`. It keeps `localSamples` as the baseline
+and raises primary opaque pixels to at most four samples near high-importance
+LightBVH nodes. For emissive candidate reservoirs it also lowers the candidate
+count in low-importance pixels. Disable it to use a uniform budget everywhere.
 `torchLights` and `emissiveLights` independently control sphere and triangle
 casting beneath the existing master switch, both defaulting to `1`. Larger sets
 containing emissive triangles use the bounded [emissive candidate reservoir](emissive-maps.md);

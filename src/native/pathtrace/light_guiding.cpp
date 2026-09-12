@@ -43,11 +43,15 @@ void PathTracer::Gpu::configureLightGuiding(Frame &frame, const TraceOptions &op
   if (!g.history[0])
     return;
   const bool resampled = split || frame.localScale[2] > 1;
-  if (history.reset() || g.generation != tree.visibilityGeneration || g.range != options.localRange || g.resampled != resampled || g.split != split) {
+  // Visibility correspondence survives small radiance animation, but a
+  // significant source change also changes the proposal weights. Drop the
+  // guide for that bounded fast-response event so it cannot favor an extinct
+  // or newly dominant light.
+  if (history.reset() || g.generation != tree.lightingGeneration || g.range != options.localRange || g.resampled != resampled || g.split != split) {
     g.valid = false;
     ++g.stats.historyResets;
   }
-  g.generation = tree.visibilityGeneration;
+  g.generation = tree.lightingGeneration;
   g.split = split;
   g.range = options.localRange;
   g.resampled = resampled;

@@ -27,10 +27,18 @@ if get_option('gpu_tests')
     args : [meson.current_build_dir() / 'torch-stability-scenes'], timeout : 300)
   test('Mixed emissive and torch sampling stability', torch_stability_test,
     args : [meson.current_build_dir() / 'mixed-light-scenes'],
-    env : ['REMIX_TEST_MIXED_LIGHTS=1'], timeout : 300)
+    env : ['REMIX_TEST_MIXED_LIGHTS=1', 'REMIX_TEST_ADAPTIVE_LOCAL=1'], timeout : 300)
+  test('Near emissive solid-angle sampling and motion', torch_stability_test,
+    args : [meson.current_build_dir() / 'angular-emission-scenes'],
+    env : ['REMIX_TEST_MIXED_LIGHTS=1', 'REMIX_TEST_SOLID_ANGLE=1'], timeout : 360)
+  foreach angular : ['0', '1']
+    test('Broad near emitter reference mode ' + angular, torch_stability_test,
+      args : [meson.current_build_dir() / ('near-emitter-scenes-' + angular)],
+      env : ['REMIX_TEST_MIXED_LIGHTS=1', 'REMIX_TEST_NEAR_EMITTERS=1', 'REMIX_TEST_SOLID_ANGLE=' + angular], timeout : 360)
+  endforeach
   test('Many emissive clusters and sampling stability', torch_stability_test,
     args : [meson.current_build_dir() / 'emissive-cluster-scenes'],
-    env : ['REMIX_TEST_MIXED_LIGHTS=1', 'REMIX_TEST_EMISSIVE_CLUSTERS=1'], timeout : 300)
+    env : ['REMIX_TEST_MIXED_LIGHTS=1', 'REMIX_TEST_EMISSIVE_CLUSTERS=1', 'REMIX_TEST_ADAPTIVE_LOCAL=1'], timeout : 300)
   foreach mode : ['1', '2']
     test('Separate direct histories mode ' + mode, torch_stability_test,
       args : [meson.current_build_dir() / ('separate-light-scenes-' + mode)],
@@ -81,6 +89,9 @@ if get_option('gpu_tests')
     args : [meson.current_build_dir() / 'sky-scenes'], timeout : 240)
   test('Emissive maps and sampled area lights', environment_test,
     args : [meson.current_build_dir() / 'emission-scenes'], env : ['REMIX_TEST_EMISSION=1'], timeout : 240)
+  test('Stable emissive casting preserves maps and controls', environment_test,
+    args : [meson.current_build_dir() / 'stable-emission-scenes'],
+    env : ['REMIX_TEST_EMISSION=1', 'REMIX_TEST_EMISSION_STABILITY=1'], timeout : 240)
   test('Prism and gamma display transfer', environment_test,
     args : [meson.current_build_dir() / 'prism-scenes'], env : ['REMIX_TEST_DISPLAY=1'], timeout : 240)
   if system == 'linux'

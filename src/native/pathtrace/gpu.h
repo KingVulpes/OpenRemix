@@ -2,6 +2,7 @@
 #include "pathtrace/renderer.h"
 #include "pathtrace/tlas_policy.h"
 #include "scene/light_bvh.h"
+#include "scene/emission.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -104,7 +105,7 @@ namespace remix::trace::detail {
     uint64_t sharcHash = 0, sharcAccumulation = 0, sharcResolved = 0, sharcCounters = 0;
     uint32_t sharcConfig[4] = {};
     float sharcGrid[4] = {}, sharcPreviousCamera[4] = {};
-    float sun[4] = {}; // tangent of angular radius, SIGMA active, debug view, reserved
+    float sun[4] = {}; // tangent of angular radius, SIGMA active, debug view, raw local-distance diagnostic
     uint64_t lightNodes = 0, lightEmitters = 0;
     uint32_t localConfig[4] = {};
     float localScale[4] = {};
@@ -171,6 +172,7 @@ namespace remix {
       bool resamplingAttempted[2] = {};
       VkPipeline withSplit[2] = {};
       bool splitAttempted[2] = {};
+      std::map<uint32_t, std::pair<VkPipeline, bool>> angular;
       bool attempted = false, guidingAttempted = false;
       bool supportsGuiding = true;
       VkPipeline small[2] = {};
@@ -179,6 +181,7 @@ namespace remix {
     std::unordered_map<VkPipeline, LightingPipeline> lightingPipelines;
     bool localIlluminationActive = false;
     bool localResamplingActive = false;
+    bool localAngularActive = false;
     bool localGuidingActive = false;
     VkPipeline selectLightingPipeline(VkPipeline pipeline);
     void forgetLightingPipeline(VkPipeline pipeline);
@@ -231,7 +234,7 @@ namespace remix {
     bool postLocalDenoise = false, postLocalDenoiseRequested = false;
     uint64_t previousLocalGeneration = 0;
     float previousLocalIntensity = 0, previousLocalRange = 0;
-    uint32_t previousLocalActive = 0, localResponsiveFrames = 0;
+    uint32_t previousLocalActive = 0, previousLocalAdaptive = 0, localResponsiveFrames = 0;
     float previousSun[8] = {}, pendingSun[8] = {};
     bool postReblur = false, postTaa = false, postAttempted = false, rendered = false;
     std::string postFailure;
@@ -248,6 +251,7 @@ namespace remix {
     std::vector<std::shared_ptr<Arena>> arenas;
     std::unique_ptr<Buffer> scratch, table, uniform;
     scene::LightBvh lightBvh;
+    scene::EmissionHistory emissionHistory;
     scene::LightBvh torchBvh, emissiveBvh;
     std::unique_ptr<Buffer> torchNodes, torchEmitters, emissiveNodes, emissiveEmitters;
     uint64_t previousFamilyGeneration[2] = {};

@@ -326,6 +326,8 @@ int main(int argc, char **argv) {
             "Invalid influence range accepted");
   require(api.SetConfigVariable("rtx.native.pathtrace.localGuiding", "2") == REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS,
           "Invalid guiding toggle accepted");
+  require(api.SetConfigVariable("rtx.native.pathtrace.adaptiveLocalSampling", "2") == REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS,
+          "Invalid adaptive sampling toggle accepted");
   require(remixapi_GetLocalLightStatisticsEXT(nullptr) ==
                   REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS &&
               remixapi_GetLocalLightStatisticsEXT(&invalid) ==

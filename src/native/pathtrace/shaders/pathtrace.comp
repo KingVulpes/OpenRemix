@@ -37,6 +37,7 @@ layout(constant_id=0) const bool enableLocalLights=true;
 layout(constant_id=1) const bool enableLocalGuiding=true;
 layout(constant_id=2) const bool enableSmallLights=false;
 layout(constant_id=3) const bool enableLightResampling=false;
+layout(constant_id=5) const bool enableAngularEmitters=false;
 #ifdef SPLIT_LOCAL_PASS
 layout(constant_id=4) const bool enableSplitLighting=true;
 #else
@@ -381,6 +382,10 @@ void main() {
   vec3 emission=opaque?primary.emission:vec3(0);
   vec3 color=opaque?emission+primaryDirect+primary.color.rgb*(indirect+local):imageLoad(rawSky,pixel).rgb;
   if(primary.blended)color=vec3(0);
+#ifndef TEMPORAL
+  // Diagnostic raw output: distance in world units / 16, before display transfer.
+  if(frame.sun.w!=0)color=opaque?vec3(localDistance/16):vec3(0);
+#endif
 #ifdef SHARC_QUERY
   if(frame.sharcConfig.w!=0&&opaque) {
     // Explicit debug exception: show cache values at visible surfaces, never

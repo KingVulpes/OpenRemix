@@ -17,6 +17,9 @@ namespace remix {
     bool localLights = true, localDenoiser = true;
     bool torchLights = true, emissiveLights = true;
     uint32_t emissiveCandidates = 4;
+    bool adaptiveLocalSampling = true;
+    bool stabilizeEmissiveLighting = false, emissiveSolidAngleSampling = false;
+    bool freezeEmissiveRadiance = false; // diagnostic: casting only
     uint32_t separateLocalLighting = 0; // combined, shared ray budget, one budget per family
     uint32_t localSamples = 1;
     float localIntensity = 1, localRange = 16;

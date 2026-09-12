@@ -6,6 +6,45 @@
 using namespace remix::scene;
 using namespace remix::test;
 int main() {
+  auto response = [](unsigned fps) {
+    EmissionHistory h;
+    SphereLight l{}; l.id=1; l.triangle=1; l.radiance[0]=1;
+    h.begin(1,0,1); h.apply(l,7); h.end();
+    for (unsigned f=1; f<=fps; ++f) {
+      l.radiance[0]=3; h.begin(1,double(f)/fps,1); h.apply(l,7); h.end();
+    }
+    return l.radiance[0];
+  };
+  for (unsigned fps : {30u,60u,144u})
+    require(std::abs(response(fps)-(3-2*std::exp(-2.)))<1e-5, "Emission smoothing depends on frame rate");
+  EmissionHistory periodic;
+  SphereLight animated{}; animated.id=9; animated.triangle=1;
+  double average=0;
+  for (unsigned f=0; f<=600; ++f) {
+    animated.radiance[0]=1+.5f*std::sin(float(f)*2*3.14159265359f/60);
+    periodic.begin(1,double(f)/60,1); periodic.apply(animated,1); periodic.end();
+    if (f>540) average+=animated.radiance[0]/60;
+  }
+  require(std::abs(average-1)<1e-4, "Emission smoothing changed periodic mean radiance");
+  EmissionHistory history;
+  SphereLight source{}; source.id=4; source.triangle=1; source.radiance[0]=2;
+  history.begin(1,0,1); history.apply(source,5); history.end();
+  require(source.radiance[0]==2, "New emission fades in");
+  source.radiance[0]=0; history.begin(1,.01,1); history.apply(source,5); history.end();
+  require(source.radiance[0]==0&&history.size()==0, "Disabled emission lingers");
+  source.radiance[0]=2; history.begin(1,.02,1); history.apply(source,5); history.end();
+  source.radiance[0]=4; source.corners[0][0]=1;
+  history.begin(1,.03,1); history.apply(source,5); history.end();
+  require(source.radiance[0]==4, "Geometry change retained stale emission");
+  source.radiance[0]=6; history.begin(1,.04,1); history.apply(source,6); history.end();
+  require(source.radiance[0]==6, "Material/layout change retained stale emission");
+  history.begin(1,.05,1); history.end();
+  require(history.size()==0, "Absent source history was retained");
+  source.radiance[0]=1; history.begin(1,.06,2); history.apply(source,6); history.end();
+  source.radiance[0]=8; history.begin(1,.07,2); history.apply(source,6); history.end();
+  require(source.radiance[0]==1, "Diagnostic freeze did not hold cast radiance");
+  source.radiance[0]=8; history.begin(2,.08,2); history.apply(source,6); history.end();
+  require(source.radiance[0]==8, "World change retained old cast radiance");
   Draw draw;
   draw.material = std::make_shared<Material>();
   draw.surface = std::make_shared<Surface>();
@@ -16,6 +55,16 @@ int main() {
   std::fill_n(m.emission,3,2.f);
   m.emissionTexture = std::make_shared<Texture>();
   m.emissionTexture->pixels = {2,1,true,{{128,0,0,255,0,255,0,255}}};
+  const auto layout = emissionHistoryKey(draw, 0);
+  m.emissionTexture->pixels.mips[0][0] = 64;
+  require(emissionHistoryKey(draw, 0) == layout, "Animated texels invalidate emission history");
+  m.emissionTexture->pixels.mips[0][0] = 128;
+  draw.surface->vertices[0].uv[0] = .1f;
+  require(emissionHistoryKey(draw, 0) != layout, "UV layout retained stale emission history");
+  draw.surface->vertices[0].uv[0] = 0;
+  m.emission[0] = 3;
+  require(emissionHistoryKey(draw, 0) != layout, "Emission coefficient retained stale history");
+  m.emission[0] = 2;
   const float uv[] = {1,1,0,0};
   auto color = triangleEmission(draw,0,uv);
   require(std::abs(color[0] - .43172f)<.0001f && color[1]==0, "UV region/linear emission average");

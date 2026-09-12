@@ -64,6 +64,7 @@ int main(int argc, char **argv) {
   config("sigma", "0");
   config("localRange", "16");
   config("localIntensity", "1");
+  config("adaptiveLocalSampling", std::getenv("REMIX_TEST_ADAPTIVE_LOCAL") ? "1" : "0");
   if (const char *split = std::getenv("REMIX_TEST_SPLIT_LOCAL"))
     config("separateLocalLighting", split);
   const bool mixed = std::getenv("REMIX_TEST_MIXED_LIGHTS");
@@ -125,8 +126,13 @@ int main(int argc, char **argv) {
   std::vector<remixapi_MeshHandle> emitters;
   if (mixed) {
     auto glowing = material({0, 0, 0}, 1, .3f);
+    if (std::getenv("REMIX_TEST_NEAR_EMITTERS")) {
+      // Broad emitter just outside the central receiver ROI; its solid angle
+      // changes across the wall and during the same translated camera path.
+      emitters.push_back(quad(1, -.6f, 0, .7f, -.8f, .8f, glowing));
+    }
     const bool many = std::getenv("REMIX_TEST_MIXED_MANY") || std::getenv("REMIX_TEST_EMISSIVE_CLUSTERS");
-    for (int i = 0; i < (many ? 512 : 4); ++i) {
+    for (int i = 0; i < (std::getenv("REMIX_TEST_NEAR_EMITTERS") ? 0 : many ? 512 : 4); ++i) {
       float x = -.8f + (many ? (i % 32) * .05f : i * .4f);
       float y = many ? -.4f + (i / 32) * .05f : -.3f;
       emitters.push_back(quad(2, -.25f, x, x + (many ? .04f : .2f),
@@ -302,6 +308,7 @@ int main(int argc, char **argv) {
         continue;
       }
       std::vector<Image> reference;
+      config("emissiveSolidAngleSampling", "0");
       // Compare split estimators to the established combined-light integral,
       // not to a reference produced by the same family-selection code.
       if (std::getenv("REMIX_TEST_SPLIT_LOCAL"))
@@ -328,6 +335,7 @@ int main(int argc, char **argv) {
       config("samples", "1");
       if (const char *split = std::getenv("REMIX_TEST_SPLIT_LOCAL"))
         config("separateLocalLighting", split);
+      config("emissiveSolidAngleSampling", std::getenv("REMIX_TEST_SOLID_ANGLE") ? std::getenv("REMIX_TEST_SOLID_ANGLE") : "0");
       double baselineError = 0;
       for (int run = 0; run < (mixed ? 6 : 3); ++run) {
         int mode = run % 3;

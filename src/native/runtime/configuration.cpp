@@ -134,6 +134,14 @@ namespace remix {
       m_traceOptions.torchLights = number != 0;
     else if (!std::strcmp(key, "emissiveLights") && number <= 1)
       m_traceOptions.emissiveLights = number != 0;
+    else if (!std::strcmp(key, "adaptiveLocalSampling") && number <= 1)
+      m_traceOptions.adaptiveLocalSampling = number != 0;
+    else if (!std::strcmp(key, "stabilizeEmissiveLighting") && number <= 1)
+      m_traceOptions.stabilizeEmissiveLighting = number != 0;
+    else if (!std::strcmp(key, "emissiveSolidAngleSampling") && number <= 1)
+      m_traceOptions.emissiveSolidAngleSampling = number != 0;
+    else if (!std::strcmp(key, "freezeEmissiveRadiance") && number <= 1)
+      m_traceOptions.freezeEmissiveRadiance = number != 0;
     else if (!std::strcmp(key, "emissiveCandidates") && number >= 1 && number <= 8)
       m_traceOptions.emissiveCandidates = number;
     else if (!std::strcmp(key, "separateLocalLighting") && number <= 2)

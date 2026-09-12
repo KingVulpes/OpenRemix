@@ -1,5 +1,7 @@
 #include "pathtrace/gpu.h"
 #include "scene/emission.h"
+#include <cstdio>
+#include <cstdlib>
 
 namespace remix {
   using namespace scene;
@@ -65,6 +67,10 @@ namespace remix {
     if (!options.torchLights)
       lights.clear();
     const size_t sphereCount = lights.size();
+    const auto emissionMode = options.freezeEmissiveRadiance ? 2u : options.stabilizeEmissiveLighting ? 1u : 0u;
+    emissionHistory.begin(resources.temporalEpoch().world,
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - epoch).count(),
+        options.emissiveLights && options.localLights ? emissionMode : 0u);
     primaryDraws.clear();
     std::vector<VkDescriptorImageInfo> textures;
     std::unordered_map<const Material *, uint32_t> textureIndices;
@@ -194,6 +200,8 @@ namespace remix {
             emissions.push_back({emission[0], emission[1], emission[2], 0});
             if (emission[0] > 0 || emission[1] > 0 || emission[2] > 0) {
               auto emitter = scene::triangleEmitter(surface, triangle, emission);
+              if (material.emissionTexture && emissionMode && options.emissiveLights && options.localLights)
+                emissionHistory.apply(emitter, scene::emissionHistoryKey(surface, triangle));
               if (options.emissiveLights && emitter.radius > 1e-8f) lights.push_back(emitter);
             }
           }
@@ -250,6 +258,8 @@ namespace remix {
                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     append(emissions.data(), emissions.size() * sizeof(emissions[0]));
     const bool hasEmissiveLights = lights.size() > sphereCount;
+    emissionHistory.end();
+    localAngularActive = hasEmissiveLights && options.emissiveSolidAngleSampling;
     splitLightingActive = hasEmissiveLights && options.separateLocalLighting != 0 && (!denoiser || postSplit);
     if (splitLightingActive) {
       auto upload = [&](scene::LightBvh &bvh, std::unique_ptr<Buffer> &nodes,
@@ -277,7 +287,8 @@ namespace remix {
     frame.splitLocal[2] = localIlluminationActive && splitLightingActive ? emissiveBvh.active : 0;
     frame.localConfig[1] = options.localSamples;
     frame.localConfig[2] = uint32_t(lightBvh.lightingGeneration);
-    frame.localConfig[3] = uint32_t(lightBvh.lightingGeneration >> 32);
+    frame.localConfig[3] = uint32_t(lightBvh.lightingGeneration >> 32) |
+                           (options.adaptiveLocalSampling ? 0x80000000u : 0u);
     frame.localScale[0] = options.localIntensity;
     frame.localScale[1] = options.localRange;
     // Private, previously unused shader word: bounded candidate count. Keep
@@ -304,6 +315,7 @@ namespace remix {
     frame.sun[0] = std::tan(diameter * (3.14159265359f / 360.f));
     frame.sun[1] = denoiser && postSigma;
     frame.sun[2] = frame.sun[1] != 0 ? float(options.shadowDebug) : 0;
+    frame.sun[3] = std::getenv("REMIX_EMISSIVE_HIT_DISTANCE") ? 1.f : 0.f;
     std::copy_n(light.direction, 3, frame.direction);
     std::copy_n(light.radiance, 3, frame.radiance);
     if (options.sky)
@@ -323,6 +335,8 @@ namespace remix {
     append(&integrator, sizeof(integrator));
     append(&options.validation, sizeof(options.validation));
     append(&options.localGuiding, sizeof(options.localGuiding));
+    append(&options.emissiveSolidAngleSampling, sizeof(options.emissiveSolidAngleSampling));
+    append(&emissionMode, sizeof(emissionMode));
     append(&options.fsrSharpness, sizeof(options.fsrSharpness));
     const uint64_t cacheSettings[] = {options.sharcReset, options.sharcCapacityLog2, options.sharcSceneScale,
         options.sharcDownscale, options.sharcAccumulationFrames, options.sharcStaleFrames};
@@ -346,7 +360,8 @@ namespace remix {
       stats.accumulationCount = 0;
     const bool localSettingsChanged = frame.localScale[0] != previousLocalIntensity || frame.localScale[1] != previousLocalRange;
     if (lightBvh.lightingGeneration != previousLocalGeneration || localSettingsChanged ||
-        frame.localConfig[0] != previousLocalActive)
+        frame.localConfig[0] != previousLocalActive ||
+        (frame.localConfig[3] & 0x80000000u) != previousLocalAdaptive)
       localResponsiveFrames = 8;
     else if (localResponsiveFrames)
       --localResponsiveFrames;
@@ -354,10 +369,16 @@ namespace remix {
     previousLocalIntensity = frame.localScale[0];
     previousLocalRange = frame.localScale[1];
     previousLocalActive = frame.localConfig[0];
+    previousLocalAdaptive = frame.localConfig[3] & 0x80000000u;
     temporalFrame = {};
     temporalFrame.local[0] = denoiser && postLocalDenoise;
     temporalFrame.local[1] = frame.localConfig[0];
     temporalFrame.local[2] = localResponsiveFrames;
+    if (std::getenv("REMIX_EMISSIVE_DIAGNOSTICS"))
+      std::fprintf(stderr, "EMISSION mode=%u sources=%zu raw_delta=%.6f filtered_delta=%.6f response=%u generation=%llu visibility=%llu\n",
+          emissionMode, emissionHistory.size(), emissionHistory.rawChange, emissionHistory.filteredChange,
+          localResponsiveFrames, static_cast<unsigned long long>(lightBvh.lightingGeneration),
+          static_cast<unsigned long long>(lightBvh.visibilityGeneration));
     temporalFrame.local[3] = frame.splitLocal[0];
     for (unsigned i = 0; i < 2; ++i) {
       const auto &family = i ? emissiveBvh : torchBvh;

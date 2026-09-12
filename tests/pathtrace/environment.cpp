@@ -176,6 +176,10 @@ int main(int argc, char **argv) {
     auto config = [&](const char *key, const char *value) {
       ok(api.SetConfigVariable((std::string("rtx.native.pathtrace.")+key).c_str(),value));
     };
+    if (std::getenv("REMIX_TEST_EMISSION_STABILITY")) {
+      config("stabilizeEmissiveLighting","1");
+      config("emissiveSolidAngleSampling","1");
+    }
     config("sky","0"); config("sharc","0"); config("bounces","0");
     config("localRange","0"); config("localGuiding","0"); config("localSamples","4");
     if (std::getenv("REMIX_TEST_EMISSION_FSR")) {

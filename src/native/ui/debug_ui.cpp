@@ -102,6 +102,15 @@ namespace remix {
             ImGui::Checkbox("Emissive lighting", &m_traceOptions.emissiveLights);
             if (ImGui::IsItemHovered())
               ImGui::SetTooltip("Controls light cast onto the world. Emissive textures remain visible.");
+            ImGui::Checkbox("Adaptive local-light sampling", &m_traceOptions.adaptiveLocalSampling);
+            if (ImGui::IsItemHovered())
+              ImGui::SetTooltip("Uses the configured local-light budget as a baseline and adds up to four samples near important lights. Emissive candidates are reduced in low-contribution pixels.");
+            ImGui::Checkbox("Stabilize animated emissive lighting", &m_traceOptions.stabilizeEmissiveLighting);
+            if (ImGui::IsItemHovered())
+              ImGui::SetTooltip("Experimental: smooths animation-driven cast light over half a second. Visible emissive textures keep animating.\nCombined lighting and the shadow-ray budget are preserved.");
+            ImGui::Checkbox("Improve nearby emissive lighting", &m_traceOptions.emissiveSolidAngleSampling);
+            if (ImGui::IsItemHovered())
+              ImGui::SetTooltip("Experimental: samples nearby area lights with the same shadow-ray count.\nAdds some GPU work; disable to compare performance.");
             int candidates = int(m_traceOptions.emissiveCandidates);
             if (ImGui::SliderInt("Emissive candidates", &candidates, 1, 8))
               m_traceOptions.emissiveCandidates = uint32_t(candidates);

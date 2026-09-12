@@ -3,6 +3,56 @@
 #include <cmath>
 
 namespace remix::scene {
+uint64_t emissionHistoryKey(const Draw &draw, uint32_t triangle) {
+  const auto &m = *draw.material;
+  std::array<uint8_t, 64> bytes{};
+  size_t size = 0;
+  auto add = [&](const auto &value) {
+    auto p = reinterpret_cast<const uint8_t *>(&value);
+    std::copy_n(p, sizeof(value), bytes.data() + size); size += sizeof(value);
+  };
+  add(m.emission); add(m.wrapU); add(m.wrapV); add(m.rows); add(m.columns); add(m.fps);
+  if (m.emissionTexture) {
+    add(m.emissionTexture->pixels.width); add(m.emissionTexture->pixels.height);
+    add(m.emissionTexture->pixels.srgb);
+  }
+  for (unsigned i = 0; i < 3; ++i)
+    add(draw.surface->vertices[draw.surface->indices[triangle * 3 + i]].uv);
+  return hashBytes(bytes.data(), size);
+}
+void EmissionHistory::begin(uint64_t nextWorld, double seconds, uint32_t nextMode) {
+  if (nextWorld != world || nextMode != mode || seconds < time) entries.clear();
+  alpha = -std::expm1(-std::max(0., seconds - time) / .5);
+  world = nextWorld; time = seconds; mode = nextMode; ++sequence;
+  rawChange = filteredChange = 0;
+}
+void EmissionHistory::apply(SphereLight &light, uint64_t layout) {
+  if (!mode || !light.triangle) return;
+  if (!(light.radiance[0] > 0 || light.radiance[1] > 0 || light.radiance[2] > 0)) {
+    entries.erase(light.id); return;
+  }
+  // World-space geometry changes invalidate correspondence independently of
+  // animation. Hash only initialized xyz corners, never structure padding.
+  layout ^= hashBytes(light.corners, sizeof(light.corners));
+  auto [it, inserted] = entries.try_emplace(light.id);
+  auto &entry = it->second;
+  if (inserted || entry.layout != layout)
+    for (unsigned c = 0; c < 3; ++c) entry.raw[c] = entry.filtered[c] = light.radiance[c];
+  entry.layout = layout; entry.seen = sequence;
+  for (unsigned c = 0; c < 3; ++c) {
+    const float raw = light.radiance[c], previous = entry.filtered[c];
+    rawChange += std::abs(raw - entry.raw[c]);
+    if (mode == 1) {
+      entry.filtered[c] += float(alpha * (double(raw) - entry.filtered[c]));
+      if (std::abs(entry.filtered[c] - raw) <= 1e-5f * std::max(1.f, raw)) entry.filtered[c] = raw;
+    }
+    filteredChange += std::abs(entry.filtered[c] - previous);
+    entry.raw[c] = raw; light.radiance[c] = entry.filtered[c];
+  }
+}
+void EmissionHistory::end() {
+  std::erase_if(entries, [&](const auto &item) { return item.second.seen != sequence; });
+}
 std::array<float, 3> triangleEmission(const Draw &draw, uint32_t triangle, const float *transform) {
   const auto &m = *draw.material;
   if (m.emission[0] == 0 && m.emission[1] == 0 && m.emission[2] == 0) return {};

@@ -138,4 +138,56 @@ gradual ramps; summing changes across the scene prevents one animated portal fro
 continually shortening the history of unrelated torches. Local radiance changes
 retain normal NRD history and anti-lag behavior. SHARC uses the significant-lighting
 generation, while visibility guidance retains its spatial correspondence through
-radiance-only updates. These generations do not change public or GPU record layouts.
+small radiance-only updates and is rebuilt after a significant source change.
+These generations do not change public or GPU record layouts.
+
+Animated cast-light stabilization is controlled independently by
+`rtx.native.pathtrace.stabilizeEmissiveLighting` (0 or 1), also available as
+**Stabilize animated emissive lighting** in F12. A per-triangle history filters
+linear RGB with a 0.5-second exponential time constant. Stable instance/surface/
+triangle identity retains correspondence through camera motion and texture or
+sprite-frame animation. New sources start at their current radiance; changed
+geometry, UV layout, texture dimensions, emission coefficients or world identity
+invalidate correspondence. Absent, disabled and black sources disappear
+immediately. The history is retired with its source and stops requesting redraws
+once it converges. It feeds the sampling hierarchies and indirect/SHARC lighting,
+while visible emissive maps retain their original animation and detail.
+
+`rtx.native.pathtrace.emissiveSolidAngleSampling` (0 or 1) selects a lower-variance
+proposal for nearby emissive triangles at opaque primary surfaces. Within four
+bounding radii, suitable triangles use Arvo's uniform spherical-triangle sampling
+with PDF `1 / solidAngle`; other triangles retain uniform area sampling and its
+Jacobian. Geometry alone selects the proposal, before any random-sample-dependent
+fallback could bias the estimator. Thin-angle calculations use `atan2` to avoid
+cancellation; unsuitable or degenerate geometry uses the area proposal. Every
+selected candidate still traces fresh cutout/tinted visibility. The existing
+candidate and shadow-ray counts, combined-light default, continuation sampler and
+transparent-surface sampler are preserved. Shader specialization removes the new
+sampler from passes that do not use it.
+
+Both options are experimental, default off and can be enabled independently. The sampling option
+is also available as **Improve nearby emissive lighting** in F12.
+For diagnosis, `rtx.native.pathtrace.freezeEmissiveRadiance=1` holds each mapped
+source's initial cast radiance until its identity/layout changes, without freezing
+its visible texture. This overrides smoothing and is not a gameplay setting.
+`REMIX_EMISSIVE_DIAGNOSTICS=1` logs history size, RGB changes and local fast-response
+state to stderr when history tracking is enabled. With temporal filtering disabled,
+`REMIX_EMISSIVE_HIT_DISTANCE=1` instead displays the sampled primary local-light
+distance divided by 16, before display transfer, for variance diagnosis. No public
+ABI, transport or GPU record layout changes are needed.
+
+The sampling design follows the importance-sampling and many-light discussions
+in *Ray Tracing Gems* (chapters 15 and 18) and *Ray Tracing Gems II* (chapters 22
+and 23). The spherical-triangle construction is adapted from pbrt-v4's
+`SampleSphericalTriangle`; its Apache-2.0 notice accompanies the shader. It does
+not add temporal reservoirs or reuse stale shadow visibility. NRD-Sample's
+radiance blue-noise and Russian-roulette switches are not enabled by this feature.
+
+Adaptive local-light sampling is enabled by default. The configured local-light
+sample count remains the baseline; primary opaque pixels whose BVH importance is
+high receive up to four samples, while low-contribution pixels use one or two.
+Large emissive sets similarly reduce their candidate count away from important
+emitters. This keeps ordinary pixels close to the one-sample cost without
+changing the estimator's expected radiance. The behavior can be disabled with
+`rtx.native.pathtrace.adaptiveLocalSampling=0` or the **Adaptive local-light
+sampling** F12 control.

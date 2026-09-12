@@ -31,7 +31,7 @@ layout(set=0,binding=3,std140) uniform Frame {
   vec4 sharcPreviousCamera;
   vec4 sun;
   uint64_t lightNodes, lightEmitters;
-  uvec4 localConfig; // active lights, samples, generation low/high
+  uvec4 localConfig; // active lights, samples, generation low, generation high + adaptive bit
   vec4 localScale; // radiance multiplier, reach, guiding requested, inverse reach squared
   uint64_t lightGuideRead, lightGuideWrite;
   uvec4 lightGuideConfig; // capacity, node count, reserved

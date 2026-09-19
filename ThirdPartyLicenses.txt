@@ -39,3 +39,9 @@ AMD FidelityFX Super Resolution 3.1.4 (upscaler, FidelityFX SDK v1.1.4)
 Copyright (C) 2024 Advanced Micro Devices, Inc.
 MIT license: third_party/fsr31/LICENSE.txt; distributed as FidelityFX.txt.
 Source revision and local portability patches: third_party/fsr31/upstream.json.
+
+EON rough diffuse BRDF evaluator and CLTC sampling
+Copyright (c) 2024 Jamie Portsmouth
+MIT license; full notice: src/native/pathtrace/shaders/LICENSE-eon.txt.
+Source: https://github.com/portsmouth/EON-diffuse (paper Listings 1–4).
+Packages include EON.txt.

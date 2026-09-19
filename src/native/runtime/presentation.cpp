@@ -21,6 +21,7 @@
  */
 
 #include "runtime/runtime.h"
+#include "platform/timing.h"
 
 #include <algorithm>
 #include <array>
@@ -31,6 +32,31 @@
 #include <optional>
 
 namespace remix {
+  namespace {
+    struct CompletePerformance {
+      remixapi_FramePerformanceEXT &out;
+      const std::unique_ptr<PathTracer> &tracer;
+      const uint64_t &presentations;
+      ~CompletePerformance() {
+        out.presented = presentations != out.presentations;
+        out.presentations = presentations;
+        if (!tracer) return;
+        const auto p = tracer->performance();
+        out.geometryMilliseconds = p.geometryMilliseconds;
+        out.allocationMilliseconds = p.allocationMilliseconds;
+        out.uploadMilliseconds = p.uploadMilliseconds;
+        out.accelerationMilliseconds = p.accelerationMilliseconds;
+        out.geometryConversions = p.geometryConversions;
+        out.geometryCacheHits = p.geometryCacheHits;
+        out.uploadBytes = p.uploadBytes;
+        out.bufferAllocations = p.bufferAllocations;
+        out.allocationBytes = p.allocationBytes;
+        out.bufferCacheHits = p.bufferCacheHits;
+        out.memoryAllocations = p.memoryAllocations;
+        out.memoryAllocationBytes = p.memoryAllocationBytes;
+      }
+    };
+  }
   remixapi_ErrorCode RemixNativeRuntime::present(const remixapi_PresentInfo *info) {
     if (info && info->sType != REMIXAPI_STRUCT_TYPE_PRESENT_INFO) {
       return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
@@ -38,6 +64,11 @@ namespace remix {
     if (!isInitialized()) {
       return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
     }
+    auto &p = m_framePerformance;
+    p = {.structSize = sizeof(p), .attempts = p.attempts + 1, .presentations = m_presentationCount};
+    ScopedMilliseconds presentTime{p.presentMilliseconds};
+    if (m_pathTracer) m_pathTracer->resetPerformance();
+    CompletePerformance completePerformance{p, m_pathTracer, m_presentationCount};
     remixapi_WindowState state = {};
     auto status = m_window.getWindowState(state);
     if (status != REMIXAPI_ERROR_CODE_SUCCESS) {
@@ -80,9 +111,11 @@ namespace remix {
       // upload and retire resources only after the reused slot's fence.
       std::optional<scene::TraceFrame> traceScene;
       if (m_pathTracer && m_requestedBackend)
-        traceScene = m_pathTracer->prepareScene(m_raster, m_traceOptions);
+        traceScene = measured(p.sceneMilliseconds, [&] { return m_pathTracer->prepareScene(m_raster, m_traceOptions); });
       // Bounded waits keep unavailable surfaces and a stalled GPU from blocking the caller indefinitely.
-      VkResult result = vkWaitForFences(m_device, 1, &m_frames[m_frameIndex].fence, VK_TRUE, 1000000000);
+      VkResult result = measured(p.fenceMilliseconds, [&] {
+        return vkWaitForFences(m_device, 1, &m_frames[m_frameIndex].fence, VK_TRUE, 1000000000);
+      });
       if (result == VK_TIMEOUT) {
         return REMIXAPI_ERROR_CODE_SUCCESS;
       }
@@ -129,8 +162,10 @@ namespace remix {
       // Preserve next-presentation capture completion. Event polling stays
       // nonblocking; only a pending screenshot needs the preceding frame.
       m_screenshot.complete(m_device, true);
-      result = vkAcquireNextImageKHR(m_device, m_swapchain, 1000000000,
+      result = measured(p.acquireMilliseconds, [&] {
+        return vkAcquireNextImageKHR(m_device, m_swapchain, 1000000000,
                                      m_frames[m_frameIndex].imageAvailable, VK_NULL_HANDLE, &imageIndex);
+      });
       if (result == VK_TIMEOUT || result == VK_NOT_READY) {
         return REMIXAPI_ERROR_CODE_SUCCESS;
       }
@@ -144,7 +179,7 @@ namespace remix {
       }
       m_rebuild |= result == VK_SUBOPTIMAL_KHR;
       m_frameStarted = true;
-      status = recordFrame(imageIndex, traceScene ? &*traceScene : nullptr);
+      status = measured(p.recordMilliseconds, [&] { return recordFrame(imageIndex, traceScene ? &*traceScene : nullptr); });
       if (status != REMIXAPI_ERROR_CODE_SUCCESS) {
         return fail();
       }
@@ -163,7 +198,7 @@ namespace remix {
           .signalSemaphoreCount = 1,
           .pSignalSemaphores = &m_renderFinished[imageIndex],
       };
-      result = vkQueueSubmit(m_queue, 1, &submit, m_frames[m_frameIndex].fence);
+      result = measured(p.submitMilliseconds, [&] { return vkQueueSubmit(m_queue, 1, &submit, m_frames[m_frameIndex].fence); });
       if (result != VK_SUCCESS) {
         return fail(result);
       }
@@ -178,7 +213,7 @@ namespace remix {
           .pSwapchains = &m_swapchain,
           .pImageIndices = &imageIndex,
       };
-      result = vkQueuePresentKHR(m_queue, &present);
+      result = measured(p.queuePresentMilliseconds, [&] { return vkQueuePresentKHR(m_queue, &present); });
       m_frameIndex = (m_frameIndex + 1) % m_frameCount;
       if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR)
         ++m_presentationCount;
@@ -252,7 +287,7 @@ namespace remix {
       // A newly enabled tracer did not exist during CPU preparation.
       std::optional<scene::TraceFrame> prepared;
       if (!traceScene) {
-        prepared = m_pathTracer->prepareScene(m_raster, m_traceOptions);
+        prepared = measured(m_framePerformance.sceneMilliseconds, [&] { return m_pathTracer->prepareScene(m_raster, m_traceOptions); });
         traceScene = &*prepared;
       }
       m_pathTracer->prepare(buffer, m_raster, m_traceOptions, *traceScene);

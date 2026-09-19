@@ -1,5 +1,6 @@
 #include "scene/fixtures.h"
 #include "scene/images.h"
+#include "scene/temporal.h"
 #include <fstream>
 #include <limits>
 #include <remix/remix_native_ext.h>
@@ -28,6 +29,73 @@ namespace {
     r.drawInstance(draw); // Failed replacement kept the original.
     draw.transform.matrix[0][0] = std::numeric_limits<float>::quiet_NaN();
     rejected([&] { r.drawInstance(draw); });
+    // Mesh update hints retain immutable queued versions. Only exact topology
+    // carries storage lineage; destruction, disabling, or index changes end it.
+    {
+      remixapi_HardcodedVertex v[3]{};
+      v[1].position[0] = 1; v[2].position[1] = 1;
+      v[0].normal[2] = 2;
+      v[2].normal[0] = std::numeric_limits<float>::quiet_NaN();
+      uint32_t indices[]{0,1,2};
+      remixapi_MeshInfoSurfaceTriangles surface{};
+      surface.vertices_values = v; surface.vertices_count = 3;
+      surface.indices_values = indices; surface.indices_count = 3;
+      remixapi_MeshInfoUpdateEXT update{};
+      update.sType = REMIXAPI_STRUCT_TYPE_MESH_UPDATE_EXT; update.enabled = 1;
+      remixapi_MeshInfo info{}; info.sType = REMIXAPI_STRUCT_TYPE_MESH_INFO;
+      info.hash = 900; info.pNext = &update; info.surfaces_count = 1; info.surfaces_values = &surface;
+      remixapi_MeshHandle handle;
+      auto submit = [&] { r.createMesh(info,handle); r.drawInstance(instance(handle)); return r.draws().back().mesh; };
+      auto original = submit(); require(bool(original->updateStream), "Missing mesh update lineage");
+      require(original->surfaces[0]->vertices[0].normal[2] == 1 &&
+                  original->surfaces[0]->vertices[1].normal[2] == 0 &&
+                  original->surfaces[0]->vertices[2].normal[0] == 0,
+              "Authored normals were lost or legacy/invalid normals lost geometric fallback");
+      v[0].position[0] = .01f; auto next = submit();
+      require(original != next && original->updateStream == next->updateStream &&
+              original->surfaces[0]->vertices[0].position[0] == 0, "Replacement mutated queued mesh or lost compatible lineage");
+      update.enabled = 2; rejected([&] { r.createMesh(info,handle); });
+      update.enabled = 1; require(submit() == next, "Invalid metadata changed current mesh");
+      std::swap(indices[1],indices[2]); auto topology = submit();
+      require(topology->updateStream != next->updateStream, "Index edit retained update lineage");
+      r.destroyMesh(handle); auto recreated = submit();
+      require(recreated->updateStream != topology->updateStream, "Destroyed hash retained update lineage");
+      update.enabled = 0; require(!submit()->updateStream, "Disabled update retained lineage");
+      remixapi_MeshInfoMotionEXT motion{};
+      motion.sType = REMIXAPI_STRUCT_TYPE_MESH_MOTION_EXT; motion.enabled = 1;
+      update.pNext = &motion;
+      rejected([&] { r.createMesh(info,handle); }); // Motion needs storage lineage.
+      update.enabled = 1; motion.enabled = 2;
+      rejected([&] { r.createMesh(info,handle); });
+      motion.enabled = 1;
+      auto firstMotion = submit();
+      auto previousDraw = r.draws().back(); previousDraw.instanceId = 71;
+      remix::scene::TemporalHistory history;
+      history.begin({1,1},1,480,270); history.stage(previousDraw); history.commit();
+      history.begin({1,1},1,480,270);
+      v[0].position[0] = .2f; auto moved = submit();
+      auto movedDraw = r.draws().back(); movedDraw.instanceId = 71;
+      require(moved != firstMotion && history.previousGeometry(movedDraw) &&
+                  history.previousGeometry(movedDraw)->draw.surface->vertices[0].position[0] == .01f,
+              "Explicit motion did not preserve last submitted immutable vertices");
+      history.stage(movedDraw); // A discarded submission must not replace history.
+      history.begin({1,1},1,480,270);
+      require(history.previousGeometry(movedDraw)->draw.mesh == firstMotion,
+              "Unsubmitted streamed update advanced history");
+      motion.enabled = 0; submit();
+      auto untracked = r.draws().back(); untracked.instanceId = 71;
+      require(!history.previousGeometry(untracked), "Storage hint alone gained motion correspondence");
+      motion.enabled = 1;
+      submit(); auto reenabled = r.draws().back(); reenabled.instanceId = 71;
+      require(!history.previousGeometry(reenabled), "Reenabled motion retained a disabled lifetime");
+      std::swap(indices[1],indices[2]); submit();
+      auto changedTopology = r.draws().back(); changedTopology.instanceId = 71;
+      require(!history.previousGeometry(changedTopology), "Topology edit retained motion correspondence");
+      r.destroyMesh(handle); submit();
+      auto newLifetime = r.draws().back(); newLifetime.instanceId = 71;
+      require(!history.previousGeometry(newLifetime), "Recreated hash retained motion correspondence");
+      r.destroyMesh(handle); r.finishFrame();
+    }
     remixapi_CameraInfoParameterizedEXT params = {};
     params.sType = REMIXAPI_STRUCT_TYPE_CAMERA_INFO_PARAMETERIZED_EXT;
     params.aspect = 1;
@@ -138,6 +206,11 @@ namespace {
     texture.dataSize = 8;
     texture.format = REMIXAPI_FORMAT_BC1_RGB_UNORM;
     require(remix::scene::decodeTexture(texture).mips[0][3] == 255, "Raw BC1 RGB is opaque");
+    texture.format = REMIXAPI_FORMAT_BC1_RGBA_UNORM_EXT;
+    require(remix::scene::decodeTexture(texture).mips[0][3] == 0, "Raw BC1 RGBA lost cutout alpha");
+    texture.format = REMIXAPI_FORMAT_BC1_RGBA_SRGB_EXT;
+    auto rgbaBc1 = remix::scene::decodeTexture(texture);
+    require(rgbaBc1.srgb && rgbaBc1.mips[0][3] == 0, "sRGB BC1 changed alpha or transfer function");
     // Tiny valid DDS fixtures cover channel masks, BC1/2/3, odd dimensions and truncation.
     auto save = [&](const char *name, const std::vector<uint8_t> &data) {
       auto path = directory / name;

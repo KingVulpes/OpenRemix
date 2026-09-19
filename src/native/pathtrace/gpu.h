@@ -4,6 +4,7 @@
 #include "pathtrace/tlas_policy.h"
 #include "scene/light_bvh.h"
 #include "scene/emission.h"
+#include "platform/timing.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -82,8 +83,10 @@ namespace remix::trace::detail {
     uint64_t previousVertices = 0, debugIdentity = 0;
     Matrix previousModel{};
     float emission[4] = {};
+    float pbr[4] = {}; // perceptual roughness, metalness, enabled, reserved
+    uint32_t pbrTextures[4] = {}; // roughness, metalness, normal; index + 1
   };
-  static_assert(sizeof(TraceSurface) == 192 && sizeof(TraceVertex) == 48);
+  static_assert(sizeof(TraceSurface) == 224 && sizeof(TraceVertex) == 48);
   struct Frame {
     Matrix inverseCamera, camera;
     float eye[4] = {}, direction[4] = {}, radiance[4] = {};
@@ -121,6 +124,8 @@ namespace remix::trace::detail {
 
 namespace remix {
   struct PathTracer::Gpu {
+    remixapi_FramePerformanceEXT performance{.structSize = sizeof(remixapi_FramePerformanceEXT)};
+    std::vector<std::shared_ptr<trace::detail::BufferMemory>> bufferMemory;
     using Buffer = trace::detail::Buffer;
     using Image = trace::detail::Image;
     using Arena = trace::detail::Arena;
@@ -128,6 +133,20 @@ namespace remix {
     using TraceVertex = trace::detail::TraceVertex;
     using TraceSurface = trace::detail::TraceSurface;
     using Frame = trace::detail::Frame;
+    struct GeometryScratch {
+      std::string content;
+      std::vector<std::vector<TraceVertex>> shading;
+      std::vector<VkDeviceSize> vertexOffsets, indexOffsets;
+      std::vector<uint32_t> counts, vertexCounts;
+      size_t bytes() const {
+        size_t size = content.capacity() + shading.capacity()*sizeof(std::vector<TraceVertex>) +
+            (vertexOffsets.capacity()+indexOffsets.capacity())*sizeof(VkDeviceSize) +
+            (counts.capacity()+vertexCounts.capacity())*sizeof(uint32_t);
+        for (const auto &vertices : shading) size += vertices.capacity()*sizeof(TraceVertex);
+        return size;
+      }
+    } conversion;
+
     VkPhysicalDevice physical = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
     VkPhysicalDeviceMemoryProperties memory = {};
@@ -201,7 +220,7 @@ namespace remix {
     };
     static_assert(sizeof(PrimaryPush) == 80);
     std::vector<PrimaryDraw> primaryDraws;
-    std::unique_ptr<Image> primary[6];
+    std::unique_ptr<Image> primary[7];
     VkRenderPass primaryPass[2] = {};
     VkFramebuffer primaryFramebuffer[2] = {};
     VkPipeline primaryPipeline[2] = {};
@@ -274,12 +293,15 @@ namespace remix {
       std::shared_ptr<Accel> accel;
       uint64_t fingerprint = 0, revision = 0;
       float diagonal = 0;
+      std::array<float, 3> buildLow{}, buildHigh{};
+      uint32_t refits = 0;
       bool deform = false, pending = true, update = false;
       VkAccelerationStructureBuildSizesInfoKHR sizes = {
           .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
     };
     struct MeshView {
       std::weak_ptr<scene::Mesh> owner;
+      std::shared_ptr<const scene::MeshUpdateStream> updateStream;
       std::shared_ptr<Geometry> geometry;
       std::vector<std::shared_ptr<Buffer>> vertices;
       std::vector<scene::Matrix> bones;
@@ -292,6 +314,8 @@ namespace remix {
     } tlas[2];
     std::unordered_map<std::string, std::weak_ptr<Geometry>> geometryCache;
     std::map<std::tuple<const scene::Mesh *, uint64_t, uint32_t>, MeshView> meshes;
+    using MeshViewKey = std::tuple<const scene::Mesh *, uint64_t, uint32_t>;
+    std::map<const scene::MeshUpdateStream *, MeshViewKey> updateViews;
     std::vector<std::shared_ptr<Geometry>> retiredGeometry;
     std::vector<std::shared_ptr<Buffer>> retiredBuffers;
     std::vector<std::shared_ptr<Geometry>> compactPending;

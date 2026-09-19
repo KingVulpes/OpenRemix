@@ -23,6 +23,8 @@ if get_option('gpu_tests')
     include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
   test('FSR 3.1 presets and temporal composition', upscale_test,
     args : [meson.current_build_dir() / 'fsr-scenes'], timeout : 300)
+  test('PBR denoising with FSR presets motion and resizing', upscale_test,
+    args : [meson.current_build_dir() / 'pbr-fsr-scenes'], env : ['REMIX_TEST_PBR=1'], timeout : 300)
   if system == 'linux'
     foreach fault : ['fsr-allocation', 'fsr-pipeline']
       test('FSR 3.1 fallback ' + fault, upscale_test,
@@ -114,6 +116,10 @@ if get_option('gpu_tests')
   endif
   pathtrace_test = executable('remix-pathtrace-test', 'rendering.cpp',
     include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
+  test('Compatible mesh updates and queued version isolation', pathtrace_test,
+    args : [meson.current_build_dir() / 'mesh-update-scenes', 'mesh-update'], timeout : 120)
+  test('Geometry content reuse and shading history invalidation', pathtrace_test,
+    args : [meson.current_build_dir() / 'geometry-history-scenes', 'geometry-history'], timeout : 120)
   test('Path tracing capabilities and GPU scenes', pathtrace_test,
     args : [meson.current_build_dir() / 'pathtrace-scenes'], timeout : 180)
   test('Diffuse SH convergence against raw reference', pathtrace_test,
@@ -159,3 +165,15 @@ endif
 buffer_cache_test = executable('remix-buffer-cache-test', 'buffer_cache.cpp',
   include_directories : test_includes, dependencies : vulkan_dep, cpp_args : ['-UNDEBUG'])
 test('Upload buffer cache ownership and bounds', buffer_cache_test)
+eon_test = executable('remix-eon-test', 'eon.cpp', include_directories : native_include)
+test('EON furnace reciprocity and sampling PDFs', eon_test)
+if get_option('gpu_tests')
+  pbr_render_test = executable('remix-pbr-render-test', 'pbr.cpp',
+    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
+  test('EON PBR maps and primary visibility agreement', pbr_render_test,
+    args : [meson.current_build_dir() / 'pbr-scenes'], timeout : 300)
+  pbr_denoise_test = executable('remix-pbr-denoise-test', 'pbr_denoise.cpp',
+    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
+  test('PBR denoising noise energy and camera cuts', pbr_denoise_test,
+    args : [meson.current_build_dir() / 'pbr-denoise-scenes'], timeout : 300)
+endif

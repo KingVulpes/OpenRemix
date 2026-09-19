@@ -64,6 +64,8 @@ namespace remix {
                  scene::TraceFrame &scene);
     void record(VkCommandBuffer command);
     remixapi_TracingStatisticsEXT statistics() const;
+    void resetPerformance();
+    remixapi_FramePerformanceEXT performance() const;
 
   private:
     struct Gpu;

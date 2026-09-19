@@ -13,6 +13,7 @@ namespace remix {
 
   std::unique_ptr<Buffer> PathTracer::Gpu::buffer(VkDeviceSize size, VkBufferUsageFlags usage, bool host,
                                                  bool reusable) {
+    ScopedMilliseconds time{performance.allocationMilliseconds};
     auto out = std::make_unique<Buffer>();
     out->device = device;
     out->size = align(std::max(size, VkDeviceSize(16)), 4096);
@@ -20,6 +21,7 @@ namespace remix {
     out->host = host;
     if (reusable) {
       if (auto cached = bufferCache->take(out->size, out->usage, host)) {
+        ++performance.bufferCacheHits;
         static_cast<BufferAllocation &>(*out) = *cached;
         out->cache = bufferCache;
         return out;
@@ -30,9 +32,15 @@ namespace remix {
                                .usage = out->usage,
                                .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     check(vkCreateBuffer(device, &info, nullptr, &out->handle));
-    VkMemoryRequirements requirements;
-    vkGetBufferMemoryRequirements(device, out->handle, &requirements);
+    VkMemoryDedicatedRequirements dedicated{.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS};
+    VkMemoryRequirements2 query{.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2, .pNext = &dedicated};
+    VkBufferMemoryRequirementsInfo2 request{.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_REQUIREMENTS_INFO_2,
+                                           .buffer = out->handle};
+    vkGetBufferMemoryRequirements2(device, &request, &query);
+    const auto &requirements = query.memoryRequirements;
     out->allocationSize = requirements.size;
+    ++performance.bufferAllocations;
+    performance.allocationBytes += requirements.size;
     VkMemoryAllocateFlagsInfo flags = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO,
                                        .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT};
     VkMemoryAllocateInfo allocate = {
@@ -42,8 +50,42 @@ namespace remix {
         .memoryTypeIndex =
             memoryType(requirements.memoryTypeBits,
                        host ? VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)};
-    check(vkAllocateMemory(device, &allocate, nullptr, &out->memory));
-    check(vkBindBufferMemory(device, out->handle, out->memory, 0));
+    if (reusable && !dedicated.requiresDedicatedAllocation) {
+      const VkDeviceSize alignment = std::max(requirements.alignment,
+          host ? properties.limits.nonCoherentAtomSize : VkDeviceSize(1));
+      out->allocationSize = align(requirements.size,alignment);
+      out->atomSize = host ? properties.limits.nonCoherentAtomSize : 1;
+      for (const auto &block : bufferMemory) if (block->type == allocate.memoryTypeIndex) {
+        if (const auto offset = block->take(out->allocationSize,alignment)) {
+          out->block = block; out->memoryOffset = *offset; break;
+        }
+      }
+      if (!out->block) {
+        auto block = std::make_shared<BufferMemory>();
+        block->device = device; block->type = allocate.memoryTypeIndex;
+        block->size = std::max(VkDeviceSize(16*1024*1024),out->allocationSize);
+        allocate.allocationSize = block->size;
+        check(vkAllocateMemory(device,&allocate,nullptr,&block->memory));
+        ++performance.memoryAllocations; performance.memoryAllocationBytes += block->size;
+        block->free.emplace_back(0,block->size);
+        const auto offset = block->take(out->allocationSize,alignment);
+        out->block = block; out->memoryOffset = *offset;
+        bufferMemory.push_back(std::move(block));
+      }
+      out->memory = out->block->memory;
+      if (host) {
+        if (!out->block->mapped)
+          check(vkMapMemory(device,out->memory,0,VK_WHOLE_SIZE,0,&out->block->mapped));
+        out->mapped = static_cast<char*>(out->block->mapped)+out->memoryOffset;
+      }
+    } else {
+      VkMemoryDedicatedAllocateInfo dedicatedInfo{.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
+                                                   .buffer = out->handle};
+      if (dedicated.requiresDedicatedAllocation) flags.pNext = &dedicatedInfo;
+      check(vkAllocateMemory(device, &allocate, nullptr, &out->memory));
+      ++performance.memoryAllocations; performance.memoryAllocationBytes += allocate.allocationSize;
+    }
+    check(vkBindBufferMemory(device, out->handle, out->memory, out->memoryOffset));
     VkBufferDeviceAddressInfo address = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
                                          .buffer = out->handle};
     out->address = getBufferAddress(device, &address);
@@ -56,13 +98,18 @@ namespace remix {
   void PathTracer::Gpu::write(Buffer &buffer, const void *data, size_t size) {
     if (!size)
       return;
-    void *mapped;
-    check(vkMapMemory(device, buffer.memory, 0, VK_WHOLE_SIZE, 0, &mapped));
-    std::memcpy(mapped, data, size);
+    ScopedMilliseconds time{performance.uploadMilliseconds};
+    performance.uploadBytes += size;
+    // Slot ownership already protects host writes. Keep reusable staging mapped
+    // through its lifetime, including time in the bounded idle allocation cache.
+    if (!buffer.mapped)
+      check(vkMapMemory(device, buffer.memory, 0, VK_WHOLE_SIZE, 0, &buffer.mapped));
+    std::memcpy(buffer.mapped, data, size);
     VkMappedMemoryRange flush = {
-        .sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = buffer.memory, .size = VK_WHOLE_SIZE};
+        .sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = buffer.memory,
+        .offset = buffer.memoryOffset,
+        .size = buffer.block ? align(size,buffer.atomSize) : VK_WHOLE_SIZE};
     const auto result = vkFlushMappedMemoryRanges(device, 1, &flush);
-    vkUnmapMemory(device, buffer.memory);
     check(result);
   }
 

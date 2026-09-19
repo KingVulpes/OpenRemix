@@ -27,6 +27,25 @@ SDL3, the sample, SDK headers, pin and license notices. No Vulkan driver is bund
 
 ## Windows x64
 
+### Cross-build from Linux
+
+Linux hosts can use Clang with the x86_64 MinGW-w64 headers, libraries and runtime,
+plus Python, CMake, Meson, Ninja, pkg-config, LLVM binutils and Wine:
+
+```sh
+python3 scripts/linux/build-windows-remix.py
+python3 scripts/common/package-remix.py --target windows --build _work/build/windows-cross \
+  --deps _work/deps/windows --output _work/packages/windows-cross
+```
+
+Use `--cmake /path/to/cmake` if CMake is outside PATH. The cross-build entry point
+builds the pinned SDL3, generates a Windows import library from the verified Vulkan
+1.4.309 export definition, and runs CPU tests in an isolated Wine prefix under
+`_work/deps/windows`. Windows or Proton supplies the Vulkan loader and GPU driver.
+The cross-built package includes the MinGW runtime DLLs alongside SDL3 and remix.dll.
+
+### Build on Windows
+
 Install the Vulkan SDK and Clang, and run in a Visual Studio x64 developer PowerShell.
 The compiler is clang-cl with the Visual Studio headers, import libraries and CRT.
 Install `meson`, `ninja` and `cmake` through Python or your tool installer.

@@ -17,7 +17,14 @@ namespace remix {
     if (!info.hash || !info.surfaces_count || info.surfaces_count > 4096 || !info.surfaces_values) {
       throw invalid;
     }
+    const auto *update = static_cast<const remixapi_MeshInfoUpdateEXT *>(
+        extension(info.pNext, REMIXAPI_STRUCT_TYPE_MESH_UPDATE_EXT));
+    if (update && update->enabled > 1) throw invalid;
+    const auto *motion = static_cast<const remixapi_MeshInfoMotionEXT *>(
+        extension(info.pNext, REMIXAPI_STRUCT_TYPE_MESH_MOTION_EXT));
+    if (motion && (motion->enabled > 1 || (motion->enabled && (!update || !update->enabled)))) throw invalid;
     auto mesh = std::make_shared<Mesh>();
+    mesh->motionCorrespondence = motion && motion->enabled;
     uint64_t bytes = 0;
     for (uint32_t i = 0; i < info.surfaces_count; ++i) {
       const auto &source = info.surfaces_values[i];
@@ -45,6 +52,13 @@ namespace remix {
         auto &dst = surface->vertices[v];
         std::copy_n(src.position, 3, dst.position);
         std::copy_n(src.texcoord, 2, dst.uv);
+        // Legacy callers may omit normals. Invalid/zero normals retain flat
+        // shading; a valid authored normal must survive scene ownership.
+        if (std::isfinite(src.normal[0]) && std::isfinite(src.normal[1]) && std::isfinite(src.normal[2])) {
+          const float length = std::hypot(src.normal[0], src.normal[1], src.normal[2]);
+          if (length > 1e-12f)
+            for (int c = 0; c < 3; ++c) dst.normal[c] = src.normal[c] / length;
+        }
         rgba(src.color, dst.color);
         for (int c = 0; c < 3; ++c) {
           low[c] = std::min(low[c], src.position[c]);
@@ -88,7 +102,19 @@ namespace remix {
       mesh->surfaces.push_back(std::move(surface));
     }
     auto previous = m_meshes.find(info.hash);
+    if (update && update->enabled && std::none_of(mesh->surfaces.begin(), mesh->surfaces.end(),
+                                                 [](const auto &s) { return s->bonesPerVertex != 0; })) {
+      bool compatible = previous != m_meshes.end() && previous->second->updateStream &&
+                        previous->second->motionCorrespondence == mesh->motionCorrespondence &&
+                        previous->second->surfaces.size() == mesh->surfaces.size();
+      if (compatible) for (size_t i = 0; i < mesh->surfaces.size(); ++i) {
+        const auto &old = *previous->second->surfaces[i], &next = *mesh->surfaces[i];
+        if (old.vertices.size() != next.vertices.size() || old.indices != next.indices) { compatible = false; break; }
+      }
+      mesh->updateStream = compatible ? previous->second->updateStream : std::make_shared<MeshUpdateStream>();
+    }
     auto equal = [&](const Mesh &a, const Mesh &b) {
+      if (a.updateStream != b.updateStream || a.motionCorrespondence != b.motionCorrespondence) return false;
       if (a.surfaces.size() != b.surfaces.size())
         return false;
       for (size_t i = 0; i < a.surfaces.size(); ++i) {

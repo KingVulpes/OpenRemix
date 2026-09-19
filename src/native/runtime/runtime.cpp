@@ -50,6 +50,7 @@ namespace remix {
     m_failed = false;
     m_deviceLost = false;
     m_presentationCount = 0;
+    m_framePerformance = {.structSize = sizeof(remixapi_FramePerformanceEXT)};
     m_frameIndex = 0;
     const char *frames = std::getenv("REMIX_FRAMES_IN_FLIGHT");
     m_frameCount = frames && std::strcmp(frames, "1") == 0 ? 1u : gpuFrameCount;

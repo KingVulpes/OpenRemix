@@ -10,6 +10,8 @@ namespace remix {
     retiredGeometry.clear();
     retiredBuffers.clear();
     retired.clear();
+    bufferCache->trimMemory(bufferMemory);
+    std::erase_if(bufferMemory, [](const auto &block) { return block.use_count() == 1; });
     if (timingPending) {
       uint64_t times[4] = {};
       if (vkGetQueryPoolResults(device, timestamps, 0, 4, sizeof(times), times, sizeof(uint64_t),
@@ -63,6 +65,7 @@ namespace remix {
   }
 
   void PathTracer::Gpu::buildBottom(VkCommandBuffer command) {
+    ScopedMilliseconds time{performance.accelerationMilliseconds};
     std::vector<std::shared_ptr<Geometry>> work;
     VkDeviceSize scratchBytes = 0;
     for (auto &[key, view] : meshes)

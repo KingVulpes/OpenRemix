@@ -1,4 +1,5 @@
 #include "scene/images.h"
+#include <remix/remix_native_ext.h>
 
 #include <algorithm>
 #include <cstring>
@@ -40,6 +41,7 @@ namespace remix::scene {
         throw invalid;
       }
       Pixels out{width, height, srgb, {}};
+      out.twoChannel = block == 5;
       size_t offset = 0, total = 0;
       for (uint32_t mip = 0; mip < mips; ++mip) {
         const size_t bytes = block ? size_t((width + 3) / 4) * ((height + 3) / 4) * (block == 1 ? 8 : 16)
@@ -103,8 +105,8 @@ namespace remix::scene {
       throw invalid;
     }
     uint32_t block = 0;
-    bool srgb = false, bgra = false;
-    switch (info.format) {
+    bool srgb = false, bgra = false, bc1Alpha = false;
+    switch (uint32_t(info.format)) {
     case REMIXAPI_FORMAT_R8G8B8A8_SRGB:
       srgb = true;
       break;
@@ -122,6 +124,13 @@ namespace remix::scene {
       [[fallthrough]];
     case REMIXAPI_FORMAT_BC1_RGB_UNORM:
       block = 1;
+      break;
+    case REMIXAPI_FORMAT_BC1_RGBA_SRGB_EXT:
+      srgb = true;
+      [[fallthrough]];
+    case REMIXAPI_FORMAT_BC1_RGBA_UNORM_EXT:
+      block = 1;
+      bc1Alpha = true;
       break;
     case REMIXAPI_FORMAT_BC3_SRGB:
       srgb = true;
@@ -144,7 +153,7 @@ namespace remix::scene {
     auto result = decode(info.width, info.height, info.mipLevels, srgb, block, bgra,
                          static_cast<const uint8_t *>(info.data), size_t(info.dataSize));
     // The raw API exposes BC1 RGB, whereas DDS DXT1 can also carry one-bit alpha.
-    if (block == 1) {
+    if (block == 1 && !bc1Alpha) {
       for (auto &mip : result.mips) {
         for (size_t i = 3; i < mip.size(); i += 4) {
           mip[i] = 255;

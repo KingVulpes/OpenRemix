@@ -40,8 +40,15 @@ namespace remix::denoise {
     LocalImageCount,
     EmissiveInput = LocalImageCount,
     EmissiveOutput,
+    EmissiveImageCount,
+    PbrSpecularInput = EmissiveImageCount,
+    PbrDiffuseOutput,
+    PbrSpecularOutput,
+    PbrSpecularFactor,
     ImageCount
   };
+  static_assert(BaseImageCount == 22 && PbrSpecularInput == 29 && ImageCount == 33,
+                "Update the matching inputs.glsl bindings when changing image slots");
   // Shared std140 constants. Matrices are nonjittered, in Vulkan framebuffer coordinates.
   struct Frame {
     scene::Matrix view{}, previousView{}, previousCamera{}, previousInverseCamera{}, inverseCamera{};
@@ -51,7 +58,7 @@ namespace remix::denoise {
     uint32_t target[4] = {}; // width, height, previous seed, samples
     float timing[4] = {};    // frame milliseconds, validation, world changed, reserved
     float sun[4] = {};       // direction toward sun, SIGMA active
-    uint32_t shadow[4] = {}; // SIGMA reset, debug view, reserved
+    uint32_t shadow[4] = {}; // SIGMA reset, debug view, PBR receivers, legacy receivers
     uint32_t local[4] = {}; // denoise, active lights, responsive frames, reserved
     uint32_t families[4] = {}; // torch/emissive counts, torch/emissive response frames
   };

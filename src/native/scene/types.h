@@ -20,9 +20,12 @@ namespace remix {
       uint32_t width = 0, height = 0;
       bool srgb = true;
       std::vector<std::vector<uint8_t>> mips;
+      bool twoChannel = false; // BC5 stores normal X/Y; reconstruct Z when used as a normal map.
     };
     struct Texture {
       Pixels pixels;
+      mutable std::weak_ptr<Texture> linear;
+      std::shared_ptr<Texture> encodedSource; // Keep a file-backed data view's weak path cache alive.
       mutable uint64_t contentHash = 0;
       uint64_t fingerprint() const;
     };
@@ -30,10 +33,14 @@ namespace remix {
       float position[3];
       float uv[2];
       float color[4];
+      float normal[3] = {}; // Zero selects the geometric-normal fallback.
     };
     struct Material {
       std::shared_ptr<Texture> texture;
       std::shared_ptr<Texture> emissionTexture;
+      std::shared_ptr<Texture> roughnessTexture, metallicTexture, normalTexture;
+      float roughness = 1, metallic = 0;
+      bool pbr = false;
       float emission[3] = {};
       mutable std::unordered_map<uint64_t, std::array<float, 3>> emissionCache;
       float tint[4] = {1, 1, 1, 1};
@@ -52,7 +59,10 @@ namespace remix {
       remixapi_MaterialHandle material = nullptr;
       std::array<float, 3> center = {};
     };
+    struct MeshUpdateStream {};
     struct Mesh {
+      std::shared_ptr<const MeshUpdateStream> updateStream;
+      bool motionCorrespondence = false;
       std::vector<std::shared_ptr<Surface>> surfaces;
     };
     struct Blend {

@@ -21,6 +21,10 @@ namespace {
 
 int main(int argc, char **argv) {
   require(argc == 2, "Supply screenshot output directory");
+  static_assert(sizeof(remixapi_MeshInfoUpdateEXT) == 24);
+  static_assert(sizeof(remixapi_MeshInfoMotionEXT) == 24);
+  static_assert(offsetof(remixapi_MeshInfoMotionEXT, enabled) == 16);
+  static_assert(offsetof(remixapi_MeshInfoUpdateEXT, enabled) == 16);
   static_assert(sizeof(remixapi_InputEvent) == 32);
   static_assert(sizeof(remixapi_WindowMetrics) == 16);
   static_assert(sizeof(remixapi_CameraTemporalEXT) == 32);
@@ -29,6 +33,15 @@ int main(int argc, char **argv) {
   static_assert(offsetof(remixapi_CameraEnvironmentEXT, radiance) == 20);
   static_assert(sizeof(remixapi_DenoisingCapabilitiesEXT) == 272);
   static_assert(sizeof(remixapi_DenoisingStatisticsEXT) == 344);
+  static_assert(sizeof(remixapi_FramePerformanceEXT) == 176);
+  remixapi_FramePerformanceEXT framePerformance{};
+  require(remixapi_GetFramePerformanceEXT(nullptr) == REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS,
+          "Null frame performance accepted");
+  require(remixapi_GetFramePerformanceEXT(&framePerformance) == REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS,
+          "Invalid frame performance size accepted");
+  framePerformance.structSize = sizeof(framePerformance);
+  require(remixapi_GetFramePerformanceEXT(&framePerformance) == REMIXAPI_ERROR_CODE_NOT_INITIALIZED,
+          "Frame performance before startup");
   remixapi_DenoisingCapabilitiesEXT denoiseCaps{};
   remixapi_DenoisingStatisticsEXT denoiseStats{};
   require(remixapi_GetDenoisingCapabilitiesEXT(nullptr) == REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS,
@@ -58,6 +71,9 @@ int main(int argc, char **argv) {
   startup.windowHeight = 240;
 #endif
   ok(api.Startup(&startup));
+  ok(remixapi_GetFramePerformanceEXT(&framePerformance));
+  require(!framePerformance.attempts && !framePerformance.presentations,
+          "Frame performance not reset on startup");
   ok(remixapi_GetDenoisingCapabilitiesEXT(&denoiseCaps));
   ok(remixapi_GetDenoisingStatisticsEXT(&denoiseStats));
   require(denoiseStats.requestedDenoiser && denoiseStats.requestedTaa && !denoiseStats.activeDenoiser &&
@@ -141,6 +157,11 @@ int main(int argc, char **argv) {
   require(SDL_SyncWindow(window), "Wait for resize before screenshot");
   ok(api.PumpEvents());
   ok(api.Present(nullptr));
+  ok(remixapi_GetFramePerformanceEXT(&framePerformance));
+  require(framePerformance.attempts == 1 && framePerformance.presentMilliseconds >= 0 &&
+              framePerformance.presentMilliseconds >= framePerformance.fenceMilliseconds &&
+              framePerformance.presentations == framePerformance.presented,
+          "Invalid frame performance accounting");
   for (unsigned i = 0; i < 250 && !std::filesystem::exists(path); ++i) {
     SDL_Delay(8);
     ok(api.PumpEvents());

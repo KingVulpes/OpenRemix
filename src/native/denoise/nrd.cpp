@@ -38,11 +38,15 @@ namespace remix::denoise {
       }
     }
   } // namespace
-  void Renderer::Gpu::initializeNrd(NrdPass &pass, bool sigma, bool local) {
+  void Renderer::Gpu::initializeNrd(NrdPass &pass, bool sigma, bool local, bool pbr) {
     pass.device = device;
     pass.sigma = sigma;
     pass.local = local;
-    const nrd::DenoiserDesc denoiser{0, sigma ? nrd::Denoiser::SIGMA_SHADOW_TRANSLUCENCY : local ? nrd::Denoiser::REBLUR_DIFFUSE : nrd::Denoiser::REBLUR_DIFFUSE_SH};
+    pass.pbr = pbr;
+    const nrd::DenoiserDesc denoiser{0, sigma ? nrd::Denoiser::SIGMA_SHADOW_TRANSLUCENCY
+                                         : pbr ? nrd::Denoiser::REBLUR_DIFFUSE_SPECULAR
+                                               : local ? nrd::Denoiser::REBLUR_DIFFUSE
+                                                       : nrd::Denoiser::REBLUR_DIFFUSE_SH};
     nrd::InstanceCreationDesc create{};
     create.denoisers = &denoiser;
     create.denoisersNum = 1;
@@ -75,9 +79,9 @@ namespace remix::denoise {
     for (uint32_t i = 0; i < desc.pipelinesNum; ++i) {
       const auto &source = desc.pipelines[i];
       auto &p = pass.pipelines[i];
-      // Only split local histories need reconstruction for skipped samples.
-      // Keep that optional permutation out of ordinary startup.
-      if (std::strstr(source.shaderIdentifier, "HitDistReconstruction") && !(local && split))
+      // Split-family samples and PBR lobes can leave invalid hit distances.
+      // Other signals do not request distance reconstruction.
+      if (std::strstr(source.shaderIdentifier, "HitDistReconstruction") && !(local && split) && !pbr)
         continue;
       const Shader *shader = nullptr;
       for (const auto &s : shaders)
@@ -152,7 +156,7 @@ namespace remix::denoise {
     common.timeDeltaBetweenFrames = frame.timing[0];
     common.frameIndex = uint32_t(stats.renderedFrames);
     common.accumulationMode =
-        (frame.flags[0] || (pass.sigma && frame.shadow[0]) || (pass.local && !pass.wasActive))
+        (frame.flags[0] || (pass.sigma && frame.shadow[0]) || !pass.wasActive)
             ? nrd::AccumulationMode::CLEAR_AND_RESTART : nrd::AccumulationMode::CONTINUE;
     common.enableValidation = frame.timing[1] != 0;
     common.isHistoryConfidenceAvailable = !pass.sigma && !pass.local;
@@ -169,6 +173,8 @@ namespace remix::denoise {
       require(nrd::SetDenoiserSettings(*pass.instance, 0, &settings));
     } else {
       nrd::ReblurSettings settings{};
+      // Keep legacy diffuse, PBR dielectric and metallic receivers separate.
+      settings.minMaterialForDiffuse = settings.minMaterialForSpecular = 0;
       if (frame.local[1]) {
         // Sparse torch samples need stronger outlier rejection in both the
         // direct signal and bounced SH, without increasing spatial blur.
@@ -186,6 +192,14 @@ namespace remix::denoise {
           std::clamp(nrd::GetMaxAccumulatedFrameNum(nrd::REBLUR_DEFAULT_ACCUMULATION_TIME,
                                                     1000.f / std::max(frame.timing[0], 1.f)),
                      1u, nrd::REBLUR_MAX_HISTORY_FRAME_NUM);
+      if (pass.pbr) {
+        settings.hitDistanceReconstructionMode = nrd::HitDistanceReconstructionMode::AREA_3X3;
+        settings.diffusePrepassBlurRadius = 4.f;
+        settings.specularPrepassBlurRadius = 8.f;
+        settings.maxBlurRadius = 16.f;
+        if (frame.local[0] && frame.local[2])
+          settings.maxAccumulatedFrameNum = std::min(settings.maxAccumulatedFrameNum, 8u);
+      }
       if (pass.local) {
         const bool responsive = split ? frame.families[pass.emissive ? 3 : 2] != 0 : frame.local[2] != 0;
         // Direct-light discontinuities are sharper than diffuse GI. Large GI
@@ -240,14 +254,19 @@ namespace remix::denoise {
       case R::IN_VIEWZ:
         return *images[Depth];
       case R::IN_DIFF_RADIANCE_HITDIST:
-        return *images[pass.emissive ? EmissiveInput : LocalInput];
+        return *images[pass.pbr ? Sh0 : pass.emissive ? EmissiveInput : LocalInput];
       case R::OUT_DIFF_RADIANCE_HITDIST:
-        return *images[pass.emissive ? EmissiveOutput : LocalOutput];
+        return *images[pass.pbr ? PbrDiffuseOutput : pass.emissive ? EmissiveOutput : LocalOutput];
+      case R::IN_SPEC_RADIANCE_HITDIST:
+        return *images[PbrSpecularInput];
+      case R::OUT_SPEC_RADIANCE_HITDIST:
+        return *images[PbrSpecularOutput];
       case R::IN_DIFF_SH0:
         return *images[Sh0];
       case R::IN_DIFF_SH1:
         return *images[Sh1];
       case R::IN_DIFF_CONFIDENCE:
+      case R::IN_SPEC_CONFIDENCE:
         return *images[Confidence];
       case R::OUT_DIFF_SH0:
         return *images[Out0];

@@ -15,21 +15,35 @@ for manifest, base in [(root / 'tests/abi/headers.sha256', root),
     for line in manifest.read_text().splitlines():
         checksum, filename = line.split('  ', 1)
         assert hashlib.sha256((base / filename).read_bytes()).hexdigest() == checksum, filename
-runtime = ctypes.CDLL(str(library), **({'winmode': 0} if sys.platform == 'win32' else {}))
-for name in (root / 'tests/abi/exports.txt').read_text().splitlines():
-    assert getattr(runtime, name), name
-for name in ('remixapi_GetBackendCapabilitiesEXT', 'remixapi_GetTracingStatisticsEXT',
-             'remixapi_GetLocalLightGuidingStatisticsEXT', 'remixapi_GetLocalLightStatisticsEXT', 'remixapi_GetShadowStatisticsEXT', 'remixapi_GetSharcStatisticsEXT', 'remixapi_GetDenoisingCapabilitiesEXT', 'remixapi_GetDenoisingStatisticsEXT'):
-    assert getattr(runtime, name), name
-assert runtime.remixapi_imgui_Begin(None, None, 0) == 0
-value = ctypes.c_float(12)
-runtime.remixapi_imgui_GetWindowSize(ctypes.byref(value), None)
-assert value.value == 0
-if sys.platform.startswith('linux'):
+required_exports = (root / 'tests/abi/exports.txt').read_text().splitlines()
+required_exports += ['remixapi_GetBackendCapabilitiesEXT', 'remixapi_GetTracingStatisticsEXT', 'remixapi_GetFramePerformanceEXT',
+             'remixapi_GetLocalLightGuidingStatisticsEXT', 'remixapi_GetLocalLightStatisticsEXT',
+             'remixapi_GetShadowStatisticsEXT', 'remixapi_GetSharcStatisticsEXT',
+             'remixapi_GetDenoisingCapabilitiesEXT', 'remixapi_GetDenoisingStatisticsEXT']
+cross_windows = library.suffix.lower() == '.dll' and sys.platform != 'win32'
+if cross_windows:
+    # The host Python cannot load a PE DLL. Inspect it here; the Windows export
+    # test executes loader/widget checks through Meson's Wine exe_wrapper.
+    pe = subprocess.check_output(['objdump', '-p', library], text=True)
+    exported = {line.split()[-1] for line in pe.splitlines() if 'remixapi_' in line}
+    for name in required_exports:
+        assert name in exported, name
+    needed = '\n'.join(line.lower() for line in pe.splitlines() if 'DLL Name:' in line)
+    for removed in ['ngx', 'nrd', 'usd', 'rtxio', 'dxvk', 'd3d', 'xess', 'slang']:
+        assert removed not in needed, removed
+else:
+    runtime = ctypes.CDLL(str(library), **({'winmode': 0} if sys.platform == 'win32' else {}))
+    for name in required_exports:
+        assert getattr(runtime, name), name
+    assert runtime.remixapi_imgui_Begin(None, None, 0) == 0
+    value = ctypes.c_float(12)
+    runtime.remixapi_imgui_GetWindowSize(ctypes.byref(value), None)
+    assert value.value == 0
+if sys.platform.startswith('linux') and not cross_windows:
     dynamic = subprocess.check_output(['readelf', '-d', library], text=True)
     needed = '\n'.join(line.lower() for line in dynamic.splitlines() if '(NEEDED)' in line)
     for removed in ['ngx', 'nrd', 'usd', 'rtxio', 'dxvk', 'd3d', 'xess', 'slang']:
         assert removed not in needed, removed
     symbols = subprocess.check_output(['nm', '-D', '--undefined-only', library], text=True)
     assert 'vkGetBufferDeviceAddress' not in symbols, 'Tracing must not require a Vulkan 1.2 loader for raster'
-print('Header checksums, ImGui pin, required exports, inert widgets and dependency audit passed')
+print('Header checksums, vendor pins, required exports and dependency audit passed')

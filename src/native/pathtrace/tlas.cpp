@@ -6,6 +6,7 @@ namespace remix {
 
   void PathTracer::Gpu::buildTop(VkCommandBuffer command, const std::vector<trace::InstanceInput> inputs[2],
                                  bool force) {
+    ScopedMilliseconds time{performance.accelerationMilliseconds};
     VkAccelerationStructureGeometryKHR geometry[2] = {};
     VkAccelerationStructureBuildGeometryInfoKHR builds[2] = {};
     VkAccelerationStructureBuildSizesInfoKHR sizes[2] = {};

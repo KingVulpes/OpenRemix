@@ -13,6 +13,9 @@ if cpp.get_id() not in ['clang', 'clang-cl']
 endif
 if system == 'windows'
   add_project_arguments('-DNOMINMAX', language : ['c', 'cpp'])
+  if cpp.get_id() == 'clang'
+    add_project_arguments('-include', meson.project_source_root() / 'src/native/platform/mingw_compat.h', language : 'cpp')
+  endif
 endif
 add_project_arguments('-DREMIX_HAS_SHARC=' + (get_option('sharc') ? '1' : '0'), language : ['c', 'cpp'])
 threads_dep = dependency('threads')

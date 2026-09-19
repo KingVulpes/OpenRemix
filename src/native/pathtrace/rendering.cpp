@@ -2,6 +2,8 @@
 #include "scene/emission.h"
 #include <cstdio>
 #include <cstdlib>
+#include <map>
+#include <tuple>
 
 namespace remix {
   using namespace scene;
@@ -35,6 +37,7 @@ namespace remix {
     std::vector<VkDescriptorImageInfo> textures;
     std::unordered_map<const Material *, uint32_t> textureIndices;
     std::unordered_map<const Material *, uint32_t> emissionTextures;
+    std::map<std::tuple<const scene::Texture *, uint8_t, uint8_t, uint8_t>, uint32_t> pbrTextures;
     std::vector<uint8_t> scene, staticGeometry, dynamicGeometry;
     auto appendStatic = [&](const void *data, size_t size) {
       const auto *bytes = static_cast<const uint8_t *>(data);
@@ -106,6 +109,25 @@ namespace remix {
           append(sampler, sizeof(sampler));
         }
         TraceSurface value;
+        value.pbr[0] = material.roughness;
+        value.pbr[1] = material.metallic;
+        value.pbr[2] = material.pbr ? 1.f : 0.f;
+        value.pbrTextures[3] = material.normalTexture && material.normalTexture->pixels.twoChannel;
+        const std::shared_ptr<scene::Texture> maps[] = {
+            material.roughnessTexture, material.metallicTexture, material.normalTexture};
+        for (unsigned i = 0; i < 3; ++i) {
+          if (!maps[i]) continue;
+          auto [map, added] = pbrTextures.emplace(
+              std::make_tuple(maps[i].get(), material.filter, material.wrapU, material.wrapV),
+              uint32_t(textures.size()));
+          if (added) {
+            if (textures.size() >= PathTracer::textureLimit) throw VK_ERROR_TOO_MANY_OBJECTS;
+            textures.push_back(resources.sampledTexture(surface.material, maps[i], command));
+            const auto fingerprint = maps[i]->fingerprint();
+            append(&fingerprint, sizeof(fingerprint));
+          }
+          value.pbrTextures[i] = map->second + 1;
+        }
         std::copy_n(material.emission, 3, value.emission);
         if (material.emissionTexture && (material.emission[0] > 0 || material.emission[1] > 0 || material.emission[2] > 0)) {
           auto [emitter, newTexture] = emissionTextures.emplace(surface.material.get(), uint32_t(textures.size()));
@@ -176,6 +198,11 @@ namespace remix {
         it = meshes.erase(it);
       } else
         ++it;
+    }
+    for (auto it = updateViews.begin(); it != updateViews.end();) {
+      auto view = meshes.find(it->second);
+      if (view == meshes.end() || view->second.updateStream.get() != it->first) it = updateViews.erase(it);
+      else ++it;
     }
     // Geometry uploads feed both AS construction and BDA reads in the compute shader.
     barrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -313,6 +340,10 @@ namespace remix {
     previousLocalActive = frame.localConfig[0];
     previousLocalAdaptive = frame.localConfig[3] & 0x80000000u;
     temporalFrame = {};
+    temporalFrame.shadow[2] = std::any_of(resources.draws().begin(), resources.draws().end(),
+        [](const auto &draw) { return draw.traced() && draw.material->pbr; });
+    temporalFrame.shadow[3] = std::any_of(resources.draws().begin(), resources.draws().end(),
+        [](const auto &draw) { return draw.traced() && !draw.material->pbr; });
     temporalFrame.local[0] = denoiser && postLocalDenoise;
     temporalFrame.local[1] = frame.localConfig[0];
     temporalFrame.local[2] = localResponsiveFrames;
@@ -427,10 +458,11 @@ namespace remix {
                                       {VK_NULL_HANDLE, primary[2]->view, VK_IMAGE_LAYOUT_GENERAL},
                                       {VK_NULL_HANDLE, primary[3]->view, VK_IMAGE_LAYOUT_GENERAL},
                                       {VK_NULL_HANDLE, primary[4]->view, VK_IMAGE_LAYOUT_GENERAL},
-                                      {VK_NULL_HANDLE, primary[5]->view, VK_IMAGE_LAYOUT_GENERAL}};
+                                      {VK_NULL_HANDLE, primary[5]->view, VK_IMAGE_LAYOUT_GENERAL},
+                                      {VK_NULL_HANDLE, primary[6]->view, VK_IMAGE_LAYOUT_GENERAL}};
     VkWriteDescriptorSetAccelerationStructureKHR structures[2] = {};
-    VkWriteDescriptorSet writes[14] = {};
-    for (unsigned i = 0; i < 14; ++i) {
+    VkWriteDescriptorSet writes[15] = {};
+    for (unsigned i = 0; i < 15; ++i) {
       writes[i] = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                    .dstSet = set,
                    .dstBinding = i,
@@ -453,7 +485,7 @@ namespace remix {
           writes[i].descriptorCount = PathTracer::textureLimit;
       }
     }
-    vkUpdateDescriptorSets(device, 14, writes, 0, nullptr);
+    vkUpdateDescriptorSets(device, 15, writes, 0, nullptr);
     if (!imagesInitialized) {
       VkImageMemoryBarrier barriers[2] = {};
       for (unsigned i = 0; i < 2; ++i)

@@ -72,6 +72,10 @@ namespace remix {
   }
 
   void PathTracer::selectFrame(uint32_t slot) { m_gpu->selectFrame(slot); }
+  void PathTracer::resetPerformance() {
+    m_gpu->performance = {.structSize = sizeof(remixapi_FramePerformanceEXT)};
+  }
+  remixapi_FramePerformanceEXT PathTracer::performance() const { return m_gpu->performance; }
 
   PathTracer::Gpu::~Gpu() {
     destroyTarget();
@@ -224,8 +228,8 @@ namespace remix {
     LOAD(copyAs, vkCmdCopyAccelerationStructureKHR);
     LOAD(writeAsProperties, vkCmdWriteAccelerationStructuresPropertiesKHR);
 #undef LOAD
-    VkDescriptorSetLayoutBinding bindings[14] = {};
-    for (unsigned i = 0; i < 14; ++i) {
+    VkDescriptorSetLayoutBinding bindings[15] = {};
+    for (unsigned i = 0; i < 15; ++i) {
       bindings[i] = {.binding = i,
                      .descriptorCount = i == 6 ? textureLimit : 1u,
                      .stageFlags =
@@ -240,13 +244,13 @@ namespace remix {
                                             : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     }
     VkDescriptorSetLayoutCreateInfo setLayout = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-                                                 .bindingCount = 14,
+                                                 .bindingCount = 15,
                                                  .pBindings = bindings};
     check(vkCreateDescriptorSetLayout(device, &setLayout, nullptr, &g.setLayout));
     VkDescriptorPoolSize poolSizes[] = {{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 2},
                                         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
                                         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
-                                        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 9},
+                                        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 10},
                                         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, textureLimit}};
     for (auto &size : poolSizes)
       size.descriptorCount *= gpuFrameCount;

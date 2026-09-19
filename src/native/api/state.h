@@ -31,7 +31,6 @@ namespace remix::api {
   extern remix::RemixNativeRuntime g_runtime;
   extern std::mutex g_apiMutex;
   extern bool g_frameExitRegistered;
-  extern remixapi_UIState g_uiState;
   extern PFN_remixapi_BridgeCallback g_beginSceneCallback;
   extern PFN_remixapi_BridgeCallback g_endSceneCallback;
   extern PFN_remixapi_BridgeCallback g_presentCallback;

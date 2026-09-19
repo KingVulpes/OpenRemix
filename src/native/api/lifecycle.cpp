@@ -56,7 +56,6 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_Shutdown() {
     g_beginSceneCallback = nullptr;
     g_endSceneCallback = nullptr;
     g_presentCallback = nullptr;
-    g_uiState = REMIXAPI_UI_STATE_NONE;
   }
   return status;
 }

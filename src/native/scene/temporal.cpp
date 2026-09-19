@@ -16,6 +16,12 @@ namespace remix::scene {
     auto add = [&](const auto &v) { hash = hashBytes(&v, sizeof(v), hash); };
     add(m.tint);
     add(m.emission);
+    add(m.roughness);
+    add(m.metallic);
+    add(m.pbr);
+    if (m.roughnessTexture) add(m.roughnessTexture->fingerprint());
+    if (m.metallicTexture) add(m.metallicTexture->fingerprint());
+    if (m.normalTexture) add(m.normalTexture->fingerprint());
     if (m.emissionTexture) add(m.emissionTexture->fingerprint());
     add(m.compare);
     add(m.reference);
@@ -56,10 +62,14 @@ namespace remix::scene {
     if (it == m_previous.end())
       return nullptr;
     const auto &p = it->second;
-    // Mesh replacement has no guaranteed vertex correspondence. A retained mesh
-    // with changed bones does: the last submitted deformation is kept separately.
-    if (p.draw.mesh != draw.mesh || p.draw.surface != draw.surface ||
-        p.draw.classification != draw.classification)
+    // Retained meshes preserve vertex identity, including changed bones. Streamed
+    // replacements need both an explicit correspondence guarantee and exact
+    // topology lineage; an update/storage hint alone is insufficient.
+    const bool retained = p.draw.mesh == draw.mesh && p.draw.surface == draw.surface;
+    const bool corresponding = draw.mesh && p.draw.mesh && draw.mesh->motionCorrespondence &&
+        p.draw.mesh->motionCorrespondence && draw.mesh->updateStream &&
+        draw.mesh->updateStream == p.draw.mesh->updateStream;
+    if ((!retained && !corresponding) || p.draw.classification != draw.classification)
       return nullptr;
     return &p;
   }

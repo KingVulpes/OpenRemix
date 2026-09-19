@@ -7,7 +7,7 @@ shared vec4 waterNormals[64];
 shared vec3 waterIrradiance[64];
 vec4 waterIndirect(Hit primary,bool eligible,ivec2 pixel) {
   uint lane=gl_LocalInvocationIndex;
-  waterPositions[lane]=vec4(primary.p,eligible?1:0);
+  waterPositions[lane]=vec4(primary.p,eligible&&!primary.pbr?1:0);
   waterNormals[lane]=vec4(primary.n,0);
   waterIrradiance[lane]=vec3(0);
   barrier();

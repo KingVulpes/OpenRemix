@@ -163,10 +163,10 @@ bool supportsCamera(const scene::Matrix &projection) {
       !projection[5])
     return false;
   const auto inverse = scene::inverse(projection);
-  const float near = std::abs(inverse[14] / inverse[15]);
-  const float far =
+  const float nearPlane = std::abs(inverse[14] / inverse[15]);
+  const float farPlane =
       std::abs((inverse[10] + inverse[14]) / (inverse[11] + inverse[15]));
-  return std::isfinite(near) && std::isfinite(far) && near > 0 && far > near;
+  return std::isfinite(nearPlane) && std::isfinite(farPlane) && nearPlane > 0 && farPlane > nearPlane;
 }
 VkExtent2D renderSize(VkExtent2D display, uint32_t quality) {
   VkExtent2D out{};

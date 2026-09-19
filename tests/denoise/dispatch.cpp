@@ -28,7 +28,7 @@ int main() {
               offset.storageTextureAndBufferOffset == 3 && offset.textureOffset == 20,
           "SPIR-V binding contract changed");
   std::set<std::string> reached;
-  for (auto kind : {nrd::Denoiser::REBLUR_DIFFUSE_SH, nrd::Denoiser::SIGMA_SHADOW_TRANSLUCENCY, nrd::Denoiser::REBLUR_DIFFUSE}) {
+  for (auto kind : {nrd::Denoiser::REBLUR_DIFFUSE_SH, nrd::Denoiser::SIGMA_SHADOW_TRANSLUCENCY, nrd::Denoiser::REBLUR_DIFFUSE, nrd::Denoiser::REBLUR_DIFFUSE_SPECULAR}) {
     nrd::DenoiserDesc denoiser{0, kind};
     nrd::InstanceCreationDesc create{};
     create.denoisers = &denoiser;
@@ -57,7 +57,7 @@ int main() {
       common.timeDeltaBetweenFrames = frame % 2 ? 33.f : 8.f;
       nrd::ReblurSettings settings{};
       settings.hitDistanceReconstructionMode = nrd::HitDistanceReconstructionMode::OFF;
-      if (kind == nrd::Denoiser::REBLUR_DIFFUSE && frame >= 2 && frame < 4) {
+      if ((kind == nrd::Denoiser::REBLUR_DIFFUSE || kind == nrd::Denoiser::REBLUR_DIFFUSE_SPECULAR) && frame >= 2 && frame < 4) {
         settings.hitDistanceReconstructionMode = nrd::HitDistanceReconstructionMode::AREA_3X3;
         settings.diffusePrepassBlurRadius = 4.f;
       }

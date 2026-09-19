@@ -18,6 +18,10 @@ if system in ['linux', 'android']
   shell_link_args += ['-Wl,--version-script=' + meson.current_source_dir() / 'api/remix.map']
 endif
 shell_rpath = ''
+shell_versions = {}
+if system not in ['windows', 'android']
+  shell_versions = {'version' : meson.project_version(), 'soversion' : '0'}
+endif
 if system == 'darwin'
   shell_rpath = '@loader_path'
 elif system == 'linux'
@@ -25,12 +29,12 @@ elif system == 'linux'
 endif
 remix = shared_library('remix',
   api_sources + runtime_sources + ui_sources,
+  name_prefix : system == 'windows' ? '' : 'lib',
   link_with : [shell_platform, imgui_vulkan, scene_library, raster_library, pathtrace_library, denoise_library, upscale_library], dependencies : shell_deps,
   include_directories : [remix_public_include, native_include, image_include], cpp_args : shell_args,
   link_args : shell_link_args, link_depends : 'api/remix.map',
   gnu_symbol_visibility : 'hidden',
-  version : system == 'windows' or system == 'android' ? '' : meson.project_version(),
-  soversion : system == 'windows' or system == 'android' ? '' : '0',
+  kwargs : shell_versions,
   # The SDK's ABI minor 1003 exceeds Mach-O's 8-bit version component.
   darwin_versions : ['0.0.0', '0.0.0'],
   install_rpath : shell_rpath,

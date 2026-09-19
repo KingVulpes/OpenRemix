@@ -48,10 +48,10 @@ RIMGUI_EXPORT void RIMGUI_CALL remixapi_imgui_RegisterDrawCallback(PFN_remixapi_
 RIMGUI_EXPORT void RIMGUI_CALL remixapi_imgui_UnregisterDrawCallback(void);
 
 // Retained compatibility exports.
-void remixapi_imgui_InvokeDrawCallback();
+RIMGUI_EXPORT void remixapi_imgui_InvokeDrawCallback();
 
 // Always returns zero.
-int remixapi_imgui_HasDrawCallback();
+RIMGUI_EXPORT int remixapi_imgui_HasDrawCallback();
 
 // --- Windows ---
 RIMGUI_EXPORT int RIMGUI_CALL remixapi_imgui_Begin(const char *name, int *p_open, int flags);

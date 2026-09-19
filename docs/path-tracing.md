@@ -1,4 +1,6 @@
-# Optional diffuse path tracing
+# Optional path tracing
+
+EON diffuse and GGX PBR material inputs are described in [EON materials](features/eon-materials.md).
 
 Raster remains the startup default. The path tracer replaces world geometry shading
 while reusing the native runtime's window, swapchain, input, resources and raster
@@ -25,8 +27,8 @@ unchanged; the new exports and instance extension live in `remix_native_ext.h`.
 Required capabilities are Vulkan 1.2, `VK_KHR_acceleration_structure`,
 `VK_KHR_ray_query`, `VK_KHR_deferred_host_operations`, acceleration structures,
 buffer device addresses, shader int64, nonuniform sampled-image array indexing,
-512 sampled-image descriptors, 524 compute-stage resources, two AS descriptors,
-eight storage-image descriptors, four color attachments, storage/color-attachment support
+512 sampled-image descriptors, 526 compute-stage resources, two AS descriptors,
+ten storage-image descriptors, six color attachments, storage/color-attachment support
 for RGBA32F, RGBA16F, RGBA8 and R32F, RGBA32UI storage support, and a
 graphics/compute/presentation queue. Supported tracing features are enabled when the Vulkan device is created. Raster still requires
 only its previous Vulkan 1.1 graphics/presentation capabilities.
@@ -49,7 +51,9 @@ The last distant light drawn during a frame is selected, including zero radiance
 Direction specifies the direction light travels; radiance and color are linear.
 The existing angular diameter sets sun size; BetaRT uses 0.533 degrees. Primary
 opaque sun visibility is filtered separately by [SIGMA](features/sigma.md), while
-REBLUR diffuse SH retains indirect lighting. Zero diameter retains hard shadows.
+REBLUR diffuse SH retains legacy indirect lighting. [PBR materials](features/eon-materials.md)
+use separate diffuse/specular radiance denoising under the same `reblur-sh` setting.
+Zero diameter retains hard shadows.
 No submitted distant light means no direct sunlight. The sample draws white daylight;
 BetaRT updates its white distant light from the visible sun each world frame. The debug panel can override its normalized
 direction, color and intensity. [Analytic sphere lights](features/local-lights.md)
@@ -76,7 +80,7 @@ instances when explicitly using the extension. Sky and viewmodel categories rema
 raster-only. Hidden/ignored/first-person-shadow categories retain their prior skip
 behavior. Client submissions must explicitly classify gameplay feedback.
 
-BetaRT private JNI protocol version 5 carries lifetime IDs, classification, raster
+BetaRT private JNI protocol version 6 carries lifetime IDs, classification, raster
 visibility, object transforms, separate camera/floating-origin data, and camera world/reset epochs. Every camera packet carries the epochs, so replacing a pending frame cannot lose a reset. JNI still
 copies packets before returning and retains ordered resource updates plus the
 bounded frame mailbox. Terrain IDs use world generation, section lifetime and mesh
@@ -129,9 +133,10 @@ trace dispatch; the previous version remains usable until that publication.
 
 ## Integrator and composition
 
-The default primary pass rasterizes the traced scene's triangles into four attachments:
+The default primary pass rasterizes the traced scene's triangles into six attachments:
 world position/depth (RGBA32F), geometric normal/surface flags (RGBA16F), linear
-albedo/opacity (RGBA8) and previous world position/history validity (RGBA32F).
+albedo/opacity (RGBA8), previous world position/history validity (RGBA32F), visible
+emission/diagnostic identity (RGBA16F), and PBR parameters/geometric normal (RGBA16F).
 It uses the tracer's existing geometry, skinned vertices and material table, with
 shared texture/alpha evaluation and perspective-correct interpolation. Material
 color is quantized to eight bits in this pass. All traced submissions participate;
@@ -158,10 +163,14 @@ raw lighting, motion, confidence, and TAA history weight. Selecting a diagnostic
 preserves the active lighting pipelines and their histories.
 
 The compute shader reconstructs secondary-hit triangle positions, UVs, vertex tints
-and geometric normals. Textures respect their linear/sRGB format, nearest/linear filtering and
-address modes; compute shading currently samples mip level zero. At each diffuse
-surface it samples the distant light with a shadow ray and continues along a
-cosine-weighted hemisphere. Barycentric reconstruction and geometric-normal ULP
+and both geometric and authored shading normals. Vertex normals interpolate across
+triangles, follow bone animation, and use the instance inverse transpose; missing
+or invalid normals fall back to geometric normals. Both primary visibility modes
+use the same shading convention, while ray offsets retain geometric normals.
+Textures respect their linear/sRGB format, nearest/linear filtering and
+address modes; compute shading currently samples mip level zero. At each surface it samples the distant light with a shadow ray. Legacy diffuse
+materials continue along a cosine-weighted hemisphere; PBR materials use the
+EON/GGX mixture sampler. Barycentric reconstruction and geometric-normal ULP
 offsets follow *Ray Tracing Gems*, chapter 6. Mirrored transforms preserve the raster
 front-face convention. Double-sided surfaces orient the normal toward the incident ray.
 
@@ -172,7 +181,8 @@ radiance is demodulated by the primary material, packed with upstream SH helpers
 using the first continuation direction and normalized hit distance, filtered by
 REBLUR_DIFFUSE_SH, and resolved with the sample's high-quality SG resolve and diffuse
 re-jittering. Both SH outputs are used before restoring material factors. Full-rate
-sampling disables hit-distance reconstruction; roughness is linear and fixed at one.
+sampling disables hit-distance reconstruction. Legacy diffuse guides retain
+roughness one; PBR guides carry material roughness and bypass diffuse SH resolve.
 
 Blended primary sheets are excluded from opaque guides. Opaque lighting and transparent
 composition use separate compute dispatches. The first walks through at most 32
@@ -192,7 +202,7 @@ lighting sample, public interface field or history-reset condition is introduced
 
 Distant-light shadow rays retain deterministic opacity/tint products; indirect continuations use stochastic transmission. The translucent
 material fallback still multiplies alpha by 0.2. The layer bound absorbs remaining
-rays. There is no ray bending or specular material model.
+rays. There is no ray bending; opaque PBR materials use the EON/GGX model described above.
 
 Optional `remixapi_CameraEnvironmentEXT` on the world camera supplies an enabled
 flag and finite, nonnegative linear RGB sky radiance. Invalid metadata rejects the

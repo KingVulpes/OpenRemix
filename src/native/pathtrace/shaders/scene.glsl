@@ -1,4 +1,11 @@
 struct Vertex { vec4 position; vec4 uv; vec4 color; };
+vec3 vertexNormal(Vertex v) { return vec3(v.position.w,v.uv.zw); }
+vec3 shadingNormal(vec3 n,vec3 geometric,vec3 wo) {
+  if(any(isnan(n))||any(isinf(n))||dot(n,n)<1e-12)return geometric;
+  n=normalize(n);
+  if(dot(n,geometric)<0)n=-n;
+  return dot(n,wo)>1e-4?n:geometric;
+}
 layout(buffer_reference, std430, buffer_reference_align=16) readonly buffer Vertices { Vertex v[]; };
 layout(buffer_reference, std430, buffer_reference_align=4) readonly buffer Indices { uint i[]; };
 struct Surface {
@@ -13,6 +20,8 @@ struct Surface {
   uvec2 debugIdentity;
   mat4 previousModel;
   vec4 emission;
+  vec4 pbr;
+  uvec4 pbrTextures;
 };
 layout(set=0,binding=2,std430) readonly buffer Surfaces { Surface surfaces[]; };
 layout(set=0,binding=3,std140) uniform Frame {
@@ -39,6 +48,39 @@ layout(set=0,binding=3,std140) uniform Frame {
   uvec4 splitLocal;
 } frame;
 layout(set=0,binding=6) uniform sampler2D textures[512];
+vec2 materialParameters(Surface s,vec2 uv) {
+  uv=uv*s.uv.xy+s.uv.zw;
+  return clamp(vec2(s.pbrTextures.x==0?s.pbr.x:textureLod(textures[nonuniformEXT(s.pbrTextures.x-1)],uv,0).r,
+                    s.pbrTextures.y==0?s.pbr.y:textureLod(textures[nonuniformEXT(s.pbrTextures.y-1)],uv,0).r),0,1);
+}
+mat3 materialBasis(vec3 n,vec3 e1,vec3 e2,vec2 u1,vec2 u2) {
+  float det=u1.x*u2.y-u1.y*u2.x;
+  vec3 t=abs(det)>1e-10?(e1*u2.y-e2*u1.y)/det:vec3(0);
+  t-=n*dot(n,t);
+  if(dot(t,t)<1e-12)t=cross(abs(n.z)<.999?vec3(0,0,1):vec3(0,1,0),n);
+  t=normalize(t);
+  vec3 b=cross(n,t);
+  if(abs(det)>1e-10&&dot(b,(e2*u1.x-e1*u2.x)/det)<0)b=-b;
+  return mat3(t,b,n);
+}
+vec3 materialNormal(Surface s,vec2 uv,mat3 basis,vec3 wo) {
+  if(s.pbrTextures.z==0)return basis[2];
+  vec3 local=textureLod(textures[nonuniformEXT(s.pbrTextures.z-1)],uv*s.uv.xy+s.uv.zw,0).xyz*2-1;
+  if(s.pbrTextures.w!=0)local.z=sqrt(max(0,1-dot(local.xy,local.xy)));
+  if(dot(local,local)<1e-8)return basis[2];
+  vec3 n=normalize(basis*vec3(local.xy,max(local.z,.001)));
+  // A backfacing mapped normal cannot define a reflective hemisphere for wo.
+  return dot(n,wo)>1e-4?n:basis[2];
+}
+vec2 encodeGeometricNormal(vec3 n) {
+  n/=abs(n.x)+abs(n.y)+abs(n.z);
+  return n.z>=0?n.xy:(1-abs(n.yx))*mix(vec2(-1),vec2(1),greaterThanEqual(n.xy,vec2(0)));
+}
+vec3 decodeGeometricNormal(vec2 e) {
+  vec3 n=vec3(e,1-abs(e.x)-abs(e.y));
+  if(n.z<0)n.xy=(1-abs(n.yx))*mix(vec2(-1),vec2(1),greaterThanEqual(n.xy,vec2(0)));
+  return normalize(n);
+}
 vec3 materialEmission(Surface s,vec2 uv) {
   if(!any(greaterThan(s.emission.rgb,vec3(0))))return vec3(0);
   return s.emission.rgb*(s.textureState.z==0?vec3(1):

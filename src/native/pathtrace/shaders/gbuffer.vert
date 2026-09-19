@@ -17,6 +17,9 @@ layout(location=2) out vec2 uv;
 layout(location=3) out vec4 color;
 layout(location=4) out vec3 previousPosition;
 layout(location=5) flat out float triangleIdentity;
+layout(location=6) flat out vec3 tangent;
+layout(location=7) flat out vec3 bitangent;
+layout(location=8) out vec3 authoredNormal;
 void main() {
   Surface s=surfaces[draw.surfaceIndex];
   uint index=s.indices.i[gl_VertexIndex];
@@ -29,6 +32,12 @@ void main() {
   vec3 c=s.vertices.v[s.indices.i[triangle+2]].position.xyz;
   // Match ray-hit geometric normals, including mirrored and skinned triangles.
   normal=cross(mat3(draw.model)*(b-a),mat3(draw.model)*(c-a));
+  authoredNormal=transpose(inverse(mat3(draw.model)))*vertexNormal(v);
+  vec2 ua=s.vertices.v[s.indices.i[triangle]].uv.xy;
+  vec2 ub=s.vertices.v[s.indices.i[triangle+1]].uv.xy;
+  vec2 uc=s.vertices.v[s.indices.i[triangle+2]].uv.xy;
+  mat3 basis=materialBasis(normalize(normal),mat3(draw.model)*(b-a),mat3(draw.model)*(c-a),ub-ua,uc-ua);
+  tangent=basis[0];bitangent=basis[1];
   uv=v.uv.xy;color=v.color;previousPosition=position;
   if(s.previousVertices!=0) {
     Vertices previous=Vertices(s.previousVertices);

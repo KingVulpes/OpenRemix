@@ -154,6 +154,89 @@ int main(int argc, char **argv) {
     frame();
   ok(remixapi_GetBackendCapabilitiesEXT(&caps));
   require(caps.activeBackend == 1, "Hardware pathtrace did not activate");
+  if (argc > 2 && std::string(argv[2]) == "geometry-history") {
+    ok(api.SetConfigVariable("rtx.native.pathtrace.accumulate", "1"));
+    frame();
+    frame();
+    const auto builds = statistics().blasBuilds;
+    auto verifyEdit = [&](uint64_t expectedBuilds, const char *message) {
+      ok(api.CreateMesh(&mesh, &geometry));
+      frame();
+      require(statistics().blasBuilds == expectedBuilds && statistics().accumulationCount == 1, message);
+      frame();
+      require(statistics().accumulationCount == 2, "Unchanged mesh reset accumulation");
+      ok(api.CreateMesh(&mesh, &geometry));
+      frame();
+      require(statistics().accumulationCount == 3, "Identical mesh replacement reset accumulation");
+    };
+    require(statistics().accumulationCount >= 2, "Geometry history did not accumulate");
+    vertices[0].texcoord[0] = .25f;
+    verifyEdit(builds, "UV-only replacement rebuilt geometry or retained stale accumulation");
+    vertices[0].color = 0xff00ffff;
+    verifyEdit(builds, "Color-only replacement rebuilt geometry or retained stale accumulation");
+    vertices[0].position[0] -= .01f;
+    verifyEdit(builds + 1, "Position replacement did not rebuild geometry and invalidate accumulation");
+    std::swap(indices[1], indices[2]);
+    verifyEdit(builds + 2, "Index replacement did not rebuild geometry and invalidate accumulation");
+    ok(api.Shutdown());
+    std::puts("Geometry edits, shading edits, exact cache reuse and accumulation passed");
+    return 0;
+  }
+  if (argc > 2 && std::string(argv[2]) == "mesh-update") {
+    remixapi_MeshInfoUpdateEXT update{};
+    update.sType = REMIXAPI_STRUCT_TYPE_MESH_UPDATE_EXT; update.enabled = 1; mesh.pNext = &update;
+    instance.pNext = nullptr; // The hint supplies storage reuse, not actor identity.
+    for (auto &v : vertices) { v.position[0] *= .3f; v.position[1] *= .3f; }
+    ok(api.SetConfigVariable("rtx.native.pathtrace.accumulate", "1"));
+    ok(api.CreateMesh(&mesh,&geometry)); frame(); frame();
+    auto before = statistics();
+    auto edit = [&] { ok(api.CreateMesh(&mesh,&geometry)); frame(); };
+    for (unsigned i = 0; i < 60; ++i) { vertices[0].position[0] -= .001f; edit(); }
+    auto refitted = statistics();
+    require(refitted.blasBuilds == before.blasBuilds && refitted.blasRefits == before.blasRefits + 60,
+            "Compatible finite vertices did not refit");
+    require(refitted.accumulationCount == 1, "Refitted mesh retained stale history");
+    frame(); require(statistics().accumulationCount == 2, "Held update mesh did not accumulate");
+    require(statistics().blasRefits == refitted.blasRefits, "Held mesh refit again");
+    ok(api.SetConfigVariable("rtx.native.pathtrace.accumulate", "0"));
+    ok(api.SetConfigVariable("rtx.native.pathtrace.taa", "0"));
+    ok(api.SetConfigVariable("rtx.native.pathtrace.denoiser", "off"));
+    ok(api.SetConfigVariable("rtx.native.pathtrace.bounces", "0"));
+    const auto directory = std::filesystem::absolute(std::filesystem::path(argv[1]));
+    std::filesystem::create_directories(directory);
+    auto pixels = [&](const char *name) {
+      const auto file = (directory/name).string();
+      ok(api.RequestPresentedScreenshot(file.c_str())); frame(); frame();
+      int w, h, n; auto *data = stbi_load(file.c_str(), &w, &h, &n, 4);
+      require(data, "Mesh-update screenshot unavailable");
+      std::vector<unsigned char> result(data, data+w*h*4); stbi_image_free(data);
+      require(std::any_of(result.begin(),result.end(),[](auto c) { return c > 0 && c < 255; }),
+              "Mesh-update image has no shaded geometry");
+      return result;
+    };
+    const auto refitImage = pixels("refitted.png");
+    // UV-only replacement preserves this white-texture image while the refit
+    // limit forces a fresh build from precisely the same positions and indices.
+    vertices[0].texcoord[0] += .1f; edit();
+    require(statistics().blasBuilds == refitted.blasBuilds + 1, "Refit limit did not rebuild");
+    require(pixels("rebuilt.png") == refitImage, "Refitted and rebuilt geometry images disagree");
+    before = statistics(); vertices[0].position[0] -= 10; edit();
+    require(statistics().blasBuilds == before.blasBuilds + 1, "Large displacement did not rebuild");
+    before = statistics(); std::swap(indices[1],indices[2]); edit();
+    require(statistics().blasBuilds == before.blasBuilds + 1 && statistics().blasRefits == before.blasRefits,
+            "Index edit used an incompatible refit");
+    before = statistics(); surface.indices_count = 3; edit();
+    require(statistics().blasBuilds == before.blasBuilds + 1, "Primitive count edit did not rebuild");
+    before = statistics(); ok(api.DestroyMesh(geometry)); edit();
+    require(statistics().blasBuilds == before.blasBuilds + 1, "Destroy/recreate reused stale update storage");
+    // Two immutable replacements can be queued in the same frame. The second
+    // must get its own BLAS while the first is referenced by this command.
+    before = statistics(); ok(api.DrawInstance(&instance)); vertices[0].position[0] += .001f; edit();
+    require(statistics().blasBuilds == before.blasBuilds + 1, "Queued mesh versions aliased one mutable BLAS");
+    ok(api.Shutdown());
+    std::puts("Mesh updates: refits, exact reuse, history, periodic/displacement rebuilds, topology and lifetime isolation passed");
+    return 0;
+  }
   remixapi_DenoisingCapabilitiesEXT denoiseCaps{};
   denoiseCaps.structSize = sizeof(denoiseCaps);
   ok(remixapi_GetDenoisingCapabilitiesEXT(&denoiseCaps));

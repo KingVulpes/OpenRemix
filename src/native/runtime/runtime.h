@@ -48,6 +48,7 @@ namespace remix {
     void completeScreenshot();
     bool isInitialized() const { return m_initialized; }
     uint64_t presentationCount() const { return m_presentationCount; }
+    remixapi_FramePerformanceEXT framePerformance() const { return m_framePerformance; }
     bool hasStartedFrame() const { return m_frameStarted; }
     bool hasFailed() const { return m_failed; }
     RasterRenderer &raster() { return m_raster; }
@@ -64,6 +65,7 @@ namespace remix {
     remixapi_TracingStatisticsEXT tracingStatistics() const;
     remixapi_SharcStatisticsEXT sharcStatistics() const;
     void setVsync(bool enabled) { m_vsync = enabled; }
+    remixapi_UIState uiState() const { return m_uiState; }
     void setUiState(remixapi_UIState state) {
       m_uiState = state;
       if (state == REMIXAPI_UI_STATE_NONE) {
@@ -110,6 +112,7 @@ namespace remix {
     bool m_screenshotSupported = false;
     bool m_initialized = false;
     uint64_t m_presentationCount = 0;
+    remixapi_FramePerformanceEXT m_framePerformance{.structSize = sizeof(remixapi_FramePerformanceEXT)};
     bool m_frameStarted = false;
     bool m_failed = false;
     bool m_deviceLost = false;

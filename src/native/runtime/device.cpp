@@ -188,14 +188,14 @@ namespace remix {
                   properties.limits.maxDescriptorSetSamplers >= PathTracer::textureLimit &&
                   properties.limits.maxDescriptorSetSampledImages >= PathTracer::textureLimit,
               "512 sampled-image descriptors");
-      missing(properties.limits.maxPerStageResources >= PathTracer::textureLimit + 13,
-              "525 compute-stage resources");
-      missing(properties.limits.maxPerStageDescriptorStorageImages >= 9 &&
-                  properties.limits.maxDescriptorSetStorageImages >= 9,
-              "nine tracing storage images");
-      missing(properties.limits.maxColorAttachments >= 5 &&
-                  properties.limits.maxFragmentOutputAttachments >= 5,
-              "five G-buffer color attachments");
+      missing(properties.limits.maxPerStageResources >= PathTracer::textureLimit + 14,
+              "526 compute-stage resources");
+      missing(properties.limits.maxPerStageDescriptorStorageImages >= 10 &&
+                  properties.limits.maxDescriptorSetStorageImages >= 10,
+              "ten tracing storage images");
+      missing(properties.limits.maxColorAttachments >= 6 &&
+                  properties.limits.maxFragmentOutputAttachments >= 6,
+              "six G-buffer color attachments");
       for (auto targetFormat : {VK_FORMAT_R32G32B32A32_SFLOAT, VK_FORMAT_R16G16B16A16_SFLOAT,
                                 VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R32_SFLOAT}) {
         VkFormatProperties target;

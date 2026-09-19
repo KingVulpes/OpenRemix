@@ -1,8 +1,19 @@
 #include "pathtrace/gpu.h"
+#include <string_view>
 
 namespace remix {
   using namespace scene;
   using namespace trace::detail;
+
+  namespace {
+    uint64_t bufferFingerprint(const void *data, size_t size, uint64_t seed = 1469598103934665603ull) {
+      // These fingerprints only invalidate history inside this renderer run.
+      // Bulk hashing avoids a serial byte-at-a-time multiply over every changed
+      // vertex. Geometry cache reuse still compares the complete content string.
+      const uint64_t digest = std::hash<std::string_view>{}({static_cast<const char *>(data), size});
+      return scene::hashBytes(&digest, sizeof(digest), seed);
+    }
+  } // namespace
 
   VkBuildAccelerationStructureFlagsKHR PathTracer::Gpu::flags(bool deform) const {
     return VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR |
@@ -11,37 +22,74 @@ namespace remix {
   }
 
   PathTracer::Gpu::MeshView &PathTracer::Gpu::mesh(VkCommandBuffer command, const Draw &draw) {
-    const bool deform = draw.bones && std::any_of(draw.mesh->surfaces.begin(), draw.mesh->surfaces.end(),
+    ScopedMilliseconds time{performance.geometryMilliseconds};
+    const bool skinned = draw.bones && std::any_of(draw.mesh->surfaces.begin(), draw.mesh->surfaces.end(),
                                                   [](const auto &s) { return s->bonesPerVertex != 0; });
-    // Each independently animated skin owns its update-capable BLAS. Rigid parts share canonical BLASes.
+    const bool streaming = bool(draw.mesh->updateStream);
+    const bool deform = skinned || streaming;
+    // Each independently animated skin owns its BLAS. Opt-in CPU replacements
+    // may transfer compatible storage only from a view unused in this frame.
     auto key =
-        std::make_tuple(draw.mesh.get(), deform ? draw.instanceId : 0, deform ? draw.instanceIndex : 0);
+        std::make_tuple(draw.mesh.get(), skinned ? draw.instanceId : 0, skinned ? draw.instanceIndex : 0);
     auto &view = meshes[key];
+    if (streaming && view.owner.lock() != draw.mesh) {
+      auto found = updateViews.find(draw.mesh->updateStream.get());
+      if (found != updateViews.end() && found->second != key) {
+        auto old = meshes.find(found->second);
+        if (old != meshes.end() && old->second.updateStream == draw.mesh->updateStream &&
+            old->second.lastUse != sequence) {
+          if (view.geometry) retiredGeometry.push_back(std::move(view.geometry));
+          for (auto &vertices : view.vertices) retiredBuffers.push_back(std::move(vertices));
+          view = std::move(old->second); meshes.erase(old);
+        }
+      }
+      updateViews[draw.mesh->updateStream.get()] = key;
+    }
     view.lastUse = sequence;
-    if (!view.owner.expired() && (!deform || view.bones == *draw.bones))
+    if (view.owner.lock() == draw.mesh && (!skinned || view.bones == *draw.bones))
       return view;
+    ++performance.geometryConversions;
     // A replaced CPU mesh may reuse an address. Keep its geometry alive through
     // the canonical lookup, but never mistake its view for the new mesh.
-    auto previousGeometry = view.owner.expired() ? std::move(view.geometry) : nullptr;
+    const bool transfer = streaming && view.updateStream == draw.mesh->updateStream;
+    auto previousGeometry = !transfer && view.owner.lock() != draw.mesh ? std::move(view.geometry) : nullptr;
     view.owner = draw.mesh;
-    if (deform)
+    view.updateStream = draw.mesh->updateStream;
+    if (skinned)
       view.bones = *draw.bones;
-    std::string content;
+    struct TrimScratch {
+      GeometryScratch &scratch;
+      ~TrimScratch() { if (scratch.bytes() > 64*1024*1024) scratch = {}; }
+    } trim{conversion};
+    auto &content = conversion.content;
+    content.clear();
+    size_t contentBytes = 0;
+    for (const auto &surface : draw.mesh->surfaces)
+      contentBytes += 8 + surface->vertices.size() * 12 + surface->indices.size() * 4;
+    content.reserve(contentBytes);
     auto append = [&](const void *p, size_t size) { content.append(static_cast<const char *>(p), size); };
-    std::vector<std::vector<TraceVertex>> shading;
-    std::vector<VkDeviceSize> vertexOffsets, indexOffsets;
-    std::vector<uint32_t> counts, vertexCounts;
+    auto &shading = conversion.shading;
+    auto &vertexOffsets = conversion.vertexOffsets, &indexOffsets = conversion.indexOffsets;
+    auto &counts = conversion.counts, &vertexCounts = conversion.vertexCounts;
+    vertexOffsets.clear(); indexOffsets.clear(); counts.clear(); vertexCounts.clear();
+    const auto surfaceCount = draw.mesh->surfaces.size();
+    shading.resize(surfaceCount);
+    size_t surfaceIndex = 0;
+    vertexOffsets.reserve(surfaceCount); indexOffsets.reserve(surfaceCount);
+    counts.reserve(surfaceCount); vertexCounts.reserve(surfaceCount);
     float low[3] = {INFINITY, INFINITY, INFINITY}, high[3] = {-INFINITY, -INFINITY, -INFINITY};
     for (const auto &surface : draw.mesh->surfaces) {
       uint32_t count[2] = {uint32_t(surface->vertices.size()), uint32_t(surface->indices.size())};
       append(count, sizeof(count));
       vertexOffsets.push_back(content.size());
-      auto &vertices = shading.emplace_back();
+      auto &vertices = shading[surfaceIndex++];
+      vertices.resize(surface->vertices.size());
       for (size_t i = 0; i < surface->vertices.size(); ++i) {
         auto vertex = surface->vertices[i];
         if (surface->bonesPerVertex) {
           const auto original = vertex;
           std::fill_n(vertex.position, 3, 0.f);
+          std::fill_n(vertex.normal, 3, 0.f);
           for (uint32_t b = 0; b < surface->bonesPerVertex; ++b) {
             size_t index = i * surface->bonesPerVertex + b;
             const auto &matrix = (*draw.bones)[surface->bones[index]];
@@ -49,18 +97,30 @@ namespace remix {
               vertex.position[r] += surface->weights[index] *
                                     (matrix[r] * original.position[0] + matrix[4 + r] * original.position[1] +
                                      matrix[8 + r] * original.position[2] + matrix[12 + r]);
+            for (int r = 0; r < 3; ++r)
+              vertex.normal[r] += surface->weights[index] *
+                  (matrix[r] * original.normal[0] + matrix[4 + r] * original.normal[1] +
+                   matrix[8 + r] * original.normal[2]);
           }
+          const float length = std::hypot(vertex.normal[0], vertex.normal[1], vertex.normal[2]);
+          if (std::isfinite(length) && length > 1e-12f)
+            for (float &component : vertex.normal) component /= length;
+          else
+            std::fill_n(vertex.normal, 3, 0.f);
         }
         append(vertex.position, 12);
         for (int r = 0; r < 3; ++r) {
           low[r] = std::min(low[r], vertex.position[r]);
           high[r] = std::max(high[r], vertex.position[r]);
         }
-        TraceVertex out;
+        auto &out = vertices[i];
         std::copy_n(vertex.position, 3, out.position);
         std::copy_n(vertex.uv, 2, out.uv);
         std::copy_n(vertex.color, 4, out.color);
-        vertices.push_back(out);
+        // Reuse the existing shading-vertex padding, preserving its 48-byte
+        // stride and the position-only BLAS input size.
+        out.position[3] = vertex.normal[0];
+        out.uv[2] = vertex.normal[1]; out.uv[3] = vertex.normal[2];
       }
       indexOffsets.push_back(content.size());
       append(surface->indices.data(), surface->indices.size() * 4);
@@ -71,6 +131,7 @@ namespace remix {
       auto found = geometryCache.find(content);
       if (found != geometryCache.end())
         view.geometry = found->second.lock();
+      if (view.geometry) ++performance.geometryCacheHits;
     }
     if (!view.geometry || deform) {
       bool update = view.geometry != nullptr;
@@ -78,11 +139,24 @@ namespace remix {
         view.geometry = std::make_shared<Geometry>();
       auto &g = *view.geometry;
       g.deform = deform;
+      // Refit only while the build remains spatially similar, and periodically
+      // rebuild to bound degradation from many small deformations.
+      if (update && streaming) {
+        const float limit = std::max(g.diagonal * .25f, .001f);
+        if (g.refits >= 60) update = false;
+        for (unsigned c = 0; c < 3; ++c)
+          if (std::abs(low[c] - g.buildLow[c]) > limit || std::abs(high[c] - g.buildHigh[c]) > limit) update = false;
+      }
       g.update = update;
+      if (update) ++g.refits;
+      else {
+        g.refits = 0;
+        std::copy_n(low, 3, g.buildLow.begin()); std::copy_n(high, 3, g.buildHigh.begin());
+      }
       g.pending = true;
       g.counts = counts;
       g.indexOffsets = indexOffsets;
-      g.fingerprint = scene::hashBytes(content.data(), content.size());
+      g.fingerprint = bufferFingerprint(content.data(), content.size());
       ++g.revision;
       g.diagonal = std::hypot(high[0] - low[0], high[1] - low[1], high[2] - low[2]);
       if (g.input)
@@ -112,7 +186,7 @@ namespace remix {
           .flags = flags(deform),
           .geometryCount = uint32_t(g.geometries.size()),
           .pGeometries = g.geometries.data()};
-      buildSizes(device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &build, counts.data(), &g.sizes);
+      if (!g.accel) buildSizes(device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &build, counts.data(), &g.sizes);
       if (!g.accel)
         g.accel =
             acceleration(g.sizes.accelerationStructureSize, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR);
@@ -125,7 +199,7 @@ namespace remix {
     view.fingerprint = view.geometry->fingerprint;
     for (const auto &vertices : shading) {
       view.fingerprint =
-          scene::hashBytes(vertices.data(), vertices.size() * sizeof(TraceVertex), view.fingerprint);
+          bufferFingerprint(vertices.data(), vertices.size() * sizeof(TraceVertex), view.fingerprint);
       view.vertices.push_back(upload(command, vertices.data(), vertices.size() * sizeof(TraceVertex),
                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT));
     }

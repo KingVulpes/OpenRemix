@@ -127,8 +127,14 @@ namespace remix {
 
   VkDescriptorImageInfo RasterRenderer::sampledEmission(const std::shared_ptr<Material> &source,
                                                         VkCommandBuffer command) {
+    return sampledTexture(source, source->emissionTexture, command);
+  }
+
+  VkDescriptorImageInfo RasterRenderer::sampledTexture(const std::shared_ptr<Material> &source,
+                                                       const std::shared_ptr<Texture> &image,
+                                                       VkCommandBuffer command) {
     m_gpu->material(source, command);
-    auto &texture = m_gpu->texture(source->emissionTexture, command);
+    auto &texture = m_gpu->texture(image, command);
     return {m_gpu->materials.at(source.get())->sampler, texture.data->view,
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
   }

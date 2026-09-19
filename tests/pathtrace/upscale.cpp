@@ -65,6 +65,10 @@ int main(int argc, char **argv) {
     opaque.albedoConstant = color;
     opaque.opacityConstant = alpha;
     opaque.alphaTestType = 7;
+    if (std::getenv("REMIX_TEST_PBR")) {
+      opaque.roughnessConstant = .5f;
+      opaque.metallicConstant = .35f;
+    }
     remixapi_MaterialInfo info{};
     info.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO;
     info.pNext = &opaque;

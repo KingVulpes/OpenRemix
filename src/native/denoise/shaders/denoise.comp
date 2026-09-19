@@ -67,8 +67,12 @@ void main() {
     float z=depthAt(p);vec4 material=imageLoad(guideAlbedo,p);vec3 color;
     if(z>=500000)color=imageLoad(skyColor,p).rgb;
     else {
-      vec3 indirect=imageLoad(lighting,p).rgb;
-      if(temporal.flags.y!=0) {
+      vec3 indirect=imageLoad(lighting,p).rgb,specular=vec3(0);
+      if(material.a>1.5) {
+        indirect=REBLUR_BackEnd_UnpackRadianceAndNormHitDist(temporal.flags.y!=0?imageLoad(pbrDiffuseOutput,p):imageLoad(sh0,p)).rgb;
+        specular=REBLUR_BackEnd_UnpackRadianceAndNormHitDist(temporal.flags.y!=0?imageLoad(pbrSpecularOutput,p):imageLoad(pbrSpecularInput,p)).rgb;
+        specular*=imageLoad(pbrSpecularFactor,p).rgb;
+      } else if(temporal.flags.y!=0) {
         NRD_SG sg=REBLUR_BackEnd_UnpackSh(imageLoad(outSh0,p),imageLoad(outSh1,p).xyz);
         vec3 N=normalAt(p);
         vec4 nearPoint=temporal.inverseCamera*vec4((vec2(p)+.5+temporal.jitter.xy)/vec2(size)*2-1,0,1);
@@ -86,13 +90,13 @@ void main() {
       vec3 local=vec3(0);
 #ifdef LOCAL_PASS
       if(temporal.local.w!=0?temporal.families.x!=0:temporal.local.y!=0)
-        local=REBLUR_BackEnd_UnpackRadianceAndNormHitDist(temporal.local.x!=0?imageLoad(localOutput,p):imageLoad(localInput,p)).rgb;
+        local=REBLUR_BackEnd_UnpackRadianceAndNormHitDist(temporal.local.x!=0&&material.a<1.5?imageLoad(localOutput,p):imageLoad(localInput,p)).rgb;
 #endif
 #ifdef SPLIT_LOCAL_PASS
       if(temporal.families.y!=0)
-        local+=REBLUR_BackEnd_UnpackRadianceAndNormHitDist(temporal.local.x!=0?imageLoad(emissiveOutput,p):imageLoad(emissiveInput,p)).rgb;
+        local+=REBLUR_BackEnd_UnpackRadianceAndNormHitDist(temporal.local.x!=0&&material.a<1.5?imageLoad(emissiveOutput,p):imageLoad(emissiveInput,p)).rgb;
 #endif
-      color=direct+safeRadiance(indirect+local)*material.rgb;
+      color=direct+safeRadiance(indirect+local)*material.rgb+safeRadiance(specular);
     }
     vec4 tr=imageLoad(transmittance,p);
     color=safeRadiance(imageLoad(transparentLight,p).rgb+tr.rgb*color);

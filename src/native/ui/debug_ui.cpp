@@ -41,14 +41,14 @@ namespace remix {
           if (ImGui::CollapsingHeader("Diagnostics")) {
             int view = int(m_traceOptions.debugView);
             if (ImGui::Combo("Debug view", &view,
-                "Final lighting\0Albedo\0Geometric normals\0Triangle IDs\0Depth bands\0World position grid\0"
+                "Final lighting\0Albedo\0Shading normals\0Triangle IDs\0Depth bands\0World position grid\0"
                 "Raw local lighting\0Raw indirect lighting\0Motion vectors\0Motion validity\0"
                 "Indirect lighting confidence\0TAA current-frame weight\0"))
               m_traceOptions.debugView = uint32_t(view);
             static const char *help[] = {
-              "Start with Triangle IDs and Geometric normals at the problem angle, then compare Raw local lighting. Compare both Primary visibility options above.",
+              "Start with Triangle IDs and Shading normals at the problem angle, then compare Raw local lighting. Compare both Primary visibility options above.",
               "Unlit base color of the first visible surface. Flicker here points to visibility or material data.",
-              "World-space geometric normals: RGB = XYZ mapped to 0..1. Flat faces should keep one color.",
+              "World-space shading normals: RGB = XYZ mapped to 0..1. Includes authored vertex normals and material normal maps; missing vertex normals fall back to flat faces.",
               "Colors identify submitted triangles. Coplanar surfaces swapping visibility change color. Remeshing can also change IDs; palette collisions are possible.",
               "Distance from the camera, repeating black to white every 4 world units. Sudden patches can reveal visibility or position jumps.",
               "World position as RGB, repeating every world unit. Look for moving discontinuities inside a flat face.",

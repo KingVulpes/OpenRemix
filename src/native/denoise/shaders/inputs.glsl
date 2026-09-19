@@ -38,6 +38,10 @@ layout(set=1,binding=30,rgba16f) uniform image2D localOutput;
 layout(set=1,binding=31,rgba16f) uniform image2D emissiveInput;
 layout(set=1,binding=32,rgba16f) uniform image2D emissiveOutput;
 #endif
+layout(set=1,binding=33,rgba16f) uniform image2D pbrSpecularInput;
+layout(set=1,binding=34,rgba16f) uniform image2D pbrDiffuseOutput;
+layout(set=1,binding=35,rgba16f) uniform image2D pbrSpecularOutput;
+layout(set=1,binding=36,rgba16f) uniform image2D pbrSpecularFactor;
 layout(set=1,binding=25,std140) uniform TemporalFrame {
   mat4 view;
   mat4 previousView;

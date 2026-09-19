@@ -30,8 +30,8 @@ namespace remix {
     // linear albedo use smaller attachments to limit G-buffer bandwidth.
     const VkFormat formats[] = {VK_FORMAT_R32G32B32A32_SFLOAT, VK_FORMAT_R16G16B16A16_SFLOAT,
                                 VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R32G32B32A32_SFLOAT,
-                                VK_FORMAT_R32_SFLOAT, VK_FORMAT_R16G16B16A16_SFLOAT};
-    for (unsigned i = 0; i < 6; ++i)
+                                VK_FORMAT_R32_SFLOAT, VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R16G16B16A16_SFLOAT};
+    for (unsigned i = 0; i < 7; ++i)
       primary[i] = image(true, formats[i], i == 4 ? displayExtent : extent);
     VkPushConstantRange push{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                              sizeof(PrimaryPush)};
@@ -44,12 +44,12 @@ namespace remix {
 
     for (unsigned pass = 0; pass < 2; ++pass) {
       const VkExtent2D size = pass ? displayExtent : extent;
-      const unsigned colors = pass ? 1 : 5;
-      VkAttachmentDescription attachments[6] = {};
-      VkAttachmentReference references[5] = {};
-      VkImageView views[6] = {};
+      const unsigned colors = pass ? 1 : 6;
+      VkAttachmentDescription attachments[7] = {};
+      VkAttachmentReference references[6] = {};
+      VkImageView views[7] = {};
       for (unsigned i = 0; i < colors; ++i) {
-        const unsigned target = pass ? 4 : i == 4 ? 5 : i;
+        const unsigned target = pass ? 4 : i >= 4 ? i + 1 : i;
         attachments[i] = {.format = formats[target],
                           .samples = VK_SAMPLE_COUNT_1_BIT,
                           .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
@@ -152,7 +152,7 @@ namespace remix {
             .depthWriteEnable = VK_TRUE,
             .depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL,
             .maxDepthBounds = 1};
-        VkPipelineColorBlendAttachmentState blend[5] = {};
+        VkPipelineColorBlendAttachmentState blend[6] = {};
         for (unsigned i = 0; i < colors; ++i)
           blend[i].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                                     VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
@@ -196,8 +196,8 @@ namespace remix {
       // The reference shader statically declares these descriptors even when it
       // does not read them. Keep their descriptor layouts valid from first use.
       if (!primaryInitialized) {
-        VkImageMemoryBarrier transitions[6] = {};
-        for (unsigned i = 0; i < 6; ++i)
+        VkImageMemoryBarrier transitions[7] = {};
+        for (unsigned i = 0; i < 7; ++i)
           transitions[i] = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                             .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
                             .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
@@ -207,15 +207,15 @@ namespace remix {
                             .image = primary[i]->handle,
                             .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
         vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                             0, 0, nullptr, 0, nullptr, 6, transitions);
+                             0, 0, nullptr, 0, nullptr, 7, transitions);
         primaryInitialized = true;
       }
       if (!upscaler) return;
     }
     for (unsigned pass = rasterPrimary ? 0 : 1; pass < 2; ++pass) {
       const VkExtent2D size = pass ? displayExtent : extent;
-      const unsigned colors = pass ? 1 : 5;
-      VkClearValue clear[6] = {};
+      const unsigned colors = pass ? 1 : 6;
+      VkClearValue clear[7] = {};
       if (pass)
         clear[0].color.float32[0] = 1;
       clear[colors].depthStencil.depth = 1;

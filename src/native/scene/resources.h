@@ -62,6 +62,7 @@ namespace remix {
 
   protected:
     std::shared_ptr<scene::Texture> texturePath(remixapi_Path path);
+    std::shared_ptr<scene::Texture> dataTexturePath(remixapi_Path path);
     std::shared_ptr<scene::Texture> m_white;
     std::shared_ptr<scene::Material> m_default;
     std::unordered_map<uint64_t, std::shared_ptr<scene::Material>> m_materials;

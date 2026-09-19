@@ -20,12 +20,12 @@ namespace remix::denoise {
     };
     require(p.apiVersion >= VK_API_VERSION_1_2, "Vulkan 1.2");
     require(f.shaderStorageImageExtendedFormats, "extended storage-image formats");
-    // The temporal set is used alongside the tracer set (nine storage images,
+    // The temporal set is used alongside the tracer set (ten storage images,
     // 512 textures, two acceleration structures, a storage buffer and a UBO).
-    require(p.limits.maxPerStageDescriptorStorageImages >= BaseImageCount + 12 &&
-                p.limits.maxDescriptorSetStorageImages >= BaseImageCount + 12,
+    require(p.limits.maxPerStageDescriptorStorageImages >= BaseImageCount + 17 &&
+                p.limits.maxDescriptorSetStorageImages >= BaseImageCount + 17,
             "temporal storage-image descriptor limit");
-    require(p.limits.maxPerStageResources >= 512 + BaseImageCount + 17, "temporal per-stage resource limit");
+    require(p.limits.maxPerStageResources >= 512 + BaseImageCount + 22, "temporal per-stage resource limit");
     const VkFormat formats[] = {VK_FORMAT_R16G16B16A16_SFLOAT,
                                 VK_FORMAT_R32G32B32A32_SFLOAT,
                                 VK_FORMAT_R32_SFLOAT,
@@ -64,9 +64,9 @@ namespace remix::denoise {
       return false;
     VkPhysicalDeviceProperties p;
     vkGetPhysicalDeviceProperties(physical, &p);
-    if (p.limits.maxPerStageDescriptorStorageImages < SigmaImageCount + 12 ||
-        p.limits.maxDescriptorSetStorageImages < SigmaImageCount + 12 ||
-        p.limits.maxPerStageResources < 512 + SigmaImageCount + 17)
+    if (p.limits.maxPerStageDescriptorStorageImages < SigmaImageCount + 17 ||
+        p.limits.maxDescriptorSetStorageImages < SigmaImageCount + 17 ||
+        p.limits.maxPerStageResources < 512 + SigmaImageCount + 22)
       return false;
     for (auto format : {VK_FORMAT_R32_UINT, VK_FORMAT_R8G8_UNORM, VK_FORMAT_R8G8B8A8_UNORM}) {
       VkFormatProperties fp;
@@ -85,9 +85,9 @@ namespace remix::denoise {
     VkPhysicalDeviceProperties p;
     vkGetPhysicalDeviceProperties(physical, &p);
     const uint32_t count = BaseImageCount + (sigma ? 3 : 0) + (split ? 4 : 2);
-    return p.limits.maxPerStageDescriptorStorageImages >= count + 12 &&
-           p.limits.maxDescriptorSetStorageImages >= count + 12 &&
-           p.limits.maxPerStageResources >= 512 + count + 17;
+    return p.limits.maxPerStageDescriptorStorageImages >= count + 17 &&
+           p.limits.maxDescriptorSetStorageImages >= count + 17 &&
+           p.limits.maxPerStageResources >= 512 + count + 22;
   }
   uint32_t Renderer::Gpu::memoryType(uint32_t bits, VkMemoryPropertyFlags flags) {
     for (uint32_t i = 0; i < memory.memoryTypeCount; ++i)
@@ -224,7 +224,9 @@ namespace remix::denoise {
     if (extent.width > 65535 || extent.height > 65535)
       throw VK_ERROR_FORMAT_NOT_SUPPORTED;
     for (uint32_t i = 0; i < ImageCount; ++i) {
-      if ((i >= Penumbra && i < SigmaImageCount && !sigma) || (i >= LocalInput && !local) || (i >= EmissiveInput && !g.split))
+      if ((i >= Penumbra && i < SigmaImageCount && !sigma) ||
+          (i >= LocalInput && i < LocalImageCount && !local) ||
+          (i >= EmissiveInput && i < EmissiveImageCount && !g.split))
         continue;
       VkFormat format = VK_FORMAT_R16G16B16A16_SFLOAT;
       if (i == Normal || i == PreviousNormal)
@@ -259,12 +261,14 @@ namespace remix::denoise {
     if (g.split)
       for (uint32_t i = 31; i < 33; ++i)
         bindings.push_back({i, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr});
+    for (uint32_t i = 33; i < 37; ++i)
+      bindings.push_back({i, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr});
     VkDescriptorSetLayoutCreateInfo ci{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     check(vkCreateDescriptorSetLayout(device, &ci, nullptr, &g.emptyLayout));
     ci.bindingCount = uint32_t(bindings.size());
     ci.pBindings = bindings.data();
     check(vkCreateDescriptorSetLayout(device, &ci, nullptr, &g.inputLayout));
-    VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, BaseImageCount + 3 + (sigma ? 3u : 0u) + (local ? 2u : 0u) + (g.split ? 2u : 0u)},
+    VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, BaseImageCount + 7 + (sigma ? 3u : 0u) + (local ? 2u : 0u) + (g.split ? 2u : 0u)},
                                     {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}};
     for (auto &size : sizes)
       size.descriptorCount *= gpuFrameCount;
@@ -296,6 +300,8 @@ namespace remix::denoise {
     if (reblur) {
       g.indirect = std::make_unique<NrdPass>();
       g.initializeNrd(*g.indirect, false);
+      g.pbr = std::make_unique<NrdPass>();
+      g.initializeNrd(*g.pbr, false, false, true);
     }
     if (localDenoise) {
       g.localDirect = std::make_unique<NrdPass>();
@@ -341,7 +347,7 @@ namespace remix::denoise {
     swap(timestamps, next.timestamps);
     swap(timingPending, next.timingPending);
 #ifdef REMIX_HAS_NRD
-    for (auto *pass : {indirect.get(), shadow.get(), localDirect.get(), emissiveDirect.get()})
+    for (auto *pass : {indirect.get(), shadow.get(), localDirect.get(), emissiveDirect.get(), pbr.get()})
       if (pass) {
         swap(pass->nrdPool, pass->frames[slot].pool);
         swap(pass->constants, pass->frames[slot].constants);
@@ -391,7 +397,7 @@ namespace remix::denoise {
         if (t)
           textures.push_back(t.get());
 #ifdef REMIX_HAS_NRD
-      for (auto *pass : {g.indirect.get(), g.shadow.get(), g.localDirect.get(), g.emissiveDirect.get()}) {
+      for (auto *pass : {g.indirect.get(), g.shadow.get(), g.localDirect.get(), g.emissiveDirect.get(), g.pbr.get()}) {
         if (!pass)
           continue;
         for (auto &t : pass->permanent)
@@ -449,16 +455,26 @@ namespace remix::denoise {
                       .pBufferInfo = &bi});
     vkUpdateDescriptorSets(g.device, uint32_t(writes.size()), writes.data(), 0, nullptr);
 #ifdef REMIX_HAS_NRD
-    if (g.frame.flags[1])
-      g.prepareNrd(*g.indirect, projection, previousProjection);
+    if (g.indirect) {
+      if (g.frame.flags[1] && g.frame.shadow[3])
+        g.prepareNrd(*g.indirect, projection, previousProjection);
+      else
+        g.indirect->wasActive = false;
+    }
+    if (g.pbr) {
+      if (g.frame.flags[1] && g.frame.shadow[2])
+        g.prepareNrd(*g.pbr, projection, previousProjection);
+      else
+        g.pbr->wasActive = false;
+    }
     if (g.localDirect) {
-      if (g.frame.local[0] && (g.split ? g.frame.families[0] : g.frame.local[1]))
+      if (g.frame.shadow[3] && g.frame.local[0] && (g.split ? g.frame.families[0] : g.frame.local[1]))
         g.prepareNrd(*g.localDirect, projection, previousProjection);
       else
         g.localDirect->wasActive = false;
     }
     if (g.emissiveDirect) {
-      if (g.frame.local[0] && g.frame.families[1])
+      if (g.frame.shadow[3] && g.frame.local[0] && g.frame.families[1])
         g.prepareNrd(*g.emissiveDirect, projection, previousProjection);
       else
         g.emissiveDirect->wasActive = false;
@@ -493,8 +509,10 @@ namespace remix::denoise {
     if (g.timestamps)
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g.timestamps, 1);
 #ifdef REMIX_HAS_NRD
-    if (g.frame.flags[1])
+    if (g.frame.flags[1] && g.frame.shadow[3])
       g.recordNrd(*g.indirect, command);
+    if (g.frame.flags[1] && g.frame.shadow[2])
+      g.recordNrd(*g.pbr, command);
 #endif
     if (g.timestamps)
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g.timestamps, 2);
@@ -509,9 +527,9 @@ namespace remix::denoise {
     if (g.timestamps)
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g.timestamps, 7);
 #ifdef REMIX_HAS_NRD
-    if (g.localDirect && g.frame.local[0] && (g.split ? g.frame.families[0] : g.frame.local[1]))
+    if (g.localDirect && g.frame.shadow[3] && g.frame.local[0] && (g.split ? g.frame.families[0] : g.frame.local[1]))
       g.recordNrd(*g.localDirect, command);
-    if (g.emissiveDirect && g.frame.local[0] && g.frame.families[1])
+    if (g.emissiveDirect && g.frame.shadow[3] && g.frame.local[0] && g.frame.families[1])
       g.recordNrd(*g.emissiveDirect, command);
 #endif
     if (g.timestamps)

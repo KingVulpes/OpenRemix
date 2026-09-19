@@ -16,10 +16,11 @@ parser.add_argument('--deps', type=Path, required=True, help='SDL build-dependen
 parser.add_argument('--output', type=Path, required=True)
 parser.add_argument('--vulkan-sdk', type=Path)
 parser.add_argument('--max-glibc', default='2.28', help='Linux package glibc ceiling')
+parser.add_argument('--target', choices=['linux', 'windows', 'macos'], help='Override the host platform for cross-built packages')
 args = parser.parse_args()
 build, deps, output = args.build.resolve(), args.deps.resolve(), args.output.resolve()
 if output.exists(): parser.error('Use a fresh output directory.')
-system = platform.system()
+system = {'linux': 'Linux', 'windows': 'Windows', 'macos': 'Darwin'}.get(args.target, platform.system())
 if system == 'Darwin' and not args.vulkan_sdk: parser.error('macOS requires --vulkan-sdk.')
 for directory in ['bin', 'lib', 'include/remix', 'share/remix/licenses']:
     (output / directory).mkdir(parents=True, exist_ok=True)
@@ -30,6 +31,7 @@ for name in ['remix.h', 'remix_c.h', 'remix_native_ext.h']:
     shutil.copy2(root / 'public/include/remix' / name, output / 'include/remix' / name)
 shutil.copy2(root / 'third_party/imgui/LICENSE.txt', licenses / 'ImGui.txt')
 shutil.copy2(root / 'third_party/image/LICENSES.txt', licenses / 'ImageDecoders.txt')
+shutil.copy2(root / 'src/native/pathtrace/shaders/LICENSE-eon.txt', licenses / 'EON.txt')
 for source, name in [('LICENSE.txt','NRD.txt'), ('External/MathLib/LICENSE.txt','MathLib.txt'),
                      ('External/ShaderMake/LICENSE.txt','ShaderMake.txt'), ('External/sse2neon/LICENSE','sse2neon.txt')]:
     shutil.copy2(root / 'third_party/nrd' / source, licenses / name)
@@ -44,6 +46,8 @@ shutil.copy2(root / 'scripts/common/dependencies.lock.json', output / 'share/rem
 if system == 'Windows':
     for path in [build / 'src/native/remix.dll', deps / 'prefix/bin/SDL3.dll',
                  build / 'samples/remix-native/remix-native-sample.exe']:
+        shutil.copy2(path, output / 'bin' / path.name)
+    for path in (deps / 'prefix/bin').glob('lib*.dll'):
         shutil.copy2(path, output / 'bin' / path.name)
 elif system == 'Linux':
     staging = tempfile.TemporaryDirectory(prefix='remix-package-')

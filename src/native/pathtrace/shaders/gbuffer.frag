@@ -16,6 +16,9 @@ layout(location=2) in vec2 uv;
 layout(location=3) in vec4 color;
 layout(location=4) in vec3 previousPosition;
 layout(location=5) flat in float triangleIdentity;
+layout(location=6) flat in vec3 tangent;
+layout(location=7) flat in vec3 bitangent;
+layout(location=8) in vec3 authoredNormal;
 #ifdef STABLE_DEPTH
 layout(location=0) out float outDepth;
 #else
@@ -24,6 +27,7 @@ layout(location=1) out vec4 outNormal;
 layout(location=2) out vec4 outAlbedo;
 layout(location=3) out vec4 outPrevious;
 layout(location=4) out vec4 outEmission;
+layout(location=5) out vec4 outPbr;
 #endif
 void main() {
   Surface s=surfaces[draw.surfaceIndex];
@@ -42,7 +46,15 @@ void main() {
   if(dot(n,direction)>0)n=-n;
   outPosition=vec4(position,gl_FragCoord.z);
   // Zero is the cleared background, one opaque/cutout, two a blended sheet.
-  outNormal=vec4(n,(s.state.w&2)!=0?2:1);
+  vec3 smoothNormal=shadingNormal(authoredNormal,n,normalize(-direction));
+  vec3 t=tangent-smoothNormal*dot(smoothNormal,tangent);
+  if(dot(t,t)<1e-12)t=cross(abs(smoothNormal.z)<.999?vec3(0,0,1):vec3(0,1,0),smoothNormal);
+  t=normalize(t);
+  vec3 b=cross(smoothNormal,t);
+  if(dot(b,bitangent)<0)b=-b;
+  outNormal=vec4(materialNormal(s,uv,mat3(t,b,smoothNormal),normalize(-direction)),(s.state.w&2)!=0?2:1);
+  vec2 rm=materialParameters(s,uv);
+  outPbr=vec4(s.pbr.z!=0?rm.x:-1,rm.y,encodeGeometricNormal(n));
   outAlbedo=albedo;
   outPrevious=vec4(previousPosition,s.previousVertices!=0?1:0);
   outEmission=vec4(materialEmission(s,uv),triangleIdentity);

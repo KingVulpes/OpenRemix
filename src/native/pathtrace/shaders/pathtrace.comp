@@ -33,6 +33,7 @@ layout(set=0,binding=10,rgba8) readonly uniform image2D primaryAlbedo;
 layout(set=0,binding=11,rgba32f) uniform image2D primaryPrevious;
 layout(set=0,binding=12,r32f) readonly uniform image2D primaryDepth;
 layout(set=0,binding=13,rgba16f) readonly uniform image2D primaryEmission;
+layout(set=0,binding=14,rgba16f) readonly uniform image2D primaryPbr;
 
 layout(constant_id=0) const bool enableLocalLights=true;
 layout(constant_id=1) const bool enableLocalGuiding=true;
@@ -62,7 +63,7 @@ bool acceptCandidate(Surface s,uint triangle,vec2 bary) {
   vec3 w=vec3(1-bary.x-bary.y,bary);
   return alphaPass(s,materialAlpha(s,a.uv.xy*w.x+b.uv.xy*w.y+c.uv.xy*w.z,a.color.a*w.x+b.color.a*w.y+c.color.a*w.z));
 }
-struct Hit { float t; vec3 p; vec3 n; vec4 color; bool blended; bool cacheable; vec3 previousPosition; bool historyValid; vec3 emission; float identity; };
+struct Hit { float t; vec3 p; vec3 n; vec4 color; bool blended; bool cacheable; vec3 previousPosition; bool historyValid; vec3 emission; float identity; vec3 ng; vec3 wo; vec2 rm; bool pbr; };
 void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, inout Hit hit,bool motion) {
   rayQueryEXT query;
   rayQueryInitializeEXT(query, scene, gl_RayFlagsNoOpaqueEXT, 255, origin, 0.0, direction, hit.t);
@@ -88,12 +89,20 @@ void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, ino
   hit.color=albedo(s,tri/3,bary);
   hit.emission=vec3(0);
   hit.identity=motion&&frame.splitLocal.w==3?debugTriangle(s.debugIdentity,tri/3):0;
-  if(motion) {
+  {
     vec3 w=vec3(1-bary.x-bary.y,bary);
     vec2 uv=s.vertices.v[s.indices.i[tri]].uv.xy*w.x+s.vertices.v[s.indices.i[tri+1]].uv.xy*w.y+s.vertices.v[s.indices.i[tri+2]].uv.xy*w.z;
-    hit.emission=materialEmission(s,uv);
+    if(motion)hit.emission=materialEmission(s,uv);
+    hit.ng=hit.n;hit.wo=-direction;hit.rm=materialParameters(s,uv);hit.pbr=s.pbr.z!=0;
+    vec2 ua=s.vertices.v[s.indices.i[tri]].uv.xy;
+    vec2 ub=s.vertices.v[s.indices.i[tri+1]].uv.xy;
+    vec2 uc=s.vertices.v[s.indices.i[tri+2]].uv.xy;
+    vec3 normal=vertexNormal(s.vertices.v[s.indices.i[tri]])*w.x+
+      vertexNormal(s.vertices.v[s.indices.i[tri+1]])*w.y+vertexNormal(s.vertices.v[s.indices.i[tri+2]])*w.z;
+    normal=shadingNormal(transpose(mat3(rayQueryGetIntersectionWorldToObjectEXT(query,true)))*normal,hit.ng,hit.wo);
+    hit.n=materialNormal(s,uv,materialBasis(normal,model*vec4(b-a,0),model*vec4(c-a,0),ub-ua,uc-ua),hit.wo);
   }
-  hit.blended=(s.state.w&2)!=0;hit.cacheable=(s.state.w&16)!=0;
+  hit.blended=(s.state.w&2)!=0;hit.cacheable=(s.state.w&16)!=0&&!hit.pbr;
   hit.previousPosition=hit.p;hit.historyValid=false;
 // Transparent sheets never provide motion or NRD guides.
 #if defined(TEMPORAL) && !defined(TRANSPARENCY_PASS)
@@ -110,7 +119,7 @@ void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, ino
 Hit closest(vec3 origin,vec3 direction,float maximum,bool motion) {
   Hit hit; hit.t=maximum; hit.p=vec3(0);hit.n=vec3(0);hit.color=vec4(0);hit.blended=false;hit.cacheable=false;hit.previousPosition=vec3(0);hit.historyValid=false;
   hit.emission=vec3(0);
-  hit.identity=0;
+  hit.identity=0;hit.ng=vec3(0);hit.wo=-direction;hit.rm=vec2(1,0);hit.pbr=false;
   if ((frame.target.z&1)!=0) queryScene(staticScene,origin,direction,hit,motion);
   if ((frame.target.z&2)!=0) queryScene(dynamicScene,origin,direction,hit,motion);
   if(hit.t==maximum)hit.t=1e30;
@@ -129,6 +138,9 @@ Hit rasterPrimary(ivec2 pixel, vec3 origin) {
   hit.previousPosition=previous.xyz;hit.historyValid=previous.w!=0;
   hit.emission=imageLoad(primaryEmission,pixel).rgb;
   hit.identity=imageLoad(primaryEmission,pixel).a;
+  vec4 pbr=imageLoad(primaryPbr,pixel);
+  hit.ng=decodeGeometricNormal(pbr.zw);hit.rm=vec2(max(0,pbr.x),pbr.y);hit.pbr=pbr.x>=0;
+  hit.wo=hit.t<1e30?normalize(origin-hit.p):vec3(0,0,1);
   return hit;
 }
 // Geometry diagnostics show the first visible sheet. Lighting and temporal
@@ -156,6 +168,7 @@ vec3 diffuseDirection(vec3 n) {
   vec3 t=normalize(cross(abs(n.z)<0.999 ? vec3(0,0,1) : vec3(0,1,0),n));
   return normalize(t*(sqrt(u)*cos(angle))+cross(n,t)*(sqrt(u)*sin(angle))+n*sqrt(1-u));
 }
+#include "brdf.glsl"
 #include "visibility.glsl"
 vec3 shadow(vec3 origin,vec3 direction) {
   vec3 transmission=vec3(1);
@@ -185,7 +198,7 @@ vec3 sunVisibility(Hit receiver,ivec2 pixel,out float blockerDistance) {
     direction=normalize(center+frame.sun.x*sqrt(u)*(cos(angle)*t+sin(angle)*cross(center,t)));
   }
   if(dot(receiver.n,direction)<=0)return vec3(0);
-  vec3 transmission=vec3(1),origin=offsetRay(receiver.p,receiver.n);
+  vec3 transmission=vec3(1),origin=offsetRay(receiver.p,receiver.ng);
   float distance=0;blockerDistance=65504;
   for(uint layer=0;layer<32;++layer) {
     VisibilityHit hit=visibilityHit(origin,direction,false);
@@ -204,8 +217,8 @@ vec3 direct(Hit hit) {
   vec3 toLight=-frame.lightDirection.xyz;
   float cosine=max(0,dot(hit.n,toLight));
   float distance;
-  vec3 local=hit.color.rgb*localLighting(hit,rng,1u,distance);
-  return local+(cosine>0&&any(greaterThan(frame.lightRadiance.rgb,vec3(0)))?hit.color.rgb*(cosine/3.14159265359)*frame.lightRadiance.rgb*shadow(offsetRay(hit.p,hit.n),toLight):vec3(0));
+  vec3 local=materialFactor(hit)*localLighting(hit,rng,1u,distance);
+  return local+(cosine>0&&any(greaterThan(frame.lightRadiance.rgb,vec3(0)))?materialBrdf(hit,toLight)*cosine*frame.lightRadiance.rgb*shadow(offsetRay(hit.p,hit.ng),toLight):vec3(0));
 }
 #if defined(SHARC_QUERY) || defined(SHARC_UPDATE_PASS)
 SharcHitData cacheHit(Hit hit) {
@@ -221,8 +234,8 @@ bool cacheRadiance(Hit hit,float segmentLength,out vec3 radiance) {
   SharcParameters parameters=cacheParameters();
   uint level=HashGridGetLevel(hit.p,parameters.hashGridParameters);
   float voxel=HashGridGetVoxelSize(level,parameters.hashGridParameters);
-  // All traced lobes are Lambertian (roughness 1). Their footprint is wider
-  // than the segment; this stricter diagonal gate also rejects local reuse.
+  // Only view-independent legacy diffuse surfaces enter this cache.
+  // EON/GGX material hits continue tracing instead of reusing outgoing radiance.
   if(segmentLength<=voxel*1.732050808)return false;
 #ifndef CONFIDENCE_PASS
   bool measure=(hash(gl_GlobalInvocationID.x+gl_GlobalInvocationID.y*frame.target.x)&63u)==0;
@@ -236,9 +249,12 @@ bool cacheRadiance(Hit hit,float segmentLength,out vec3 radiance) {
   return found;
 }
 #endif
-vec3 continuation(Hit primary,out vec3 firstDirection,out float firstDistance) {
-  firstDirection=diffuseDirection(primary.n);firstDistance=0;
-  vec3 direction=firstDirection,origin=offsetRay(primary.p,primary.n),throughput=vec3(1),result=vec3(0);
+vec3 continuation(Hit primary,out vec3 firstDirection,out float firstDistance,out vec3 specular) {
+  vec3 specularWeight;
+  vec3 weight=materialSample(primary,firstDirection,specularWeight);firstDistance=0;specular=vec3(0);
+  if(primary.pbr&&!any(greaterThan(weight,vec3(0))))return vec3(0);
+  vec3 direction=firstDirection,origin=offsetRay(primary.p,primary.ng);
+  vec3 throughput=primary.pbr?weight/max(materialFactor(primary),vec3(1e-6)):vec3(1),result=vec3(0);
   vec3 previousVertex=primary.p;
   uint bounce=0,layers=0;
   for(uint step=0;step<164&&bounce<frame.config.y;++step) {
@@ -247,7 +263,7 @@ vec3 continuation(Hit primary,out vec3 firstDirection,out float firstDistance) {
     if(hit.t==1e30) { result+=throughput*frame.skyRadiance.rgb;break; }
     if(hit.blended&&random()>=hit.color.a) {
       if(++layers>=32)break;
-      throughput*=hit.color.rgb;origin=offsetRay(hit.p,-hit.n);continue;
+      throughput*=hit.color.rgb;origin=offsetRay(hit.p,-hit.ng);continue;
     }
 #ifdef SHARC_QUERY
     vec3 cached;
@@ -257,10 +273,34 @@ vec3 continuation(Hit primary,out vec3 firstDirection,out float firstDistance) {
 #endif
     result+=throughput*direct(hit);
     if(++bounce>=frame.config.y)break;
-    throughput*=hit.color.rgb;previousVertex=hit.p;direction=diffuseDirection(hit.n);origin=offsetRay(hit.p,hit.n);layers=0;
+    throughput*=materialSample(hit,direction);previousVertex=hit.p;origin=offsetRay(hit.p,hit.ng);layers=0;
+    if(!any(greaterThan(throughput,vec3(0))))break;
   }
+  specular=result*specularWeight/max(weight,vec3(1e-20));
   return result;
 }
+vec3 continuation(Hit primary,out vec3 firstDirection,out float firstDistance) {
+  vec3 specular;return continuation(primary,firstDirection,firstDistance,specular);
+}
+#ifdef TEMPORAL
+float nearestDistance(float a,float b) { return a>0&&b>0?min(a,b):max(a,b); }
+// Local NEE and continuation share one PBR diffuse/specular history. The same
+// selected light, visibility and PDF feed both lobes; no additional rays.
+void addPbrLocal(ivec2 pixel,Hit hit,vec3 total,vec3 specular,float distance) {
+  vec3 factor=materialFactor(hit);
+  vec3 diffuseFactor=imageLoad(guideAlbedo,pixel).rgb;
+  vec3 specularFactor=imageLoad(pbrSpecularFactor,pixel).rgb;
+  vec4 diffuse=REBLUR_BackEnd_UnpackRadianceAndNormHitDist(imageLoad(sh0,pixel));
+  vec4 reflected=REBLUR_BackEnd_UnpackRadianceAndNormHitDist(imageLoad(pbrSpecularInput,pixel));
+  diffuse.rgb+=max(total-specular,vec3(0))*factor/diffuseFactor;
+  reflected.rgb+=specular*factor/specularFactor;
+  float z=imageLoad(guideDepth,pixel).x;
+  diffuse.a=nearestDistance(diffuse.a,REBLUR_FrontEnd_GetNormHitDist(distance,z,temporal.hitDistance.xyz,1));
+  reflected.a=nearestDistance(reflected.a,REBLUR_FrontEnd_GetNormHitDist(distance,z,temporal.hitDistance.xyz,hit.rm.x));
+  imageStore(sh0,pixel,REBLUR_FrontEnd_PackRadianceAndNormHitDist(diffuse.rgb,diffuse.a,true));
+  imageStore(pbrSpecularInput,pixel,REBLUR_FrontEnd_PackRadianceAndNormHitDist(reflected.rgb,reflected.a,true));
+}
+#endif
 void ray(vec2 ndc,mat4 inverseCamera,out vec3 origin,out vec3 direction) {
   vec4 nearPoint=inverseCamera*vec4(ndc,0,1),farPoint=inverseCamera*vec4(ndc,.99999,1);
   origin=nearPoint.xyz/nearPoint.w;direction=normalize(farPoint.xyz/farPoint.w-origin);
@@ -289,7 +329,7 @@ void updateCache(ivec2 pixel) {
     if(hit.blended&&random()>=hit.color.a) {
       if(++layers>=32)break;
       if(bounce!=0)SharcSetThroughput(state,hit.color.rgb);
-      origin=offsetRay(hit.p,-hit.n);continue;
+      origin=offsetRay(hit.p,-hit.ng);continue;
     }
     vec3 lighting=direct(hit);
     if(hit.cacheable&&!hit.blended) {
@@ -300,8 +340,10 @@ void updateCache(ivec2 pixel) {
       SharcUpdateMiss(parameters,state,lighting);
     }
     if(++bounce>frame.config.y)break;
-    SharcSetThroughput(state,hit.color.rgb);
-    direction=diffuseDirection(hit.n);origin=offsetRay(hit.p,hit.n);layers=0;
+    vec3 weight=materialSample(hit,direction);
+    SharcSetThroughput(state,weight);
+    origin=offsetRay(hit.p,hit.ng);layers=0;
+    if(!any(greaterThan(weight,vec3(0))))break;
   }
 }
 #endif
@@ -315,11 +357,23 @@ void main() {
   // The opaque pass preserves the exact hit position and normal in scratch
   // images. Avoid another geometry query or depth reconstruction at edges.
   vec4 normal=imageLoad(emissiveInput,pixel);
-  vec3 torch=vec3(0),emissive=vec3(0);float torchDistance=0,emissiveDistance=0;
+  vec3 torch=vec3(0),emissive=vec3(0),torchSpecular=vec3(0),emissiveSpecular=vec3(0);float torchDistance=0,emissiveDistance=0;
   if(normal.a>0) {
-    Hit hit;hit.p=imageLoad(worldColor,pixel).rgb;hit.n=normalize(normal.rgb);
+    vec3 origin,direction;
+    ray((vec2(pixel)+.5+frame.jitter.xy)/vec2(frame.target.xy)*2-1,frame.inverseCamera,origin,direction);
+    Hit hit=frame.target.w!=0?rasterPrimary(pixel,origin):closest(origin,direction);
+    for(uint layer=0;layer<32&&hit.blended;++layer)hit=closest(offsetRay(hit.p,-hit.ng),direction);
     uint state=hash(uint(pixel.x)+uint(pixel.y)*frame.target.x+hash(frame.config.z));
-    splitLocalLighting(hit,state,frame.localConfig.y,torch,emissive,torchDistance,emissiveDistance);
+    splitLocalLighting(hit,state,frame.localConfig.y,torch,emissive,torchDistance,emissiveDistance,torchSpecular,emissiveSpecular);
+    if(hit.pbr) {
+      if(temporal.flags.y!=0&&temporal.local.x!=0) {
+        addPbrLocal(pixel,hit,torch+emissive,torchSpecular+emissiveSpecular,nearestDistance(torchDistance,emissiveDistance));
+        torch=emissive=vec3(0);
+      } else {
+        vec3 scale=materialFactor(hit)/imageLoad(guideAlbedo,pixel).rgb;
+        torch*=scale;emissive*=scale;
+      }
+    }
   }
   float z=imageLoad(guideDepth,pixel).x;
   float td=normal.a>0?REBLUR_FrontEnd_GetNormHitDist(torchDistance,z,temporal.hitDistance.xyz,1):0;
@@ -341,7 +395,7 @@ void main() {
   ray((vec2(fullPixel)+.5+temporal.jitter.zw)/vec2(frame.target.xy)*2-1,temporal.previousInverseCamera,origin,direction);
   rng=hash(uint(fullPixel.x)+uint(fullPixel.y)*frame.target.x+hash(temporal.target.z));
   Hit hit=closest(origin,direction);
-  for(uint layer=0;layer<32&&hit.blended;++layer){origin=offsetRay(hit.p,-hit.n);hit=closest(origin,direction);}
+  for(uint layer=0;layer<32&&hit.blended;++layer){origin=offsetRay(hit.p,-hit.ng);hit=closest(origin,direction);}
   vec3 current=vec3(0);vec3 firstDir;float firstDist;
   if(hit.t<1e30)for(uint i=0;i<frame.config.x;++i)current+=continuation(hit,firstDir,firstDist)/float(frame.config.x);
   vec3 old=imageLoad(previousLighting,fullPixel).rgb;
@@ -369,41 +423,57 @@ void main() {
   // Opaque lighting owns the initial random sequence used by confidence retracing.
   uint sheetCount=0;
   while(sheetCount<32&&primary.blended) {
-    ++sheetCount;origin=offsetRay(primary.p,-primary.n);primary=closest(origin,direction);
+    ++sheetCount;origin=offsetRay(primary.p,-primary.ng);primary=closest(origin,direction);
   }
-  vec3 local=vec3(0);float localDistance=0;
-  vec3 emissive=vec3(0);float emissiveDistance=0;
+  vec3 local=vec3(0),localSpecular=vec3(0);float localDistance=0;
+  vec3 emissive=vec3(0),emissiveSpecular=vec3(0);float emissiveDistance=0;
   vec3 indirect=vec3(0),primaryDirect=vec3(0);vec4 packed0=vec4(0),packed1=vec4(0);
+#ifdef TEMPORAL
+  vec3 diffuseFactor=vec3(1),specularFactor=vec3(1),specularIndirect=vec3(0);
+  float specularDistance=0;
+  if(primary.t<1e30&&primary.pbr)
+    NRD_MaterialFactors(primary.n,primary.wo,primary.color.rgb*(1-primary.rm.y),
+      mix(vec3(.04),primary.color.rgb,primary.rm.y),primary.rm.x,diffuseFactor,specularFactor);
+#endif
   vec3 sunTransmittance=vec3(1),unshadowedDirect=vec3(0);float blockerDistance=65504;
   if(primary.t<1e30&&!primary.blended) {
     sunTransmittance=sunVisibility(primary,pixel,blockerDistance);
-    unshadowedDirect=primary.color.rgb*(max(0,dot(primary.n,-frame.lightDirection.xyz))/3.14159265359)*frame.lightRadiance.rgb;
+    unshadowedDirect=materialBrdf(primary,-frame.lightDirection.xyz)*max(0,dot(primary.n,-frame.lightDirection.xyz))*frame.lightRadiance.rgb;
     primaryDirect=unshadowedDirect*sunTransmittance;
 #ifdef SPLIT_LOCAL_PASS
     // Split direct lighting runs separately to keep its reservoirs out of the
     // opaque/indirect kernel's register footprint.
     if(!(enableSplitLighting&&frame.splitLocal.x!=0))
-      local=localLighting(primary,rng,frame.localConfig.y,localDistance,true);
+      local=localLighting(primary,rng,frame.localConfig.y,localDistance,true,localSpecular);
 #else
     if(enableSplitLighting&&frame.splitLocal.x!=0)
-      splitLocalLighting(primary,rng,frame.localConfig.y,local,emissive,localDistance,emissiveDistance);
+      splitLocalLighting(primary,rng,frame.localConfig.y,local,emissive,localDistance,emissiveDistance,localSpecular,emissiveSpecular);
     else
-      local=localLighting(primary,rng,frame.localConfig.y,localDistance,true);
-    local+=emissive;
+      local=localLighting(primary,rng,frame.localConfig.y,localDistance,true,localSpecular);
+    local+=emissive;localSpecular+=emissiveSpecular;
 #endif
     for(uint i=0;i<frame.config.x;++i) {
-      vec3 firstDir;float firstDist;vec3 sampleLight=continuation(primary,firstDir,firstDist);
+      vec3 firstDir,sampleSpecular;float firstDist;vec3 sampleLight=continuation(primary,firstDir,firstDist,sampleSpecular);
       indirect+=sampleLight/float(frame.config.x);
 #ifdef TEMPORAL
       float z=abs((temporal.view*vec4(primary.p,1)).z);
-      vec4 one;packed0+=REBLUR_FrontEnd_PackSh(sampleLight,REBLUR_FrontEnd_GetNormHitDist(firstDist,z,temporal.hitDistance.xyz,1),firstDir,one,true)/float(frame.config.x);
-      packed1+=one/float(frame.config.x);
+      if(primary.pbr) {
+        vec3 factor=materialFactor(primary);
+        packed0+=REBLUR_FrontEnd_PackRadianceAndNormHitDist(max(sampleLight-sampleSpecular,vec3(0))*factor/diffuseFactor,
+          REBLUR_FrontEnd_GetNormHitDist(firstDist,z,temporal.hitDistance.xyz,1),true)/float(frame.config.x);
+        specularIndirect+=sampleSpecular*factor/specularFactor/float(frame.config.x);
+        // Preserve a first-bounce reflection distance, including sky misses.
+        specularDistance=nearestDistance(specularDistance,firstDist);
+      } else {
+        vec4 one;packed0+=REBLUR_FrontEnd_PackSh(sampleLight,REBLUR_FrontEnd_GetNormHitDist(firstDist,z,temporal.hitDistance.xyz,1),firstDir,one,true)/float(frame.config.x);
+        packed1+=one/float(frame.config.x);
+      }
 #endif
     }
   }
   bool opaque=primary.t<1e30&&!primary.blended;
   vec3 emission=opaque?primary.emission:vec3(0);
-  vec3 color=opaque?emission+primaryDirect+primary.color.rgb*(indirect+local):imageLoad(rawSky,pixel).rgb;
+  vec3 color=opaque?emission+primaryDirect+materialFactor(primary)*(indirect+local):imageLoad(rawSky,pixel).rgb;
   if(primary.blended)color=vec3(0);
 #ifndef TEMPORAL
   // Raw diagnostics, before display transfer: distance / 16, or the combined
@@ -438,9 +508,12 @@ void main() {
     if(prev.w>0&&clip.w>0)mv=vec4((prev.xy/prev.w-clip.xy/clip.w)*.5*vec2(frame.target.xy),0,1);
   }
   imageStore(guideMotion,pixel,mv);imageStore(guideDepth,pixel,vec4(z));
-  imageStore(guideNormal,pixel,NRD_FrontEnd_PackNormalAndRoughness(N,1,0));
-  imageStore(guideAlbedo,pixel,opaque?vec4(primary.color.rgb,1):vec4(0));
+  imageStore(guideNormal,pixel,NRD_FrontEnd_PackNormalAndRoughness(N,opaque&&primary.pbr?primary.rm.x:1,opaque&&primary.pbr?(primary.rm.y>.5?2:1):0));
+  imageStore(guideAlbedo,pixel,opaque?vec4(primary.pbr?diffuseFactor:materialFactor(primary),primary.pbr?2:1):vec4(0));
   imageStore(sh0,pixel,packed0);imageStore(sh1,pixel,packed1);
+  float specularHit=opaque&&primary.pbr?REBLUR_FrontEnd_GetNormHitDist(specularDistance,z,temporal.hitDistance.xyz,primary.rm.x):0;
+  imageStore(pbrSpecularInput,pixel,REBLUR_FrontEnd_PackRadianceAndNormHitDist(specularIndirect,specularHit,true));
+  imageStore(pbrSpecularFactor,pixel,vec4(specularFactor,0));
 #ifdef SIGMA_PASS
   imageStore(shadowPenumbra,pixel,vec4(SIGMA_FrontEnd_PackPenumbra(blockerDistance,frame.sun.x)));
   imageStore(shadowInput,pixel,SIGMA_FrontEnd_PackTranslucency(blockerDistance,sunTransmittance));
@@ -448,7 +521,14 @@ void main() {
 #endif
 #ifdef LOCAL_PASS
   float normalizedDistance=opaque?REBLUR_FrontEnd_GetNormHitDist(localDistance,z,temporal.hitDistance.xyz,1):0;
-  imageStore(localInput,pixel,REBLUR_FrontEnd_PackRadianceAndNormHitDist(local,normalizedDistance,true));
+  vec3 storedLocal=local;
+  if(opaque&&primary.pbr) {
+    if(temporal.flags.y!=0&&temporal.local.x!=0) {
+      addPbrLocal(pixel,primary,local,localSpecular,localDistance);
+      storedLocal=vec3(0);
+    } else storedLocal*=materialFactor(primary)/diffuseFactor;
+  }
+  imageStore(localInput,pixel,REBLUR_FrontEnd_PackRadianceAndNormHitDist(storedLocal,normalizedDistance,true));
 #ifdef SPLIT_LOCAL_PASS
   float emissiveHitDistance=opaque?REBLUR_FrontEnd_GetNormHitDist(emissiveDistance,z,temporal.hitDistance.xyz,1):0;
   imageStore(emissiveInput,pixel,REBLUR_FrontEnd_PackRadianceAndNormHitDist(emissive,emissiveHitDistance,true));
@@ -456,7 +536,7 @@ void main() {
     imageStore(emissiveInput,pixel,vec4(N,opaque?1:0));
 #endif
 #else
-  primaryDirect+=opaque?primary.color.rgb*local:vec3(0);
+  primaryDirect+=opaque?materialFactor(primary)*local:vec3(0);
 #endif
   imageStore(directLight,pixel,vec4(safeRadiance(primaryDirect),1));imageStore(lighting,pixel,vec4(safeRadiance(indirect),1));
 #endif
@@ -483,7 +563,7 @@ void main() {
   vec3 tint=vec3(1),transparent=vec3(0);float opacityProduct=1;
   float signedCount=imageLoad(worldColor,pixel).a;
   uint sheetCount=uint(abs(signedCount));
-  Hit primary;primary.p=vec3(0);primary.n=vec3(0);primary.blended=false;
+  Hit primary;primary.p=vec3(0);primary.n=vec3(0);primary.blended=false;primary.pbr=false;
   if(sheetCount!=0)primary=frame.target.w!=0?rasterPrimary(pixel,origin):closest(origin,direction);
   vec4 sharedIndirect=vec4(0);
   uint directSeed=rng;
@@ -494,19 +574,20 @@ void main() {
   // Keep only shading fields, at most eight sheets at once. Separating these
   // batches from opaque/NRD work avoids the old 32-Hit array living across both.
   // Pretrace each batch before shading it; retain front-to-back RNG order.
-  struct Sheet { vec3 p;vec3 n;vec4 color;vec3 emission; };
+  struct Sheet { vec3 p;vec3 n;vec4 color;vec3 emission;vec3 ng;vec2 rm;bool pbr; };
   Sheet sheets[8];
   for(uint batch=0;batch<sheetCount;batch+=8) {
     uint count=min(8,sheetCount-batch);
     for(uint layer=0;layer<count;++layer) {
-      sheets[layer]=Sheet(primary.p,primary.n,primary.color,primary.emission);
-      if(batch+layer+1<sheetCount)primary=closest(offsetRay(primary.p,-primary.n),direction);
+      sheets[layer]=Sheet(primary.p,primary.n,primary.color,primary.emission,primary.ng,primary.rm,primary.pbr);
+      if(batch+layer+1<sheetCount)primary=closest(offsetRay(primary.p,-primary.ng),direction);
     }
     for(uint layer=0;layer<count;++layer) {
       Hit hit;hit.p=sheets[layer].p;hit.n=sheets[layer].n;hit.color=sheets[layer].color;
+      hit.ng=sheets[layer].ng;hit.rm=sheets[layer].rm;hit.pbr=sheets[layer].pbr;hit.wo=-direction;
       vec3 surfaceLight=direct(hit)+sheets[layer].emission;
-      if(sharedIndirect.a!=0)surfaceLight+=hit.color.rgb*sharedIndirect.rgb;
-      else for(uint i=0;i<frame.config.x;++i){vec3 d;float t;surfaceLight+=hit.color.rgb*continuation(hit,d,t)/float(frame.config.x);}
+      if(sharedIndirect.a!=0)surfaceLight+=materialFactor(hit)*sharedIndirect.rgb;
+      else for(uint i=0;i<frame.config.x;++i){vec3 d;float t;surfaceLight+=materialFactor(hit)*continuation(hit,d,t)/float(frame.config.x);}
       transparent+=tint*hit.color.a*surfaceLight;tint*=hit.color.rgb*(1-hit.color.a);opacityProduct*=1-hit.color.a;
     }
   }
@@ -533,7 +614,7 @@ void main() {
         vec4 clip=frame.camera*vec4(hit.p,1);
         depth=clamp(clip.z/clip.w,0,1);break;
       }
-      depthOrigin=offsetRay(hit.p,-hit.n);
+      depthOrigin=offsetRay(hit.p,-hit.ng);
     }
   }
   float count=float(frame.config.w);

@@ -8,7 +8,7 @@ The same selector is available as `rtx.native.pathtrace.debugView` (0–11).
 | --- | --- | --- |
 | 0 | Final lighting | Normal rendered output. |
 | 1 | Albedo | Unlit base color, before illumination. |
-| 2 | Geometric normals | World XYZ mapped to RGB in 0–1. A flat face has a constant color. |
+| 2 | Shading normals | World XYZ mapped to RGB in 0–1, including interpolated vertex normals and material normal maps. Missing vertex normals fall back to flat faces. |
 | 3 | Triangle IDs | Hashed persistent instance/surface/triangle identity. Remeshing can change colors; the finite palette permits collisions. Legacy submissions use their submission identity. |
 | 4 | Depth bands | Camera distance repeating black to white every four world units. |
 | 5 | World position grid | World XYZ as RGB, repeating every world unit. |

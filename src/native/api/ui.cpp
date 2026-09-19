@@ -29,7 +29,7 @@ extern "C" {
 
 REMIXAPI remixapi_UIState REMIXAPI_CALL remixapi_GetUIState() {
   std::lock_guard lock(g_apiMutex);
-  return g_uiState;
+  return g_runtime.uiState();
 }
 
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_SetUIState(remixapi_UIState state) {
@@ -41,7 +41,6 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_SetUIState(remixapi_UIState s
     return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
   }
   g_runtime.setUiState(state);
-  g_uiState = state;
   return REMIXAPI_ERROR_CODE_SUCCESS;
 }
 

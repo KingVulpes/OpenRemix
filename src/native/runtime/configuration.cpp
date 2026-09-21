@@ -124,6 +124,10 @@ namespace remix {
       m_traceOptions.accumulate = number != 0;
     else if (!std::strcmp(key, "sigma") && number <= 1)
       m_traceOptions.sigma = number != 0;
+    else if (!std::strcmp(key, "blueNoiseShadows") && number <= 1)
+      m_traceOptions.blueNoiseShadows = number != 0;
+    else if (!std::strcmp(key, "blueNoiseLocalLights") && number <= 1)
+      m_traceOptions.blueNoiseLocalLights = number != 0;
     else if (!std::strcmp(key, "prism") && number <= 1)
       m_traceOptions.prism = number != 0;
     else if (!std::strcmp(key, "gamma22") && number <= 1)
@@ -144,7 +148,7 @@ namespace remix {
       m_traceOptions.freezeEmissiveRadiance = number != 0;
     else if (!std::strcmp(key, "emissiveCandidates") && number >= 1 && number <= 8)
       m_traceOptions.emissiveCandidates = number;
-    else if (!std::strcmp(key, "separateLocalLighting") && number <= 2)
+    else if (!std::strcmp(key, "separateLocalLighting") && number <= 3)
       m_traceOptions.separateLocalLighting = number;
     else if (!std::strcmp(key, "localDenoiser") && number <= 1)
       m_traceOptions.localDenoiser = number != 0;
@@ -160,6 +164,8 @@ namespace remix {
       m_traceOptions.taa = number != 0;
     else if (!std::strcmp(key, "waterIndirectReuse") && number <= 1)
       m_traceOptions.waterIndirectReuse = number != 0;
+    else if (!std::strcmp(key, "pbrLocalReuse") && number <= 1)
+      m_traceOptions.pbrLocalReuse = number != 0;
     else if (!std::strcmp(key, "validation") && number <= 1)
       m_traceOptions.validation = number != 0;
     else if (!std::strcmp(key, "sharc") && number <= 1)

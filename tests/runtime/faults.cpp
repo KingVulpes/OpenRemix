@@ -104,7 +104,7 @@ extern "C" VKAPI_ATTR VkResult VKAPI_CALL vkCreateComputePipelines(VkDevice devi
     for(uint32_t j=0;j<count;++j)outputs[j]=VK_NULL_HANDLE;
     return VK_ERROR_OUT_OF_DEVICE_MEMORY;
   }
-  if (fault("light-guiding-compute")) {
+  if (fault("light-guiding-compute") || fault("indirect-consumer")) {
     for (uint32_t i = 0; i < count; ++i) {
       const auto *specialization = infos[i].stage.pSpecializationInfo;
       if (!specialization)
@@ -112,7 +112,7 @@ extern "C" VKAPI_ATTR VkResult VKAPI_CALL vkCreateComputePipelines(VkDevice devi
       for (uint32_t j = 0; j < specialization->mapEntryCount; ++j) {
         const auto &entry = specialization->pMapEntries[j];
         VkBool32 enabled = VK_FALSE;
-        if (entry.constantID != 1 || entry.size != sizeof(enabled))
+        if (entry.constantID != (fault("indirect-consumer") ? 9u : 1u) || entry.size != sizeof(enabled))
           continue;
         std::memcpy(&enabled, static_cast<const char *>(specialization->pData) + entry.offset, sizeof(enabled));
         if (enabled) {
@@ -222,6 +222,19 @@ extern "C" VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceFeatures2(VkPhysicalDev
 
 extern "C" VKAPI_ATTR VkResult VKAPI_CALL vkCreateBuffer(VkDevice device, const VkBufferCreateInfo *info,
                                                         const VkAllocationCallbacks *alloc, VkBuffer *output) {
+  // Two packed 128x128 tiles plus 8/32 Sobol pairs, aligned to 4096 bytes.
+  if ((fault("blue-noise-allocation") || fault("local-blue-noise-allocation")) && info->size == 135168 &&
+      (info->usage & VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) &&
+      (info->usage & VK_BUFFER_USAGE_TRANSFER_DST_BIT)) {
+    *output = VK_NULL_HANDLE;
+    return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+  }
+  // The focused indirect fixture is 160 x 128, with 16 bytes per pixel.
+  if (fault("indirect-allocation") && info->size == 160 * 128 * 16 &&
+      (info->usage & VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) {
+    *output = VK_NULL_HANDLE;
+    return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+  }
   if (fault("light-guiding-allocation") && info->size == 1052672 &&
       (info->usage & VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) {
     *output = VK_NULL_HANDLE;

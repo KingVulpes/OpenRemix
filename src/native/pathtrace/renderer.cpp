@@ -7,6 +7,10 @@ namespace remix {
 
   void PathTracer::Gpu::swapFrame(FrameResources &frame) {
     using std::swap;
+    swap(rayProfile.readback, frame.rayReadback);
+    swap(rayProfile.pending, frame.rayPending);
+    swap(pbrReuse.readback, frame.reuseReadback);
+    swap(pbrReuse.pending, frame.reusePending);
     swap(set, frame.set);
     swap(timestamps, frame.timestamps);
     swap(compaction, frame.compaction);
@@ -55,7 +59,7 @@ namespace remix {
     if (!timestamps && timestampBits && properties.limits.timestampComputeAndGraphics) {
       const VkQueryPoolCreateInfo query{.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
                                         .queryType = VK_QUERY_TYPE_TIMESTAMP,
-                                        .queryCount = 4};
+                                        .queryCount = 10};
       check(vkCreateQueryPool(device, &query, nullptr, &timestamps));
     }
     if (sharc.hash && !sharc.readback) {
@@ -156,6 +160,8 @@ namespace remix {
   }
 
   void PathTracer::Gpu::destroyTarget() {
+    for (auto &buffer : pbrReuse.history) buffer.reset();
+    pbrReuse.valid = pbrReuse.active = pbrReuse.failed = false;
     upscaler.reset();
     lightGuiding.valid = false;
     destroyPost();
@@ -210,6 +216,7 @@ namespace remix {
     g.localCapable[1] = denoise::localSupported(physical, true);
     vkGetPhysicalDeviceMemoryProperties(physical, &g.memory);
     vkGetPhysicalDeviceProperties(physical, &g.properties);
+    g.opacityCache = scene::OpacityCache(g.properties.limits.subTexelPrecisionBits, std::getenv("REMIX_OPACITY_PROFILE") != nullptr);
     VkPhysicalDeviceProperties2 properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
                                               .pNext = &g.asProperties};
     vkGetPhysicalDeviceProperties2(physical, &properties);
@@ -312,7 +319,7 @@ namespace remix {
     if (g.timestampBits && g.properties.limits.timestampComputeAndGraphics) {
       VkQueryPoolCreateInfo query = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
                                      .queryType = VK_QUERY_TYPE_TIMESTAMP,
-                                     .queryCount = 4};
+                                     .queryCount = 10};
       check(vkCreateQueryPool(device, &query, nullptr, &g.timestamps));
     }
   }
@@ -505,7 +512,7 @@ namespace remix {
     auto result = m_gpu->stats;
     result.redrawRequested = result.accumulationEnabled ||
         (m_gpu->upscaler && m_gpu->upscaler->statistics().frames < 128) ||
-        (m_gpu->sharc.stats.active && m_gpu->sharc.warmFrames < m_gpu->sharc.warmTarget);
+        (m_gpu->sharc.stats.active && m_gpu->sharc.hasReceivers && m_gpu->sharc.warmFrames < m_gpu->sharc.warmTarget);
     return result;
   }
 

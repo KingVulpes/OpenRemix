@@ -15,13 +15,15 @@ namespace remix {
     uint32_t fsrQuality = 1;
     float fsrSharpness = 0.f;
     bool sigma = true;
+    bool blueNoiseShadows = true;
+    bool blueNoiseLocalLights = true;
     bool localLights = true, localDenoiser = true;
     bool torchLights = true, emissiveLights = true;
     uint32_t emissiveCandidates = 4;
     bool adaptiveLocalSampling = true;
     bool stabilizeEmissiveLighting = false, emissiveSolidAngleSampling = false;
     bool freezeEmissiveRadiance = false; // diagnostic: casting only
-    uint32_t separateLocalLighting = 0; // combined, shared ray budget, one budget per family
+    uint32_t separateLocalLighting = 0; // combined, shared rays, per-family rays, combined separate pass
     uint32_t localSamples = 1;
     float localIntensity = 1, localRange = 16;
     bool localGuiding = true;
@@ -30,6 +32,7 @@ namespace remix {
     float sunAngularDiameter = -1; // -1 inherits the distant light's diameter.
     bool rasterPrimary = true;
     bool waterIndirectReuse = true;
+    bool pbrLocalReuse = false; // Experimental previous-frame secondary local lighting.
     bool sky = true;
     bool sharc = true, sharcDebug = false;
     uint32_t sharcCapacityLog2 = 22, sharcDownscale = 5, sharcSceneScale = 50;

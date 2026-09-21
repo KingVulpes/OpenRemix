@@ -72,6 +72,7 @@ namespace remix {
             m_traceOptions.bounces = uint32_t(bounces);
           ImGui::Checkbox("REBLUR diffuse SH", &m_traceOptions.denoiser);
           ImGui::Checkbox("SIGMA sun shadows", &m_traceOptions.sigma);
+          ImGui::Checkbox("Blue noise sun shadows", &m_traceOptions.blueNoiseShadows);
           const auto shadows = shadowStatistics();
           ImGui::Text("SIGMA: %s", shadows.active ? "active" : "inactive");
           if (shadows.active && shadows.gpuTimingsAvailable)
@@ -108,6 +109,9 @@ namespace remix {
           ImGui::Checkbox("Reuse water indirect samples", &m_traceOptions.waterIndirectReuse);
           if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Shares diffuse lighting across small flat water patches with TAA or FSR.\nEdges, overlapping layers and raw reference rendering retain full sampling.");
+          ImGui::Checkbox("Experimental PBR lighting reuse", &m_traceOptions.pbrLocalReuse);
+          if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Reuses local lighting on closely matching rough surfaces.\nMay change lighting and temporal noise; disabled by default.");
           ImGui::Checkbox("NRD validation", &m_traceOptions.validation);
           ImGui::Checkbox("Progressive accumulation", &m_traceOptions.accumulate);
           if (m_traceOptions.accumulate)
@@ -144,12 +148,15 @@ namespace remix {
             if (ImGui::IsItemHovered())
               ImGui::SetTooltip("Compares unshadowed candidates at opaque primary surfaces in larger emissive light sets.\nKeeps one shadow ray per local light sample; 1 restores basic BVH sampling.");
             ImGui::Checkbox("Denoise local lighting", &m_traceOptions.localDenoiser);
+            ImGui::Checkbox("Blue noise local lights", &m_traceOptions.blueNoiseLocalLights);
+            if (ImGui::IsItemHovered())
+              ImGui::SetTooltip("Uses blue noise for primary torch and emissive sample positions with local denoising.\nPreserves candidate and shadow-ray budgets.");
             int separation = int(m_traceOptions.separateLocalLighting);
-            const char *separationModes[] = {"Combined", "Separate - shared ray budget", "Separate - samples per family"};
-            if (ImGui::Combo("Torch / emissive lighting", &separation, separationModes, 3))
+            const char *separationModes[] = {"Combined", "Separate - shared ray budget", "Separate - samples per family", "Combined - separate pass"};
+            if (ImGui::Combo("Torch / emissive lighting", &separation, separationModes, 4))
               m_traceOptions.separateLocalLighting = uint32_t(separation);
             if (ImGui::IsItemHovered())
-              ImGui::SetTooltip("Separates direct torch and emissive sampling and denoiser histories.\nShared budget keeps the shadow-ray budget. Per-family mode can trace twice as many.\nIndirect lighting remains combined.");
+              ImGui::SetTooltip("Separate families use distinct direct sampling and denoiser histories.\nShared budget keeps the shadow-ray budget. Per-family mode can trace twice as many.\nCombined separate pass retains the combined sampler and budget in a dedicated dispatch.\nIndirect lighting remains combined.");
             int samples = int(m_traceOptions.localSamples);
             if (ImGui::SliderInt("Local light samples", &samples, 1, 16))
               m_traceOptions.localSamples = uint32_t(samples);

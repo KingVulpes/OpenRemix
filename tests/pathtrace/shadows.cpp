@@ -2,8 +2,10 @@
 #include <SDL3/SDL.h>
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <cstdlib>
 #include <filesystem>
 #include <vector>
@@ -30,6 +32,9 @@ int main(int argc, char **argv) {
   startup.sType = REMIXAPI_STRUCT_TYPE_STARTUP_INFO;
 #if !defined(_WIN32)
   startup.windowWidth = 256; startup.windowHeight = 128;
+  if (std::getenv("REMIX_TEST_SHADOW_BENCHMARK")) {
+    startup.windowWidth = 1920; startup.windowHeight = 1080;
+  }
 #endif
   ok(api.Startup(&startup));
   remixapi_BackendCapabilitiesEXT caps{};
@@ -113,6 +118,10 @@ int main(int argc, char **argv) {
   auto configure = [&](const char *key, const char *value) {
     ok(api.SetConfigVariable((std::string("rtx.native.pathtrace.") + key).c_str(), value));
   };
+  const bool blueNoise = !std::getenv("REMIX_TEST_WHITE_SHADOWS");
+  configure("blueNoiseShadows", blueNoise ? "1" : "0");
+  require(api.SetConfigVariable("rtx.native.pathtrace.blueNoiseShadows", "2") == REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS,
+          "Invalid blue-noise shadow toggle accepted");
   auto draw = [&](remixapi_MeshHandle mesh) {
     remixapi_InstanceIdentityEXT identity{};
     identity.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_IDENTITY_EXT;
@@ -131,7 +140,13 @@ int main(int argc, char **argv) {
     }
     ok(api.DrawInstance(&instance));
   };
+  bool continuous = false;
+  unsigned refresh = 0;
   auto frame = [&] {
+    // This scene has no local emitters. Toggling their unused proposal setting
+    // keeps scene submissions fresh without changing sun samples or history.
+    // Otherwise the renderer legitimately reuses its converged static image.
+    if (continuous) configure("emissiveSolidAngleSampling", (++refresh & 1) ? "1" : "0");
     ok(api.PumpEvents()); ok(api.SetupCamera(&camera)); ok(api.DrawLightInstance(sun));
     draw(receiver); if (occluder) draw(occluder);
     ok(api.Present(nullptr));
@@ -198,6 +213,16 @@ int main(int argc, char **argv) {
             "Malformed sun diameter override accepted");
   frame(); frame();
   if (const char *fault = std::getenv("REMIX_TEST_FAULT")) {
+    if (std::strcmp(fault, "blue-noise-allocation") == 0) {
+      require(shadows().active && temporal().activeDenoiser && temporal().activeTaa,
+              "Blue-noise allocation failure disabled denoising");
+      configure("shadowDebug", "2");
+      const auto fallback = capture("blue-noise-fallback");
+      require(average(fallback, 32, 64) < .01 && average(fallback, 192, 224) > .98 && mse(fallback) < .02,
+              "Blue-noise allocation fallback changed sun visibility");
+      std::puts("Blue-noise allocation fallback retained SIGMA and shadow energy");
+      ok(api.Shutdown()); return 0;
+    }
     require(!shadows().active && shadows().unavailableReason[0] && temporal().activeDenoiser && temporal().activeTaa,
             "SIGMA failure disabled the existing indirect/TAA path");
     auto image = capture("fallback");
@@ -210,6 +235,38 @@ int main(int argc, char **argv) {
     ok(api.Shutdown()); return 77;
   }
   require(shadows().active, "Supported SIGMA did not activate");
+  if (std::getenv("REMIX_TEST_SHADOW_BENCHMARK")) {
+    continuous = true;
+    auto output = std::fopen((directory / "timings.csv").string().c_str(), "w");
+    require(output, "Cannot write shadow benchmark");
+    std::fprintf(output, "phase,blue_noise,frame,gpu_trace_ms,gpu_sigma_ms,present_ms\n");
+    unsigned phase = 0;
+    for (bool enabled : {false, true, true, false}) {
+      configure("blueNoiseShadows", enabled ? "1" : "0");
+      for (unsigned i = 0; i < 64; ++i) frame();
+      uint64_t previousSequence = 0;
+      for (unsigned i = 0; i < 256; ++i) {
+        auto begin = std::chrono::steady_clock::now();
+        frame();
+        double milliseconds = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
+        remixapi_TracingStatisticsEXT tracing{}; tracing.structSize = sizeof(tracing);
+        ok(remixapi_GetTracingStatisticsEXT(&tracing));
+        require(tracing.gpuTimingsAvailable && shadows().gpuTimingsAvailable, "GPU benchmark timestamps unavailable");
+        require(!previousSequence || tracing.sampleSequence > previousSequence, "Benchmark reused a converged frame");
+        previousSequence = tracing.sampleSequence;
+        std::fprintf(output, "%u,%u,%u,%.6f,%.6f,%.6f\n", phase, unsigned(enabled), i,
+                     tracing.gpuTraceMilliseconds, shadows().gpuSigmaMilliseconds, milliseconds);
+      }
+      ++phase;
+    }
+    std::fclose(output);
+    ok(api.Shutdown());
+    std::puts("Shadow sampler 1080p comparison captured");
+    return 0;
+  }
+  auto metrics = std::fopen((directory / "blue-noise.csv").string().c_str(), "w");
+  require(metrics, "Cannot write shadow comparison metrics");
+  std::fprintf(metrics, "primary,blue_noise,frame,sequence,mse,mean,temporal_mse,gpu_trace_ms,gpu_sigma_ms\n");
   for (const char *primary : {"raster", "ray"}) {
     configure("primaryVisibility", primary);
     configure("denoiser", "off"); configure("taa", "0");
@@ -225,6 +282,28 @@ int main(int argc, char **argv) {
     require(farWidth > nearWidth * 2 && farWidth > 10, "Penumbra did not grow with blocker distance");
     require(average(far, 32, 64) < .01 && average(far, 192, 224) > .98,
             "SIGMA changed fully shadowed/lit regions");
+    // Complete eight-sample cycles after warmup, including every temporal phase.
+    continuous = true;
+    auto previous = capture(std::string(primary) + "-continuous-warmup", 40);
+    uint64_t previousSequence = 0;
+    for (unsigned i = 0; i < 16; ++i) {
+      auto image = capture(std::string(primary) + "-sequence-" + std::to_string(i), 1);
+      double difference = 0;
+      for (int y = 32; y < 96; ++y) for (int x = 96; x < 160; ++x) {
+        const double delta = image[y * 256 + x][0] - previous[y * 256 + x][0];
+        difference += delta * delta;
+      }
+      remixapi_TracingStatisticsEXT tracing{}; tracing.structSize = sizeof(tracing);
+      ok(remixapi_GetTracingStatisticsEXT(&tracing));
+      require(!previousSequence || tracing.sampleSequence > previousSequence, "Shadow comparison reused a converged frame");
+      previousSequence = tracing.sampleSequence;
+      std::fprintf(metrics, "%s,%u,%u,%llu,%.9f,%.9f,%.9f,%.6f,%.6f\n", primary, unsigned(blueNoise), i,
+                   static_cast<unsigned long long>(tracing.sampleSequence),
+                   mse(image), average(image, 96, 160), difference / 4096,
+                   tracing.gpuTraceMilliseconds, shadows().gpuSigmaMilliseconds);
+      previous = std::move(image);
+    }
+    continuous = false;
     configure("shadowDebug", "1");
     auto raw = capture(std::string(primary) + "-raw-visibility");
     std::printf("%s analytic disk MSE: raw=%.6f SIGMA=%.6f\n", primary, mse(raw), mse(far));
@@ -252,6 +331,11 @@ int main(int argc, char **argv) {
     capture(std::string(primary) + "-combined", 96);
     require(shadows().active && temporal().activeDenoiser && temporal().activeTaa,
             "SIGMA and diffuse SH/TAA did not run together");
+    auto beforeToggle = temporal().historyResets, shadowBeforeToggle = shadows().historyResets;
+    configure("blueNoiseShadows", blueNoise ? "0" : "1"); frame(); frame();
+    require(temporal().historyResets == beforeToggle && shadows().historyResets > shadowBeforeToggle,
+            "Shadow sampler toggle did not reset only SIGMA");
+    configure("blueNoiseShadows", blueNoise ? "1" : "0"); frame(); frame();
     auto resets = temporal().historyResets, shadowResets = shadows().historyResets;
     for (int i = 0; i < 16; ++i) {
       distant.direction.x = i * .0001f;
@@ -284,6 +368,7 @@ int main(int argc, char **argv) {
   }
   std::printf("SIGMA last dispatch %.3f ms; shadow-only history resets %llu\n", shadows().gpuSigmaMilliseconds,
               static_cast<unsigned long long>(shadows().historyResets));
+  std::fclose(metrics);
   ok(api.Shutdown());
   std::puts("SIGMA penumbra, occlusion, transmission, signal separation and temporal checks passed");
 }

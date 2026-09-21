@@ -2,6 +2,7 @@
 #include "scene/types.h"
 #include "scene/light_bvh.h"
 #include "scene/emission.h"
+#include "scene/opacity.h"
 #include <unordered_set>
 
 namespace remix::scene {
@@ -12,6 +13,7 @@ struct TraceFrame {
     Draw draw;
     uint32_t animationFrame = 0;
     std::array<float, 4> uv{};
+    std::shared_ptr<const OpacityPartition> opacity;
   };
   struct Emitter {
     SphereLight light;

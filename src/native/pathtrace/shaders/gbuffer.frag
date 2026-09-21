@@ -31,7 +31,12 @@ layout(location=5) out vec4 outPbr;
 #endif
 void main() {
   Surface s=surfaces[draw.surfaceIndex];
-  if((s.state.w&4)==0&&!gl_FrontFacing)discard;
+  // Match world-space ray facing independently of projection handedness.
+  // The geometric normal includes mirrored instance transforms.
+  vec4 projected=frame.camera*vec4(position,1);
+  vec4 nearPoint=frame.inverseCamera*vec4(projected.xy/projected.w,0,1);
+  vec3 direction=position-nearPoint.xyz/nearPoint.w;
+  if((s.state.w&4)==0&&dot(normal,direction)<=0)discard;
   vec4 albedo=materialColor(s,uv,color);
   if(!alphaPass(s,albedo.a))discard;
 #ifdef STABLE_DEPTH
@@ -39,9 +44,6 @@ void main() {
   if((s.state.w&2)!=0)discard;
   outDepth=gl_FragCoord.z;
 #else
-  vec2 ndc=(gl_FragCoord.xy+draw.jitter)/vec2(frame.target.xy)*2-1;
-  vec4 nearPoint=frame.inverseCamera*vec4(ndc,0,1);
-  vec3 direction=position-nearPoint.xyz/nearPoint.w;
   vec3 n=normalize(normal);
   if(dot(n,direction)>0)n=-n;
   outPosition=vec4(position,gl_FragCoord.z);

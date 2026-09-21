@@ -3,6 +3,63 @@
 
 namespace remix {
   using namespace trace::detail;
+  void PathTracer::Gpu::destroyIndirect() {
+    for (auto &pipeline : indirectPass.pipeline) {
+      forgetLightingPipeline(pipeline);
+      if (pipeline) vkDestroyPipeline(device, pipeline, nullptr);
+      pipeline = VK_NULL_HANDLE;
+    }
+    indirectPass.results.reset();
+    indirectPass.active = indirectPass.failed = false;
+  }
+
+  void PathTracer::Gpu::configureIndirect(Frame &frame, const TraceOptions &options, bool querySharc) {
+    indirectPass.active = false;
+    if (!indirectPass.mode || indirectPass.failed || !denoiser || !postSplit ||
+        !splitLightingActive || !localIlluminationActive || !options.bounces || options.pbrLocalReuse ||
+        (indirectPass.mode == 1 && (querySharc || options.separateLocalLighting != 3)))
+      return;
+    try {
+      auto &pipeline = indirectPass.pipeline[querySharc];
+      if (!pipeline) {
+        const auto *code = querySharc ? trace::sharcIndirectTemporalShader : trace::indirectTemporalShader;
+        const size_t bytes = querySharc ? sizeof(trace::sharcIndirectTemporalShader) : sizeof(trace::indirectTemporalShader);
+        VkShaderModuleCreateInfo info{.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+                                       .codeSize = bytes, .pCode = code};
+        VkShaderModule module{};
+        check(vkCreateShaderModule(device, &info, nullptr, &module));
+        const VkBool32 guidance = VK_FALSE;
+        const VkSpecializationMapEntry entry{1, 0, sizeof(guidance)};
+        const VkSpecializationInfo specialization{1, &entry, sizeof(guidance), &guidance};
+        VkComputePipelineCreateInfo create{.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+                                            .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                      .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = module,
+                                                      .pName = "main", .pSpecializationInfo = &specialization},
+                                            .layout = temporalLayout};
+        const auto result = vkCreateComputePipelines(device, pipelineCache, 1, &create, nullptr, &pipeline);
+        vkDestroyShaderModule(device, module, nullptr);
+        check(result);
+        lightingPipelines[pipeline] = {code, bytes, temporalLayout};
+        // On the measured Turing driver, first-hit termination raises the
+        // uncached producer from 128 to 168 registers. Local visibility only
+        // returns a boolean, so closest-blocker traversal preserves transport.
+        lightingPipelines[pipeline].preferFirstHit = querySharc;
+      }
+      const VkDeviceSize bytes = VkDeviceSize(extent.width) * extent.height * 16;
+      if (!indirectPass.results || indirectPass.results->size < bytes) {
+        auto next = buffer(bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false);
+        if (indirectPass.results) retiredBuffers.push_back(std::move(indirectPass.results));
+        indirectPass.results = std::move(next);
+      }
+      frame.indirectResults = indirectPass.results->address;
+      indirectPass.active = true;
+    } catch (VkResult error) {
+      if (error == VK_ERROR_DEVICE_LOST) throw;
+      indirectPass.failed = true;
+      std::fprintf(stderr, "Separate indirect pass unavailable (%d); using inline tracing\n", int(error));
+    }
+  }
+
   void PathTracer::Gpu::destroyPost() {
     if (denoiser) {
       auto shadows = denoiser->shadowStatistics();
@@ -13,6 +70,7 @@ namespace remix {
       denoisedFrames += s.renderedFrames;
       postPeakMemory = std::max(postPeakMemory, s.peakMemoryBytes);
     }
+    destroyIndirect();
     destroySharc(true);
     forgetLightingPipeline(temporalTransparencyCompute);
     forgetLightingPipeline(temporalCompute);
@@ -52,8 +110,10 @@ namespace remix {
     }
     const bool localDenoise = local && options.localDenoiser && reblur;
     const bool split = local && options.separateLocalLighting != 0 && denoise::localSupported(physical, sigma, true);
+    const bool combinedDirect = split && options.separateLocalLighting == 3;
     if (reblur != postReblur || taa != postTaa || sigma != postSigmaRequested ||
-        local != postLocalRequested || localDenoise != postLocalDenoiseRequested || split != postSplitRequested) {
+        local != postLocalRequested || localDenoise != postLocalDenoiseRequested || split != postSplitRequested ||
+        combinedDirect != postCombinedDirect) {
       check(vkDeviceWaitIdle(device));
       destroyPost();
       postReblur = reblur;
@@ -62,6 +122,8 @@ namespace remix {
       postLocal = postLocalRequested = local;
       postLocalDenoise = postLocalDenoiseRequested = localDenoise;
       postSplit = postSplitRequested = split;
+      // A combined signal cannot reuse a history that held only one family.
+      postCombinedDirect = combinedDirect;
       history.clear();
     }
     if (!postAttempted)
@@ -69,7 +131,9 @@ namespace remix {
     if (localLimited)
       postFailure = "Insufficient descriptors for separate local and sun signals; SIGMA is disabled";
     if (local && options.separateLocalLighting && !split)
-      postFailure = "Insufficient descriptors for separate torch/emissive histories; combined local lighting active";
+      postFailure = options.separateLocalLighting == 3
+          ? "Insufficient descriptors for a separate combined-light pass; inline combined lighting active"
+          : "Insufficient descriptors for separate torch/emissive histories; combined local lighting active";
     if ((options.denoiser && !caps.reblurShSupported) || (options.taa && !caps.taaSupported))
       postFailure = caps.unavailableReason;
     if ((!reblur && !taa && !sigma && !upscaler) || postAttempted)
@@ -209,8 +273,12 @@ namespace remix {
       g.lightGuiding.valid = true;
       ++g.lightGuiding.stats.renderedFrames;
     }
+    if (g.pbrReuse.active) {
+      g.pbrReuse.writeIndex ^= 1;
+      g.pbrReuse.valid = true;
+    }
     g.history.commit();
-    if (g.sharc.stats.active) {
+    if (g.sharc.stats.active && g.sharc.hasReceivers) {
       ++g.sharc.stats.renderedFrames;
       ++g.sharc.warmFrames;
     }
@@ -225,7 +293,7 @@ namespace remix {
     std::copy_n(g.temporalFrame.jitter, 2, g.previousJitter);
     g.previousSeed = uint32_t(g.sequence - 1);
     g.previousTime = g.pendingTime;
-    std::copy_n(g.pendingSun, 8, g.previousSun);
+    std::copy_n(g.pendingSun, 9, g.previousSun);
     if (g.denoiser)
       g.denoiser->submitted();
   }

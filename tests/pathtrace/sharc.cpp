@@ -63,11 +63,12 @@ int main(int argc, char **argv) {
             "Invalid SHARC setting accepted");
   }
   uint64_t next = 100;
-  auto material = [&](remixapi_Float3D color, float alpha, bool cutout = false) {
+  auto material = [&](remixapi_Float3D color, float alpha, bool cutout = false, bool pbr = false) {
     remixapi_MaterialInfoOpaqueEXT opaque{};
     opaque.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_EXT;
     opaque.albedoConstant = color;
     opaque.opacityConstant = alpha;
+    opaque.roughnessConstant = pbr ? 1.f : 0.f;
     opaque.alphaTestType = cutout ? 4 : 7; // GREATER .5
     opaque.alphaReferenceValue = 128;
     remixapi_MaterialInfo info{};
@@ -100,6 +101,9 @@ int main(int argc, char **argv) {
     return handle;
   };
   const auto receiver = quad(2, .5f, -2, 2, -2, 2, white);
+  const auto pbrReceiver = quad(2, .5f, -2, 2, -2, 2, material({1, 1, 1}, 1, false, true));
+  const auto offscreenReceiver = quad(2, .5f, 10, 12, -2, 2, white);
+  bool pbrOnly = false, dynamicOnly = false;
   std::vector<remixapi_MeshHandle> sides;
   for (float sign : {-1.f, 1.f}) {
     sides.push_back(quad(0, sign, -1, 1, -1, .5f, black));
@@ -136,7 +140,7 @@ int main(int argc, char **argv) {
     remixapi_InstanceIdentityEXT identity{};
     identity.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_IDENTITY_EXT;
     identity.instanceId = reinterpret_cast<uintptr_t>(mesh); identity.rasterVisible = 1;
-    identity.classification = mesh == mover ? 1 : 0;
+    identity.classification = dynamicOnly || mesh == mover ? 1 : 0;
     remixapi_InstanceInfoBlendEXT blend{};
     blend.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_BLEND_EXT; blend.pNext = &identity;
     blend.alphaBlendEnabled = mesh == glass;
@@ -150,7 +154,7 @@ int main(int argc, char **argv) {
   auto frame = [&] {
     camera.view[3][0] = -translation;
     ok(api.PumpEvents()); ok(api.SetupCamera(&camera)); ok(api.DrawLightInstance(sun));
-    draw(receiver);
+    draw(pbrOnly ? pbrReceiver : receiver);
     for (auto mesh : enclosure) draw(mesh);
     ok(api.Present(nullptr));
   };
@@ -292,6 +296,31 @@ int main(int argc, char **argv) {
     require(!cache().active, "Runtime cache disable failed");
     configure("sharc", "1"); environment.radiance = {.25f, .5f, .75f};
   }
+  // All-scene eligibility is independent of recent query hits or visibility.
+  enclosure.clear(); pbrOnly = true;
+  configure("denoiser", "reblur-sh"); configure("taa", "1");
+  for (int i = 0; i < 12; ++i) frame();
+  const auto idleFrames = cache().renderedFrames, idleResets = cache().resets;
+  require(cache().active && !cache().updatePaths && !cache().queryAttempts &&
+          !cache().occupiedEntries && !cache().gpuTimingsAvailable &&
+          cache().gpuUpdateMilliseconds == 0 && cache().gpuResolveMilliseconds == 0,
+          "PBR-only scene retained SHARC update work or stale statistics");
+  const auto temporalFrames = temporal().historyFrames;
+  for (int i = 0; i < 8; ++i) frame();
+  require(cache().renderedFrames == idleFrames && cache().resets == idleResets &&
+          temporal().historyFrames > temporalFrames, "Idle cache stopped denoising or continued warming");
+  configure("sharcDebug", "1"); frame(); frame(); // No uninitialized cache lookup.
+  configure("sharcDebug", "0");
+  enclosure.push_back(offscreenReceiver);
+  for (int i = 0; i < 12; ++i) frame();
+  require(cache().renderedFrames > idleFrames && cache().resets > idleResets && cache().updatePaths,
+          "Off-screen legacy receiver did not resume initialized cache updates");
+  dynamicOnly = true;
+  for (int i = 0; i < 8; ++i) frame();
+  require(!cache().updatePaths && !cache().queryAttempts, "Dynamic legacy surfaces kept cache updates alive");
+  dynamicOnly = false; pbrOnly = false; enclosure = sides; enclosure.push_back(back);
+  for (int i = 0; i < 96; ++i) frame();
+  require(cache().updatePaths && cache().occupiedEntries, "Legacy receivers failed to warm after resume");
   ok(api.Shutdown());
   std::puts("SHARC diffuse reference, occlusion, transmission, fallback, controls and temporal checks passed");
 }

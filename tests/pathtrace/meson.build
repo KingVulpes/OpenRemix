@@ -43,6 +43,60 @@ if get_option('gpu_tests')
   test('Mixed emissive and torch sampling stability', torch_stability_test,
     args : [meson.current_build_dir() / 'mixed-light-scenes'],
     env : ['REMIX_TEST_MIXED_LIGHTS=1', 'REMIX_TEST_ADAPTIVE_LOCAL=1'], timeout : 300)
+  test('PBR mixed local lighting energy and motion', torch_stability_test,
+    args : [meson.current_build_dir() / 'pbr-mixed-light-scenes'],
+    env : ['REMIX_TEST_MIXED_LIGHTS=1', 'REMIX_TEST_ADAPTIVE_LOCAL=1', 'REMIX_TEST_PBR=1'], timeout : 300)
+  test('PBR combined direct pass energy and motion', torch_stability_test,
+    args : [meson.current_build_dir() / 'pbr-combined-pass-scenes'],
+    env : ['REMIX_TEST_MIXED_LIGHTS=1', 'REMIX_TEST_ADAPTIVE_LOCAL=1', 'REMIX_TEST_PBR=1', 'REMIX_TEST_SPLIT_LOCAL=3'], timeout : 300)
+  foreach blue : ['0', '1']
+    test('Soft torch sampler energy and history mode ' + blue, torch_stability_test,
+      args : [meson.current_build_dir() / ('soft-torch-noise-scenes-' + blue)],
+      env : ['REMIX_TEST_LOCAL_NOISE=' + blue, 'REMIX_TEST_SOFT_TORCH=1',
+             'REMIX_TEST_SIGNAL=0'], timeout : 300)
+    test('Local emitter sampler energy and history mode ' + blue, torch_stability_test,
+      args : [meson.current_build_dir() / ('local-noise-scenes-' + blue)],
+      env : ['REMIX_TEST_LOCAL_NOISE=' + blue, 'REMIX_TEST_MIXED_LIGHTS=1',
+             'REMIX_TEST_ADAPTIVE_LOCAL=1', 'REMIX_TEST_PBR=1', 'REMIX_TEST_SPLIT_LOCAL=3',
+             'REMIX_TEST_SIGNAL=0'], timeout : 300)
+  endforeach
+  if system == 'linux'
+    test('Local blue-noise allocation fallback', torch_stability_test,
+      args : [meson.current_build_dir() / 'local-blue-noise-fallback'],
+      env : ['REMIX_TEST_LOCAL_NOISE=1', 'REMIX_TEST_MIXED_LIGHTS=1', 'REMIX_TEST_PBR=1',
+             'REMIX_TEST_SIGNAL=0', 'REMIX_TEST_PRIMARY=raster',
+             'LD_PRELOAD=' + faults.full_path(), 'REMIX_TEST_FAULT=local-blue-noise-allocation'], timeout : 300)
+  endif
+  test('PBR local lighting with idle SHARC', torch_stability_test,
+    args : [meson.current_build_dir() / 'pbr-idle-sharc-scenes'],
+    env : ['REMIX_TEST_MIXED_LIGHTS=1', 'REMIX_TEST_ADAPTIVE_LOCAL=1', 'REMIX_TEST_PBR=1',
+           'REMIX_TEST_SPLIT_LOCAL=3', 'REMIX_TEST_SHARC=1'], timeout : 300)
+  foreach pbr : ['0', '1']
+    test('Separate indirect pass two bounce material ' + pbr, torch_stability_test,
+      args : [meson.current_build_dir() / ('split-indirect-scenes-' + pbr)],
+      env : ['REMIX_TEST_MIXED_LIGHTS=1', 'REMIX_TEST_ADAPTIVE_LOCAL=1',
+             'REMIX_TEST_SPLIT_LOCAL=3', 'REMIX_TEST_SIGNAL=1', 'REMIX_TEST_BOUNCES=2',
+             'REMIX_TEST_SHARC=1', 'REMIX_SPLIT_INDIRECT=1'] + (pbr == '1' ? ['REMIX_TEST_PBR=1'] : []), timeout : 360)
+  endforeach
+  if system == 'linux'
+    foreach fault : ['indirect-allocation', 'indirect-consumer']
+      test('Separate indirect fallback ' + fault, torch_stability_test,
+        args : [meson.current_build_dir() / fault],
+        env : ['REMIX_TEST_MIXED_LIGHTS=1', 'REMIX_TEST_PBR=1', 'REMIX_TEST_SPLIT_LOCAL=3',
+               'REMIX_TEST_SIGNAL=1', 'REMIX_TEST_BOUNCES=2', 'REMIX_TEST_PRIMARY=raster',
+               'REMIX_SPLIT_INDIRECT=1', 'LD_PRELOAD=' + faults.full_path(),
+               'REMIX_TEST_FAULT=' + fault], timeout : 300)
+    endforeach
+  endif
+  test('Separate indirect multisample transparent composition', torch_stability_test,
+    args : [meson.current_build_dir() / 'split-indirect-transparency'],
+    env : ['REMIX_TEST_MIXED_LIGHTS=1', 'REMIX_TEST_PBR=1', 'REMIX_TEST_SPLIT_LOCAL=3',
+           'REMIX_TEST_SIGNAL=2', 'REMIX_TEST_BOUNCES=2', 'REMIX_TEST_SAMPLES=2',
+           'REMIX_SPLIT_INDIRECT=1'], timeout : 360)
+  test('Experimental PBR local reuse and reference fallback', torch_stability_test,
+    args : [meson.current_build_dir() / 'pbr-reuse-scenes'],
+    env : ['REMIX_TEST_MIXED_LIGHTS=1', 'REMIX_TEST_PBR=1', 'REMIX_TEST_PBR_REUSE=1',
+           'REMIX_TEST_SPLIT_LOCAL=3', 'REMIX_PBR_REUSE_DIAGNOSTICS=' + meson.current_build_dir() / 'pbr-reuse-counters.csv'], timeout : 300)
   test('Near emissive solid-angle sampling and motion', torch_stability_test,
     args : [meson.current_build_dir() / 'angular-emission-scenes'],
     env : ['REMIX_TEST_MIXED_LIGHTS=1', 'REMIX_TEST_SOLID_ANGLE=1'], timeout : 360)
@@ -54,7 +108,7 @@ if get_option('gpu_tests')
   test('Many emissive clusters and sampling stability', torch_stability_test,
     args : [meson.current_build_dir() / 'emissive-cluster-scenes'],
     env : ['REMIX_TEST_MIXED_LIGHTS=1', 'REMIX_TEST_EMISSIVE_CLUSTERS=1', 'REMIX_TEST_ADAPTIVE_LOCAL=1'], timeout : 300)
-  foreach mode : ['1', '2']
+  foreach mode : ['1', '2', '3']
     test('Separate direct histories mode ' + mode, torch_stability_test,
       args : [meson.current_build_dir() / ('separate-light-scenes-' + mode)],
       env : ['REMIX_TEST_MIXED_LIGHTS=1', 'REMIX_TEST_ADAPTIVE_LOCAL=1', 'REMIX_TEST_SPLIT_LOCAL=' + mode], timeout : 360)
@@ -71,7 +125,13 @@ if get_option('gpu_tests')
     include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
   test('SIGMA sun penumbra and temporal separation', shadow_test,
     args : [meson.current_build_dir() / 'shadow-scenes'], timeout : 240)
+  test('SIGMA hashed shadow comparison', shadow_test,
+    args : [meson.current_build_dir() / 'shadow-white-scenes'],
+    env : ['REMIX_TEST_WHITE_SHADOWS=1'], timeout : 240)
   if system == 'linux'
+    test('Blue-noise shadow allocation fallback', shadow_test,
+      args : [meson.current_build_dir() / 'blue-noise-fallback'],
+      env : ['LD_PRELOAD=' + faults.full_path(), 'REMIX_TEST_FAULT=blue-noise-allocation'], timeout : 120)
     test('Local visibility guiding resource fallback', local_light_test,
       args : [meson.current_build_dir() / 'guiding-fallback'],
       env : ['LD_PRELOAD=' + faults.full_path(), 'REMIX_TEST_FAULT=light-guiding-allocation'], timeout : 90)
@@ -116,6 +176,8 @@ if get_option('gpu_tests')
   endif
   pathtrace_test = executable('remix-pathtrace-test', 'rendering.cpp',
     include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
+  test('Opaque traversal shared mesh and alpha replacement', pathtrace_test,
+    args : [meson.current_build_dir() / 'opacity-scenes', 'opaque-variants'], timeout : 180)
   test('Compatible mesh updates and queued version isolation', pathtrace_test,
     args : [meson.current_build_dir() / 'mesh-update-scenes', 'mesh-update'], timeout : 120)
   test('Geometry content reuse and shading history invalidation', pathtrace_test,

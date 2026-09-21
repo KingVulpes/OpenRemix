@@ -21,8 +21,11 @@ namespace remix {
                    : VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR);
   }
 
-  PathTracer::Gpu::MeshView &PathTracer::Gpu::mesh(VkCommandBuffer command, const Draw &draw) {
+  PathTracer::Gpu::MeshView &PathTracer::Gpu::mesh(VkCommandBuffer command, const Draw &draw,
+      const std::vector<std::shared_ptr<const scene::OpacityPartition>> &partitions) {
     ScopedMilliseconds time{performance.geometryMilliseconds};
+    std::string opaque;
+    for (const auto &partition : partitions) opaque.append(partition->key);
     const bool skinned = draw.bones && std::any_of(draw.mesh->surfaces.begin(), draw.mesh->surfaces.end(),
                                                   [](const auto &s) { return s->bonesPerVertex != 0; });
     const bool streaming = bool(draw.mesh->updateStream);
@@ -30,10 +33,10 @@ namespace remix {
     // Each independently animated skin owns its BLAS. Opt-in CPU replacements
     // may transfer compatible storage only from a view unused in this frame.
     auto key =
-        std::make_tuple(draw.mesh.get(), skinned ? draw.instanceId : 0, skinned ? draw.instanceIndex : 0);
+        std::make_tuple(draw.mesh.get(), skinned ? draw.instanceId : 0, skinned ? draw.instanceIndex : 0, opaque);
     auto &view = meshes[key];
     if (streaming && view.owner.lock() != draw.mesh) {
-      auto found = updateViews.find(draw.mesh->updateStream.get());
+      auto found = updateViews.find({draw.mesh->updateStream.get(), opaque});
       if (found != updateViews.end() && found->second != key) {
         auto old = meshes.find(found->second);
         if (old != meshes.end() && old->second.updateStream == draw.mesh->updateStream &&
@@ -43,7 +46,7 @@ namespace remix {
           view = std::move(old->second); meshes.erase(old);
         }
       }
-      updateViews[draw.mesh->updateStream.get()] = key;
+      updateViews[{draw.mesh->updateStream.get(), opaque}] = key;
     }
     view.lastUse = sequence;
     if (view.owner.lock() == draw.mesh && (!skinned || view.bones == *draw.bones))
@@ -63,9 +66,9 @@ namespace remix {
     } trim{conversion};
     auto &content = conversion.content;
     content.clear();
-    size_t contentBytes = 0;
+    size_t contentBytes = opaque.size() + sizeof(uint32_t);
     for (const auto &surface : draw.mesh->surfaces)
-      contentBytes += 8 + surface->vertices.size() * 12 + surface->indices.size() * 4;
+      contentBytes += 12 + surface->vertices.size() * 12 + surface->indices.size() * 4;
     content.reserve(contentBytes);
     auto append = [&](const void *p, size_t size) { content.append(static_cast<const char *>(p), size); };
     auto &shading = conversion.shading;
@@ -73,16 +76,20 @@ namespace remix {
     auto &counts = conversion.counts, &vertexCounts = conversion.vertexCounts;
     vertexOffsets.clear(); indexOffsets.clear(); counts.clear(); vertexCounts.clear();
     const auto surfaceCount = draw.mesh->surfaces.size();
+    const auto surfaceHeader = uint32_t(surfaceCount);
+    append(&surfaceHeader, sizeof(surfaceHeader));
     shading.resize(surfaceCount);
     size_t surfaceIndex = 0;
+    std::vector<GeometryGroup> groups;
     vertexOffsets.reserve(surfaceCount); indexOffsets.reserve(surfaceCount);
     counts.reserve(surfaceCount); vertexCounts.reserve(surfaceCount);
     float low[3] = {INFINITY, INFINITY, INFINITY}, high[3] = {-INFINITY, -INFINITY, -INFINITY};
     for (const auto &surface : draw.mesh->surfaces) {
-      uint32_t count[2] = {uint32_t(surface->vertices.size()), uint32_t(surface->indices.size())};
+      uint32_t count[3] = {uint32_t(surface->vertices.size()), uint32_t(surface->indices.size()),
+                           partitions[surfaceIndex]->key[0] == 2 ? 2u : 1u};
       append(count, sizeof(count));
       vertexOffsets.push_back(content.size());
-      auto &vertices = shading[surfaceIndex++];
+      auto &vertices = shading[surfaceIndex];
       vertices.resize(surface->vertices.size());
       for (size_t i = 0; i < surface->vertices.size(); ++i) {
         auto vertex = surface->vertices[i];
@@ -124,9 +131,31 @@ namespace remix {
       }
       indexOffsets.push_back(content.size());
       append(surface->indices.data(), surface->indices.size() * 4);
-      counts.push_back(count[1] / 3);
+      const auto &partition = *partitions[surfaceIndex];
+      if (partition.key[0] != 2) {
+        groups.push_back({uint32_t(surfaceIndex), count[1] / 3, indexOffsets.back(), 0, partition.key[0] == 1});
+        counts.push_back(count[1] / 3);
+      } else {
+        // AS/shading indices share the partition order. Raster indices, vertex
+        // correspondence and emitter/debug identities retain their original order.
+        for (bool solid : {true, false}) {
+          GeometryGroup group{uint32_t(surfaceIndex), 0, content.size(), 0, solid};
+          for (uint32_t triangle = 0; triangle < partition.triangles; ++triangle)
+            if (partition.opaque(triangle) == solid) {
+              append(surface->indices.data() + triangle * 3, 12); ++group.count;
+            }
+          group.triangleMap = content.size();
+          for (uint32_t triangle = 0; triangle < partition.triangles; ++triangle)
+            if (partition.opaque(triangle) == solid) append(&triangle, sizeof(triangle));
+          counts.push_back(group.count); groups.push_back(group);
+        }
+      }
       vertexCounts.push_back(count[0]);
+      ++surfaceIndex;
     }
+    // Opacity is part of BLAS identity, including independently skinned and
+    // streamed variants. Append after geometry data to preserve input alignment.
+    content.append(opaque);
     if (!deform) {
       auto found = geometryCache.find(content);
       if (found != geometryCache.end())
@@ -156,6 +185,7 @@ namespace remix {
       g.pending = true;
       g.counts = counts;
       g.indexOffsets = indexOffsets;
+      g.groups = groups;
       g.fingerprint = bufferFingerprint(content.data(), content.size());
       ++g.revision;
       g.diagonal = std::hypot(high[0] - low[0], high[1] - low[1], high[2] - low[2]);
@@ -165,10 +195,13 @@ namespace remix {
           upload(command, content.data(), content.size(), inputUsage | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
       g.geometries.clear();
       g.ranges.clear();
-      for (size_t i = 0; i < counts.size(); ++i) {
+      if (groups.size() > asProperties.maxGeometryCount) throw VK_ERROR_TOO_MANY_OBJECTS;
+      for (const auto &group : groups) {
+        const auto i = group.surface;
         VkAccelerationStructureGeometryKHR geometry = {
             .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR,
-            .geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR};
+            .geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR,
+            .flags = group.opaque ? VK_GEOMETRY_OPAQUE_BIT_KHR : VkGeometryFlagsKHR(0)};
         geometry.geometry.triangles = {
             .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR,
             .vertexFormat = VK_FORMAT_R32G32B32_SFLOAT,
@@ -176,9 +209,9 @@ namespace remix {
             .vertexStride = 12,
             .maxVertex = vertexCounts[i] - 1,
             .indexType = VK_INDEX_TYPE_UINT32,
-            .indexData = {.deviceAddress = g.input->address + indexOffsets[i]}};
+            .indexData = {.deviceAddress = g.input->address + group.indices}};
         g.geometries.push_back(geometry);
-        g.ranges.push_back({.primitiveCount = counts[i]});
+        g.ranges.push_back({.primitiveCount = group.count});
       }
       VkAccelerationStructureBuildGeometryInfoKHR build = {
           .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,

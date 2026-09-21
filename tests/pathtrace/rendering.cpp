@@ -154,6 +154,99 @@ int main(int argc, char **argv) {
     frame();
   ok(remixapi_GetBackendCapabilitiesEXT(&caps));
   require(caps.activeBackend == 1, "Hardware pathtrace did not activate");
+  if (argc > 2 && std::string(argv[2]) == "opaque-variants") {
+    for (auto key : {"taa", "sharc", "sigma", "accumulate"})
+      ok(api.SetConfigVariable((std::string("rtx.native.pathtrace.") + key).c_str(), "0"));
+    ok(api.SetConfigVariable("rtx.native.pathtrace.denoiser", "off"));
+    ok(api.SetConfigVariable("rtx.native.pathtrace.bounces", "0"));
+    ok(api.SetConfigVariable("rtx.native.pathtrace.primaryVisibility", "ray"));
+    opaque.useDrawCallAlphaState = 1;
+    ok(api.CreateMaterial(&material, &mat));
+    remixapi_InstanceInfoBlendEXT alpha{};
+    alpha.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_BLEND_EXT;
+    alpha.alphaTestEnabled = 1; alpha.alphaTestCompareOp = 7;
+    alpha.alphaTestReferenceValue = 255; alpha.pNext = &identity;
+    instance.pNext = &alpha;
+    instance.transform.matrix[0][0] = instance.transform.matrix[1][1] = .2f;
+    instance.transform.matrix[0][3] = -.5f;
+    uint32_t rightCompare = 2; // EQUAL 1: identical coverage, deliberately not proven opaque.
+    extra = [&] {
+      auto second = instance;
+      auto secondAlpha = alpha;
+      auto secondIdentity = identity; secondIdentity.instanceId = 21;
+      secondAlpha.alphaTestCompareOp = rightCompare; secondAlpha.pNext = &secondIdentity;
+      second.pNext = &secondAlpha; second.transform.matrix[0][3] = .5f;
+      ok(api.DrawInstance(&second));
+    };
+    auto pixels = [&](const char *name) {
+      const auto directory = std::filesystem::absolute(argv[1]);
+      std::filesystem::create_directories(directory);
+      const auto file = (directory / name).string();
+      ok(api.RequestPresentedScreenshot(file.c_str())); frame(); frame();
+      int w, h, n;
+      auto bytes = stbi_load(file.c_str(), &w, &h, &n, 4);
+      require(bytes != nullptr, "Missing opacity variant screenshot");
+      std::vector<uint8_t> image(bytes, bytes + w*h*4); stbi_image_free(bytes);
+      return image;
+    };
+    const auto mixed = pixels("mixed.png");
+    rightCompare = 7;
+    require(pixels("opaque.png") == mixed, "Shared-mesh opaque and alpha-tested visibility differ");
+    alpha.alphaTestCompareOp = 2; rightCompare = 2;
+    require(pixels("candidates.png") == mixed, "Candidate-only reference differs from hardware opacity");
+    alpha.alphaTestCompareOp = 7; rightCompare = 0;
+    const auto rejected = pixels("rejected.png");
+    require(rejected != mixed, "Per-instance alpha rejection reused another instance's opaque BLAS");
+    // Replacing the material keeps the geometry identity while changing coverage.
+    opaque.useDrawCallAlphaState = 0; opaque.alphaTestType = 0;
+    ok(api.CreateMaterial(&material, &mat));
+    const auto replaced = pixels("replacement.png");
+    require(replaced != rejected, "Material replacement retained stale opaque coverage");
+    opaque.alphaTestType = 7; ok(api.CreateMaterial(&material, &mat));
+    require(pixels("restored.png") == mixed, "Restoring opacity did not reuse the correct geometry variant");
+    extra = [] {}; instance.transform.matrix[0][3] = 0;
+    for (const char *primary : {"ray", "raster"}) {
+    ok(api.SetConfigVariable("rtx.native.pathtrace.primaryVisibility", primary));
+    instance.doubleSided = 1; instance.transform.matrix[0][0] = .2f;
+    const auto twoSided = pixels("two-sided.png");
+    instance.doubleSided = 0;
+    require(pixels("front.png") == twoSided, "Single-sided front changed opaque traversal coverage");
+    instance.transform.matrix[0][0] *= -1;
+    require(pixels("back.png") != twoSided, "Mirrored single-sided back bypassed candidate rejection");
+    instance.doubleSided = 1;
+    require(pixels("mirrored.png") == twoSided, "Mirrored double-sided opaque geometry lost coverage");
+    }
+    // A single surface contains solid and rejected triangles. Start with the
+    // cutout so hardware geometry partitioning must remap primitive identities.
+    remixapi_HardcodedVertex atlasVertices[8] = {};
+    for (unsigned i = 0; i < 8; ++i) {
+      atlasVertices[i] = vertices[i % 4];
+      atlasVertices[i].position[0] = positions[i % 4][0] * .2f + (i < 4 ? -.6f : .6f);
+      atlasVertices[i].position[1] *= .4f;
+      atlasVertices[i].color = i < 4 ? 0xffffffff : 0x00ffffff;
+    }
+    uint32_t atlasIndices[] = {4, 5, 6, 4, 6, 7, 0, 1, 2, 0, 2, 3};
+    surface.vertices_values = atlasVertices; surface.vertices_count = 8;
+    surface.indices_values = atlasIndices; surface.indices_count = 12;
+    ok(api.CreateMesh(&mesh, &geometry)); instance.mesh = geometry;
+    instance.transform.matrix[0][0] = instance.transform.matrix[1][1] = 1;
+    opaque.useDrawCallAlphaState = 1; ok(api.CreateMaterial(&material, &mat));
+    alpha.textureAlphaOperation = 1; alpha.textureAlphaArg1Source = 2;
+    for (const char *primary : {"ray", "raster"}) {
+      ok(api.SetConfigVariable("rtx.native.pathtrace.primaryVisibility", primary));
+      for (const char *debug : {"0", "3"}) {
+        ok(api.SetConfigVariable("rtx.native.pathtrace.debugView", debug));
+        alpha.alphaTestCompareOp = 4; alpha.alphaTestReferenceValue = 128;
+        const auto partitioned = pixels("partitioned.png");
+        alpha.alphaTestCompareOp = 5; alpha.alphaTestReferenceValue = 0;
+        require(pixels("partition-reference.png") == partitioned,
+                "Mixed opacity partition changed shading or original triangle identity");
+        alpha.alphaTestCompareOp = 7;
+        require(pixels("partition-all.png") != partitioned, "Changing mixed coverage retained stale BLAS flags");
+      }
+    }
+    ok(api.Shutdown()); return 0;
+  }
   if (argc > 2 && std::string(argv[2]) == "geometry-history") {
     ok(api.SetConfigVariable("rtx.native.pathtrace.accumulate", "1"));
     frame();
@@ -539,7 +632,8 @@ int main(int argc, char **argv) {
   blocker.transform.matrix[2][3] = -.3f;
   auto primaryCutout = capture("cutout-primary.png");
   require(primaryCutout[0] > 80, "Primary cutout handling");
-  // Actual texture alpha replacement changes visibility without touching BLASes.
+  // Texture alpha replacement changes coverage and may select a different
+  // cached opacity variant; position/index topology still stays shared.
   uint8_t texel[] = {0, 255, 0, 0};
   remixapi_TextureInfo texture = {};
   texture.sType = REMIXAPI_STRUCT_TYPE_TEXTURE_INFO;
@@ -574,8 +668,8 @@ int main(int argc, char **argv) {
   ok(api.CreateTexture(&texture, &textureHandle));
   ok(api.CreateMaterial(&material, &textured));
   auto textureSolid = capture("texture-alpha-replaced.png");
-  require(textureSolid[0] < 5 && textureSolid[1] > 80 && statistics().blasBuilds == textureBuilds,
-          "Texture alpha replacement rebuilt BLAS or retained stale alpha");
+  require(textureSolid[0] < 5 && textureSolid[1] > 80 && statistics().blasBuilds <= textureBuilds + 1,
+          "Texture alpha replacement retained stale coverage or rebuilt unrelated geometry");
   material.hash = 11;
   material.albedoTexture = nullptr;
   blocker.mesh = geometry;

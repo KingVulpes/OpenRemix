@@ -50,6 +50,24 @@ void require(bool value, const char *message) {
   }
 }
 int main() {
+  // A tilted world frame must give the same isotropic response as local +Z,
+  // including grazing views and opposing azimuths. The production NEE path
+  // uses world dot products; the reference rotates both directions explicitly.
+  const mat3 rotated({.6f, 0, -.8f}, {0, 1, 0}, {.8f, 0, .6f});
+  for (float r : {0.f, .01f, .25f, .5f, 1.f})
+    for (float ni : {.001f, .05f, .5f, 1.f})
+      for (float no : {.001f, .05f, .5f, 1.f})
+        for (float phi : {0.f, .5f, 1.5f, 3.14159265f, 4.5f}) {
+          const vec3 wi(sqrt(1 - ni * ni) * cos(phi), sqrt(1 - ni * ni) * sin(phi), ni);
+          const vec3 wo(sqrt(1 - no * no), 0, no), rho(.1f, .5f, .9f);
+          const vec3 worldI = rotated * wi, worldO = rotated * wo;
+          const vec3 reference = eonBrdf(rho, r, wi, wo);
+          const vec3 actual = eonBrdfCosines(rho, r, dot(rotated.z, worldI),
+                                           dot(rotated.z, worldO), dot(worldI, worldO));
+          require(dot(actual - reference, actual - reference) <
+                      1e-9f + 1e-8f * dot(reference, reference),
+                  "EON world-frame evaluation changed reflectance");
+        }
   for (float roughness : {0.f, .01f, .25f, .5f, 1.f})
     for (float mu : {1.f, .5f, .05f, .001f}) {
       vec3 wo(sqrt(1 - mu * mu), 0, mu);

@@ -1,0 +1,97 @@
+#pragma once
+#include "scene/types.h"
+#include <map>
+#include <tuple>
+
+namespace remix::scene {
+// Coverage belongs to immutable CPU snapshots, independent of any GPU layout.
+struct OpacityPartition {
+  enum Reason {
+    Solid,
+    OneSided,
+    Blended,
+    Transmission,
+    AlphaTest,
+    Invalid,
+    MissingTexture,
+    TextureBoundary,
+    TextureCutout,
+    Count
+  };
+  std::array<uint32_t, Count> reasons{};
+  // Uniform coverage needs one byte; mixed coverage stores a packed triangle
+  // mask.
+  std::string key;
+  uint32_t triangles = 0;
+  bool opaque(uint32_t triangle) const {
+    return key[0] == 1 || (key[0] == 2 && (uint8_t(key[1 + triangle / 8]) &
+                                           (1u << (triangle % 8))));
+  }
+};
+// Weak owners prevent stale results when resource addresses recur.
+class OpacityCache {
+public:
+  struct Statistics {
+    uint64_t lookups = 0, hits = 0, proofs = 0, triangles = 0, evictions = 0,
+             owners = 0, textures = 0;
+  };
+  Statistics takeStatistics() {
+    auto value = statistics;
+    statistics = {};
+    return value;
+  }
+
+private:
+  Statistics statistics;
+  bool profile = false;
+  float texelMargin;
+  using Region = std::array<uint32_t, 4>;
+  // Only opacity-affecting values belong in the key. RGB animation, emission,
+  // normal maps and material snapshot addresses do not change coverage.
+  using Key = std::tuple<std::array<uint32_t, 2>, std::array<float, 4>,
+                         uint32_t, float, float, uint32_t, uint32_t, uint32_t,
+                         uint32_t, uint32_t, uint32_t>;
+  struct Entry {
+    std::weak_ptr<Texture> texture;
+    std::shared_ptr<const OpacityPartition> partition;
+    std::map<Region, bool> regions;
+  };
+  struct SurfaceEntries {
+    std::weak_ptr<Surface> owner;
+    std::map<Key, Entry> entries;
+  };
+  struct TextureEntries {
+    std::weak_ptr<Texture> owner;
+    uint32_t width = 0;
+    // Summed-area counts of texels whose alpha is not exactly 255. This gives
+    // the same conservative rectangle predicate as scanning the RGBA bytes.
+    std::vector<uint32_t> prefix;
+    bool solid(const Region &r) const {
+      const size_t stride = size_t(width) + 1;
+      const size_t x0 = r[0], y0 = r[1], x1 = size_t(r[2]) + 1,
+                   y1 = size_t(r[3]) + 1;
+      return prefix[y1 * stride + x1] + prefix[y0 * stride + x0] ==
+             prefix[y1 * stride + x0] + prefix[y0 * stride + x1];
+    }
+  };
+  std::unordered_map<const Surface *, SurfaceEntries> surfaces;
+  std::unordered_map<const Texture *, TextureEntries> textures;
+  TextureEntries &coverage(const std::shared_ptr<Texture> &texture);
+  OpacityPartition::Reason opaqueTexels(const Draw &draw,
+                                        const std::array<float, 4> &uv,
+                                        uint32_t triangle,
+                                        TextureEntries *texture,
+                                        std::map<Region, bool> &regions);
+
+public:
+  explicit OpacityCache(uint32_t subTexelPrecisionBits = 4,
+                        bool profile = false);
+  std::shared_ptr<const OpacityPartition>
+  partition(const Draw &draw, const std::array<float, 4> &uv);
+  bool opaque(const Draw &draw, const std::array<float, 4> &uv) {
+    auto result = partition(draw, uv);
+    return result->reasons[OpacityPartition::Solid] == result->triangles;
+  }
+  void prune();
+};
+} // namespace remix::scene

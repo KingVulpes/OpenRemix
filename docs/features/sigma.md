@@ -13,9 +13,20 @@ finite diameters in `[0, 180)` before accepting a light definition.
 
 A primary shadow ray samples a uniform disk around the direction toward the sun,
 using the tangent of half the angular diameter. Its random stream is independent
-of diffuse sampling and confidence retracing. Filtered shadows repeat eight
-sample patterns, limiting temporal noise animation as recommended by NRD;
-progressive reference rendering uses the full frame sequence.
+of diffuse sampling and confidence retracing. Filtered shadows use an eight-sample
+Owen-scrambled Sobol sequence with a 128x128 blue-noise scrambling/ranking tile,
+following Heitz et al. and NRD-Sample. The tile repeats in screen space; the
+sequence repeats every eight frames to limit shadow animation. A packed immutable
+buffer contains the two shadow dimensions and a separate local-light table
+(131,232 bytes total). No texture assets,
+additional descriptors or additional shadow rays are needed at runtime.
+
+`blueNoiseShadows=0` restores the previous eight hashed sample patterns for
+comparison. The blue-noise stream applies only to primary opaque sun shadows
+while SIGMA is active. Raw/progressive reference rendering uses the full hashed
+frame sequence. Local emitter positions use an independent sampler described in
+[Emissive maps](emissive-maps.md). Light selection, indirect directions,
+sample counts and bounce limits retain their existing algorithms.
 
 Direct light is split into an analytic, unshadowed Lambertian term evaluated at
 the sun's center and sampled RGB visibility. SIGMA receives the blocker distance
@@ -53,8 +64,9 @@ passes and composition. SIGMA adds full-resolution R16F penumbra and RGBA8 input
 output textures; its internal pools follow the pinned SDK description.
 
 The established temporal bindings remain intact. Optional SIGMA images occupy
-bindings 26–28, following the existing uniform buffer at binding 25. Private
-CPU/GPU frame sizes are 336 bytes for tracing and 432 bytes for temporal passes.
+bindings 26–28, following the existing uniform buffer at binding 25.
+The private tracing frame uses its reserved tail address for the sampling tables
+and retains its 512-byte layout; the temporal frame remains 432 bytes.
 Public SDK layouts and the retained interface table are unchanged.
 
 Camera cuts, world/reset epochs, resize and explicit mode changes retain existing
@@ -63,6 +75,10 @@ SIGMA independently. Ordinary time/weather updates keep both denoisers' historie
 REBLUR's existing lighting-confidence pass continues to track indirect changes.
 Convergence participates in the existing redraw scheduling. Shadow diagnostic
 views bypass final TAA and clear display history when changing views.
+Changing the shadow sampler resets only SIGMA history. The immutable sampling
+buffer is uploaded once per renderer, with a transfer-to-compute memory barrier;
+it survives resize and sampler toggles. Allocation failure keeps SIGMA active
+with the previous hashed sampler and avoids retrying the failed allocation.
 
 SIGMA checks its additional image formats and descriptor limits independently.
 Unsupported builds/devices or optional shadow initialization failure retain the
@@ -76,10 +92,11 @@ All renderer keys use the `rtx.native.pathtrace.` prefix:
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `sigma` | true | Denoise primary opaque sun visibility |
+| `blueNoiseShadows` | true | Use the eight-frame blue-noise sun-shadow sequence with SIGMA |
 | `sunAngularDiameter` | -1 | Inherit the light's size; override with 0–10 degrees; zero gives hard shadows |
 | `shadowDebug` | 0 | 0 final lighting, 1 raw visibility, 2 SIGMA visibility |
 
-The debug panel exposes the SIGMA toggle, sun-size override and visibility views.
+The debug panel exposes SIGMA and blue-noise toggles, sun-size override and visibility views.
 The optional additive `remixapi_GetShadowStatisticsEXT` reports support, active
 state, diameter, history resets and SIGMA GPU time. Existing diffuse NRD timing
 continues to measure REBLUR alone. BetaRT forwards `MCRTX_PT_SIGMA`,
@@ -107,3 +124,10 @@ SIGMA/REBLUR/SHARC/TAA, moving blockers, sunlight changes, disabled sun and zero
 bounces are relevant. Re-run stationary-edge and animated-atlas TAA regressions,
 NRD dispatch coverage, ABI checks and Vulkan synchronization validation after
 changes. Shader generation compiles only the used SIGMA translucency permutations.
+
+The packed sampling data and its [MIT attribution](../../src/native/pathtrace/shaders/LICENSE-blue-noise.txt)
+are checked in. `scripts/shaders/blue_noise.py` regenerates or checks the packed
+header from the pinned upstream `spp8.rs` and `spp32.rs` files, passed in that
+order; ordinary builds need no download.
+Shadow tests record analytic error and temporal variation for complete sampling
+cycles, check sampler-toggle history isolation, and inject allocation failure.

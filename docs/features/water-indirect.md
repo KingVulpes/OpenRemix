@@ -7,6 +7,17 @@ Always-accepted and always-rejected alpha comparisons avoid texture access.
 Motion vertices are reconstructed for primary guides only; continuation and SHARC
 update hits do not need them.
 
+Double-sided, non-blended, non-transmitting surfaces whose alpha test always
+passes use opaque hardware traversal. The CPU proof includes the alpha combiner,
+vertex alpha, tint and mip-zero atlas coverage for each triangle, with linear
+filter neighbors where needed. Uncertain coverage, atlas boundaries, wrapped UVs
+and one-sided surfaces retain shader candidate checks. Cached proofs follow
+immutable material, texture and mesh snapshots, including sprite animation.
+BLAS identity includes each surface's opacity so instances sharing geometry can
+use different alpha states. This changes no rays, light budgets, PDFs or denoising.
+For profiling, `REMIX_OPACITY_DIAGNOSTICS=1` logs opaque and candidate surface and
+triangle counts during scene preparation; leave it unset for timing captures.
+
 Sun visibility carries blocker distance and transmission instead of the full
 diffuse hit record. SIGMA queries retain the nearest blocker and first attenuating
 sheet for penumbra reconstruction. Ordinary secondary sun shadows can terminate

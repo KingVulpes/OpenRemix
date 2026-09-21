@@ -31,18 +31,30 @@ uniform linear sky as the main tracer. `SharcInit`, `SharcUpdateHit`,
 `SharcSetThroughput` and `SharcUpdateMiss` follow the SDK contract: each throughput
 update supplies **the current segment's** reflectance or transmission.
 
-Only opaque **static** surfaces own cache entries. Moving surfaces and blended
+Only opaque **static legacy diffuse** surfaces own cache entries. EON/GGX PBR
+surfaces do not store or query this outgoing-radiance cache. Moving surfaces and blended
 sheets still affect visibility and contribute lighting along update paths. Their
 own surface radiance is never stored or queried. Geometry normals select the
 cache orientation. Material demodulation uses `max(albedo, 0.001)` so queried
 radiance retains local texture detail and black materials cannot divide by zero.
 
+When the entire traced scene has no eligible receivers, cache update, resolve and
+counter readback work stop automatically. Off-screen static legacy receivers
+still count. Tracing selects the ordinary uncached shader while no receiver is
+eligible, removing unused hash-grid code from the shader. Sampling budgets and
+the denoiser confidence pass remain active; cache debug views retain their
+specialized shader. Returning receivers trigger cache initialization
+and warmup before reuse. During an idle period, update/query/occupancy counters
+and update/resolve times are zero, timing availability is false, and cache
+rendered-frame counts stop; `active` still reports that SHARC is available and
+enabled. Allocated cache storage is retained for reuse.
+
 The production query path starts from the existing primary surface and samples
 its cosine hemisphere exactly as the reference tracer does. It queries only
 subsequent diffuse hits, after any intervening transmission. The distance from
 the previous diffuse vertex must exceed the cache voxel's diagonal. Every traced
-lobe is currently Lambertian, so its diffuse footprint is wider than this bound;
-future sharp specular lobes need a separate footprint test. Cache hits must have
+eligible lobe is Lambertian, so its diffuse footprint is wider than this bound;
+PBR paths continue with their existing EON/GGX estimator. Cache hits must have
 more than three accumulated samples and finite radiance. A hit contributes
 `throughput * cachedOutgoingRadiance` exactly once. Its direct light is already
 included in the cached value. Primary direct light and visible raster sky remain

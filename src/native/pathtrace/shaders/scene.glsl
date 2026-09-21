@@ -16,6 +16,8 @@ struct Surface {
   vec4 factor;
   uvec4 state; // texture operations, compare, reference bits, flags
   uvec4 textureState; // texture index
+  uint64_t triangleMap;
+  Indices traceIndices;
   uint64_t previousVertices;
   uvec2 debugIdentity;
   mat4 previousModel;
@@ -23,6 +25,11 @@ struct Surface {
   vec4 pbr;
   uvec4 pbrTextures;
 };
+// Shading reads the AS index order directly. Only debug identity needs the
+// original triangle mapping; motion still addresses the original vertex array.
+uint originalTriangle(Surface s,uint triangle) {
+  return s.triangleMap==0?triangle:Indices(s.triangleMap).i[triangle];
+}
 layout(set=0,binding=2,std430) readonly buffer Surfaces { Surface surfaces[]; };
 layout(set=0,binding=3,std140) uniform Frame {
   mat4 inverseCamera;
@@ -32,7 +39,7 @@ layout(set=0,binding=3,std140) uniform Frame {
   vec4 lightRadiance;
   uvec4 config; // samples, indirect bounces, random sequence, accumulated frames
   uvec4 target; // width, height, structure mask, raster primary visibility
-  vec4 jitter; // primary sample offset; z water indirect reuse; w reserved
+  vec4 jitter; // primary offset; z water reuse; w blue-noise sun/local bits
   vec4 skyRadiance; // linear uniform environment; w reserved
   uint64_t sharcHash, sharcAccumulation, sharcResolved, sharcCounters;
   uvec4 sharcConfig; // active, capacity, update downscale, debug view
@@ -46,6 +53,9 @@ layout(set=0,binding=3,std140) uniform Frame {
   uvec4 lightGuideConfig; // capacity, node count, reserved
   uint64_t torchNodes, torchEmitters, emissiveNodes, emissiveEmitters;
   uvec4 splitLocal;
+  uint64_t reuseRead, reuseWrite;
+  uvec4 reuseConfig;
+  uint64_t indirectResults, blueNoise;
 } frame;
 layout(set=0,binding=6) uniform sampler2D textures[512];
 vec2 materialParameters(Surface s,vec2 uv) {

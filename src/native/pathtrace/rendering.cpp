@@ -16,7 +16,7 @@ namespace remix {
     prism = options.prism && !falseColor;
     gamma22 = options.gamma22 && !falseColor;
     if (timestamps) {
-      vkCmdResetQueryPool(command, timestamps, 0, 4);
+      vkCmdResetQueryPool(command, timestamps, 0, stageProfile ? 10 : 4);
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestamps, 0);
     }
     complete(command);
@@ -26,7 +26,7 @@ namespace remix {
         options.samples | uint64_t(options.bounces) << 8 | uint64_t(options.accumulate) << 16 |
         uint64_t(bool(denoiser) && postReblur) << 17 | uint64_t(bool(denoiser) && postTaa) << 18 |
         uint64_t(options.rasterPrimary) << 19 | uint64_t(bool(sharc.stats.active)) << 20 |
-        uint64_t(options.sharcDebug) << 21;
+        uint64_t(options.sharcDebug) << 21 | uint64_t(options.pbrLocalReuse) << 22;
     history.begin(resources.temporalEpoch(), integrator, extent.width, extent.height);
     pendingVertices.clear();
     std::vector<trace::InstanceInput> inputs[2];
@@ -61,9 +61,18 @@ namespace remix {
           append(&animationFrame, sizeof(animationFrame));
         }
       }
+    uint64_t reuseSignature = 1469598103934665603ull;
+    bool hasCacheReceivers = false, hasBlendedGeometry = false;
     for (const auto &instance : prepared.instances) {
       const auto &draw = instance[0].draw;
-      auto &view = mesh(command, draw);
+      std::vector<std::shared_ptr<const scene::OpacityPartition>> partitions(draw.mesh->surfaces.size());
+      for (const auto &surface : instance) {
+        partitions[surface.draw.surfaceIndex] = surface.opacity;
+        hasBlendedGeometry |= surface.draw.blend.enabled;
+        hasCacheReceivers |= surface.draw.classification == 0 && !surface.draw.material->pbr &&
+                             !surface.draw.blend.enabled;
+      }
+      auto &view = mesh(command, draw, partitions);
       const auto &geometry = *view.geometry;
       auto model = draw.model;
       if (draw.classification == 1) {
@@ -75,6 +84,7 @@ namespace remix {
         appendDynamic(&draw.instanceIndex, sizeof(draw.instanceIndex));
         appendDynamic(model.data(), sizeof(model));
         appendDynamic(&geometry.revision, sizeof(geometry.revision));
+        appendDynamic(&geometry.fingerprint, sizeof(geometry.fingerprint));
       }
       if (draw.classification == 0) {
         appendStatic(&draw.instanceId, sizeof(draw.instanceId));
@@ -83,10 +93,12 @@ namespace remix {
         const auto identity = reinterpret_cast<uintptr_t>(draw.mesh.get());
         appendStatic(&identity, sizeof(identity));
         appendStatic(&geometry.revision, sizeof(geometry.revision));
+        appendStatic(&geometry.fingerprint, sizeof(geometry.fingerprint));
       }
       float scale = 0;
       for (int c = 0; c < 3; ++c)
         scale = std::max(scale, std::hypot(model[c * 4], model[c * 4 + 1], model[c * 4 + 2]));
+      if (surfaces.size() > 0xffffffu) throw VK_ERROR_TOO_MANY_OBJECTS;
       inputs[draw.classification].push_back({draw.instanceId, geometry.accel->address, draw.instanceIndex,
                                              uint32_t(surfaces.size()), model, geometry.diagonal * scale,
                                              geometry.revision});
@@ -95,6 +107,7 @@ namespace remix {
       append(&draw.instanceId, sizeof(draw.instanceId));
       append(&draw.instanceIndex, sizeof(draw.instanceIndex));
       append(&draw.classification, sizeof(draw.classification));
+      size_t groupIndex = 0;
       for (const auto &preparedSurface : instance) {
         const auto &surface = preparedSurface.draw;
         const auto &material = *surface.material;
@@ -163,6 +176,12 @@ namespace remix {
           pendingVertices[temporalKey] = view.vertices.at(surface.surfaceIndex);
         std::copy_n(material.tint, 4, value.tint);
         history.stage(temporalDraw, preparedSurface.animationFrame);
+        if (options.pbrLocalReuse) {
+          const uint64_t values[] = {view.fingerprint, value.debugIdentity,
+              scene::TemporalHistory::materialSignature(surface), preparedSurface.animationFrame};
+          reuseSignature = hashBytes(values, sizeof(values), reuseSignature);
+          reuseSignature = hashBytes(model.data(), sizeof(model), reuseSignature);
+        }
         std::copy(preparedSurface.uv.begin(), preparedSurface.uv.end(), value.uv);
         const auto &b = surface.blend;
         value.factor[0] = linear(float((b.factor >> 16) & 255) / 255);
@@ -185,7 +204,12 @@ namespace remix {
         value.textureState[0] = entry->second;
         primaryDraws.push_back(
             {model, uint32_t(surfaces.size()), uint32_t(surface.surface->indices.size()), b.enabled});
-        surfaces.push_back(value);
+        do {
+          const auto &group = geometry.groups.at(groupIndex++);
+          value.triangleMap = group.triangleMap ? geometry.input->address + group.triangleMap : 0;
+          value.traceIndices = geometry.input->address + group.indices;
+          surfaces.push_back(value);
+        } while (groupIndex < geometry.groups.size() && geometry.groups[groupIndex].surface == surface.surfaceIndex);
       }
     }
     // Retire absent deformation instances after their last-use fence. Rigid
@@ -201,7 +225,7 @@ namespace remix {
     }
     for (auto it = updateViews.begin(); it != updateViews.end();) {
       auto view = meshes.find(it->second);
-      if (view == meshes.end() || view->second.updateStream.get() != it->first) it = updateViews.erase(it);
+      if (view == meshes.end() || view->second.updateStream.get() != it->first.first) it = updateViews.erase(it);
       else ++it;
     }
     // Geometry uploads feed both AS construction and BDA reads in the compute shader.
@@ -239,7 +263,8 @@ namespace remix {
                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
       }
     };
-    if (splitLightingActive) {
+    const bool splitFamilies = splitLightingActive && options.separateLocalLighting != 3;
+    if (splitFamilies) {
       torchBvh = std::move(lighting.torch);
       emissiveBvh = std::move(lighting.emissive);
       uploadLights(torchBvh, torchBufferGeneration, torchNodes, torchEmitters);
@@ -249,9 +274,10 @@ namespace remix {
     Frame frame = {};
     frame.localConfig[0] = options.localLights && options.localIntensity > 0 ? lightBvh.active : 0;
     localIlluminationActive = frame.localConfig[0] != 0;
+    localFirstHitActive = localIlluminationActive && !hasBlendedGeometry;
     frame.splitLocal[0] = splitLightingActive ? options.separateLocalLighting : 0;
-    frame.splitLocal[1] = localIlluminationActive && splitLightingActive ? torchBvh.active : 0;
-    frame.splitLocal[2] = localIlluminationActive && splitLightingActive ? emissiveBvh.active : 0;
+    frame.splitLocal[1] = localIlluminationActive && splitFamilies ? torchBvh.active : 0;
+    frame.splitLocal[2] = localIlluminationActive && splitFamilies ? emissiveBvh.active : 0;
     frame.splitLocal[3] = debugView;
     frame.localConfig[1] = options.localSamples;
     frame.localConfig[2] = uint32_t(lightBvh.lightingGeneration);
@@ -282,6 +308,7 @@ namespace remix {
     const float diameter = options.sunAngularDiameter >= 0 ? options.sunAngularDiameter : light.angularDiameterDegrees;
     frame.sun[0] = std::tan(diameter * (3.14159265359f / 360.f));
     frame.sun[1] = denoiser && postSigma;
+    configureBlueNoise(command, frame, options);
     frame.sun[2] = frame.sun[1] != 0 ? float(options.shadowDebug) : 0;
     const char *localDebug = std::getenv("REMIX_EMISSIVE_HIT_DISTANCE");
     frame.sun[3] = localDebug ? (std::strcmp(localDebug, "budget") == 0 ? 2.f : 1.f) : 0.f;
@@ -312,10 +339,10 @@ namespace remix {
     append(cacheSettings, sizeof(cacheSettings));
     const auto temporalEpoch = resources.temporalEpoch();
     append(&temporalEpoch, sizeof(temporalEpoch));
-    configureSharc(frame, options, temporalEpoch, std::move(staticGeometry), std::move(dynamicGeometry));
+    configureSharc(frame, options, temporalEpoch, std::move(staticGeometry), std::move(dynamicGeometry), hasCacheReceivers);
     // An unchanged world can reuse its cached output once both histories are warm.
     if (scene == lastScene && !options.accumulate && !debugView && denoiser && !denoiser->statistics().redrawRequested &&
-        !history.reset() && !(upscaler && upscaler->statistics().frames < 128) && !(sharc.stats.active && sharc.warmFrames < 2 * options.sharcAccumulationFrames))
+        !history.reset() && !(upscaler && upscaler->statistics().frames < 128) && !(sharc.stats.active && sharc.hasReceivers && sharc.warmFrames < 2 * options.sharcAccumulationFrames))
       return;
     const bool sceneChanged = scene != lastScene;
     if (sceneChanged) {
@@ -327,7 +354,9 @@ namespace remix {
       stats.accumulationCount = 0;
     if (!options.accumulate || stats.accumulationCount >= 1048576)
       stats.accumulationCount = 0;
-    const bool localSettingsChanged = frame.localScale[0] != previousLocalIntensity || frame.localScale[1] != previousLocalRange;
+    const bool localBlueNoise = (uint32_t(frame.jitter[3]) & 2u) != 0;
+    const bool localSettingsChanged = frame.localScale[0] != previousLocalIntensity || frame.localScale[1] != previousLocalRange ||
+                                      localBlueNoise != previousLocalBlueNoise;
     if (lightBvh.lightingGeneration != previousLocalGeneration || localSettingsChanged ||
         frame.localConfig[0] != previousLocalActive ||
         (frame.localConfig[3] & 0x80000000u) != previousLocalAdaptive)
@@ -337,6 +366,7 @@ namespace remix {
     previousLocalGeneration = lightBvh.lightingGeneration;
     previousLocalIntensity = frame.localScale[0];
     previousLocalRange = frame.localScale[1];
+    previousLocalBlueNoise = localBlueNoise;
     previousLocalActive = frame.localConfig[0];
     previousLocalAdaptive = frame.localConfig[3] & 0x80000000u;
     temporalFrame = {};
@@ -363,9 +393,11 @@ namespace remix {
       temporalFrame.families[i] = frame.splitLocal[i + 1];
       temporalFrame.families[i + 2] = familyResponsive[i];
     }
-    if (!splitLightingActive) {
+    if (!splitFamilies) {
       temporalFrame.families[0] = frame.localConfig[0];
+      temporalFrame.families[1] = 0;
       temporalFrame.families[2] = localResponsiveFrames;
+      temporalFrame.families[3] = 0;
     }
     temporalFrame.view = resources.view();
     temporalFrame.inverseCamera = frame.inverseCamera;
@@ -416,6 +448,7 @@ namespace remix {
     }
     pendingSun[6] = diameter;
     pendingSun[7] = frame.sun[2];
+    pendingSun[8] = (uint32_t(frame.jitter[3]) & 1u) != 0;
     temporalFrame.sun[3] = frame.sun[1];
     // Abrupt sun changes invalidate only SIGMA. Ordinary time/weather changes
     // keep both denoisers' histories and the existing lighting confidence path.
@@ -426,7 +459,7 @@ namespace remix {
       previousRadiance += previousSun[i + 3];
     }
     temporalFrame.shadow[0] = directionDelta > .01f || radianceDelta > std::max(.1f, previousRadiance * .5f) ||
-                              diameter != previousSun[6];
+                              diameter != previousSun[6] || pendingSun[8] != previousSun[8];
     temporalFrame.shadow[1] = uint32_t(frame.sun[2]);
     frame.lightNodes = lightNodes ? lightNodes->address : 0;
     frame.lightEmitters = lightEmitters ? lightEmitters->address : 0;
@@ -435,6 +468,17 @@ namespace remix {
     frame.emissiveNodes = emissiveNodes ? emissiveNodes->address : 0;
     frame.emissiveEmitters = emissiveEmitters ? emissiveEmitters->address : 0;
     configureLightGuiding(frame, options);
+    if (options.pbrLocalReuse) {
+      const uint32_t settings[] = {options.localSamples, options.emissiveCandidates,
+          uint32_t(options.adaptiveLocalSampling), uint32_t(options.localGuiding),
+          options.separateLocalLighting, uint32_t(options.emissiveSolidAngleSampling), uint32_t(localBlueNoise)};
+      reuseSignature = hashBytes(settings, sizeof(settings), reuseSignature);
+    }
+    configurePbrReuse(command, frame, options, reuseSignature,
+        inputs[1].empty() && temporalFrame.local[2] == 0 && !history.reset());
+    const bool querySharc = sharc.stats.active && (sharc.hasReceivers || options.sharcDebug);
+    configureIndirect(frame, options, querySharc);
+    beginRayProfile(command, frame);
     frame.config[2] = uint32_t(sequence++);
     frame.config[3] = uint32_t(stats.accumulationCount);
     hostBuffer(uniform, &frame, sizeof(frame), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
@@ -444,7 +488,7 @@ namespace remix {
     ++stats.accumulationCount;
     stats.sampleSequence = sequence;
     stats.redrawRequested = options.accumulate || debugView ||
-        (sharc.stats.active && sharc.warmFrames < 2 * options.sharcAccumulationFrames);
+        (sharc.stats.active && sharc.hasReceivers && sharc.warmFrames < 2 * options.sharcAccumulationFrames);
     if (textures.empty())
       textures.push_back(resources.sampledMaterial(resources.defaultMaterial(), command));
     textures.resize(PathTracer::textureLimit, textures.front());
@@ -522,13 +566,32 @@ namespace remix {
     if (timestamps)
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, timestamps, 2);
     beginLightGuiding(command);
+    auto stageTime = [&](uint32_t query) {
+      if (timestamps && stageProfile)
+        vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, timestamps, query);
+    };
     recordPrimary(command, options.rasterPrimary);
+    stageTime(4);
     recordSharc(command, options);
     if (denoiser)
       denoiser->begin(command, temporalFrame, pendingProjection,
                       history.reset() ? pendingProjection : previousProjection, world->view, sky->view);
-    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE,
-        selectLightingPipeline(sharc.stats.active ? (denoiser ? sharc.temporal : sharc.query) : (denoiser ? temporalCompute : compute)));
+    stageTime(5);
+    // Idle caches have no eligible hit in either TLAS. Select the ordinary
+    // shader so unused hash-grid code does not reserve tracing registers.
+    // Keep the cache debug specialization available even in an empty scene.
+    const auto opaqueSource = querySharc ? (denoiser ? sharc.temporal : sharc.query) : (denoiser ? temporalCompute : compute);
+    VkPipeline opaquePipeline = VK_NULL_HANDLE;
+    if (indirectPass.active) {
+      opaquePipeline = selectLightingPipeline(opaqueSource, false, true);
+      if (!opaquePipeline) {
+        indirectPass.active = false;
+        indirectPass.failed = true;
+        if (indirectPass.results) retiredBuffers.push_back(std::move(indirectPass.results));
+        std::fprintf(stderr, "Separate indirect consumer unavailable; using inline tracing\n");
+      }
+    }
+    if (!opaquePipeline) opaquePipeline = selectLightingPipeline(opaqueSource);
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, denoiser ? temporalLayout : layout, 0, 1,
                             &set, 0, nullptr);
     if (denoiser) {
@@ -536,18 +599,34 @@ namespace remix {
       vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, temporalLayout, 1, 1, &inputs, 0,
                               nullptr);
     }
-    vkCmdDispatch(command, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
-    // Publish opaque lighting, RNG and sheet count to transparent composition.
-    barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
-    if (splitLightingActive && denoiser && postSplit) {
-      vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, selectLightingPipeline(splitDirectCompute));
+    if (indirectPass.active) {
+      // Scratch is queue-ordered across frame slots. Publish last frame's reads
+      // before overwriting, then publish this producer to the opaque consumer.
+      barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+              VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT);
+      vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE,
+                        selectLightingPipeline(indirectPass.pipeline[querySharc]));
       vkCmdDispatch(command, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
       barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
               VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
     }
+    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, opaquePipeline);
+    vkCmdDispatch(command, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
+    stageTime(6);
+    // Publish opaque lighting, RNG and sheet count to transparent composition.
+    barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+    if (splitLightingActive && denoiser && postSplit) {
+      vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE,
+                        selectLightingPipeline(splitDirectCompute, options.separateLocalLighting == 3));
+      vkCmdDispatch(command, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
+      barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+    }
+    stageTime(7);
     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE,
-                      selectLightingPipeline(sharc.stats.active ? (denoiser ? sharc.temporalTransparency : sharc.transparency)
+                      selectLightingPipeline(querySharc ? (denoiser ? sharc.temporalTransparency : sharc.transparency)
                                          : (denoiser ? temporalTransparencyCompute : transparencyCompute)));
     vkCmdDispatch(command, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
     if (timestamps) {
@@ -559,17 +638,23 @@ namespace remix {
       if (postReblur) {
         barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
-        vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, selectLightingPipeline(sharc.stats.active ? sharc.confidence : confidenceCompute));
+        vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, selectLightingPipeline(querySharc ? sharc.confidence : confidenceCompute));
         vkCmdDispatch(command, ((extent.width + 4) / 5 + 7) / 8, ((extent.height + 4) / 5 + 7) / 8, 1);
       }
+      stageTime(8);
       denoiser->record(command);
+    } else {
+      stageTime(8);
     }
+    stageTime(9);
     if (upscaler) {
       upscaler->record(command, denoiser->image(denoise::Composed), denoiser->image(denoise::Depth),
                        denoiser->image(denoise::Motion), denoiser->image(denoise::Transmission),
                        pendingProjection, temporalFrame.jitter, temporalFrame.timing[0],
                        options.fsrSharpness, temporalFrame.flags[0]);
     }
+    finishPbrReuse(command);
+    finishRayProfile(command);
     finishLightGuiding(command);
     finishSharc(command);
     rendered = true;
@@ -590,11 +675,38 @@ namespace remix {
 
   scene::TraceFrame PathTracer::prepareScene(const RasterRenderer &resources,
                                              const TraceOptions &options) const {
+    using Clock = std::chrono::steady_clock;
+    const char *profile = std::getenv("REMIX_OPACITY_PROFILE");
+    const auto start = profile ? Clock::now() : Clock::time_point{};
     auto frame = scene::prepareTraceFrame(
         resources.draws(),
         std::chrono::duration<double>(std::chrono::steady_clock::now() - m_gpu->epoch).count(),
         options.emissiveLights && options.localLights &&
             (options.freezeEmissiveRadiance || options.stabilizeEmissiveLighting));
+    const auto prepared = profile ? Clock::now() : Clock::time_point{};
+    // Coverage proof is CPU-only and can overlap the previous GPU submission.
+    // Keep the result on this immutable frame, alongside its animated UVs.
+    for (auto &instance : frame.instances)
+      for (auto &surface : instance)
+        surface.opacity = m_gpu->opacityCache.partition(surface.draw, surface.uv);
+    const auto classified = profile ? Clock::now() : Clock::time_point{};
+    m_gpu->opacityCache.prune();
+    const auto pruned = profile ? Clock::now() : Clock::time_point{};
+    if (std::getenv("REMIX_OPACITY_DIAGNOSTICS")) {
+      uint64_t reasons[scene::OpacityPartition::Count] = {}, mixed = 0;
+      for (const auto &instance : frame.instances)
+        for (const auto &surface : instance) {
+          const auto &partition = surface.opacity;
+          mixed += partition->key[0] == 2;
+          for (unsigned i = 0; i < scene::OpacityPartition::Count; ++i) reasons[i] += partition->reasons[i];
+        }
+      std::fprintf(stderr, "OPACITY mixed_surfaces=%llu", static_cast<unsigned long long>(mixed));
+      const char *names[] = {"solid", "one_sided", "blended", "transmission", "alpha_test", "invalid",
+                             "missing_texture", "texture_boundary", "texture_cutout"};
+      for (unsigned i = 0; i < scene::OpacityPartition::Count; ++i)
+        std::fprintf(stderr, " %s=%llu", names[i], static_cast<unsigned long long>(reasons[i]));
+      std::fprintf(stderr, "\n");
+    }
     auto &staged = frame.lighting;
     staged.combined = m_gpu->lightBvh;
     staged.history = m_gpu->emissionHistory;
@@ -612,13 +724,27 @@ namespace remix {
     }
     staged.history.end();
     staged.hasEmissive = lights.size() > sphereCount;
-    if (staged.hasEmissive && options.separateLocalLighting) {
+    if (staged.hasEmissive && options.separateLocalLighting && options.separateLocalLighting != 3) {
       staged.torch = m_gpu->torchBvh;
       staged.emissive = m_gpu->emissiveBvh;
       staged.torch.update({lights.begin(), lights.begin() + sphereCount});
       staged.emissive.update({lights.begin() + sphereCount, lights.end()});
     }
     staged.combined.update(std::move(lights));
+    if (profile) {
+      const auto end = Clock::now();
+      const auto count = m_gpu->opacityCache.takeStatistics();
+      if (auto *file = std::fopen(profile, "a")) {
+        if (!std::ftell(file)) std::fprintf(file, "prepare_ms,opacity_ms,prune_ms,lights_ms,lookups,hits,proofs,triangles,evictions,owners,textures\n");
+        auto ms = [](auto a, auto b) { return std::chrono::duration<double, std::milli>(b-a).count(); };
+        std::fprintf(file, "%.6f,%.6f,%.6f,%.6f,%llu,%llu,%llu,%llu,%llu,%llu,%llu\n",
+                     ms(start,prepared), ms(prepared,classified), ms(classified,pruned), ms(pruned,end),
+                     (unsigned long long)count.lookups, (unsigned long long)count.hits,
+                     (unsigned long long)count.proofs, (unsigned long long)count.triangles,
+                     (unsigned long long)count.evictions, (unsigned long long)count.owners, (unsigned long long)count.textures);
+        std::fclose(file);
+      }
+    }
     return frame;
   }
 

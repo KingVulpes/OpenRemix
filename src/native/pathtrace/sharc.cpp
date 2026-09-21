@@ -60,6 +60,7 @@ namespace remix {
     sharc.readback.reset();
     sharc.clear = true;
     sharc.pending = false;
+    sharc.hasReceivers = false;
     sharc.warmFrames = 0;
     sharc.stats.active = sharc.stats.capacity = sharc.stats.occupiedEntries = 0;
     sharc.stats.memoryBytes = 0;
@@ -188,9 +189,19 @@ namespace remix {
   }
 
   void PathTracer::Gpu::configureSharc(Frame &frame, const TraceOptions &options, scene::TemporalEpoch currentEpoch,
-                                      std::vector<uint8_t> geometry, std::vector<uint8_t> dynamicGeometry) {
+                                      std::vector<uint8_t> geometry, std::vector<uint8_t> dynamicGeometry, bool hasReceivers) {
     if (!sharc.stats.active)
       return;
+    // Eligibility covers every traced surface, including off-screen receivers.
+    // Idle scenes use the ordinary uncached shader; confidence tracing continues.
+    sharc.clear |= !sharc.hasReceivers || !hasReceivers;
+    sharc.hasReceivers = hasReceivers;
+    if (!hasReceivers) {
+      auto &s = sharc.stats;
+      s.updatePaths = s.queryAttempts = s.queryHits = s.occupiedEntries = 0;
+      s.gpuUpdateMilliseconds = s.gpuResolveMilliseconds = 0;
+      s.gpuTimingsAvailable = 0;
+    }
     sharc.clear |= sharc.epoch != currentEpoch || sharc.reset != options.sharcReset ||
                    sharc.scale != options.sharcSceneScale || sharc.bounces != options.bounces ||
                    sharc.geometry != geometry;
@@ -238,7 +249,7 @@ namespace remix {
     frame.sharcAccumulation = sharc.accumulation->address;
     frame.sharcResolved = sharc.resolved->address;
     frame.sharcCounters = sharc.counters->address;
-    frame.sharcConfig[0] = 1;
+    frame.sharcConfig[0] = hasReceivers;
     frame.sharcConfig[1] = sharc.stats.capacity;
     frame.sharcConfig[2] = options.sharcDownscale;
     frame.sharcConfig[3] = options.sharcDebug;
@@ -252,7 +263,7 @@ namespace remix {
   }
 
   void PathTracer::Gpu::recordSharc(VkCommandBuffer command, const TraceOptions &options) {
-    if (!sharc.stats.active)
+    if (!sharc.stats.active || !sharc.hasReceivers)
       return;
     // Previous resolve/query (including confidence) must finish before either
     // transfer clears or this frame's atomic updates can reuse the buffers.
@@ -294,7 +305,7 @@ namespace remix {
   }
 
   void PathTracer::Gpu::finishSharc(VkCommandBuffer command) {
-    if (!sharc.stats.active)
+    if (!sharc.stats.active || !sharc.hasReceivers)
       return;
     barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
             VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT);

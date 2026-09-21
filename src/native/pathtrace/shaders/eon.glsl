@@ -9,17 +9,22 @@ float eonAlbedo(float mu, float r) {
   float g = x * (0.0571085289f + x * (0.491881867f + x * (-0.332181442f + x * 0.0714429953f)));
   return (1.0f + r * g) / (1.0f + eonA * r);
 }
-vec3 eonBrdf(vec3 rho, float r, vec3 wi, vec3 wo) {
-  if (wi.z <= 0.0f || wo.z <= 0.0f) return vec3(0.0f);
+// Isotropy makes the evaluator depend only on these three dot products. NEE
+// already has the cosines, so it need not construct/rotate a tangent frame.
+vec3 eonBrdfCosines(vec3 rho, float r, float ni, float no, float io) {
+  if (ni <= 0.0f || no <= 0.0f) return vec3(0.0f);
   if (r == 0.0f) return rho / eonPi;
-  float s = dot(wi, wo) - wi.z * wo.z;
-  float st = s > 0.0f ? s / max(wi.z, wo.z) : s;
+  float s = io - ni * no;
+  float st = s > 0.0f ? s / max(ni, no) : s;
   float a = 1.0f / (1.0f + eonA * r);
   float avg = a * (1.0f + eonB * r);
   vec3 ms = rho * rho * avg / (vec3(1.0f) - rho * (1.0f - avg));
   return (rho * a * (1.0f + r * st) + ms *
-      (max(0.0f, 1.0f - eonAlbedo(wi.z, r)) * max(0.0f, 1.0f - eonAlbedo(wo.z, r)) /
+      (max(0.0f, 1.0f - eonAlbedo(ni, r)) * max(0.0f, 1.0f - eonAlbedo(no, r)) /
        max(1e-7f, 1.0f - avg))) / eonPi;
+}
+vec3 eonBrdf(vec3 rho, float r, vec3 wi, vec3 wo) {
+  return eonBrdfCosines(rho, r, wi.z, wo.z, dot(wi, wo));
 }
 vec4 eonCoefficients(float mu, float r) {
   return vec4(

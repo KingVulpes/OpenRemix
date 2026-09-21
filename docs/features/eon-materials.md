@@ -20,6 +20,9 @@ missing normals use the geometric normal. The same roughness controls EON diffus
 and GGX perceptual roughness (GGX alpha is roughness squared, floored at 0.001).
 Dielectrics use F0=0.04; metals use base color as F0 and suppress diffuse reflection.
 EON's colored multiple scattering uses base color as its single-scattering albedo.
+Isotropic BRDF evaluation uses the world-space direction/normal dot products
+directly; sampling still uses the tangent frame. This preserves the EON equations
+while avoiding redundant direction transforms during light evaluation.
 
 All maps accept file paths or uploaded texture hash paths, share the material's
 filter/address/sprite settings and currently sample mip zero. Roughness, metallic
@@ -106,8 +109,34 @@ materials with an authored emissive map use unit emission intensity.
 BetaRT's private material packet is version 6. Build/install the patched client
 and JNI library together; the public Remix interface version remains 0.1003.
 
+## Experimental secondary local-light reuse
+
+`rtx.native.pathtrace.pbrLocalReuse=1` enables an experimental screen-space cache,
+following NRD-Sample's use of previous-frame radiance as a first-level lookup.
+The F12 **Experimental PBR lighting reuse** control selects the same option.
+It is **off by default** and is not a quality-preserving replacement for tracing.
+EON and GGX depend on viewing direction; even closely matched reprojection can
+introduce bias and correlated noise.
+
+Only fresh primary local-light radiance is stored. A secondary rough dielectric
+hit can reuse it after position, normal, material and viewing-direction checks.
+Sunlight, emission and recursive indirect tails are never taken from this cache.
+Rejected hits trace fresh local lighting. Geometry/material/lighting changes,
+dynamic traced instances and temporal resets prevent reuse. Sharp surfaces,
+metals, blended surfaces, raw/reference accumulation and multisample rendering
+use the ordinary path. Confidence retracing always uses fresh samples.
+
+The prototype requires temporal denoising and allocates two 64-byte-per-pixel
+histories only while enabled (about 253 MiB at 1920×1080). Disable/re-enable it to
+retry after allocation failure. `REMIX_PBR_REUSE_DIAGNOSTICS=/path/reuse.csv`
+records attempts, accepts and geometry/view rejections after each frame's fence.
+Keep the option disabled for normal play until energy, temporal-noise, movement
+and disocclusion comparisons meet the desired quality requirements.
+
 ## References
 
 [EON paper](../../../reference/eon/eon.md), Listings 1–4, and its
 [MIT-licensed source](https://github.com/portsmouth/EON-diffuse).
 GGX sampling follows Heitz, [Sampling the GGX Distribution of Visible Normals](https://jcgt.org/published/0007/04/01/).
+
+Previous-frame reuse is guided by [NRD-Sample TraceOpaque](../../../reference/NRD-Sample/Shaders/TraceOpaque.cs.hlsl) and its reprojection checks.

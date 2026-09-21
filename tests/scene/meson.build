@@ -17,3 +17,6 @@ test('CPU tracing preparation and snapshot ownership', trace_frame_test)
 pbr_test = executable('remix-pbr-resource-test', 'pbr.cpp',
   include_directories : test_includes, link_with : scene_library)
 test('PBR material validation and texture lifetime', pbr_test)
+opacity_test = executable('remix-opacity-test', 'opacity.cpp',
+  include_directories : test_includes, link_with : scene_library)
+test('Opaque traversal atlas coverage and snapshot ownership', opacity_test)

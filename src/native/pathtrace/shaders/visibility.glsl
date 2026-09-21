@@ -4,18 +4,24 @@
 struct VisibilityHit { float t; bool blocked; vec3 p; vec3 n; vec3 transmission; };
 void queryVisibility(accelerationStructureEXT scene,vec3 origin,vec3 direction,inout VisibilityHit hit,bool anyOpaque) {
   rayQueryEXT query;
-  rayQueryInitializeEXT(query,scene,gl_RayFlagsNoOpaqueEXT,255,origin,0,direction,hit.t);
+  profileRay(8);
+  rayQueryInitializeEXT(query,scene,gl_RayFlagsNoneEXT,255,origin,0,direction,hit.t);
   while(rayQueryProceedEXT(query)) {
     if(rayQueryGetIntersectionTypeEXT(query,false)!=gl_RayQueryCandidateIntersectionTriangleEXT)continue;
+    profileRay(9);
     Surface s=surfaces[rayQueryGetIntersectionInstanceCustomIndexEXT(query,false)+rayQueryGetIntersectionGeometryIndexEXT(query,false)];
-    if((s.state.w&4)==0&&!rayQueryGetIntersectionFrontFaceEXT(query,false))continue;
-    if(!acceptCandidate(s,rayQueryGetIntersectionPrimitiveIndexEXT(query,false),rayQueryGetIntersectionBarycentricsEXT(query,false)))continue;
+    s.indices=s.traceIndices;
+    if((s.state.w&4)==0&&!rayQueryGetIntersectionFrontFaceEXT(query,false)){profileRay(12);continue;}
+    profileAlpha(s,8);
+    if(!acceptCandidate(s,rayQueryGetIntersectionPrimitiveIndexEXT(query,false),rayQueryGetIntersectionBarycentricsEXT(query,false))){profileRay(11);continue;}
     if(anyOpaque&&(s.state.w&2)==0) {hit.blocked=true;rayQueryTerminateEXT(query);return;}
     rayQueryConfirmIntersectionEXT(query);
   }
   if(rayQueryGetIntersectionTypeEXT(query,true)==gl_RayQueryCommittedIntersectionNoneEXT)return;
+  profileRay(13);
   hit.t=rayQueryGetIntersectionTEXT(query,true);
   Surface s=surfaces[rayQueryGetIntersectionInstanceCustomIndexEXT(query,true)+rayQueryGetIntersectionGeometryIndexEXT(query,true)];
+  s.indices=s.traceIndices;
   hit.blocked=(s.state.w&2)==0;
   if(hit.blocked)return;
   uint tri=rayQueryGetIntersectionPrimitiveIndexEXT(query,true)*3;

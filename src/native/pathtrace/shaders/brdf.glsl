@@ -18,8 +18,7 @@ void materialLobes(Hit hit,vec3 wi,out vec3 diffuse,out vec3 specular) {
   float ni=dot(hit.n,wi),no=dot(hit.n,hit.wo);
   if(ni<=0||no<=0||dot(hit.ng,wi)<=0)return;
   if(!hit.pbr){diffuse=hit.color.rgb/eonPi;return;}
-  mat3 basis=shadingBasis(hit.n);
-  diffuse=eonBrdf(hit.color.rgb,hit.rm.x,transpose(basis)*wi,transpose(basis)*hit.wo);
+  diffuse=eonBrdfCosines(hit.color.rgb,hit.rm.x,ni,no,dot(wi,hit.wo));
   vec3 h=normalize(wi+hit.wo);
   vec3 f=fresnel(mix(vec3(.04),hit.color.rgb,hit.rm.y),max(0,dot(hit.wo,h)));
   float alpha=max(.001,hit.rm.x*hit.rm.x);

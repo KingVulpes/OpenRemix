@@ -84,15 +84,51 @@ emissive group, but neither technique eliminates noise from unknown
 occlusion, differing light colors or near-field triangle-area sampling, and adds
 candidate arithmetic even though the visibility-ray budget is unchanged.
 
+**Blue noise local lights** in F12 **Local lighting** controls primary opaque
+torch and emissive sample positions. Its key is
+`rtx.native.pathtrace.blueNoiseLocalLights` (0 or 1, default 1). With REBLUR and
+local denoising active, emitter sampling uses two dimensions of a 32-frame
+Owen-scrambled Sobol sequence and a 128x128 blue-noise tile. Screen-uniform
+rotations distinguish candidates, requested samples and light families without
+hashing away the spatial pattern. The longer local sequence is separate from
+the eight-frame SIGMA sun-shadow sequence.
+
+This changes positions on sphere and triangle emitters, including the optional
+solid-angle proposal. LightBVH selection probabilities, reservoir weights,
+candidate counts and visibility-ray budgets keep their established formulas.
+The original random stream still advances for each replaced pair, keeping later
+light-selection draws separate from the blue-noise values. Indirect vertices,
+SHARC, confidence retracing, transparent surfaces and raw/progressive references
+retain hashed sampling. Turning the option off restores hashed emitter positions.
+Switching samplers requests the local filter's fast response without a global
+history reset or a reset of SIGMA. Blue noise is a noise-distribution change;
+it does not reduce the number of rays or guarantee a frame-rate improvement.
+
+Both samplers share one immutable 131,232-byte buffer, uploaded once and retained
+across resize and toggles. Allocation failure keeps the denoisers active with
+hashed sampling and avoids repeated allocation attempts. The checked-in tables
+and their [MIT attribution](../../src/native/pathtrace/shaders/LICENSE-blue-noise.txt)
+require no runtime assets or additional descriptors.
+
 F12 **Torch / emissive lighting** optionally separates opaque primary direct
 lighting into two LightBVHs and two independent REBLUR diffuse histories.
 `rtx.native.pathtrace.separateLocalLighting` selects **Combined** (`0`, default),
-**Separate - shared ray budget** (`1`), or **Separate - samples per family** (`2`).
+**Separate - shared ray budget** (`1`), **Separate - samples per family** (`2`),
+or **Combined - separate pass** (`3`).
 Combined retains the established sampler. Separation is
 experimental: independent histories can isolate fluctuations between source
 families, but do not guarantee less noise and require extra filtering and memory.
 Indirect lighting, SHARC, confidence retracing and transparent sheets retain the
 combined hierarchy. SIGMA continues to process only the sun.
+
+In scenes containing emissive sources, mode `3` moves opaque primary direct
+sampling into the dedicated compute pass while retaining the combined hierarchy, selection PDFs, candidate and ray
+budgets, and fresh visibility rays. It does not build separate family trees.
+PBR radiance still joins the same diffuse/specular NRD histories; legacy local
+radiance uses the first local history. Switching between combined and per-family
+signals resets the incompatible histories. This mode can reduce GPU time by
+dividing the shader work, but its benefit depends on the scene and hardware.
+Raw rendering or unavailable temporal resources retain inline combined sampling.
 
 Shared-budget mode assigns complementary pixels to torch or emissive sampling
 with a changing frame-wide phase. Where both families can contribute, each has
@@ -106,11 +142,12 @@ The emissive tree has its own visibility proposal history. Torch sampling uses
 fresh candidates without sharing the emissive guide.
 
 With temporal resources active, split direct sampling runs in a separate compute
-pass after opaque shading. Existing scratch images retain full-precision hit
-positions and half-precision normals until that pass finishes, avoiding another
-primary ray or depth-based position reconstruction. Per-family lighting generations drive their
-fast-response windows. Two additional RGBA16F signal images and a second local
-NRD instance are allocated only when separation is requested and supported.
+pass after opaque shading. The pass reconstructs the receiver from the G-buffer
+or primary ray query so PBR maps and transparent foreground layers use the same
+material evaluation. Per-family lighting generations drive their fast-response
+windows; mode `3` uses the combined lighting generation. Two additional RGBA16F
+signal images and a second local NRD instance are allocated only when separation
+is requested and supported.
 Capability or initialization failures fall back to combined local lighting.
 The **Denoise local lighting** control applies to both direct histories; raw
 rendering can still use either split sampler without the filtering resources.
@@ -193,3 +230,67 @@ radiance. Dense emissive scenes can require the full four-sample cost.
 The behavior can be disabled with
 `rtx.native.pathtrace.adaptiveLocalSampling=0` or the **Adaptive local-light
 sampling** F12 control.
+
+### Opaque terrain traversal and profiling
+
+The tracing backend proves opacity per triangle against the immutable material,
+vertex alpha, alpha combiner and transformed texture footprint. Nearest/linear
+filtering, repeat, mirror, edge clamp and transparent-border addressing are part
+of the proof. Unknown coverage, single-sided geometry and transmitting sheets
+remain shader candidates. Mixed surfaces place proven triangles in opaque BLAS
+geometries and retain candidate geometries for the rest. Shading reads each
+geometry's reordered indices directly; only debug views need a triangle-ID remap.
+Raster ordering, emitter identities and vertex/motion correspondence remain
+unchanged; opacity partitions participate in BLAS cache/refit identity.
+
+The CPU cache keys only opacity-affecting material values. When an atlas snapshot
+changes, it rechecks the exact texel rectangles used by the existing proof with
+summed-area alpha counts. RGB animation and alpha edits in unrelated atlas tiles
+can therefore retain the partition. Changed coverage, sampling state, dimensions,
+vertex alpha or geometry still invalidates it; queued snapshots remain independent.
+
+Local shadows can terminate on the first opaque blocker when the traced scene
+has no blended geometry. Scenes containing blended sheets retain closest-layer
+queries and ordered colored transmission. Sample counts, PDFs and the production
+random sequence do not change.
+
+Private diagnostics are disabled unless their environment variables are set:
+
+- `REMIX_OPACITY_PROFILE=/path/opacity.csv` records CPU preparation, opacity,
+  pruning and light-hierarchy times plus proof/cache counters.
+- `REMIX_OPACITY_DIAGNOSTICS=1` prints triangle proof/rejection counts.
+- `REMIX_STACK_PROFILE=/path/stages.csv` records primary, SHARC, opaque/indirect,
+  primary local, transparency, confidence and denoising GPU durations.
+- `REMIX_RAY_PROFILE=/path/rays.csv` counts ray queries, candidate intersections,
+  alpha tests/rejections and texture-dependent alpha tests separately for opaque,
+  primary-local and transparency dispatches. It samples one in 64 pixel
+  invocations and excludes SHARC updates and confidence retracing. The counters
+  describe work, not unbiased frame totals; instrumentation changes execution
+  cost, so performance comparisons must disable it. Shader specialization removes
+  counter code from ordinary rendering. Neither register counts nor these
+  structural counters establish memory-spill or hardware-cache behavior.
+
+### Separate indirect pass
+
+Combined local lighting (`rtx.native.pathtrace.separateLocalLighting=3`) moves
+opaque-surface continuation tracing into its own compute dispatch when temporal
+rendering is active and there are no eligible SHARC query receivers.
+`REMIX_SPLIT_INDIRECT=0` selects inline continuation; `=1` explicitly opts other
+supported separate-light modes and active SHARC queries into the split pass.
+The opaque pass consumes its full-precision radiance and final integer RNG state. The producer writes diffuse SH or PBR lobe inputs and hit distances
+directly to the existing denoiser images at their normal precision. Sampling
+budgets, light PDFs, bounce limits and confidence retracing remain unchanged. SHARC queries run
+in the producer; transparent composition retains its existing integrator.
+
+The temporary buffer uses 16 bytes per render pixel (about 32 MiB at 1080p),
+shared across queue-ordered frame slots with explicit read/write barriers. Raw
+rendering, zero bounces and experimental PBR reuse retain inline continuation.
+Allocation or consumer-pipeline failure also selects inline continuation before
+any producer dispatch. Automatic selection is restricted to the measured combined
+lighting configuration; splitting adds another primary-hit reconstruction, a
+dispatch and memory traffic. The opaque/indirect stage timer includes both dispatches.
+
+The uncached indirect producer uses ordinary closest-blocker traversal: on the
+measured Turing driver, first-hit termination increases this shader's register
+count. Both modes return the same boolean local visibility. The other passes
+retain their existing first-opaque-hit selection and blended-sheet behavior.

@@ -6,6 +6,8 @@ namespace remix {
 
   void PathTracer::Gpu::complete(VkCommandBuffer command) {
     completeLightGuiding();
+    completePbrReuse();
+    completeRayProfile();
     uploads.clear();
     retiredGeometry.clear();
     retiredBuffers.clear();
@@ -13,8 +15,8 @@ namespace remix {
     bufferCache->trimMemory(bufferMemory);
     std::erase_if(bufferMemory, [](const auto &block) { return block.use_count() == 1; });
     if (timingPending) {
-      uint64_t times[4] = {};
-      if (vkGetQueryPoolResults(device, timestamps, 0, 4, sizeof(times), times, sizeof(uint64_t),
+      uint64_t times[10] = {};
+      if (vkGetQueryPoolResults(device, timestamps, 0, stageProfile ? 10 : 4, sizeof(times), times, sizeof(uint64_t),
                                 VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
         const uint64_t mask = timestampBits >= 64 ? UINT64_MAX : (uint64_t(1) << timestampBits) - 1;
         stats.gpuBuildMilliseconds =
@@ -22,6 +24,20 @@ namespace remix {
         stats.gpuTraceMilliseconds =
             float((times[3] - times[2]) & mask) * properties.limits.timestampPeriod / 1e6f;
         stats.gpuTimingsAvailable = 1;
+        if (stageProfile) {
+          if (auto *file = std::fopen(stageProfile, "a")) {
+            if (std::ftell(file) == 0)
+              std::fprintf(file, "time_ms,primary_ms,sharc_ms,opaque_ms,local_ms,transparency_ms,confidence_ms,denoise_ms\n");
+            const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            auto elapsed = [&](unsigned first, unsigned last) {
+              return double((times[last] - times[first]) & mask) * properties.limits.timestampPeriod / 1e6;
+            };
+            std::fprintf(file, "%lld,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n", static_cast<long long>(now),
+                elapsed(2, 4), elapsed(4, 5), elapsed(5, 6), elapsed(6, 7), elapsed(7, 3), elapsed(3, 8), elapsed(8, 9));
+            std::fclose(file);
+          }
+        }
       }
       timingPending = false;
     }

@@ -1,6 +1,6 @@
 native_include = include_directories('.')
 image_include = include_directories('../../third_party', is_system : true)
-shell_deps = [sdl3_dep, vulkan_dep, threads_dep, imgui_dep, nrd_dep, fsr31_dep]
+shell_deps = [sdl3_dep, vulkan_dep, threads_dep, imgui_dep, nrd_dep, fsr31_dep, dlss_dep]
 shell_args = ['-DREMIX_LIBRARY_EXPORTS=1'] + cpp.get_supported_arguments('-Wno-missing-field-initializers', '-Wno-unused-parameter')
 subdir('platform')
 subdir('api')

@@ -38,6 +38,7 @@ int main(int argc, char **argv) {
   startup.windowHeight = std::getenv("REMIX_TEST_LOCAL_PERF") ? 720 : 128;
 #endif
   ok(api.Startup(&startup));
+  ok(api.SetConfigVariable("rtx.native.pathtrace.upscaler", "off"));
   remixapi_BackendCapabilitiesEXT caps{};
   caps.structSize = sizeof(caps);
   ok(remixapi_GetBackendCapabilitiesEXT(&caps));

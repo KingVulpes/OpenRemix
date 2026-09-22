@@ -23,7 +23,6 @@ struct TraceFrame {
   double seconds = 0;
   std::vector<std::vector<Surface>> instances;
   std::unordered_set<uint64_t> persistentIds;
-  std::vector<std::array<float, 4>> emissions{1}; // zero is non-emissive
   std::vector<Emitter> emitters;
   // Staged copies leave the last submitted lighting intact if presentation is skipped.
   struct Lighting {
@@ -33,5 +32,6 @@ struct TraceFrame {
   } lighting;
 };
 
-TraceFrame prepareTraceFrame(const std::vector<Draw> &draws, double seconds, bool filterEmission);
+TraceFrame prepareTraceFrame(const std::vector<Draw> &draws, double seconds, bool filterEmission,
+                             SurfaceEmissionCache &emissionCache);
 } // namespace remix::scene

@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <remix/remix_native_ext.h>
+#include <remix/remix_reconstruction_ext.h>
 #include <string>
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_PNG
@@ -34,6 +35,7 @@ int main(int argc, char **argv) {
   startup.windowWidth = startup.windowHeight = 512;
 #endif
   ok(api.Startup(&startup));
+  ok(api.SetConfigVariable("rtx.native.pathtrace.upscaler", "off"));
   remixapi_BackendCapabilitiesEXT capabilities{};
   capabilities.structSize = sizeof(capabilities);
   ok(remixapi_GetBackendCapabilitiesEXT(&capabilities));
@@ -52,7 +54,14 @@ int main(int argc, char **argv) {
   config("sharc", "0");
   config("sky", "0");
   config("localLights", "0");
-  config("upscaler", "fsr31");
+  const char *ngxMode = std::getenv("REMIX_TEST_NGX");
+  if (ngxMode) {
+    remixapi_ReconstructionDiagnosticsEXT d{}; d.structSize = sizeof(d);
+    ok(remixapi_GetReconstructionDiagnosticsEXT(&d));
+    if (!(d.capabilities & (std::string(ngxMode) == "rr" ? 4 : 2))) { ok(api.Shutdown()); return 77; }
+  }
+  config("upscaler", ngxMode ? "dlss" : "fsr31");
+  if (ngxMode) config("dlssRayReconstruction", std::string(ngxMode) == "rr" ? "1" : "0");
   std::array<uint8_t, 128 * 128 * 4> texels{};
   for (unsigned y = 0; y < 128; ++y)
     for (unsigned x = 0; x < 128; ++x) {
@@ -161,6 +170,7 @@ int main(int argc, char **argv) {
     ok(api.DrawInstance(&instance));
     ok(api.Present(nullptr));
   };
+  double lastMean = 0;
   auto capture = [&](const std::string &name) {
     auto path = (directory / (name + ".png")).string();
     ok(api.RequestPresentedScreenshot(path.c_str()));
@@ -180,6 +190,7 @@ int main(int argc, char **argv) {
         ++count;
       }
     stbi_image_free(bytes);
+    lastMean = sum / count;
     return std::array<double, 2>{gradient / count, squares / count - std::pow(sum / count, 2)};
   };
   auto stats = [&] {
@@ -191,7 +202,7 @@ int main(int argc, char **argv) {
   for (const char *primary : {"raster", "ray"}) {
     config("primaryVisibility", primary);
     for (const char *quality : {"native-aa", "quality"}) {
-      config("fsrQuality", quality);
+      config(ngxMode ? "dlssQuality" : "fsrQuality", quality);
       std::array<double, 2> reference{};
       for (bool translated : {false, true}) {
         const float position[] = {translated ? 1023.247f : 0, translated ? 71.62f : 0,
@@ -219,10 +230,31 @@ int main(int argc, char **argv) {
         if (!translated)
           reference = late;
         require(late[0] > .05 && late[1] > .01, "Texture contrast disappeared");
-        require(late[0] > reference[0] * .9 && late[1] > reference[1] * .85,
+        // DLSS allows 10% RMS contrast variation (variance is squared RMS).
+        // Keep the original, tighter FSR variance regression bound.
+        require(late[0] > reference[0] * .9 && late[1] > reference[1] * (ngxMode ? .81 : .85),
                 "Stationary FSR texture history depends on world translation");
         require(late[0] > early[0] * .95, "Stationary FSR progressively loses texture detail");
       }
+    }
+  }
+  if (ngxMode) {
+    remixapi_ReconstructionDiagnosticsEXT d{}; d.structSize = sizeof(d);
+    ok(remixapi_GetReconstructionDiagnosticsEXT(&d));
+    require(d.activeBackend == (std::string(ngxMode) == "rr" ? 3u : 2u), "Texture test reconstruction unavailable");
+    // Replace the streamed texture and move its instance without a camera cut.
+    // Capture both colors after short settling periods to expose stale histories.
+    for (unsigned tick = 0; tick < 4; ++tick) {
+      for (unsigned i = 0; i < 128 * 128; ++i) {
+        texels[i * 4] = tick & 1 ? 230 : 40;
+        texels[i * 4 + 1] = 80; texels[i * 4 + 2] = 80;
+      }
+      ok(api.CreateTexture(&texture, &textureHandle));
+      ok(api.CreateMaterial(&material, &materialHandle));
+      instance.transform.matrix[0][3] += tick & 1 ? -.02f : .02f;
+      for (int i = 0; i < 16; ++i) frame();
+      capture("animated-moving-" + std::to_string(tick));
+      require(tick & 1 ? lastMean > .6 : lastMean < .4, "Animated texture retained stale color");
     }
   }
   ok(api.Shutdown());

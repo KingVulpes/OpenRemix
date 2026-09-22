@@ -35,6 +35,7 @@ namespace remix {
         if (!m_traceUnavailable.empty())
           ImGui::TextWrapped("Path tracing: %s", m_traceUnavailable.c_str());
         if (m_backend || m_requestedBackend) {
+          const bool rrActive = m_pathTracer && m_pathTracer->upscalingStatistics().backend == upscale::Backend::DlssRr;
           int primary = m_traceOptions.rasterPrimary ? 0 : 1;
           if (ImGui::Combo("Primary visibility", &primary, "Rasterized G-buffer\0Ray traced\0"))
             m_traceOptions.rasterPrimary = primary == 0;
@@ -70,9 +71,11 @@ namespace remix {
             m_traceOptions.samples = uint32_t(samples);
           if (ImGui::SliderInt("Indirect bounces", &bounces, 0, 4))
             m_traceOptions.bounces = uint32_t(bounces);
+          ImGui::BeginDisabled(rrActive);
           ImGui::Checkbox("REBLUR diffuse SH", &m_traceOptions.denoiser);
           ImGui::Checkbox("SIGMA sun shadows", &m_traceOptions.sigma);
           ImGui::Checkbox("Blue noise sun shadows", &m_traceOptions.blueNoiseShadows);
+          ImGui::EndDisabled();
           const auto shadows = shadowStatistics();
           ImGui::Text("SIGMA: %s", shadows.active ? "active" : "inactive");
           if (shadows.active && shadows.gpuTimingsAvailable)
@@ -87,32 +90,42 @@ namespace remix {
           int shadowView = int(m_traceOptions.shadowDebug);
           if (ImGui::Combo("Shadow view", &shadowView, "Final lighting\0Raw visibility\0SIGMA visibility\0"))
             m_traceOptions.shadowDebug = uint32_t(shadowView);
-          int upscaler = m_traceOptions.fsr ? 1 : 0;
+          int upscaler = int(m_traceOptions.upscaler);
           ImGui::Checkbox("Prism tonemapping", &m_traceOptions.prism);
           ImGui::Checkbox("Gamma 2.2 output", &m_traceOptions.gamma22);
-          if (ImGui::Combo("Upscaling", &upscaler, "Off\0FSR 3.1\0"))
-            m_traceOptions.fsr = upscaler != 0;
+          if (ImGui::Combo("Requested upscaler", &upscaler, "Off\0Auto\0FSR 3.1\0DLSS\0"))
+            m_traceOptions.upscaler = upscale::Mode(upscaler);
           const auto fsr = m_pathTracer ? m_pathTracer->upscalingStatistics() : upscale::Statistics{};
-          if (m_traceOptions.fsr) {
-            int quality = int(m_traceOptions.fsrQuality);
-            if (ImGui::Combo("FSR preset", &quality, "Native AA\0Quality\0Balanced\0Performance\0Ultra Performance\0"))
-              m_traceOptions.fsrQuality = uint32_t(quality);
-            ImGui::SliderFloat("FSR sharpening", &m_traceOptions.fsrSharpness, 0.f, 1.f, "%.2f");
-            if (fsr.active)
-              ImGui::Text("FSR: %ux%u -> %ux%u | %.2f ms", fsr.render.width, fsr.render.height,
-                          fsr.display.width, fsr.display.height, fsr.milliseconds);
-            if (!fsr.failure.empty()) ImGui::TextWrapped("%s", fsr.failure.c_str());
+          if (m_traceOptions.upscaler != upscale::Mode::Off) {
+            const bool amd = m_traceOptions.upscaler == upscale::Mode::Fsr31;
+            auto &savedQuality = amd ? m_traceOptions.fsrQuality : m_traceOptions.dlssQuality;
+            int quality = int(savedQuality);
+            if (ImGui::Combo("Quality preset", &quality, "Native AA / DLAA\0Quality\0Balanced\0Performance\0Ultra Performance\0"))
+              savedQuality = uint32_t(quality);
+            if (amd) ImGui::SliderFloat("FSR sharpening", &m_traceOptions.fsrSharpness, 0.f, 1.f, "%.2f");
+            else ImGui::Checkbox("DLSS Ray Reconstruction", &m_traceOptions.dlssRayReconstruction);
           }
+          ImGui::Text("Active: %s", upscale::name(fsr.backend));
+          ImGui::Text("%ux%u -> %ux%u | reconstruction %.2f ms", fsr.render.width, fsr.render.height,
+                      fsr.display.width, fsr.display.height, fsr.milliseconds);
+          if (!fsr.failure.empty()) ImGui::TextWrapped("%s", fsr.failure.c_str());
+          if (rrActive) ImGui::TextWrapped("Ray Reconstruction manages denoising and independent sampling. Saved settings resume when it is disabled.");
           ImGui::BeginDisabled(fsr.active);
           ImGui::Checkbox("Native resolution TAA", &m_traceOptions.taa);
           ImGui::EndDisabled();
+          ImGui::BeginDisabled(rrActive);
           ImGui::Checkbox("Reuse water indirect samples", &m_traceOptions.waterIndirectReuse);
+          ImGui::EndDisabled();
           if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Shares diffuse lighting across small flat water patches with TAA or FSR.\nEdges, overlapping layers and raw reference rendering retain full sampling.");
+          ImGui::BeginDisabled(rrActive);
           ImGui::Checkbox("Experimental PBR lighting reuse", &m_traceOptions.pbrLocalReuse);
+          ImGui::EndDisabled();
           if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Reuses local lighting on closely matching rough surfaces.\nMay change lighting and temporal noise; disabled by default.");
+          ImGui::BeginDisabled(rrActive);
           ImGui::Checkbox("NRD validation", &m_traceOptions.validation);
+          ImGui::EndDisabled();
           ImGui::Checkbox("Progressive accumulation", &m_traceOptions.accumulate);
           if (m_traceOptions.accumulate)
             ImGui::TextUnformatted("Raw reference: requested denoiser and TAA resume afterward.");
@@ -147,16 +160,23 @@ namespace remix {
               m_traceOptions.emissiveCandidates = uint32_t(candidates);
             if (ImGui::IsItemHovered())
               ImGui::SetTooltip("Compares unshadowed candidates at opaque primary surfaces in larger emissive light sets.\nKeeps one shadow ray per local light sample; 1 restores basic BVH sampling.");
+            ImGui::BeginDisabled(rrActive);
             ImGui::Checkbox("Denoise local lighting", &m_traceOptions.localDenoiser);
+            ImGui::EndDisabled();
+            ImGui::BeginDisabled(rrActive);
             ImGui::Checkbox("Blue noise local lights", &m_traceOptions.blueNoiseLocalLights);
+            ImGui::EndDisabled();
             if (ImGui::IsItemHovered())
               ImGui::SetTooltip("Uses blue noise for primary torch and emissive sample positions with local denoising.\nPreserves candidate and shadow-ray budgets.");
+            ImGui::BeginDisabled(rrActive);
             int separation = int(m_traceOptions.separateLocalLighting);
             const char *separationModes[] = {"Combined", "Separate - shared ray budget", "Separate - samples per family", "Combined - separate pass"};
             if (ImGui::Combo("Torch / emissive lighting", &separation, separationModes, 4))
               m_traceOptions.separateLocalLighting = uint32_t(separation);
             if (ImGui::IsItemHovered())
               ImGui::SetTooltip("Separate families use distinct direct sampling and denoiser histories.\nShared budget keeps the shadow-ray budget. Per-family mode can trace twice as many.\nCombined separate pass retains the combined sampler and budget in a dedicated dispatch.\nIndirect lighting remains combined.");
+            ImGui::EndDisabled();
+            if (rrActive) ImGui::TextUnformatted("RR samples each pixel; shared family budgets use combined sampling.");
             int samples = int(m_traceOptions.localSamples);
             if (ImGui::SliderInt("Local light samples", &samples, 1, 16))
               m_traceOptions.localSamples = uint32_t(samples);

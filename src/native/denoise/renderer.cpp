@@ -22,10 +22,10 @@ namespace remix::denoise {
     require(f.shaderStorageImageExtendedFormats, "extended storage-image formats");
     // The temporal set is used alongside the tracer set (ten storage images,
     // 512 textures, two acceleration structures, a storage buffer and a UBO).
-    require(p.limits.maxPerStageDescriptorStorageImages >= BaseImageCount + 17 &&
-                p.limits.maxDescriptorSetStorageImages >= BaseImageCount + 17,
+    require(p.limits.maxPerStageDescriptorStorageImages >= BaseImageCount + 21 &&
+                p.limits.maxDescriptorSetStorageImages >= BaseImageCount + 21,
             "temporal storage-image descriptor limit");
-    require(p.limits.maxPerStageResources >= 512 + BaseImageCount + 22, "temporal per-stage resource limit");
+    require(p.limits.maxPerStageResources >= 512 + BaseImageCount + 26, "temporal per-stage resource limit");
     const VkFormat formats[] = {VK_FORMAT_R16G16B16A16_SFLOAT,
                                 VK_FORMAT_R32G32B32A32_SFLOAT,
                                 VK_FORMAT_R32_SFLOAT,
@@ -64,9 +64,9 @@ namespace remix::denoise {
       return false;
     VkPhysicalDeviceProperties p;
     vkGetPhysicalDeviceProperties(physical, &p);
-    if (p.limits.maxPerStageDescriptorStorageImages < SigmaImageCount + 17 ||
-        p.limits.maxDescriptorSetStorageImages < SigmaImageCount + 17 ||
-        p.limits.maxPerStageResources < 512 + SigmaImageCount + 22)
+    if (p.limits.maxPerStageDescriptorStorageImages < SigmaImageCount + 21 ||
+        p.limits.maxDescriptorSetStorageImages < SigmaImageCount + 21 ||
+        p.limits.maxPerStageResources < 512 + SigmaImageCount + 26)
       return false;
     for (auto format : {VK_FORMAT_R32_UINT, VK_FORMAT_R8G8_UNORM, VK_FORMAT_R8G8B8A8_UNORM}) {
       VkFormatProperties fp;
@@ -85,9 +85,9 @@ namespace remix::denoise {
     VkPhysicalDeviceProperties p;
     vkGetPhysicalDeviceProperties(physical, &p);
     const uint32_t count = BaseImageCount + (sigma ? 3 : 0) + (split ? 4 : 2);
-    return p.limits.maxPerStageDescriptorStorageImages >= count + 17 &&
-           p.limits.maxDescriptorSetStorageImages >= count + 17 &&
-           p.limits.maxPerStageResources >= 512 + count + 22;
+    return p.limits.maxPerStageDescriptorStorageImages >= count + 21 &&
+           p.limits.maxDescriptorSetStorageImages >= count + 21 &&
+           p.limits.maxPerStageResources >= 512 + count + 26;
   }
   uint32_t Renderer::Gpu::memoryType(uint32_t bits, VkMemoryPropertyFlags flags) {
     for (uint32_t i = 0; i < memory.memoryTypeCount; ++i)
@@ -210,7 +210,7 @@ namespace remix::denoise {
   Renderer::Renderer() = default;
   Renderer::~Renderer() = default;
   void Renderer::initialize(VkPhysicalDevice physical, VkDevice device, VkExtent2D extent, bool reblur,
-                            uint32_t queueFamily, bool sigma, bool local, bool localDenoise, bool split) {
+                            uint32_t queueFamily, bool sigma, bool local, bool localDenoise, bool split, bool rayReconstruction) {
     m_gpu = std::make_unique<Gpu>();
     auto &g = *m_gpu;
     g.physical = physical;
@@ -231,7 +231,7 @@ namespace remix::denoise {
       VkFormat format = VK_FORMAT_R16G16B16A16_SFLOAT;
       if (i == Normal || i == PreviousNormal)
         format = VK_FORMAT_A2B10G10R10_UNORM_PACK32;
-      if (i == Depth || i == PreviousDepth || i == Confidence)
+      if (i == Depth || i == PreviousDepth || i == Confidence || i == RrHitDistance)
         format = VK_FORMAT_R32_SFLOAT;
       if (i == Motion)
         format = VK_FORMAT_R32G32B32A32_SFLOAT;
@@ -239,7 +239,7 @@ namespace remix::denoise {
         format = VK_FORMAT_R16_SFLOAT;
       if (i == ShadowInput || i == ShadowOutput)
         format = VK_FORMAT_R8G8B8A8_UNORM;
-      VkExtent2D size = extent;
+      VkExtent2D size = i >= RrDiffuse && !rayReconstruction ? VkExtent2D{1, 1} : extent;
       if (i == GradientA || i == GradientB)
         size = {(extent.width + 4) / 5, (extent.height + 4) / 5};
       g.images[i] = g.texture(format, size);
@@ -261,14 +261,14 @@ namespace remix::denoise {
     if (g.split)
       for (uint32_t i = 31; i < 33; ++i)
         bindings.push_back({i, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr});
-    for (uint32_t i = 33; i < 37; ++i)
+    for (uint32_t i = 33; i < 41; ++i)
       bindings.push_back({i, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr});
     VkDescriptorSetLayoutCreateInfo ci{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     check(vkCreateDescriptorSetLayout(device, &ci, nullptr, &g.emptyLayout));
     ci.bindingCount = uint32_t(bindings.size());
     ci.pBindings = bindings.data();
     check(vkCreateDescriptorSetLayout(device, &ci, nullptr, &g.inputLayout));
-    VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, BaseImageCount + 7 + (sigma ? 3u : 0u) + (local ? 2u : 0u) + (g.split ? 2u : 0u)},
+    VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, BaseImageCount + 11 + (sigma ? 3u : 0u) + (local ? 2u : 0u) + (g.split ? 2u : 0u)},
                                     {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}};
     for (auto &size : sizes)
       size.descriptorCount *= gpuFrameCount;
@@ -340,7 +340,7 @@ namespace remix::denoise {
     const auto& image = *m_gpu->images.at(slot);
     return {image.image, image.view};
   }
-  void Renderer::Gpu::swapFrame(FrameResources &next, uint32_t slot) {
+  void Renderer::Gpu::swapFrame(FrameResources &next, [[maybe_unused]] uint32_t slot) {
     using std::swap;
     swap(uniform, next.uniform);
     swap(inputs, next.inputs);
@@ -534,10 +534,10 @@ namespace remix::denoise {
 #endif
     if (g.timestamps)
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g.timestamps, 8);
-    g.pass(command, 2);
+    if (g.frame.hitDistance[3] == 0) g.pass(command, 2);
     if (g.timestamps)
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g.timestamps, 3);
-    g.pass(command, 3);
+    if (g.frame.hitDistance[3] == 0) g.pass(command, 3);
     g.pass(command, 4);
     if (g.timestamps) {
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g.timestamps, 4);

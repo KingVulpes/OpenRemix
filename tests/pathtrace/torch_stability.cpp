@@ -42,6 +42,7 @@ int main(int argc, char **argv) {
   startup.windowHeight = std::getenv("REMIX_TEST_MIXED_PERF") ? 1080 : 128;
 #endif
   ok(api.Startup(&startup));
+  ok(api.SetConfigVariable("rtx.native.pathtrace.upscaler", "off"));
   if (std::getenv("REMIX_TEST_MIXED_PERF")) {
     remixapi_WindowMetrics metrics{};
     ok(remixapi_GetWindowMetrics(&metrics));

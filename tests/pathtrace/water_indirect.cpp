@@ -1,4 +1,6 @@
 #include <remix/remix_native_ext.h>
+#include <remix/remix_reconstruction_ext.h>
+#include <chrono>
 #include <SDL3/SDL.h>
 #include <algorithm>
 #include <array>
@@ -29,9 +31,11 @@ int main(int argc, char **argv) {
   remixapi_StartupInfo startup{};
   startup.sType = REMIXAPI_STRUCT_TYPE_STARTUP_INFO;
 #if !defined(_WIN32)
-  startup.windowWidth = 79; startup.windowHeight = 67; // Partial compute workgroups.
+  startup.windowWidth = std::getenv("REMIX_TEST_RR_REUSE") ? 256 : 79;
+  startup.windowHeight = std::getenv("REMIX_TEST_RR_REUSE") ? 256 : 67; // Partial compute workgroups.
 #endif
   ok(api.Startup(&startup));
+  ok(api.SetConfigVariable("rtx.native.pathtrace.upscaler", "off"));
   remixapi_BackendCapabilitiesEXT caps{};
   caps.structSize = sizeof(caps);
   ok(remixapi_GetBackendCapabilitiesEXT(&caps));
@@ -183,6 +187,47 @@ int main(int argc, char **argv) {
   config("sharc", "0"); config("localLights", "0"); config("sigma", "0");
   require(api.SetConfigVariable("rtx.native.pathtrace.waterIndirectReuse", "2") == REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS,
           "Invalid water reuse setting accepted");
+  if (std::getenv("REMIX_TEST_RR_REUSE")) {
+    remixapi_ReconstructionDiagnosticsEXT available{}; available.structSize = sizeof(available);
+    ok(remixapi_GetReconstructionDiagnosticsEXT(&available));
+    if (!(available.capabilities & 4)) { ok(api.Shutdown()); return 77; }
+    for (int i = 0; i < 4; ++i) for (int j = 0; j < 4; ++j) camera.projection[i][j] = 0;
+    camera.projection[0][0] = camera.projection[1][1] = 1;
+    camera.projection[2][2] = 100.f / 99.95f; camera.projection[2][3] = 1;
+    camera.projection[3][2] = -5.f / 99.95f;
+    config("samples", "1"); config("bounces", "1"); config("accumulate", "0");
+    config("denoiser", "reblur-sh"); config("taa", "1"); config("dlssQuality", "native-aa");
+    enclosure = {water, shore, indirectBlocker};
+    for (const char *primary : {"raster", "ray"}) {
+      config("primaryVisibility", primary);
+      config("upscaler", "off"); config("accumulate", "1"); config("samples", "16");
+      forceFresh = false;
+      const auto reference = capture(std::string(primary) + "-accumulated-reference", 128);
+      config("accumulate", "0"); config("samples", "1"); forceFresh = true;
+      for (const char *mode : {"off", "auto"}) for (const char *reuse : {"0", "1"}) {
+        config("upscaler", mode); config("waterIndirectReuse", reuse);
+        for (int i = 0; i < 32; ++i) frame();
+        const auto begin = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        for (int i = 0; i < 32; ++i) frame();
+        const auto end = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        remixapi_ReconstructionDiagnosticsEXT reconstruction{};
+        reconstruction.structSize = sizeof(reconstruction);
+        ok(remixapi_GetReconstructionDiagnosticsEXT(&reconstruction));
+        require(reconstruction.activeBackend == (std::string(mode) == "auto" ? 3u : 0u),
+                "Water ray-count comparison did not select requested backend");
+        std::printf("RAY_INTERVAL,%s,%s,%s,%lld,%lld\n", primary, mode, reuse,
+                    static_cast<long long>(begin), static_cast<long long>(end));
+        const auto color = readback(std::string(primary) + "-" + mode + "-reuse-" + reuse);
+        if (reconstruction.activeBackend == 3)
+          for (int c = 0; c < 3; ++c)
+            require(std::abs(color[c] - reference[c]) < reference[c] * .1f + .001f,
+                    "RR transparent material guides changed accumulated lighting energy");
+      }
+    }
+    ok(api.Shutdown()); return 0;
+  }
   for (const char *primary : {"raster", "ray"}) for (int scene = 0; scene < 5; ++scene) {
     config("primaryVisibility", primary);
     reverse = scene == 2;

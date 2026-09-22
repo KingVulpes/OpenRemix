@@ -10,7 +10,8 @@ namespace remix {
   using namespace trace::detail;
 
   void PathTracer::Gpu::prepare(VkCommandBuffer command, RasterRenderer &resources,
-                                const TraceOptions &options, scene::TraceFrame &prepared) {
+                                const TraceOptions &requestedOptions, scene::TraceFrame &prepared) {
+    const auto options = effectiveOptions(requestedOptions);
     debugView = options.debugView;
     const bool falseColor = debugView != 0 && debugView != 6 && debugView != 7;
     prism = options.prism && !falseColor;
@@ -31,7 +32,6 @@ namespace remix {
     pendingVertices.clear();
     std::vector<trace::InstanceInput> inputs[2];
     std::vector<TraceSurface> surfaces;
-    const auto &emissions = prepared.emissions;
     const auto emissionMode = options.freezeEmissiveRadiance ? 2u : options.stabilizeEmissiveLighting ? 1u : 0u;
     primaryDraws.clear();
     std::vector<VkDescriptorImageInfo> textures;
@@ -246,13 +246,14 @@ namespace remix {
       append(&surface, offsetof(TraceSurface, previousVertices));
     hostBuffer(table, surfaces.data(), surfaces.size() * sizeof(surfaces[0]),
                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-    append(emissions.data(), emissions.size() * sizeof(emissions[0]));
+    // Emission constants, UVs and texture fingerprints already participate in
+    // the scene signature above. Do not duplicate every triangle's reduction.
     auto &lighting = prepared.lighting;
     const bool hasEmissiveLights = lighting.hasEmissive;
     emissionHistory = std::move(lighting.history);
     lightBvh = std::move(lighting.combined);
     localAngularActive = hasEmissiveLights && options.emissiveSolidAngleSampling;
-    splitLightingActive = hasEmissiveLights && options.separateLocalLighting != 0 && (!denoiser || postSplit);
+    splitLightingActive = hasEmissiveLights && options.separateLocalLighting != 0 && (!denoiser || postSplit || rrActive());
     auto uploadLights = [&](scene::LightBvh &bvh, uint64_t &uploadedGeneration,
                             std::unique_ptr<Buffer> &nodes, std::unique_ptr<Buffer> &emitters) {
       if ((!nodes || uploadedGeneration != bvh.generation) && !bvh.nodes().empty()) {
@@ -425,6 +426,7 @@ namespace remix {
     std::copy_n(temporalFrame.jitter, 2, frame.jitter);
     temporalFrame.jitter[2] = history.reset() ? temporalFrame.jitter[0] : previousJitter[0];
     temporalFrame.jitter[3] = history.reset() ? temporalFrame.jitter[1] : previousJitter[1];
+    temporalFrame.hitDistance[3] = rrActive() ? 1.f : 0.f;
     temporalFrame.flags[0] = history.reset() || frame.sun[2] != previousSun[7];
     temporalFrame.flags[1] = postReblur;
     temporalFrame.flags[2] = postTaa;
@@ -651,7 +653,9 @@ namespace remix {
       upscaler->record(command, denoiser->image(denoise::Composed), denoiser->image(denoise::Depth),
                        denoiser->image(denoise::Motion), denoiser->image(denoise::Transmission),
                        pendingProjection, temporalFrame.jitter, temporalFrame.timing[0],
-                       options.fsrSharpness, temporalFrame.flags[0]);
+                       options.fsrSharpness, temporalFrame.flags[0],
+                       {denoiser->image(denoise::RrDiffuse), denoiser->image(denoise::RrSpecular),
+                        denoiser->image(denoise::RrNormal), denoiser->image(denoise::RrHitDistance)}, resources.view());
     }
     finishPbrReuse(command);
     finishRayProfile(command);
@@ -682,7 +686,8 @@ namespace remix {
         resources.draws(),
         std::chrono::duration<double>(std::chrono::steady_clock::now() - m_gpu->epoch).count(),
         options.emissiveLights && options.localLights &&
-            (options.freezeEmissiveRadiance || options.stabilizeEmissiveLighting));
+            (options.freezeEmissiveRadiance || options.stabilizeEmissiveLighting),
+        m_gpu->surfaceEmissionCache);
     const auto prepared = profile ? Clock::now() : Clock::time_point{};
     // Coverage proof is CPU-only and can overlap the previous GPU submission.
     // Keep the result on this immutable frame, alongside its animated UVs.

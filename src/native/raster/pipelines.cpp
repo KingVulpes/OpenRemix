@@ -54,7 +54,7 @@ namespace remix {
     const VkPipelineRasterizationStateCreateInfo raster = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
         .polygonMode = VK_POLYGON_MODE_FILL,
-        .cullMode = draw.doubleSided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT,
+        .cullMode = VkCullModeFlags(draw.doubleSided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT),
         .frontFace = VK_FRONT_FACE_CLOCKWISE,
         .depthBiasEnable = draw.depthBias,
         .depthBiasConstantFactor = -1.f,

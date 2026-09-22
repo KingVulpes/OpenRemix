@@ -199,7 +199,7 @@ namespace remix {
       bool attempted = false, guidingAttempted = false;
       bool supportsGuiding = true;
       bool preferFirstHit = true;
-      VkPipeline small[2] = {};
+      VkPipeline smallSet[2] = {};
       bool smallAttempted[2] = {};
     };
     std::unordered_map<VkPipeline, LightingPipeline> lightingPipelines;
@@ -240,7 +240,15 @@ namespace remix {
     VkRenderPass displayPass{};
     VkFormat displayDepthFormat{};
     VkImageView displayDepth{};
-    bool fsrRequested = false;
+    std::shared_ptr<upscale::Ngx> ngx;
+    upscale::Mode requestedUpscaler = upscale::Mode::Off;
+    upscale::Backend requestedBackend = upscale::Backend::Native;
+    bool rrRequested = true;
+    uint32_t failedBackends = 0;
+    uint64_t reconstructionFailures = 0, reconstructedFrames = 0, reconstructionResets = 0;
+    bool rrActive() const { return upscaler && upscaler->statistics().backend == upscale::Backend::DlssRr; }
+    TraceOptions effectiveOptions(TraceOptions options) const;
+    upscale::Backend selectBackend() const;
     uint32_t fsrQuality = 1;
     std::unique_ptr<upscale::Renderer> upscaler;
     std::string fsrFailure;
@@ -363,6 +371,7 @@ namespace remix {
     } tlas[2];
     std::unordered_map<std::string, std::weak_ptr<Geometry>> geometryCache;
     scene::OpacityCache opacityCache;
+    scene::SurfaceEmissionCache surfaceEmissionCache;
     using MeshViewKey = std::tuple<const scene::Mesh *, uint64_t, uint32_t, std::string>;
     std::map<MeshViewKey, MeshView> meshes;
     std::map<std::pair<const scene::MeshUpdateStream *, std::string>, MeshViewKey> updateViews;

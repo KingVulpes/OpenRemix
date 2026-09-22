@@ -27,7 +27,7 @@ for directory in ['bin', 'lib', 'include/remix', 'share/remix/licenses']:
 licenses = output / 'share/remix/licenses'
 for name in ['LICENSE', 'LICENSE-MIT', 'ThirdPartyLicenses.txt', 'README.md']:
     shutil.copy2(root / name, output / 'share/remix' / name)
-for name in ['remix.h', 'remix_c.h', 'remix_native_ext.h']:
+for name in ['remix.h', 'remix_c.h', 'remix_native_ext.h', 'remix_reconstruction_ext.h']:
     shutil.copy2(root / 'public/include/remix' / name, output / 'include/remix' / name)
 shutil.copy2(root / 'third_party/imgui/LICENSE.txt', licenses / 'ImGui.txt')
 shutil.copy2(root / 'third_party/image/LICENSES.txt', licenses / 'ImageDecoders.txt')
@@ -125,4 +125,21 @@ os.execve(root / 'bin/remix-native-sample', ['remix-native-sample', str(root / '
     launcher.chmod(0o755)
 else:
     parser.error('Use scripts/android/build-apk.py for Android packaging.')
+# Package the actual build's optional NGX runtime, never an installed version.
+manifest = json.loads((build / 'src/native/upscale/dlss-runtime.json').read_text())
+if manifest['enabled'] and system in ('Linux', 'Windows'):
+    isolated = output / ('lib' if system == 'Linux' else 'bin') / 'dlss' / manifest['version']
+    isolated.mkdir(parents=True)
+    binaries = ['libnvidia-ngx-dlss.so.310.9.1', 'libnvidia-ngx-dlssd.so.310.9.1'] if system == 'Linux' else ['nvngx_dlss.dll', 'nvngx_dlssd.dll']
+    import hashlib
+    expected = {Path(name).name: digest for digest, name in
+                (line.split('  ', 1) for line in (root / 'third_party/dlss/sources.sha256').read_text().splitlines())}
+    for name in binaries:
+        source = build / 'src/native/upscale' / name
+        if hashlib.sha256(source.read_bytes()).hexdigest() != expected[name]:
+            raise RuntimeError('DLSS release library hash mismatch: ' + name)
+        shutil.copy2(source, isolated / name)
+    for name in ('LICENSE.txt', 'README.remix.md', 'upstream.json', 'sources.sha256'):
+        shutil.copy2(root / 'third_party/dlss' / name, isolated / name)
+    shutil.copy2(root / 'third_party/dlss/LICENSE.txt', licenses / 'DLSS.txt')
 print(output)

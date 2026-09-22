@@ -5,7 +5,8 @@
 #include <tuple>
 
 namespace remix::scene {
-TraceFrame prepareTraceFrame(const std::vector<Draw> &draws, double seconds, bool filterEmission) {
+TraceFrame prepareTraceFrame(const std::vector<Draw> &draws, double seconds, bool filterEmission,
+                             SurfaceEmissionCache &emissionCache) {
   TraceFrame frame;
   frame.seconds = seconds;
   // Group whole mesh submissions, then sort persistent identities so caller
@@ -60,16 +61,14 @@ TraceFrame prepareTraceFrame(const std::vector<Draw> &draws, double seconds, boo
                     float(animation / material.columns) / material.rows};
       if (material.emission[0] <= 0 && material.emission[1] <= 0 && material.emission[2] <= 0)
         continue;
-      for (uint32_t triangle = 0; triangle < draw.surface->indices.size() / 3; ++triangle) {
-        const auto emission = triangleEmission(draw, triangle, surface.uv.data());
-        frame.emissions.push_back({emission[0], emission[1], emission[2], 0});
-        if (emission[0] > 0 || emission[1] > 0 || emission[2] > 0) {
-          const bool animated = filterEmission && bool(material.emissionTexture);
-          frame.emitters.push_back({triangleEmitter(draw, triangle, emission),
-                                    animated ? emissionHistoryKey(draw, triangle) : 0, animated});
-        }
+      const auto reduction = emissionCache.reduce(draw, surface.uv);
+      const bool animated = filterEmission && bool(material.emissionTexture);
+      for (const auto &triangle : *reduction) {
+        frame.emitters.push_back({triangleEmitter(draw, triangle.index, triangle.radiance),
+                                  animated ? triangle.layout : 0, animated});
       }
     }
+  emissionCache.prune();
   return frame;
 }
 } // namespace remix::scene

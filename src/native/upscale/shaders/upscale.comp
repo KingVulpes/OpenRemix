@@ -5,10 +5,25 @@ layout(binding=1,rgba16f) readonly uniform image2D transmission;
 layout(binding=2,r32f) writeonly uniform image2D deviceDepth;
 layout(binding=3,r8) writeonly uniform image2D reactive;
 layout(binding=4,r8) writeonly uniform image2D composition;
-layout(push_constant) uniform Frame { mat4 projection; } frame;
+layout(binding=5,rgba32f) readonly uniform image2D guideMotion;
+layout(binding=6,rg32f) writeonly uniform image2D motion;
+layout(binding=7,rgba16f) readonly uniform image2D inputColor;
+layout(binding=8,rgba16f) writeonly uniform image2D outputColor;
+layout(push_constant) uniform Frame { mat4 projection; uint mode; } frame;
 void main() {
   ivec2 p=ivec2(gl_GlobalInvocationID.xy);
+  if (frame.mode != 0) {
+    if (any(greaterThanEqual(p,imageSize(outputColor)))) return;
+    vec2 q=(vec2(p)+.5)*vec2(imageSize(inputColor))/vec2(imageSize(outputColor))-.5;
+    ivec2 base=ivec2(floor(q)), hi=imageSize(inputColor)-1; vec2 f=fract(q);
+    vec4 a=imageLoad(inputColor,clamp(base,ivec2(0),hi));
+    vec4 b=imageLoad(inputColor,clamp(base+ivec2(1,0),ivec2(0),hi));
+    vec4 c=imageLoad(inputColor,clamp(base+ivec2(0,1),ivec2(0),hi));
+    vec4 d=imageLoad(inputColor,clamp(base+1,ivec2(0),hi));
+    imageStore(outputColor,p,mix(mix(a,b,f.x),mix(c,d,f.x),f.y)); return;
+  }
   if (any(greaterThanEqual(p,imageSize(viewDepth)))) return;
+  imageStore(motion,p,vec4(imageLoad(guideMotion,p).xy,0,0));
   float z=imageLoad(viewDepth,p).r;
   vec4 clip=frame.projection*vec4(0,0,z*(frame.projection[2][3]>=0 ? 1 : -1),1);
   float depth=z>0 && z<1e7 ? clamp(clip.z/clip.w,0,1) : 1;

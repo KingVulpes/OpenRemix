@@ -22,10 +22,35 @@
 
 #include "api/state.h"
 #include "api/entrypoints.h"
+#include <remix/remix_reconstruction_ext.h>
+#include <algorithm>
+#include <cstring>
 
 using namespace remix::api;
 
 extern "C" {
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL
+remixapi_GetReconstructionDiagnosticsEXT(remixapi_ReconstructionDiagnosticsEXT *out) {
+  if (!out || out->structSize < 8) return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+  std::lock_guard lock(g_apiMutex);
+  if (!g_runtime.isInitialized()) return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+  try {
+    const auto stats = g_runtime.reconstructionStatistics();
+    remixapi_ReconstructionDiagnosticsEXT result{};
+    result.structSize = sizeof(result); result.version = 1;
+    result.capabilities = uint32_t(stats.sdkAvailable) | uint32_t(stats.srSupported) << 1 | uint32_t(stats.rrSupported) << 2;
+    result.requestedMode = uint32_t(stats.requested); result.activeBackend = uint32_t(stats.backend);
+    result.renderWidth = stats.render.width; result.renderHeight = stats.render.height;
+    result.displayWidth = stats.display.width; result.displayHeight = stats.display.height;
+    result.evaluatedFrames = stats.frames; result.historyResets = stats.resets;
+    result.failures = stats.failures; result.memoryBytes = stats.memoryBytes;
+    result.gpuMilliseconds = stats.milliseconds;
+    std::strncpy(result.fallbackReason, stats.failure.c_str(), sizeof(result.fallbackReason)-1);
+    std::memcpy(out, &result, std::min(size_t(out->structSize), sizeof(result)));
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  } catch (...) { return REMIXAPI_ERROR_CODE_GENERAL_FAILURE; }
+}
+
 
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_RequestPresentedScreenshot(const char *absolutePath) {
   if (absolutePath == nullptr || absolutePath[0] == '\0') {

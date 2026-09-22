@@ -239,3 +239,46 @@ if get_option('gpu_tests')
   test('PBR denoising noise energy and camera cuts', pbr_denoise_test,
     args : [meson.current_build_dir() / 'pbr-denoise-scenes'], timeout : 300)
 endif
+
+if get_option('gpu_tests')
+  foreach mode : ['sr', 'rr', 'auto']
+    test('DLSS ' + mode + ' reconstruction', upscale_test,
+      args : [meson.current_build_dir() / ('dlss-' + mode)], env : ['REMIX_TEST_NGX=' + mode], timeout : 600)
+  endforeach
+  if system == 'linux'
+    foreach fault : ['unavailable', 'init', 'allocation', 'rr-unavailable', 'sr-unavailable', 'rr-create', 'sr-create', 'rr-evaluate', 'sr-evaluate']
+      mode = fault.startswith('sr-') ? 'sr' : 'rr'
+      test('DLSS fallback ' + fault, upscale_test,
+        args : [meson.current_build_dir() / ('dlss-' + fault)],
+        env : ['REMIX_TEST_NGX=' + mode, 'REMIX_NGX_FAULT=' + fault], timeout : 180)
+    endforeach
+  endif
+endif
+
+if get_option('gpu_tests')
+  foreach primary : ['raster', 'ray']
+    test('DLSS RR PBR references ' + primary, pbr_denoise_test,
+      args : [meson.current_build_dir() / ('rr-pbr-' + primary)],
+      env : ['REMIX_TEST_RR=1'] + (primary == 'ray' ? ['REMIX_TEST_RAY_PRIMARY=1'] : []), timeout : 600)
+  endforeach
+endif
+
+if get_option('gpu_tests')
+  foreach mode : ['sr', 'rr']
+    test('DLSS ' + mode + ' texture history and animated objects', texture_history_test,
+      args : [meson.current_build_dir() / ('dlss-textures-' + mode)],
+      env : ['REMIX_TEST_NGX=' + mode], timeout : 300)
+  endforeach
+endif
+
+if get_option('gpu_tests')
+  test('DLSS RR dense mixed lighting and saved settings', upscale_test,
+    args : [meson.current_build_dir() / 'dlss-dense'],
+    env : ['REMIX_TEST_RR_DENSE=1'], timeout : 300)
+endif
+
+if get_option('gpu_tests')
+  test('DLSS RR water reference and reuse settings', water_indirect_test,
+    args : [meson.current_build_dir() / 'dlss-water'],
+    env : ['REMIX_TEST_RR_REUSE=1'], timeout : 300)
+endif

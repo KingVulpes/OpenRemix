@@ -25,6 +25,36 @@ const auto emissionSamples = [] {
   return weights;
 }();
 } // namespace
+std::shared_ptr<const SurfaceEmissionCache::Reduction>
+SurfaceEmissionCache::reduce(const Draw &draw, const std::array<float, 4> &uv) {
+  const auto &m = *draw.material;
+  const Key key{{m.emission[0], m.emission[1], m.emission[2]}, uv,
+                 m.wrapU, m.wrapV, m.rows, m.columns, m.fps};
+  auto &cache = surfaces[draw.surface.get()];
+  if (cache.owner.lock() != draw.surface)
+    cache = {draw.surface, {}};
+  if (const auto found = cache.entries.find(key); found != cache.entries.end()) {
+    const auto &entry = found->second;
+    if (entry.textured == bool(m.emissionTexture) && entry.texture.lock() == m.emissionTexture)
+      return entry.reduction;
+  }
+  auto result = std::make_shared<Reduction>();
+  for (uint32_t triangle = 0; triangle < draw.surface->indices.size() / 3; ++triangle) {
+    const auto radiance = triangleEmission(draw, triangle, uv.data());
+    if (radiance[0] > 0 || radiance[1] > 0 || radiance[2] > 0)
+      result->push_back({triangle, radiance, m.emissionTexture ? emissionHistoryKey(draw, triangle) : 0});
+  }
+  // Bound sprite/setting variants without retaining old surfaces or textures.
+  if (cache.entries.size() >= 8)
+    cache.entries.clear();
+  cache.entries.insert_or_assign(key, Entry{m.emissionTexture, bool(m.emissionTexture), result});
+  return result;
+}
+
+void SurfaceEmissionCache::prune() {
+  std::erase_if(surfaces, [](const auto &entry) { return entry.second.owner.expired(); });
+}
+
 uint64_t emissionHistoryKey(const Draw &draw, uint32_t triangle) {
   const auto &m = *draw.material;
   std::array<uint8_t, 64> bytes{};

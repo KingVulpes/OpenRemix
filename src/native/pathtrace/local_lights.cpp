@@ -12,7 +12,7 @@ VkPipeline PathTracer::Gpu::selectLightingPipeline(VkPipeline pipeline, bool com
   if (found == lightingPipelines.end())
     return separateIndirect ? VK_NULL_HANDLE : pipeline;
   auto &source = found->second;
-  const bool small = localIlluminationActive && lightBvh.nodes().size() >= 3 && lightBvh.nodes().size() <= 7;
+  const bool smallSet = localIlluminationActive && lightBvh.nodes().size() >= 3 && lightBvh.nodes().size() <= 7;
   const bool guided = localGuidingActive && source.supportsGuiding;
   const bool resampling = localResamplingActive && source.supportsGuiding;
   const bool split = splitLightingActive && source.supportsGuiding && !combinedDirect;
@@ -22,13 +22,13 @@ VkPipeline PathTracer::Gpu::selectLightingPipeline(VkPipeline pipeline, bool com
   const bool firstHit = localFirstHitActive && source.supportsGuiding && source.preferFirstHit;
   const bool reuse = pbrReuse.active;
   const bool keyed = separateIndirect || angular || combinedDirect || split || reuse || rayProfile.path || firstHit;
-  const uint32_t key = uint32_t(guided) | uint32_t(small) << 1 | uint32_t(resampling) << 2 |
+  const uint32_t key = uint32_t(guided) | uint32_t(smallSet) << 1 | uint32_t(resampling) << 2 |
                        uint32_t(split) << 3 | uint32_t(combinedDirect) << 4 | uint32_t(angular) << 5 |
                        uint32_t(localIlluminationActive) << 6 | uint32_t(reuse) << 7 | uint32_t(rayProfile.path != nullptr) << 8 | uint32_t(firstHit) << 9 | uint32_t(separateIndirect) << 10;
-  if (localIlluminationActive && !guided && !small && !resampling && !split && !angular && !combinedDirect && !reuse && !rayProfile.path && !firstHit && !separateIndirect)
+  if (localIlluminationActive && !guided && !smallSet && !resampling && !split && !angular && !combinedDirect && !reuse && !rayProfile.path && !firstHit && !separateIndirect)
     return pipeline;
-  auto &variant = keyed ? source.specialized[key].first : resampling ? source.withResampling[guided] : small ? source.small[guided] : localIlluminationActive ? source.withGuiding : source.withoutLocal;
-  auto &attempted = keyed ? source.specialized[key].second : resampling ? source.resamplingAttempted[guided] : small ? source.smallAttempted[guided] : localIlluminationActive ? source.guidingAttempted : source.attempted;
+  auto &variant = keyed ? source.specialized[key].first : resampling ? source.withResampling[guided] : smallSet ? source.smallSet[guided] : localIlluminationActive ? source.withGuiding : source.withoutLocal;
+  auto &attempted = keyed ? source.specialized[key].second : resampling ? source.resamplingAttempted[guided] : smallSet ? source.smallAttempted[guided] : localIlluminationActive ? source.guidingAttempted : source.attempted;
   if (!attempted) {
     attempted = true;
     VkShaderModuleCreateInfo ci{.sType =
@@ -38,7 +38,7 @@ VkPipeline PathTracer::Gpu::selectLightingPipeline(VkPipeline pipeline, bool com
     VkShaderModule module{};
     auto result = vkCreateShaderModule(device, &ci, nullptr, &module);
     if (result == VK_SUCCESS) {
-      const VkBool32 enabled[] = {VkBool32(localIlluminationActive), VkBool32(guided), VkBool32(small), VkBool32(resampling), VkBool32(split), VkBool32(angular), VkBool32(reuse), VkBool32(rayProfile.path != nullptr), VkBool32(firstHit), VkBool32(separateIndirect)};
+      const VkBool32 enabled[] = {VkBool32(localIlluminationActive), VkBool32(guided), VkBool32(smallSet), VkBool32(resampling), VkBool32(split), VkBool32(angular), VkBool32(reuse), VkBool32(rayProfile.path != nullptr), VkBool32(firstHit), VkBool32(separateIndirect)};
       const VkSpecializationMapEntry entries[] = {{0, 0, sizeof(VkBool32)}, {1, sizeof(VkBool32), sizeof(VkBool32)},
                                                  {2, 2 * sizeof(VkBool32), sizeof(VkBool32)},
                                                  {3, 3 * sizeof(VkBool32), sizeof(VkBool32)},
@@ -98,7 +98,7 @@ void PathTracer::Gpu::forgetLightingPipeline(VkPipeline pipeline) {
   for (const auto &[key, variant] : found->second.specialized)
     if (variant.first)
       vkDestroyPipeline(device, variant.first, nullptr);
-  for (auto variant : found->second.small)
+  for (auto variant : found->second.smallSet)
     if (variant)
       vkDestroyPipeline(device, variant, nullptr);
   lightingPipelines.erase(found);

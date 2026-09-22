@@ -11,12 +11,13 @@ for manifest, base in [(root / 'tests/abi/headers.sha256', root),
                        (root / 'third_party/image/SHA256SUMS', root / 'third_party/image'),
                        (root / 'third_party/nrd/sources.sha256', root / 'third_party/nrd'),
                        (root / 'third_party/sharc/sources.sha256', root / 'third_party/sharc'),
-                       (root / 'third_party/fsr31/sources.sha256', root / 'third_party/fsr31')]:
+                       (root / 'third_party/fsr31/sources.sha256', root / 'third_party/fsr31'),
+                       (root / 'third_party/dlss/sources.sha256', root / 'third_party/dlss')]:
     for line in manifest.read_text().splitlines():
         checksum, filename = line.split('  ', 1)
         assert hashlib.sha256((base / filename).read_bytes()).hexdigest() == checksum, filename
 required_exports = (root / 'tests/abi/exports.txt').read_text().splitlines()
-required_exports += ['remixapi_GetBackendCapabilitiesEXT', 'remixapi_GetTracingStatisticsEXT', 'remixapi_GetFramePerformanceEXT',
+required_exports += ['remixapi_GetReconstructionDiagnosticsEXT', 'remixapi_GetBackendCapabilitiesEXT', 'remixapi_GetTracingStatisticsEXT', 'remixapi_GetFramePerformanceEXT',
              'remixapi_GetLocalLightGuidingStatisticsEXT', 'remixapi_GetLocalLightStatisticsEXT',
              'remixapi_GetShadowStatisticsEXT', 'remixapi_GetSharcStatisticsEXT',
              'remixapi_GetDenoisingCapabilitiesEXT', 'remixapi_GetDenoisingStatisticsEXT']

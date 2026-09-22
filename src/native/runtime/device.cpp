@@ -21,6 +21,7 @@
  */
 
 #include "runtime/runtime.h"
+#include "upscale/ngx.h"
 
 #include <algorithm>
 #include <array>
@@ -50,6 +51,11 @@ namespace remix {
     extensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
 #endif
 
+    m_ngx = std::make_shared<upscale::Ngx>();
+    const auto ngxExtensions = m_ngx->instanceExtensions();
+    for (const auto &extension : ngxExtensions)
+      if (std::none_of(extensions.begin(), extensions.end(), [&](auto p) { return extension == p; }))
+        extensions.push_back(extension.c_str());
     uint32_t loaderVersion = VK_API_VERSION_1_1;
     if (auto enumerate = reinterpret_cast<PFN_vkEnumerateInstanceVersion>(
             vkGetInstanceProcAddr(nullptr, "vkEnumerateInstanceVersion")))
@@ -258,6 +264,20 @@ namespace remix {
     }
     if (!m_traceSupported)
       features.pNext = nullptr;
+    const auto ngxExtensions = m_ngx->deviceExtensions(m_instance, selection.physicalDevice);
+    if (m_ngx->capabilities().sdk) {
+      // NGX initialization can create its own shaders even when the renderer's
+      // temporal descriptor limits are unavailable. Enable supported image
+      // access features independently of NRD/FSR capability checks.
+      VkPhysicalDeviceFeatures available{};
+      vkGetPhysicalDeviceFeatures(selection.physicalDevice, &available);
+      features.features.shaderStorageImageExtendedFormats = available.shaderStorageImageExtendedFormats;
+      features.features.shaderStorageImageReadWithoutFormat = available.shaderStorageImageReadWithoutFormat;
+      features.features.shaderStorageImageWriteWithoutFormat = available.shaderStorageImageWriteWithoutFormat;
+    }
+    for (const auto &extension : ngxExtensions)
+      if (std::none_of(extensions.begin(), extensions.end(), [&](auto p) { return extension == p; }))
+        extensions.push_back(extension.c_str());
     const VkDeviceCreateInfo createInfo = {
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
         .pNext = &features,
@@ -270,6 +290,7 @@ namespace remix {
       return REMIXAPI_ERROR_CODE_HRESULT_VK_CREATE_DEVICE_FAIL;
     }
 
+    m_ngx->initialize(m_instance, selection.physicalDevice, m_device);
     m_physicalDevice = selection.physicalDevice;
     vkGetPhysicalDeviceProperties(m_physicalDevice, &m_properties);
     m_queueFamily = selection.family;

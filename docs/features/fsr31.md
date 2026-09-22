@@ -1,7 +1,7 @@
 # FSR 3.1 upscaling
 
 F12 → **Upscaling → FSR 3.1** enables AMD FidelityFX Super Resolution 3.1.4 for
-the path-traced world. The default remains native rendering with the existing TAA.
+the path-traced world. The default `auto` selects DLSS + Ray Reconstruction, DLSS SR, then native rendering according to availability.
 FSR replaces TAA while active. REBLUR SH, local-light REBLUR, SIGMA and SHARC remain
 independent lighting controls. Frame generation is not included.
 
@@ -17,7 +17,7 @@ Quality is the initial preset. Optional RCAS sharpening ranges from 0 to 1 and
 starts at 0. Lower render resolutions reduce lighting samples and geometric
 coverage; FSR reconstructs edges but does not replace a lighting denoiser.
 
-The configuration keys under `rtx.native.pathtrace.` are `upscaler` (`off` or
+The configuration keys under `rtx.native.pathtrace.` are `upscaler` (`off`, `auto`, `dlss` or
 `fsr31`), `fsrQuality` (`native-aa`, `quality`, `balanced`, `performance`, or
 `ultra-performance`) and `fsrSharpness` (finite number from 0 to 1). Invalid values
 are rejected before changing settings. F12 displays actual render/display sizes,

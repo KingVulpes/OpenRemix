@@ -143,6 +143,7 @@ namespace remix {
     m_screenshot.reset(m_device);
     shutdownUi();
     m_pathTracer.reset();
+    m_ngx.reset();
     m_raster.shutdownGpu();
     if (m_device) {
       for (auto &frame : m_frames) {

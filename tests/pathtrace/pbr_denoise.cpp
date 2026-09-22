@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <remix/remix_native_ext.h>
+#include <remix/remix_reconstruction_ext.h>
 #include <string>
 #include <vector>
 #define STB_IMAGE_IMPLEMENTATION
@@ -30,6 +31,7 @@ int main(int argc, char **argv) {
   require(argc == 2, "Supply capture directory");
   const auto directory = std::filesystem::absolute(argv[1]);
   std::filesystem::create_directories(directory);
+  const bool rrTest = std::getenv("REMIX_TEST_RR") != nullptr;
   remixapi_Interface api{};
   remixapi_InitializeLibraryInfo init{};
   init.sType = REMIXAPI_STRUCT_TYPE_INITIALIZE_LIBRARY_INFO;
@@ -38,9 +40,10 @@ int main(int argc, char **argv) {
   remixapi_StartupInfo startup{};
   startup.sType = REMIXAPI_STRUCT_TYPE_STARTUP_INFO;
 #if !defined(_WIN32)
-  startup.windowWidth = startup.windowHeight = 96;
+  startup.windowWidth = startup.windowHeight = rrTest ? 256 : 96;
 #endif
   ok(api.Startup(&startup));
+  ok(api.SetConfigVariable("rtx.native.pathtrace.upscaler", "off"));
   remixapi_BackendCapabilitiesEXT caps{};
   caps.structSize = sizeof(caps);
   ok(remixapi_GetBackendCapabilitiesEXT(&caps));
@@ -55,6 +58,13 @@ int main(int argc, char **argv) {
   };
   for (const auto *key : {"taa", "sigma", "sharc", "prism", "gamma22", "adaptiveLocalSampling"})
     config(key, "0");
+  if (rrTest) {
+    remixapi_ReconstructionDiagnosticsEXT d{}; d.structSize = sizeof(d);
+    ok(remixapi_GetReconstructionDiagnosticsEXT(&d));
+    if (!(d.capabilities & 4)) { ok(api.Shutdown()); return 77; }
+    config("dlssQuality", "native-aa");
+    config("primaryVisibility", std::getenv("REMIX_TEST_RAY_PRIMARY") ? "ray" : "raster");
+  }
   config("bounces", "1");
   config("localSamples", "1");
   config("localDenoiser", "1");
@@ -71,6 +81,12 @@ int main(int argc, char **argv) {
   camera.pNext = &epoch;
   for (int i = 0; i < 4; ++i)
     camera.view[i][i] = camera.projection[i][i] = 1;
+  if (rrTest) {
+    for (int i=0;i<4;++i) for (int j=0;j<4;++j) camera.projection[i][j]=0;
+    camera.projection[0][0]=camera.projection[1][1]=1;
+    camera.projection[2][2]=100.f/99.95f; camera.projection[2][3]=1;
+    camera.projection[3][2]=-5.f/99.95f;
+  }
   remixapi_MaterialInfoOpaqueEXT opaque{};
   opaque.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_EXT;
   opaque.albedoConstant = {.55f, .25f, .1f};
@@ -236,6 +252,7 @@ int main(int argc, char **argv) {
     config("separateLocalLighting", kind == 2 ? "1" : kind == 1 ? "2" : "0");
     ++epoch.historyResetEpoch;
     forceFresh = false;
+    config("upscaler", "off");
     config("denoiser", "off");
     config("samples", "16");
     config("accumulate", "1");
@@ -250,6 +267,7 @@ int main(int argc, char **argv) {
     auto raw = capture(name + "-raw");
     auto rawNext = capture(name + "-raw-next");
     config("denoiser", "reblur-sh");
+    if (rrTest) config("upscaler", "dlss");
     for (int i = 0; i < 96; ++i)
       frame();
     auto filtered = capture(name + "-filtered");
@@ -257,7 +275,12 @@ int main(int argc, char **argv) {
     remixapi_DenoisingStatisticsEXT stats{};
     stats.structSize = sizeof(stats);
     ok(remixapi_GetDenoisingStatisticsEXT(&stats));
-    require(stats.activeDenoiser, "PBR denoiser silently fell back to raw");
+    if (rrTest) {
+      remixapi_ReconstructionDiagnosticsEXT d{};d.structSize=sizeof(d);
+      ok(remixapi_GetReconstructionDiagnosticsEXT(&d));
+      require(d.activeBackend==3 && d.evaluatedFrames>0, "RR PBR fallback");
+      require(!stats.activeDenoiser && !stats.activeTaa, "RR PBR ran NRD/TAA");
+    } else require(stats.activeDenoiser, "PBR denoiser silently fell back to raw");
     const double rawError = error(raw, reference), filteredError = error(filtered, reference);
     const double rawVariance = error(raw, rawNext), filteredVariance = error(filtered, filteredNext);
     std::printf("%s: error %.7f -> %.7f; temporal variance %.7f -> %.7f; energy %.5f -> %.5f\n", name.c_str(),

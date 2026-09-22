@@ -12,7 +12,7 @@ if cpp.get_id() not in ['clang', 'clang-cl']
   error('Use Clang (clang-cl with the Visual Studio toolchain on Windows).')
 endif
 if system == 'windows'
-  add_project_arguments('-DNOMINMAX', language : ['c', 'cpp'])
+  add_project_arguments('-DNOMINMAX', '-D_CRT_SECURE_NO_WARNINGS', language : ['c', 'cpp'])
   if cpp.get_id() == 'clang'
     add_project_arguments('-include', meson.project_source_root() / 'src/native/platform/mingw_compat.h', language : 'cpp')
   endif
@@ -47,6 +47,7 @@ vulkan_dep = declare_dependency(dependencies : vulkan_dep,
 subdir('third_party/imgui')
 subdir('third_party/nrd')
 subdir('third_party/fsr31')
+subdir('third_party/dlss')
 subdir('src/native')
 subdir('samples/remix-native')
 if get_option('enable_tests')

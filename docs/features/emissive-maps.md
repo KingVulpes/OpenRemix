@@ -15,6 +15,13 @@ preserving sparse-mask coverage approximately. Texture alpha is not an additiona
 emission multiplier; masks should encode emission coverage in RGB. Reduction is
 cached by UV region and material emission snapshot, including sprite-sheet UV
 transforms. Unrelated albedo atlas animation preserves the reduction cache.
+The renderer also caches the sparse list of luminous triangles per immutable
+surface and emission snapshot, avoiding repeated UV hashing and visits to black
+triangles in loaded terrain. Emission texture replacement, emission constants,
+wrapping and sprite transforms invalidate the corresponding reductions. Weak
+resource ownership allows retired geometry and textures to be released; a bounded
+set of sprite variants is retained per surface. Instance transforms, skinning,
+identities and sidedness are applied to the cached sources each frame.
 This approximation applies only to the light cast by the material. Visible glow
 samples the original emission map at the surface UVs, retaining colored and black
 texels. Raster primary visibility writes emission to a dedicated HDR G-buffer

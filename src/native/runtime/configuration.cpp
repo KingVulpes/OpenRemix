@@ -21,6 +21,7 @@
  */
 
 #include "runtime/runtime.h"
+#include "upscale/ngx.h"
 
 #include <algorithm>
 #include <array>
@@ -48,16 +49,23 @@ namespace remix {
 
   remixapi_ErrorCode RemixNativeRuntime::configureTracing(const char *key, const char *value) {
     if (!std::strcmp(key, "upscaler")) {
-      if (std::strcmp(value, "off") && std::strcmp(value, "fsr31"))
-        return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
-      m_traceOptions.fsr = !std::strcmp(value, "fsr31");
+      const char *modes[] = {"off", "auto", "fsr31", "dlss"};
+      for (uint32_t i = 0; i < 4; ++i) if (!std::strcmp(value, modes[i])) {
+        m_traceOptions.upscaler = upscale::Mode(i);
+        return REMIXAPI_ERROR_CODE_SUCCESS;
+      }
+      return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+    }
+    if (!std::strcmp(key, "dlssRayReconstruction")) {
+      if (std::strcmp(value, "0") && std::strcmp(value, "1")) return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+      m_traceOptions.dlssRayReconstruction = !std::strcmp(value, "1");
       return REMIXAPI_ERROR_CODE_SUCCESS;
     }
-    if (!std::strcmp(key, "fsrQuality")) {
+    if (!std::strcmp(key, "fsrQuality") || !std::strcmp(key, "dlssQuality")) {
       const char* modes[] = {"native-aa", "quality", "balanced", "performance", "ultra-performance"};
       for (uint32_t i = 0; i < 5; ++i) {
         if (!std::strcmp(value, modes[i])) {
-          m_traceOptions.fsrQuality = i;
+          (!std::strcmp(key, "fsrQuality") ? m_traceOptions.fsrQuality : m_traceOptions.dlssQuality) = i;
           return REMIXAPI_ERROR_CODE_SUCCESS;
         }
       }
@@ -193,6 +201,16 @@ namespace remix {
     return REMIXAPI_ERROR_CODE_SUCCESS;
   }
 
+  upscale::Statistics RemixNativeRuntime::reconstructionStatistics() const {
+    auto result = m_pathTracer ? m_pathTracer->upscalingStatistics() : upscale::Statistics{};
+    result.requested = m_traceOptions.upscaler;
+    if (m_ngx) {
+      const auto caps = m_ngx->capabilities();
+      result.srSupported = caps.sr; result.rrSupported = caps.rr; result.sdkAvailable = caps.sdk;
+      if (result.failure.empty() && !result.active) result.failure = caps.reason;
+    }
+    return result;
+  }
   remixapi_BackendCapabilitiesEXT RemixNativeRuntime::backendCapabilities() const {
     remixapi_BackendCapabilitiesEXT result = {.structSize = sizeof(result),
                                               .supportedBackends = m_traceSupported ? 3u : 1u,

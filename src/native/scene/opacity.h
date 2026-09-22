@@ -1,4 +1,5 @@
 #pragma once
+#include <string>
 #include "scene/types.h"
 #include <map>
 #include <tuple>

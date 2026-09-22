@@ -42,6 +42,10 @@ layout(set=1,binding=33,rgba16f) uniform image2D pbrSpecularInput;
 layout(set=1,binding=34,rgba16f) uniform image2D pbrDiffuseOutput;
 layout(set=1,binding=35,rgba16f) uniform image2D pbrSpecularOutput;
 layout(set=1,binding=36,rgba16f) uniform image2D pbrSpecularFactor;
+layout(set=1,binding=37,rgba16f) uniform image2D rrDiffuse;
+layout(set=1,binding=38,rgba16f) uniform image2D rrSpecular;
+layout(set=1,binding=39,rgba16f) uniform image2D rrNormal;
+layout(set=1,binding=40,r32f) uniform image2D rrHitDistance;
 layout(set=1,binding=25,std140) uniform TemporalFrame {
   mat4 view;
   mat4 previousView;

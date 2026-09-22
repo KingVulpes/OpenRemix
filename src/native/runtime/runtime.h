@@ -43,6 +43,7 @@ namespace remix {
 
     remixapi_ErrorCode initialize(const remixapi_StartupInfo &info);
     remixapi_ErrorCode shutdown();
+    upscale::Statistics reconstructionStatistics() const;
     remixapi_ErrorCode present(const remixapi_PresentInfo *info);
     remixapi_ErrorCode requestScreenshot(const char *path);
     void completeScreenshot();
@@ -101,6 +102,7 @@ namespace remix {
 
     RemixSdlWindow m_window;
     RasterRenderer m_raster;
+    std::shared_ptr<upscale::Ngx> m_ngx;
     std::unique_ptr<PathTracer> m_pathTracer;
     TraceOptions m_traceOptions;
     uint32_t m_backend = 0, m_requestedBackend = 0, m_instanceApiVersion = VK_API_VERSION_1_1;

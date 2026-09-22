@@ -130,6 +130,7 @@ namespace remix {
           try {
             auto tracer = std::make_unique<PathTracer>();
             tracer->initialize(m_physicalDevice, m_device, m_queueFamily);
+            tracer->setNgx(m_ngx);
             tracer->configureTarget(m_renderPass, m_swapchainExtent,
                                     m_srgb && m_swapchainFormat != VK_FORMAT_R8G8B8A8_SRGB &&
                                         m_swapchainFormat != VK_FORMAT_B8G8R8A8_SRGB,

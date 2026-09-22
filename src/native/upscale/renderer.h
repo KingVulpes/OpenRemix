@@ -1,15 +1,26 @@
 #pragma once
+#include "platform/gpu_frames.h"
 #include "scene/types.h"
 #include <memory>
 #include <string>
 #include <vulkan/vulkan.h>
-#include "platform/gpu_frames.h"
 namespace remix::upscale {
+enum class Mode : uint32_t { Off, Auto, Fsr31, Dlss };
+enum class Backend : uint32_t { Native, Fsr31, DlssSr, DlssRr };
+const char *name(Backend backend);
+class Ngx;
 struct Input {
   VkImage image{};
   VkImageView view{};
 };
+struct ReconstructionGuides {
+  Input diffuse, specular, normalRoughness, hitDistance;
+};
 struct Statistics {
+  Backend backend{};
+  Mode requested{};
+  bool srSupported{}, rrSupported{}, sdkAvailable{}, failed{};
+  uint64_t failures{}, memoryBytes{};
   bool active{};
   VkExtent2D render{}, display{};
   uint64_t frames{}, resets{};
@@ -23,15 +34,15 @@ class Renderer {
 public:
   Renderer();
   ~Renderer();
-  void initialize(VkPhysicalDevice physical, VkDevice device,
-                  uint32_t queueFamily, VkExtent2D render, VkExtent2D display);
+  void initialize(VkPhysicalDevice physical, VkDevice device, uint32_t queueFamily, VkExtent2D render,
+                  VkExtent2D display, Backend backend = Backend::Fsr31, std::shared_ptr<Ngx> ngx = {},
+                  uint32_t quality = 1);
   void configureComposite(VkRenderPass pass, VkImageView stableDepth);
   void selectFrame(uint32_t slot);
   void composite(VkCommandBuffer command, bool encodeOutput, bool prism, bool gamma22, bool hardwareSrgb);
-  void record(VkCommandBuffer command, Input color, Input depth, Input motion,
-              Input transmission, const scene::Matrix &projection,
-              const float *jitter, float milliseconds, float sharpness,
-              bool reset);
+  void record(VkCommandBuffer command, Input color, Input depth, Input motion, Input transmission,
+              const scene::Matrix &projection, const float *jitter, float milliseconds, float sharpness,
+              bool reset, const ReconstructionGuides &guides = {}, const scene::Matrix &view = {});
   Statistics statistics() const;
 
 private:

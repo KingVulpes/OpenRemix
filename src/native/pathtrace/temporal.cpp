@@ -1,4 +1,5 @@
 #include "pathtrace/gpu.h"
+#include "upscale/ngx.h"
 #include "pathtrace/shaders/embedded.h"
 
 namespace remix {
@@ -15,7 +16,7 @@ namespace remix {
 
   void PathTracer::Gpu::configureIndirect(Frame &frame, const TraceOptions &options, bool querySharc) {
     indirectPass.active = false;
-    if (!indirectPass.mode || indirectPass.failed || !denoiser || !postSplit ||
+    if (rrActive() || !indirectPass.mode || indirectPass.failed || !denoiser || !postSplit ||
         !splitLightingActive || !localIlluminationActive || !options.bounces || options.pbrLocalReuse ||
         (indirectPass.mode == 1 && (querySharc || options.separateLocalLighting != 3)))
       return;
@@ -101,7 +102,7 @@ namespace remix {
     const bool taa = options.taa && !upscaler && !options.accumulate && !options.sharcDebug && caps.taaSupported;
     bool sigma = options.sigma && !options.accumulate && !options.sharcDebug &&
                        sigmaCapable;
-    bool local = localSeen && (reblur || taa || sigma || upscaler);
+    bool local = !rrActive() && localSeen && (reblur || taa || sigma || upscaler);
     const bool localLimited = local && !localCapable[sigma];
     if (localLimited) {
       // Raw local light must never be multiplied by the sun's shadow mask.
@@ -147,7 +148,7 @@ namespace remix {
       std::string failure;
       try {
         auto next = std::make_unique<denoise::Renderer>();
-        next->initialize(physical, device, extent, reblur, queueFamily, postSigma, postLocal, postLocalDenoise, postSplit);
+        next->initialize(physical, device, extent, reblur, queueFamily, postSigma, postLocal, postLocalDenoise, postSplit, rrActive());
         VkDescriptorSetLayout layouts[] = {setLayout, next->inputLayout()};
         VkPipelineLayoutCreateInfo li{.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                       .setLayoutCount = 2,
@@ -222,44 +223,84 @@ namespace remix {
     }
   }
 
+  void PathTracer::setNgx(std::shared_ptr<upscale::Ngx> ngx) { m_gpu->ngx = std::move(ngx); }
+  upscale::Backend PathTracer::Gpu::selectBackend() const {
+    auto allowed = [&](upscale::Backend b) { return !(failedBackends & (1u << uint32_t(b))); };
+    if (requestedBackend == upscale::Backend::Fsr31)
+      return allowed(requestedBackend) ? requestedBackend : upscale::Backend::Native;
+    if (requestedBackend == upscale::Backend::Native || !ngx) return upscale::Backend::Native;
+    const auto caps = ngx->capabilities();
+    if (rrRequested && caps.rr && allowed(upscale::Backend::DlssRr)) return upscale::Backend::DlssRr;
+    if (caps.sr && allowed(upscale::Backend::DlssSr)) return upscale::Backend::DlssSr;
+    return upscale::Backend::Native;
+  }
+  TraceOptions PathTracer::Gpu::effectiveOptions(TraceOptions options) const {
+    if (rrActive()) {
+      options.denoiser = options.localDenoiser = options.sigma = options.taa = false;
+      options.blueNoiseShadows = options.blueNoiseLocalLights = false;
+      options.waterIndirectReuse = options.pbrLocalReuse = false;
+      // The shared family budget remains a combined budget. Per-family mode
+      // retains both configured budgets and samples both families at every pixel.
+      if (options.separateLocalLighting == 1 || options.separateLocalLighting == 3)
+        options.separateLocalLighting = 0;
+    }
+    return options;
+  }
   void PathTracer::beginFrame(const TraceOptions &options, const RasterRenderer& resources) {
     auto& g = *m_gpu;
     const bool perspective = resources.cameraValid() && upscale::supportsCamera(
         scene::multiply(resources.camera(), scene::inverse(resources.view())));
-    const bool fsr = options.fsr && !options.accumulate && !options.sharcDebug &&
-                     g.postCapabilities.taaSupported && perspective;
-    if (fsr != g.fsrRequested || (fsr && options.fsrQuality != g.fsrQuality)) {
-      g.fsrRequested = fsr;
-      g.fsrQuality = options.fsrQuality;
-      g.createTarget();
+    const bool eligible = !options.accumulate && !options.sharcDebug && g.postCapabilities.taaSupported && perspective;
+    const auto backend = !eligible || options.upscaler == upscale::Mode::Off ? upscale::Backend::Native :
+        options.upscaler == upscale::Mode::Fsr31 ? upscale::Backend::Fsr31 : upscale::Backend::DlssSr;
+    const auto quality = options.upscaler == upscale::Mode::Fsr31 ? options.fsrQuality : options.dlssQuality;
+    bool changed = options.upscaler != g.requestedUpscaler || quality != g.fsrQuality || options.dlssRayReconstruction != g.rrRequested;
+    if (changed) { g.failedBackends = 0; g.fsrFailure.clear(); }
+    if (g.upscaler && g.upscaler->statistics().failed) {
+      const auto stats = g.upscaler->statistics();
+      g.failedBackends |= 1u << uint32_t(stats.backend);
+      g.fsrFailure = stats.failure; ++g.reconstructionFailures; changed = true;
     }
-    if (options.fsr && !options.accumulate && !options.sharcDebug) {
+    changed |= backend != g.requestedBackend;
+    g.requestedUpscaler = options.upscaler; g.requestedBackend = backend;
+    g.fsrQuality = quality; g.rrRequested = options.dlssRayReconstruction;
+    if (changed) g.createTarget();
+    if (options.upscaler != upscale::Mode::Off && !options.accumulate && !options.sharcDebug) {
       if (!g.postCapabilities.taaSupported) g.fsrFailure = g.postCapabilities.unavailableReason;
-      else if (!perspective) g.fsrFailure = "FSR requires a finite perspective world camera; native resolution active";
+      else if (!perspective) g.fsrFailure = "Reconstruction requires a finite perspective world camera";
+      else if (!g.upscaler && g.fsrFailure.empty() && g.ngx) g.fsrFailure = g.ngx->capabilities().reason;
+      else if (g.upscaler && options.dlssRayReconstruction && g.upscaler->statistics().backend == upscale::Backend::DlssSr && g.fsrFailure.empty())
+        g.fsrFailure = g.ngx->capabilities().reason;
     }
-    m_gpu->localSeen |= resources.hasSphereLights();
-    m_gpu->localSeen |= std::any_of(resources.draws().begin(), resources.draws().end(), [](const auto &draw) {
+    g.localSeen |= resources.hasSphereLights();
+    g.localSeen |= std::any_of(resources.draws().begin(), resources.draws().end(), [](const auto &draw) {
       const auto &e = draw.material->emission;
       return draw.traced() && (e[0] > 0 || e[1] > 0 || e[2] > 0);
     });
-    m_gpu->beginFrame(options);
+    g.beginFrame(g.effectiveOptions(options));
     if (g.upscaler && !g.denoiser) {
       const auto failure = g.postFailure;
-      g.fsrRequested = false;
+      g.failedBackends = ~0u;
       g.createTarget();
-      g.fsrRequested = true; // Retry on the next explicit mode/preset change.
-      g.fsrFailure = failure + "; FSR requires temporal guide resources; native resolution active";
+      g.fsrFailure = failure + "; reconstruction guide resources unavailable";
       g.beginFrame(options);
     }
-    m_gpu->beginSharc(options);
-    if (g.denoiser)
-      g.denoiser->selectFrame(g.frameIndex);
-    if (g.upscaler)
-      g.upscaler->selectFrame(g.frameIndex);
+    g.beginSharc(g.effectiveOptions(options));
+    if (g.denoiser) g.denoiser->selectFrame(g.frameIndex);
+    if (g.upscaler) g.upscaler->selectFrame(g.frameIndex);
   }
   upscale::Statistics PathTracer::upscalingStatistics() const {
-    auto result = m_gpu->upscaler ? m_gpu->upscaler->statistics() : upscale::Statistics{};
-    result.failure = m_gpu->fsrFailure;
+    const auto &g = *m_gpu;
+    auto result = g.upscaler ? g.upscaler->statistics() : upscale::Statistics{};
+    result.requested = g.requestedUpscaler;
+    result.render = g.extent; result.display = g.displayExtent;
+    if (g.ngx) {
+      auto caps = g.ngx->capabilities();
+      result.srSupported = caps.sr; result.rrSupported = caps.rr; result.sdkAvailable = caps.sdk;
+    }
+    result.failures += g.reconstructionFailures;
+    result.frames += g.reconstructedFrames; result.resets += g.reconstructionResets;
+    if (result.failure.empty()) result.failure = g.fsrFailure;
     return result;
   }
   VkRenderPass PathTracer::skyPass() const { return m_gpu->skyPass; }

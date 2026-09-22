@@ -10,7 +10,9 @@ namespace remix {
     uint32_t samples = 1, bounces = 2;
     bool accumulate = false, forceRebuild = false;
     bool denoiser = true, taa = true, validation = false;
-    bool fsr = false;
+    upscale::Mode upscaler = upscale::Mode::Auto;
+    bool dlssRayReconstruction = true;
+    uint32_t dlssQuality = 1;
     bool prism = true, gamma22 = true;
     uint32_t fsrQuality = 1;
     float fsrSharpness = 0.f;
@@ -53,6 +55,7 @@ namespace remix {
                          VkImageView depthView, bool hardwareSrgb = false);
     VkRenderPass skyPass() const;
     upscale::Statistics upscalingStatistics() const;
+    void setNgx(std::shared_ptr<upscale::Ngx> ngx);
     void beginFrame(const TraceOptions &options, const RasterRenderer& resources);
     void selectFrame(uint32_t slot);
     void submitted();

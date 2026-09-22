@@ -1,4 +1,5 @@
 #include <remix/remix_native_ext.h>
+#include <remix/remix_reconstruction_ext.h>
 #include <SDL3/SDL.h>
 #include <array>
 #include <cstdio>
@@ -71,6 +72,18 @@ int main(int argc, char **argv) {
   startup.windowHeight = 240;
 #endif
   ok(api.Startup(&startup));
+  static_assert(sizeof(remixapi_ReconstructionDiagnosticsEXT) == 336);
+  static_assert(offsetof(remixapi_ReconstructionDiagnosticsEXT, memoryBytes) == 64);
+  remixapi_ReconstructionDiagnosticsEXT reconstruction{};
+  require(remixapi_GetReconstructionDiagnosticsEXT(nullptr) == REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS, "Null reconstruction accepted");
+  require(remixapi_GetReconstructionDiagnosticsEXT(&reconstruction) == REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS, "Zero diagnostics capacity accepted");
+  // Prefix callers must not have their adjacent data overwritten.
+  struct { uint32_t size, version; uint64_t sentinel; } prefix{8,0,0x12345678abcdefull};
+  ok(remixapi_GetReconstructionDiagnosticsEXT(reinterpret_cast<remixapi_ReconstructionDiagnosticsEXT *>(&prefix)));
+  require(prefix.version == 1 && prefix.size == sizeof(reconstruction) && prefix.sentinel == 0x12345678abcdefull, "Diagnostics prefix write exceeded capacity");
+  reconstruction.structSize = sizeof(reconstruction);
+  ok(remixapi_GetReconstructionDiagnosticsEXT(&reconstruction));
+  require(reconstruction.requestedMode == 1 && !reconstruction.activeBackend, "Default reconstruction request changed");
   ok(remixapi_GetFramePerformanceEXT(&framePerformance));
   require(!framePerformance.attempts && !framePerformance.presentations,
           "Frame performance not reset on startup");

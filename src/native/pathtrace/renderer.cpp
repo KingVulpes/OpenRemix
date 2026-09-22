@@ -1,4 +1,5 @@
 #include "pathtrace/gpu.h"
+#include "upscale/ngx.h"
 #include "pathtrace/shaders/embedded.h"
 
 namespace remix {
@@ -162,6 +163,10 @@ namespace remix {
   void PathTracer::Gpu::destroyTarget() {
     for (auto &buffer : pbrReuse.history) buffer.reset();
     pbrReuse.valid = pbrReuse.active = pbrReuse.failed = false;
+    if (upscaler) {
+      reconstructedFrames += upscaler->statistics().frames;
+      reconstructionResets += upscaler->statistics().resets;
+    }
     upscaler.reset();
     lightGuiding.valid = false;
     destroyPost();
@@ -338,20 +343,25 @@ namespace remix {
   void PathTracer::Gpu::createTarget() {
     check(vkDeviceWaitIdle(device));
     destroyTarget();
-    fsrFailure.clear();
-    extent = fsrRequested ? upscale::renderSize(displayExtent, fsrQuality) : displayExtent;
-    if (fsrRequested) {
+    extent = displayExtent;
+    for (auto backend = selectBackend(); backend != upscale::Backend::Native; backend = selectBackend()) {
       try {
+        const bool dlss = backend != upscale::Backend::Fsr31;
+        extent = dlss ? ngx->renderSize(displayExtent, fsrQuality, backend == upscale::Backend::DlssRr)
+                      : upscale::renderSize(displayExtent, fsrQuality);
         auto next = std::make_unique<upscale::Renderer>();
-        next->initialize(physical, device, queueFamily, extent, displayExtent);
+        next->initialize(physical, device, queueFamily, extent, displayExtent, backend, ngx, fsrQuality);
         upscaler = std::move(next);
+        break;
       } catch (VkResult result) {
         if (result == VK_ERROR_DEVICE_LOST) throw;
-        fsrFailure = "FSR initialization failed (Vulkan " + std::to_string(result) + "); native resolution active";
+        fsrFailure = std::string(upscale::name(backend)) + " initialization failed (Vulkan " + std::to_string(result) + ")";
       } catch (const std::exception& e) {
-        fsrFailure = std::string(e.what()) + "; native resolution active";
+        fsrFailure = e.what();
       }
-      if (!upscaler) extent = displayExtent;
+      failedBackends |= 1u << uint32_t(backend);
+      ++reconstructionFailures;
+      extent = displayExtent;
     }
     auto& g = *this;
     const auto pass = displayPass;
@@ -366,13 +376,13 @@ namespace remix {
       try { g.upscaler->configureComposite(pass, g.primary[4]->view); }
       catch (VkResult result) {
         if (result == VK_ERROR_DEVICE_LOST) throw;
-        failure = "FSR compositor initialization failed (Vulkan " + std::to_string(result) + ")";
+        failure = "Reconstruction compositor initialization failed (Vulkan " + std::to_string(result) + ")";
       }
       if (!failure.empty()) {
-        fsrRequested = false;
+        failedBackends |= 1u << uint32_t(upscaler->statistics().backend);
+        ++reconstructionFailures;
+        fsrFailure = failure;
         createTarget();
-        fsrRequested = true;
-        fsrFailure = failure + "; native resolution active";
         return;
       }
     }

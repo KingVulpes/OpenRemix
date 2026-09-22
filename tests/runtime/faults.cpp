@@ -201,8 +201,10 @@ extern "C" VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceProperties(VkPhysicalDe
   reinterpret_cast<PFN_vkGetPhysicalDeviceProperties>(resolve("vkGetPhysicalDeviceProperties"))(device,
                                                                                                 properties);
   if (fault("sigma-descriptor-limit")) {
-    properties->limits.maxPerStageDescriptorStorageImages = 33;
-    properties->limits.maxDescriptorSetStorageImages = 33;
+    // Base temporal inputs plus tracer/guide bindings fit; SIGMA's three
+    // additional storage images do not. Include the dedicated RR guide slots.
+    properties->limits.maxPerStageDescriptorStorageImages = 43;
+    properties->limits.maxDescriptorSetStorageImages = 43;
   }
   if (fault("temporal-descriptor-limit")) {
     properties->limits.maxPerStageDescriptorStorageImages = 27;

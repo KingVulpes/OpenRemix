@@ -14,6 +14,24 @@ namespace remix {
     indirectPass.active = indirectPass.failed = false;
   }
 
+  void PathTracer::Gpu::configureProfile(const TraceOptions &options) {
+    // Isolated profiling can alternate dispatches without rebuilding the scene.
+    // The fixture atomically replaces this file before requesting a cache reset.
+    if (profileEveryFrame && indirectPass.modeFile && indirectPass.controlReset != options.sharcReset) {
+      indirectPass.controlReset = options.sharcReset;
+      if (auto *file = std::fopen(indirectPass.modeFile, "r")) {
+        const int mode = std::fgetc(file);
+        if (mode == '0' || mode == '1' || mode == 'a')
+          indirectPass.mode = mode == '0' ? 0u : mode == '1' ? 2u : 1u;
+        if (std::fgetc(file) == ',') {
+          const int placement = std::fgetc(file);
+          if (placement == '0' || placement == '1') deviceLocalScene = placement == '1';
+        }
+        std::fclose(file);
+      }
+    }
+  }
+
   void PathTracer::Gpu::configureIndirect(Frame &frame, const TraceOptions &options, bool querySharc) {
     indirectPass.active = false;
     if (rrActive() || !indirectPass.mode || indirectPass.failed || !denoiser || !postSplit ||

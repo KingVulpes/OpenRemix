@@ -436,6 +436,9 @@ int main(int argc, char **argv) {
     metadata << "samples=" << t.samplesPerPixel << " bounces=" << t.indirectBounces
              << " accumulation=" << t.accumulationCount << " sequence=" << t.sampleSequence
              << " reblur=" << d.activeDenoiser << " taa=" << d.activeTaa << " sharc=" << sharc.active
+             << " sharc_entries=" << sharc.occupiedEntries << " sharc_updates=" << sharc.updatePaths
+             << " sharc_queries=" << sharc.queryAttempts << " sharc_hits=" << sharc.queryHits
+             << " sharc_memory=" << sharc.memoryBytes
              << " reconstruction=" << r.activeBackend << " reconstruction_capabilities=" << r.capabilities
              << " reconstruction_frames=" << r.evaluatedFrames << " reconstruction_failures=" << r.failures
              << '\n';

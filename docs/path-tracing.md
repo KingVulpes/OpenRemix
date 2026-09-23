@@ -47,7 +47,7 @@ only its previous Vulkan 1.1 graphics/presentation capabilities.
 | `validation` | Same booleans; NRD validation overlay | false |
 | `forceRebuild` | Same booleans; rebuild dynamic TLAS for profiling | false |
 | `sky` | Same booleans; indirect environment illumination | true |
-| `sharc` | Same booleans; [diffuse radiance cache](features/sharc.md) | true |
+| `sharc` | Same booleans; [diffuse and rough PBR radiance cache](features/sharc.md) | true |
 
 The last distant light drawn during a frame is selected, including zero radiance.
 Direction specifies the direction light travels; radiance and color are linear.

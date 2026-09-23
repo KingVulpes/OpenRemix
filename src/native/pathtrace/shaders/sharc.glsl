@@ -1,4 +1,5 @@
 // Pinned NVIDIA SHARC 1.8.3.0. See third_party/sharc/License.md.
+#include "../sharc_policy.h"
 #define SHARC_ENABLE_GLSL 1
 #ifdef SHARC_UPDATE_PASS
 #define SHARC_UPDATE 1
@@ -6,6 +7,7 @@
 #define SHARC_UPDATE 0
 #endif
 #define SHARC_MATERIAL_DEMODULATION 1
+#define SHARC_ENABLE_SH_ENCODING 1
 #define SHARC_ENABLE_CACHE_RESAMPLING 1
 #define SHARC_SAMPLE_NUM_THRESHOLD 3
 // Each resolve invocation owns exactly one entry. Disable SDK cross-entry

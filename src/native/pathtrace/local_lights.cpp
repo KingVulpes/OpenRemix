@@ -8,6 +8,7 @@ using namespace trace::detail;
 // scenes. Variants are lazy, cached, and share the source pipeline's
 // fence/layout lifetime.
 VkPipeline PathTracer::Gpu::selectLightingPipeline(VkPipeline pipeline, bool combinedDirect, bool separateIndirect) {
+  selectedLightingKey = UINT32_MAX;
   auto found = lightingPipelines.find(pipeline);
   if (found == lightingPipelines.end())
     return separateIndirect ? VK_NULL_HANDLE : pipeline;
@@ -25,6 +26,7 @@ VkPipeline PathTracer::Gpu::selectLightingPipeline(VkPipeline pipeline, bool com
   const uint32_t key = uint32_t(guided) | uint32_t(smallSet) << 1 | uint32_t(resampling) << 2 |
                        uint32_t(split) << 3 | uint32_t(combinedDirect) << 4 | uint32_t(angular) << 5 |
                        uint32_t(localIlluminationActive) << 6 | uint32_t(reuse) << 7 | uint32_t(rayProfile.path != nullptr) << 8 | uint32_t(firstHit) << 9 | uint32_t(separateIndirect) << 10;
+  selectedLightingKey = key;
   if (localIlluminationActive && !guided && !smallSet && !resampling && !split && !angular && !combinedDirect && !reuse && !rayProfile.path && !firstHit && !separateIndirect)
     return pipeline;
   auto &variant = keyed ? source.specialized[key].first : resampling ? source.withResampling[guided] : smallSet ? source.smallSet[guided] : localIlluminationActive ? source.withGuiding : source.withoutLocal;

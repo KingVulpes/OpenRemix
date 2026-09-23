@@ -242,9 +242,9 @@ extern "C" VKAPI_ATTR VkResult VKAPI_CALL vkCreateBuffer(VkDevice device, const 
     *output = VK_NULL_HANDLE;
     return VK_ERROR_OUT_OF_DEVICE_MEMORY;
   }
-  // The focused cache fixture uses 2^18 entries: fail its 16-byte accumulation
+  // The focused cache fixture uses 2^18 entries: fail its 32-byte directional accumulation
   // buffer after the hash buffer was allocated, exercising partial cleanup.
-  if (fault("sharc-allocation") && info->size == (uint64_t(1) << 18) * 16 &&
+  if (fault("sharc-allocation") && info->size == (uint64_t(1) << 18) * 32 &&
       (info->usage & VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) {
     *output = VK_NULL_HANDLE;
     return VK_ERROR_OUT_OF_DEVICE_MEMORY;

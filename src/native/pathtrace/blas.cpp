@@ -26,16 +26,27 @@ namespace remix {
             float((times[3] - times[2]) & mask) * properties.limits.timestampPeriod / 1e6f;
         stats.gpuTimingsAvailable = 1;
         if (stageProfile) {
+          if (stateProfile && !traceState.empty()) {
+            if (auto *file = std::fopen(stateProfile, "a")) {
+              if (std::ftell(file) == 0)
+                std::fprintf(file, "time_ms,opaque_ms,sequence,slot,sharc,scene_device_local,split,opaque,opaque_key,producer,producer_key,transparency,transparency_key,tlas_static,tlas_dynamic,table,table_memory,table_bytes,uniform,uniform_memory,light_nodes,light_emitters,cache_hash,cache_accumulation,cache_resolved,indirect_results,scene_generation,static_builds,table_hash,frame_hex\n");
+              const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                  std::chrono::system_clock::now().time_since_epoch()).count();
+              std::fprintf(file, "%lld,%.6f,%s\n", static_cast<long long>(now),
+                  double((times[6] - times[5]) & mask) * properties.limits.timestampPeriod / 1e6, traceState.c_str());
+              std::fclose(file);
+            }
+          }
           if (auto *file = std::fopen(stageProfile, "a")) {
             if (std::ftell(file) == 0)
-              std::fprintf(file, "time_ms,primary_ms,sharc_ms,opaque_ms,local_ms,transparency_ms,confidence_ms,denoise_ms\n");
+              std::fprintf(file, "time_ms,primary_ms,sharc_ms,opaque_ms,local_ms,transparency_ms,confidence_ms,denoise_ms,prepare_ms\n");
             const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count();
             auto elapsed = [&](unsigned first, unsigned last) {
               return double((times[last] - times[first]) & mask) * properties.limits.timestampPeriod / 1e6;
             };
-            std::fprintf(file, "%lld,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n", static_cast<long long>(now),
-                elapsed(2, 4), elapsed(4, 5), elapsed(5, 6), elapsed(6, 7), elapsed(7, 3), elapsed(3, 8), elapsed(8, 9));
+            std::fprintf(file, "%lld,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n", static_cast<long long>(now),
+                elapsed(2, 4), elapsed(4, 5), elapsed(5, 6), elapsed(6, 7), elapsed(7, 3), elapsed(3, 8), elapsed(8, 9), elapsed(1, 2));
             std::fclose(file);
           }
         }

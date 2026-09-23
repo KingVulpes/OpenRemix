@@ -12,6 +12,10 @@
 #endif
 #ifdef TEMPORAL
 #include "../../denoise/shaders/inputs.glsl"
+#elif defined(SHARC_QUERY) || defined(SHARC_UPDATE_PASS)
+// Cache material demodulation must match in raw, update and temporal variants.
+#define NRD_GLSL 1
+#include "NRD.hlsli"
 #endif
 layout(local_size_x=8, local_size_y=8) in;
 #include "scene.glsl"
@@ -114,7 +118,7 @@ void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, ino
     normal=shadingNormal(transpose(mat3(rayQueryGetIntersectionWorldToObjectEXT(query,true)))*normal,hit.ng,hit.wo);
     hit.n=materialNormal(s,uv,materialBasis(normal,model*vec4(b-a,0),model*vec4(c-a,0),ub-ua,uc-ua),hit.wo);
   }
-  hit.blended=(s.state.w&2)!=0;hit.cacheable=(s.state.w&16)!=0&&!hit.pbr;
+  hit.blended=(s.state.w&2)!=0;hit.cacheable=(s.state.w&16)!=0;
   hit.previousPosition=hit.p;hit.historyValid=false;
 // Transparent sheets never provide motion or NRD guides.
 #if defined(TEMPORAL) && !defined(TRANSPARENCY_PASS)
@@ -234,34 +238,67 @@ vec3 sunVisibility(Hit receiver,ivec2 pixel,out float blockerDistance) {
 }
 #include "light_bvh.glsl"
 #include "pbr_reuse.glsl"
-vec3 direct(Hit hit,bool primary) {
+vec3 direct(Hit hit,bool primary,out vec3 specular) {
   vec3 toLight=-frame.lightDirection.xyz;
   float cosine=max(0,dot(hit.n,toLight));
   float distance;
-  vec3 local;
+  vec3 local;specular=vec3(0);
   if(!reuseLocal(hit,local)) {
-    vec3 specular;
     local=materialFactor(hit)*localLighting(hit,rng,1u,distance,false,specular,primary?frame.firefly.x:0);
+    specular*=materialFactor(hit);
   }
-  return local+(cosine>0&&any(greaterThan(frame.lightRadiance.rgb,vec3(0)))?materialBrdf(hit,toLight)*cosine*frame.lightRadiance.rgb*shadow(offsetRay(hit.p,hit.ng),toLight):vec3(0));
+  if(cosine>0&&any(greaterThan(frame.lightRadiance.rgb,vec3(0)))) {
+    vec3 diffuse,sunSpecular;materialLobes(hit,toLight,diffuse,sunSpecular);
+    vec3 visibility=shadow(offsetRay(hit.p,hit.ng),toLight);
+    local+=(diffuse+sunSpecular)*cosine*frame.lightRadiance.rgb*visibility;
+    specular+=sunSpecular*cosine*frame.lightRadiance.rgb*visibility;
+  }
+  return local;
+}
+vec3 direct(Hit hit,bool primary) {
+  vec3 specular;return direct(hit,primary,specular);
 }
 #if defined(SHARC_QUERY) || defined(SHARC_UPDATE_PASS)
+bool cacheSurface(Hit hit) {
+  return hit.cacheable&&!hit.blended&&(!hit.pbr||hit.rm.x>=REMIX_SHARC_PBR_MIN_ROUGHNESS);
+}
+float cacheDirectionWeight(Hit hit,vec3 total,vec3 specular) {
+  // Diffuse stays isotropic. Broad specular retains a directional component;
+  // sharp surfaces are traced rather than inserted in this low-order cache.
+  float energy=dot(total,vec3(.2126,.7152,.0722));
+  return hit.pbr?clamp(dot(specular,vec3(.2126,.7152,.0722))/max(energy,1e-20),0,1)*(1-hit.rm.x*hit.rm.x):0;
+}
+float cacheFootprint(Hit origin) {
+  if(!origin.pbr)return 1;
+  // SHARC integration guide's GGX cone diameter / distance. The mixture
+  // estimator carries both lobes, so use its narrower (specular) footprint.
+  float alpha2=pow(origin.rm.x,4);
+  return min(1,2*sqrt(.5*alpha2/max(1-alpha2,1e-6)));
+}
+bool cacheFootprintFits(Hit hit,float footprint) {
+  SharcParameters parameters=cacheParameters();
+  uint level=HashGridGetLevel(hit.p,parameters.hashGridParameters);
+  float voxel=HashGridGetVoxelSize(level,parameters.hashGridParameters);
+  return footprint>voxel*1.732050808;
+}
 SharcHitData cacheHit(Hit hit) {
   SharcHitData data;
   data.positionWorld=hit.p;data.normalWorld=hit.n;
+  data.radianceDirectionWorld=hit.wo;data.radianceDirectionWeight=0;
   data.materialDemodulation=max(hit.color.rgb,vec3(.001));
+  if(hit.pbr) {
+    vec3 diffuseFactor,specularFactor;
+    NRD_MaterialFactors(hit.n,hit.wo,hit.color.rgb*(1-hit.rm.y),mix(vec3(.04),hit.color.rgb,hit.rm.y),hit.rm.x,diffuseFactor,specularFactor);
+    data.materialDemodulation=max(diffuseFactor+specularFactor,vec3(.001));
+  }
   return data;
 }
 #endif
 #ifdef SHARC_QUERY
-bool cacheRadiance(Hit hit,float segmentLength,out vec3 radiance) {
-  if(!hit.cacheable||hit.blended)return false;
+bool cacheRadiance(Hit hit,float footprint,out vec3 radiance) {
+  if(!cacheSurface(hit))return false;
   SharcParameters parameters=cacheParameters();
-  uint level=HashGridGetLevel(hit.p,parameters.hashGridParameters);
-  float voxel=HashGridGetVoxelSize(level,parameters.hashGridParameters);
-  // Only view-independent legacy diffuse surfaces enter this cache.
-  // EON/GGX material hits continue tracing instead of reusing outgoing radiance.
-  if(segmentLength<=voxel*1.732050808)return false;
+  if(!cacheFootprintFits(hit,footprint))return false;
 #ifndef CONFIDENCE_PASS
   bool measure=(hash(gl_GlobalInvocationID.x+gl_GlobalInvocationID.y*frame.target.x)&63u)==0;
   if(measure)atomicAdd(CacheCounters(frame.sharcCounters).data[1],1u);
@@ -281,6 +318,9 @@ vec3 continuation(Hit primary,out vec3 firstDirection,out float firstDistance,ou
   vec3 direction=firstDirection,origin=offsetRay(primary.p,primary.ng);
   vec3 throughput=primary.pbr?weight/max(materialFactor(primary),vec3(1e-6)):vec3(1),result=vec3(0);
   vec3 previousVertex=primary.p;
+#ifdef SHARC_QUERY
+  float footprintScale=cacheFootprint(primary);
+#endif
   uint bounce=0,layers=0;
   for(uint step=0;step<164&&bounce<frame.config.y;++step) {
     Hit hit=secondaryHit(origin,direction);
@@ -292,13 +332,16 @@ vec3 continuation(Hit primary,out vec3 firstDirection,out float firstDistance,ou
     }
 #ifdef SHARC_QUERY
     vec3 cached;
-    if(cacheRadiance(hit,length(hit.p-previousVertex),cached)) {
+    if(cacheRadiance(hit,length(hit.p-previousVertex)*footprintScale,cached)) {
       result+=throughput*cached;break; // Cached outgoing radiance already includes this hit's direct light.
     }
 #endif
     result+=throughput*direct(hit,false);
     if(++bounce>=frame.config.y)break;
     throughput*=materialSample(hit,direction);previousVertex=hit.p;origin=offsetRay(hit.p,hit.ng);layers=0;
+#ifdef SHARC_QUERY
+    footprintScale=cacheFootprint(hit);
+#endif
     if(!any(greaterThan(throughput,vec3(0))))break;
   }
   specular=result*specularWeight/max(weight,vec3(1e-20));
@@ -344,6 +387,8 @@ void updateCache(ivec2 pixel) {
   vec3 origin,direction;
   ray((vec2(pixel)+.5+frame.jitter.xy)/vec2(frame.target.xy)*2-1,frame.inverseCamera,origin,direction);
   SharcParameters parameters=cacheParameters();SharcState state;SharcInit(state);
+  vec3 previousVertex=origin;
+  float footprintScale=1;
   uint bounce=0,layers=0;
   atomicAdd(CacheCounters(frame.sharcCounters).data[0],1u);
   for(uint step=0;step<164&&bounce<=frame.config.y;++step) {
@@ -357,17 +402,28 @@ void updateCache(ivec2 pixel) {
       if(bounce!=0)SharcSetThroughput(state,hit.color.rgb);
       origin=offsetRay(hit.p,-hit.ng);continue;
     }
-    vec3 lighting=direct(hit,false);
-    if(hit.cacheable&&!hit.blended) {
-      if(!SharcUpdateHit(parameters,state,cacheHit(hit),lighting,random()))break;
+    vec3 directSpecular;
+    vec3 lighting=direct(hit,false,directSpecular);
+    bool store=cacheSurface(hit);
+    // SDK update resampling can also terminate a path. Do not resample a tail
+    // through a narrow PBR reflection which the production query would reject.
+    if(store&&state.pathLength!=0&&footprintScale<1)
+      store=cacheFootprintFits(hit,length(hit.p-previousVertex)*footprintScale);
+    if(store) {
+      SharcHitData data=cacheHit(hit);
+      data.radianceDirectionWeight=cacheDirectionWeight(hit,lighting,directSpecular);
+      if(!SharcUpdateHit(parameters,state,data,lighting,random()))break;
     } else {
-      // Moving geometry and blended sheets affect other cached vertices, but
+      // Moving, blended and sharp surfaces affect other cached vertices, but
       // never insert or query their own shared surface entry.
       SharcUpdateMiss(parameters,state,lighting);
     }
     if(++bounce>frame.config.y)break;
-    vec3 weight=materialSample(hit,direction);
+    vec3 specularWeight;
+    vec3 weight=materialSample(hit,direction,specularWeight);
+    if(store)SharcSetRadianceDirectionWeight(state,cacheDirectionWeight(hit,weight,specularWeight));
     SharcSetThroughput(state,weight);
+    previousVertex=hit.p;footprintScale=cacheFootprint(hit);
     origin=offsetRay(hit.p,hit.ng);layers=0;
     if(!any(greaterThan(weight,vec3(0))))break;
   }
@@ -601,7 +657,8 @@ void main() {
     // used by the production integrator. Black/magenta indicates a cache miss.
     vec3 cached;
     bool found=false;
-    if(frame.sharcConfig.x!=0)found=SharcGetCachedRadiance(cacheParameters(),cacheHit(primary),cached,false);
+    if(frame.sharcConfig.x!=0&&(!primary.pbr||primary.rm.x>=REMIX_SHARC_PBR_MIN_ROUGHNESS))
+      found=SharcGetCachedRadiance(cacheParameters(),cacheHit(primary),cached,false);
     color=found?cached:vec3(.5,0,.5);
   }
 #endif

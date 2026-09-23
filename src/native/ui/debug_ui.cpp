@@ -236,7 +236,7 @@ namespace remix {
             if (ImGui::SliderInt("Update downscale", &downscale, 1, 16))
               m_traceOptions.sharcDownscale = uint32_t(downscale);
             auto cache = sharcStatistics();
-            ImGui::Text("%s | %u / %u entries | %.1f MiB", cache.active ? "Active" : "Inactive",
+            ImGui::Text("%s | %u / %u entries | %.1f MiB", cache.active ? (cache.updatePaths ? "Caching" : "Enabled (idle)") : "Inactive",
                         cache.occupiedEntries, cache.capacity, double(cache.memoryBytes) / (1024 * 1024));
             ImGui::Text("Update paths %u | sampled query hits %.1f%% | resets %llu", cache.updatePaths,
                         cache.queryAttempts ? 100.0 * cache.queryHits / cache.queryAttempts : 0.0,
@@ -245,6 +245,9 @@ namespace remix {
               ImGui::Text("Update %.3f / resolve %.3f ms", cache.gpuUpdateMilliseconds, cache.gpuResolveMilliseconds);
             if (cache.unavailableReason[0])
               ImGui::TextWrapped("%s", cache.unavailableReason);
+            if (cache.active && !cache.updatePaths)
+              ImGui::TextWrapped("No cache update paths. Requires static opaque diffuse or rough PBR surfaces.");
+            ImGui::TextWrapped("Sharp PBR surfaces continue tracing; rough PBR surfaces can reuse cached lighting.");
             if (m_traceOptions.accumulate)
               ImGui::TextUnformatted("Progressive reference rendering bypasses SHARC.");
           }

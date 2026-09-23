@@ -79,8 +79,11 @@ Four additional RGBA16F images (32 bytes/pixel, plus NRD history/pool storage)
 carry specular input, diffuse/specular output, and specular material factors. PBR
 diffuse input shares the existing SH0 slot. The temporal descriptor limits include
 these images, and allocation failures retain the existing raw-rendering fallback.
-PBR surfaces still bypass the view-independent SHARC outgoing-radiance cache and
-water irradiance reuse. Transparent layers retain their existing treatment;
+Static PBR surfaces with sampled roughness at least 0.5 participate in the
+[directional SHARC cache](sharc.md), including metals and mapped normals.
+Reflection footprint checks preserve tracing for narrow lobes, and sharper hit
+materials are not cached. PBR surfaces still bypass water irradiance reuse.
+Transparent layers retain their existing treatment;
 this filter operates on the opaque receiver behind them.
 
 ## BetaRT assets

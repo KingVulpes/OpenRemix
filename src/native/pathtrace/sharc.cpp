@@ -1,4 +1,5 @@
 #include "pathtrace/gpu.h"
+#include "pathtrace/sharc_policy.h"
 #include "pathtrace/shaders/embedded.h"
 
 namespace remix {
@@ -133,8 +134,8 @@ namespace remix {
         destroySharc();
         constexpr auto usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
         sharc.hash = buffer(uint64_t(capacity) * 8, usage);
-        sharc.accumulation = buffer(uint64_t(capacity) * 16, usage);
-        sharc.resolved = buffer(uint64_t(capacity) * 16, usage);
+        sharc.accumulation = buffer(uint64_t(capacity) * REMIX_SHARC_ACCUMULATION_STRIDE, usage);
+        sharc.resolved = buffer(uint64_t(capacity) * REMIX_SHARC_RESOLVED_STRIDE, usage);
         sharc.counters = buffer(16, usage | VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
         sharc.readback = buffer(16, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true);
         s.capacity = capacity;

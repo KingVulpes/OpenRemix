@@ -1,7 +1,7 @@
-# SHARC diffuse radiance cache
+# SHARC radiance cache
 
-The optional NVIDIA SHARC path shares diffuse surface radiance between indirect
-rays. The pinned, unmodified SDK is **1.8.3.0**, revision
+The optional NVIDIA SHARC path shares surface radiance between indirect rays on
+legacy diffuse and rough EON/GGX PBR materials. The pinned, unmodified SDK is **1.8.3.0**, revision
 `4e21b585c33c83d723ca9a1e11bbb1090d145793`, copied from the local reference checkout
 into `third_party/sharc`. Its license and NVIDIA attribution accompany packages.
 No network dependency or shader compiler is required by ordinary builds.
@@ -31,30 +31,45 @@ uniform linear sky as the main tracer. `SharcInit`, `SharcUpdateHit`,
 `SharcSetThroughput` and `SharcUpdateMiss` follow the SDK contract: each throughput
 update supplies **the current segment's** reflectance or transmission.
 
-Only opaque **static legacy diffuse** surfaces own cache entries. EON/GGX PBR
-surfaces do not store or query this outgoing-radiance cache. Moving surfaces and blended
-sheets still affect visibility and contribute lighting along update paths. Their
-own surface radiance is never stored or queried. Geometry normals select the
-cache orientation. Material demodulation uses `max(albedo, 0.001)` so queried
-radiance retains local texture detail and black materials cannot divide by zero.
+Opaque **static legacy diffuse** and **rough PBR** surfaces own cache entries.
+PBR entries require sampled perceptual roughness of at least 0.5, including metals
+and normal-mapped surfaces. Sharper surfaces, moving surfaces and blended sheets
+still affect visibility and lighting along update paths; their own outgoing
+radiance is never stored or queried. Mapped shading normals participate in the
+cache's orientation key.
+
+The SDK's directional encoding stores luminance L0/L1 and chroma L0. PBR specular
+energy supplies the directionality weight, reduced for broader rough lobes;
+diffuse energy remains isotropic. Both training and lookup supply the outgoing
+direction toward the previous path vertex. The cache uses combined diffuse and
+specular material factors (the same NRD approximation used by NVIDIA's sample)
+for PBR demodulation, with a positive floor. Legacy diffuse retains
+`max(albedo, 0.001)`. Dark dielectrics keep their nonzero Fresnel reflection, and
+metal tint participates in demodulation. This is a spatial and angular
+approximation, not an exact replacement for a direction-dependent BRDF.
 
 When the entire traced scene has no eligible receivers, cache update, resolve and
 counter readback work stop automatically. Off-screen static legacy receivers
 still count. Tracing selects the ordinary uncached shader while no receiver is
-eligible, removing unused hash-grid code from the shader. Sampling budgets and
+eligible, removing unused hash-grid code from the shader. Roughness textures are
+potential receivers at scene preparation; individual ray hits check sampled
+roughness. Sampling budgets and
 the denoiser confidence pass remain active; cache debug views retain their
 specialized shader. Returning receivers trigger cache initialization
 and warmup before reuse. During an idle period, update/query/occupancy counters
 and update/resolve times are zero, timing availability is false, and cache
 rendered-frame counts stop; `active` still reports that SHARC is available and
-enabled. Allocated cache storage is retained for reuse.
+enabled. Allocated cache storage is retained for reuse. F12 labels this state
+**Enabled (idle)** and shows **Caching** when update paths are reported.
 
-The production query path starts from the existing primary surface and samples
-its cosine hemisphere exactly as the reference tracer does. It queries only
-subsequent diffuse hits, after any intervening transmission. The distance from
-the previous diffuse vertex must exceed the cache voxel's diagonal. Every traced
-eligible lobe is Lambertian, so its diffuse footprint is wider than this bound;
-PBR paths continue with their existing EON/GGX estimator. Cache hits must have
+The production query path keeps the existing Lambert or EON/GGX sampling and
+mixture PDFs. It queries only subsequent eligible hits, after any intervening
+transmission. The path footprint must exceed the cache voxel's diagonal.
+Legacy diffuse uses segment length; PBR uses the narrower GGX cone from the SHARC
+integration guide, capped at the legacy footprint. The mixture estimator carries
+both lobes along one ray, so this conservative test also applies to its diffuse
+share. Zero-roughness reflections keep tracing, while a later rough bounce can
+reach the cache. Cache hits must have
 more than three accumulated samples and finite radiance. A hit contributes
 `throughput * cachedOutgoingRadiance` exactly once. Its direct light is already
 included in the cached value. Primary direct light and visible raster sky remain
@@ -69,11 +84,12 @@ cache and all indirect illumination.
 
 ## Ownership, synchronization and temporal behavior
 
-The tracer owns three device buffers with SDK strides of 8, 16 and 16 bytes for
-hash keys, atomic accumulation and resolved native-fp16 data. Capacity defaults
-to `2^22` entries (160 MiB plus two small diagnostic buffers). Device addresses
-are appended to the private 336-byte CPU/GLSL frame layout; existing public ABI
-layouts and function tables are unchanged.
+The tracer owns three device buffers with SDK strides of 8, 32 and 24 bytes for
+hash keys, directional atomic accumulation and resolved native-fp16 data.
+Capacity defaults to `2^22` entries (256 MiB plus two small diagnostic buffers).
+CPU allocation and every update/resolve/query shader use the same directional
+representation. Device addresses use the private CPU/GLSL frame layout; public
+ABI layouts and function tables are unchanged.
 
 Initialization clears all three buffers. Transfer-to-compute, update-to-resolve,
 resolve-to-query and next-frame reuse dependencies cover every buffer access.
@@ -127,11 +143,11 @@ BetaRT accepts `MCRTX_PT_SHARC`, `MCRTX_PT_SHARC_DOWNSCALE`,
 The matched JNI optionally loads the diagnostic export. Its CSV retains existing
 columns and adds `sharc_sampled_queries` / `sharc_sampled_hits`; unavailable
 full-ray counters and unrelated systems remain explicitly unavailable. The
-Java/JNI camera transport remains protocol v5.
+Java/JNI transport is unchanged by cache support.
 
 Shader permutations use `SHARC_UPDATE_PASS=1` or `SHARC_QUERY=1`, with the existing
 `TEMPORAL`, `TRANSPARENCY_PASS` and `CONFIDENCE_PASS` permutations. Shared SDK
-configuration sets GLSL support, material demodulation and cache resampling.
+configuration sets GLSL support, directional encoding, material demodulation and cache resampling.
 The separate resolve shader uses the same cache representation.
 
 ## Reference sources and visual checks
@@ -157,3 +173,43 @@ reuse. Smaller voxels reduce sharing and may reduce leaks; larger voxels increas
 sharing and potential bias. Cache updates and resolve have a fixed cost, so
 simple scenes can be slower even with a high hit rate. Assess total GPU/frame
 cost as well as noise and lighting quality before tuning update density.
+
+For controlled static-view profiling, `REMIX_PROFILE_EVERY_FRAME=1` bypasses
+reuse of the fully converged output image. It preserves camera, history and cache
+state and runs fresh lighting for every submitted world frame. This diagnostic
+is off by default; keep the same setting for both sides of a comparison. The
+ordinary presentation/fresh-packet counters alone do not prove lighting ran:
+use `REMIX_STACK_PROFILE` in separate diagnostic runs to verify GPU dispatches.
+The overall trace timer includes SHARC update/resolve; do not add them again.
+Disabled caches retain allocations and their last timing/counter values; report
+zero cache work for an inactive frame instead of treating those values as new work.
+
+At one indirect bounce, a query still needs the first continuation intersection.
+A hit can replace that surface's lighting evaluation and visibility rays, but
+cannot eliminate an additional continuation segment. Also, automatic separate
+indirect dispatch currently excludes SHARC queries. Profile both cache maintenance
+and opaque lighting: a cache on/off comparison can change dispatch strategy as
+well as the number of rays. `REMIX_SPLIT_INDIRECT=0/1` selects inline/forced split
+for controlled diagnostics in supported modes; leave this override unset for
+ordinary automatic selection. Compare image quality and repeated timings before
+choosing a dispatch policy.
+
+`REMIX_TRACE_STATE=path.csv`, together with `REMIX_STACK_PROFILE`, records the
+completed frame's selected pipelines, specialization keys, scene-table hash,
+buffer/TLAS addresses and private frame-uniform bytes beside opaque GPU time.
+State follows submission slots so it describes the timed dispatch, not the next
+frame being prepared. The stage CSV's `prepare_ms` covers GPU work between AS
+build completion and the trace timer, including staged scene uploads.
+
+With `REMIX_PROFILE_EVERY_FRAME=1`, the diagnostic `REMIX_INDIRECT_MODE_FILE`
+can name a file containing `0` (inline), `1` (split) or `a` (automatic). It is read
+when `sharcReset` changes; atomically replace it before requesting the reset.
+This permits alternating dispatch modes within one loaded fixture process.
+An optional `,0` or `,1` also selects host or device-local scene tables; placement
+changes replace each submission slot's buffers only after its completion fence.
+
+`REMIX_DEVICE_LOCAL_SCENE=1` experiments with GPU-local material and light tables.
+The material table is staged per submission slot; light tables are uploaded when
+their generation changes. It leaves lighting and sampling unchanged, adds staging
+storage and transfer work, and is disabled by default. Assess full frame time as
+well as trace time, because the scene transfers occur before the trace timer.

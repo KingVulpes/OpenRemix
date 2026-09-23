@@ -1,4 +1,5 @@
 #include "pathtrace/gpu.h"
+#include "pathtrace/sharc_policy.h"
 #include "scene/emission.h"
 #include <cstdio>
 #include <cstdlib>
@@ -21,6 +22,7 @@ namespace remix {
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestamps, 0);
     }
     complete(command);
+    configureProfile(options);
     if (options.localDirectClamp != previousDirectClamp || options.indirectClamp != previousIndirectClamp ||
         options.localFireflyFilter != previousFireflyFilter) {
       history.clear();
@@ -77,8 +79,9 @@ namespace remix {
       for (const auto &surface : instance) {
         partitions[surface.draw.surfaceIndex] = surface.opacity;
         hasBlendedGeometry |= surface.draw.blend.enabled;
-        hasCacheReceivers |= surface.draw.classification == 0 && !surface.draw.material->pbr &&
-                             !surface.draw.blend.enabled;
+        const auto &material = *surface.draw.material;
+        hasCacheReceivers |= surface.draw.classification == 0 && !surface.draw.blend.enabled &&
+            (!material.pbr || material.roughnessTexture || material.roughness >= REMIX_SHARC_PBR_MIN_ROUGHNESS);
       }
       auto &view = mesh(command, draw, partitions);
       const auto &geometry = *view.geometry;
@@ -252,8 +255,18 @@ namespace remix {
       surfaces.emplace_back();
     for (const auto &surface : surfaces)
       append(&surface, offsetof(TraceSurface, previousVertices));
-    hostBuffer(table, surfaces.data(), surfaces.size() * sizeof(surfaces[0]),
-               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    const auto tableBytes = surfaces.size() * sizeof(surfaces[0]);
+    // A diagnostic placement switch replaces only this completed slot's table.
+    if (table && table->host == deviceLocalScene) table.reset();
+    if (deviceLocalScene) {
+      hostBuffer(tableUpload, surfaces.data(), tableBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+      if (!table || table->size < tableBytes)
+        table = buffer(tableBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+      const VkBufferCopy copy{.size = tableBytes};
+      vkCmdCopyBuffer(command, tableUpload->handle, table->handle, 1, &copy);
+    } else {
+      hostBuffer(table, surfaces.data(), tableBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    }
     // Emission constants, UVs and texture fingerprints already participate in
     // the scene signature above. Do not duplicate every triangle's reduction.
     auto &lighting = prepared.lighting;
@@ -264,12 +277,23 @@ namespace remix {
     splitLightingActive = hasEmissiveLights && options.separateLocalLighting != 0 && (!denoiser || postSplit || rrActive());
     auto uploadLights = [&](scene::LightBvh &bvh, uint64_t &uploadedGeneration,
                             std::unique_ptr<Buffer> &nodes, std::unique_ptr<Buffer> &emitters) {
-      if ((!nodes || uploadedGeneration != bvh.generation) && !bvh.nodes().empty()) {
+      if ((!nodes || nodes->host == deviceLocalScene || uploadedGeneration != bvh.generation) && !bvh.nodes().empty()) {
         uploadedGeneration = bvh.generation;
-        hostBuffer(nodes, bvh.nodes().data(), bvh.nodes().size() * sizeof(scene::LightNode),
-                   VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-        hostBuffer(emitters, bvh.emitters().data(), bvh.emitters().size() * sizeof(scene::LightEmitter),
-                   VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        if (deviceLocalScene) {
+          nodes = upload(command, bvh.nodes().data(), bvh.nodes().size() * sizeof(scene::LightNode),
+                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+          emitters = upload(command, bvh.emitters().data(), bvh.emitters().size() * sizeof(scene::LightEmitter),
+                            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        } else {
+          // This slot's fence has completed; replace GPU-only allocations before
+          // hostBuffer tries to map them when a diagnostic switches back.
+          if (nodes && !nodes->host) nodes.reset();
+          if (emitters && !emitters->host) emitters.reset();
+          hostBuffer(nodes, bvh.nodes().data(), bvh.nodes().size() * sizeof(scene::LightNode),
+                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+          hostBuffer(emitters, bvh.emitters().data(), bvh.emitters().size() * sizeof(scene::LightEmitter),
+                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        }
       }
     };
     const bool splitFamilies = splitLightingActive && options.separateLocalLighting != 3;
@@ -280,6 +304,10 @@ namespace remix {
       uploadLights(emissiveBvh, emissiveBufferGeneration, emissiveNodes, emissiveEmitters);
     }
     uploadLights(lightBvh, lightBufferGeneration, lightNodes, lightEmitters);
+    if (deviceLocalScene)
+      barrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
     Frame frame = {};
     frame.localConfig[0] = options.localLights && options.localIntensity > 0 ? lightBvh.active : 0;
     localIlluminationActive = frame.localConfig[0] != 0;
@@ -353,7 +381,7 @@ namespace remix {
     append(&temporalEpoch, sizeof(temporalEpoch));
     configureSharc(frame, options, temporalEpoch, std::move(staticGeometry), std::move(dynamicGeometry), hasCacheReceivers);
     // An unchanged world can reuse its cached output once both histories are warm.
-    if (scene == lastScene && !std::getenv("REMIX_PATH_LINEAR_CAPTURE") && !options.accumulate && !debugView && denoiser && !denoiser->statistics().redrawRequested &&
+    if (scene == lastScene && !profileEveryFrame && !std::getenv("REMIX_PATH_LINEAR_CAPTURE") && !options.accumulate && !debugView && denoiser && !denoiser->statistics().redrawRequested &&
         !history.reset() && !(upscaler && upscaler->statistics().frames < 128) && !(sharc.stats.active && sharc.hasReceivers && sharc.warmFrames < 2 * options.sharcAccumulationFrames))
       return;
     const bool sceneChanged = scene != lastScene;
@@ -609,6 +637,9 @@ namespace remix {
       }
     }
     if (!opaquePipeline) opaquePipeline = selectLightingPipeline(opaqueSource);
+    const auto opaqueKey = selectedLightingKey;
+    VkPipeline indirectPipeline = VK_NULL_HANDLE;
+    uint32_t indirectKey = UINT32_MAX;
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, denoiser ? temporalLayout : layout, 0, 1,
                             &set, 0, nullptr);
     if (denoiser) {
@@ -622,8 +653,9 @@ namespace remix {
       barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
               VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
               VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT);
-      vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE,
-                        selectLightingPipeline(indirectPass.pipeline[querySharc]));
+      indirectPipeline = selectLightingPipeline(indirectPass.pipeline[querySharc]);
+      indirectKey = selectedLightingKey;
+      vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, indirectPipeline);
       vkCmdDispatch(command, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
       barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
               VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
@@ -642,9 +674,11 @@ namespace remix {
               VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
     }
     stageTime(7);
-    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE,
-                      selectLightingPipeline(querySharc ? (denoiser ? sharc.temporalTransparency : sharc.transparency)
-                                         : (denoiser ? temporalTransparencyCompute : transparencyCompute)));
+    const auto transparencyPipeline = selectLightingPipeline(
+        querySharc ? (denoiser ? sharc.temporalTransparency : sharc.transparency)
+                   : (denoiser ? temporalTransparencyCompute : transparencyCompute));
+    const auto transparencyKey = selectedLightingKey;
+    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, transparencyPipeline);
     vkCmdDispatch(command, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
     if (timestamps) {
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, timestamps, 3);
@@ -664,6 +698,27 @@ namespace remix {
       stageTime(8);
     }
     stageTime(9);
+    if (stateProfile) {
+      const uint64_t values[] = {frame.config[2], frameIndex, uint64_t(querySharc), uint64_t(deviceLocalScene), uint64_t(indirectPass.active),
+          uint64_t(opaquePipeline), opaqueKey, uint64_t(indirectPipeline), indirectKey,
+          uint64_t(transparencyPipeline), transparencyKey,
+          tlas[0].accel ? tlas[0].accel->address : 0, tlas[1].accel ? tlas[1].accel->address : 0,
+          table->address, uint64_t(table->memory), table->size, uniform->address, uint64_t(uniform->memory),
+          frame.lightNodes, frame.lightEmitters, frame.sharcHash, frame.sharcAccumulation, frame.sharcResolved,
+          frame.indirectResults, stats.sceneGeneration, stats.staticTlasBuilds,
+          hashBytes(surfaces.data(), surfaces.size() * sizeof(surfaces[0]))};
+      traceState.clear();
+      for (auto value : values) {
+        traceState += std::to_string(value);
+        traceState += ',';
+      }
+      constexpr char hex[] = "0123456789abcdef";
+      for (size_t i = 0; i < sizeof(frame); ++i) {
+        const auto value = reinterpret_cast<const uint8_t *>(&frame)[i];
+        traceState += hex[value >> 4];
+        traceState += hex[value & 15];
+      }
+    }
     if (upscaler) {
       upscaler->record(command, denoiser->image(denoise::Composed), denoiser->image(denoise::Depth),
                        denoiser->image(denoise::Motion), denoiser->image(denoise::Transmission),

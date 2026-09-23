@@ -185,8 +185,11 @@ namespace remix {
         const auto *value = std::getenv("REMIX_SPLIT_INDIRECT");
         return !value ? 1u : std::strcmp(value, "1") == 0 ? 2u : 0u;
       }();
+      const char *modeFile = std::getenv("REMIX_INDIRECT_MODE_FILE");
+      uint64_t controlReset = UINT64_MAX;
     } indirectPass;
     void configureIndirect(Frame &frame, const TraceOptions &options, bool querySharc);
+    void configureProfile(const TraceOptions &options);
     void destroyIndirect();
     struct LightingPipeline {
       const uint32_t *code = nullptr;
@@ -234,6 +237,22 @@ namespace remix {
     VkQueryPool compaction = VK_NULL_HANDLE, timestamps = VK_NULL_HANDLE;
     uint32_t timestampBits = 0;
     const char *stageProfile = std::getenv("REMIX_STACK_PROFILE");
+    const char *stateProfile = stageProfile ? std::getenv("REMIX_TRACE_STATE") : nullptr;
+    uint32_t selectedLightingKey = 0;
+    std::string traceState;
+    // Opt-in placement experiment: stage frequently-read scene tables into VRAM.
+    bool deviceLocalScene = [] {
+      const auto *value = std::getenv("REMIX_DEVICE_LOCAL_SCENE");
+      return value && std::strcmp(value, "1") == 0;
+    }();
+    std::unique_ptr<Buffer> tableUpload;
+    // Diagnostic replay must measure fresh lighting even after a static view
+    // converges. Keep camera/history/cache contents intact and only bypass the
+    // final-image reuse shortcut. Ordinary rendering retains that shortcut.
+    const bool profileEveryFrame = [] {
+      const char *value = std::getenv("REMIX_PROFILE_EVERY_FRAME");
+      return value && std::strcmp(value, "1") == 0;
+    }();
     bool timingPending = false, imagesInitialized = false, encodeOutput = false;
     uint32_t debugView = 0;
     bool prism = true, gamma22 = true, hardwareSrgb = false;
@@ -403,12 +422,14 @@ namespace remix {
     void captureLinear(VkCommandBuffer command);
     void completeLinearCapture();
     struct FrameResources {
+      std::string traceState;
       LinearCapture linearCapture;
       VkDescriptorSet set = VK_NULL_HANDLE;
       VkQueryPool timestamps = VK_NULL_HANDLE, compaction = VK_NULL_HANDLE,
                   sharcTimestamps = VK_NULL_HANDLE;
       bool timingPending = false, sharcPending = false, guidingPending = false, reusePending = false, rayPending = false;
       std::unique_ptr<Buffer> table, uniform, scratch, topScratch, instances[2];
+      std::unique_ptr<Buffer> tableUpload;
       std::unique_ptr<Buffer> lightNodes, lightEmitters, torchNodes, torchEmitters, emissiveNodes,
           emissiveEmitters;
       std::unique_ptr<Buffer> sharcReadback, guidingReadback, reuseReadback, rayReadback;

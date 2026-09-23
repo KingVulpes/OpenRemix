@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <vector>
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_PNG
@@ -64,17 +65,27 @@ int main(int argc, char **argv) {
             "Invalid SHARC setting accepted");
   }
   uint64_t next = 100;
-  auto material = [&](remixapi_Float3D color, float alpha, bool cutout = false, bool pbr = false) {
+  const bool pbrScene = std::getenv("REMIX_TEST_SHARC_PBR");
+  auto material = [&](remixapi_Float3D color, float alpha, bool cutout = false, bool pbr = false,
+                      float roughness = 1, float metallic = 0, const std::filesystem::path &normal = {},
+                      const std::filesystem::path &roughnessMap = {}) {
+    pbr |= pbrScene;
+    remixapi_MaterialInfoPbrEXT mode{};
+    mode.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_PBR_EXT; mode.enabled = pbr;
     remixapi_MaterialInfoOpaqueEXT opaque{};
     opaque.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_EXT;
+    opaque.pNext = &mode;
     opaque.albedoConstant = color;
     opaque.opacityConstant = alpha;
-    opaque.roughnessConstant = pbr ? 1.f : 0.f;
+    opaque.roughnessConstant = pbr ? roughness : 0.f;
+    opaque.metallicConstant = metallic;
+    opaque.roughnessTexture = roughnessMap.c_str();
     opaque.alphaTestType = cutout ? 4 : 7; // GREATER .5
     opaque.alphaReferenceValue = 128;
     remixapi_MaterialInfo info{};
     info.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO;
     info.pNext = &opaque;
+    info.normalTexture = normal.c_str();
     info.hash = next++;
     remixapi_MaterialHandle handle{};
     ok(api.CreateMaterial(&info, &handle));
@@ -88,6 +99,8 @@ int main(int argc, char **argv) {
       vertices[i].position[axis] = plane;
       vertices[i].position[(axis + 1) % 3] = i == 0 || i == 3 ? a0 : a1;
       vertices[i].position[(axis + 2) % 3] = i < 2 ? b0 : b1;
+      vertices[i].texcoord[0] = i == 0 || i == 3 ? 0 : 1;
+      vertices[i].texcoord[1] = i < 2 ? 0 : 1;
       vertices[i].color = 0xffffffff;
     }
     uint32_t indices[] = {0, 1, 2, 0, 2, 3};
@@ -102,9 +115,10 @@ int main(int argc, char **argv) {
     return handle;
   };
   const auto receiver = quad(2, .5f, -2, 2, -2, 2, white);
-  const auto pbrReceiver = quad(2, .5f, -2, 2, -2, 2, material({1, 1, 1}, 1, false, true));
+  const auto sharpReceiver = quad(2, .5f, -2, 2, -2, 2, material({1, 1, 1}, 1, false, true, 0));
   const auto offscreenReceiver = quad(2, .5f, 10, 12, -2, 2, white);
-  bool pbrOnly = false, dynamicOnly = false;
+  bool sharpOnly = false, dynamicOnly = false;
+  remixapi_MeshHandle receiverOverride{};
   std::vector<remixapi_MeshHandle> sides;
   for (float sign : {-1.f, 1.f}) {
     sides.push_back(quad(0, sign, -1, 1, -1, .5f, black));
@@ -155,7 +169,7 @@ int main(int argc, char **argv) {
   auto frame = [&] {
     camera.view[3][0] = -translation;
     ok(api.PumpEvents()); ok(api.SetupCamera(&camera)); ok(api.DrawLightInstance(sun));
-    draw(pbrOnly ? pbrReceiver : receiver);
+    draw(receiverOverride ? receiverOverride : sharpOnly ? sharpReceiver : receiver);
     for (auto mesh : enclosure) draw(mesh);
     ok(api.Present(nullptr));
   };
@@ -169,7 +183,11 @@ int main(int argc, char **argv) {
   };
   auto readback = [&](const std::string &name) {
     const auto file = (directory / (name + ".png")).string();
-    ok(api.RequestPresentedScreenshot(file.c_str())); frame(); frame();
+    const auto raw = (directory / (name + ".pfm")).string();
+    if (pbrScene) SDL_setenv_unsafe("REMIX_PATH_LINEAR_CAPTURE", raw.c_str(), 1);
+    ok(api.RequestPresentedScreenshot(file.c_str())); frame();
+    if (pbrScene) SDL_unsetenv_unsafe("REMIX_PATH_LINEAR_CAPTURE");
+    frame();
     int width, height, channels;
     auto pixels = stbi_load(file.c_str(), &width, &height, &channels, 4);
     require(pixels, "Missing sky screenshot");
@@ -181,7 +199,23 @@ int main(int argc, char **argv) {
           average[c] += (v <= .04045f ? v / 12.92f : std::pow((v + .055f) / 1.055f, 2.4f)) / 64;
         }
     stbi_image_free(pixels);
-    std::printf("%s linear RGB: %.4f %.4f %.4f\n", name.c_str(), average[0], average[1], average[2]);
+    if (pbrScene) {
+      frame(); frame(); // Retire all three readback slots.
+      std::ifstream input(raw, std::ios::binary);
+      std::string magic; float scale = 0;
+      input >> magic >> width >> height >> scale;
+      require(magic == "PF" && scale == -1 && width > 0 && height > 0, "Missing linear PBR cache capture");
+      input.get();
+      std::vector<float> radiance(size_t(width) * height * 3);
+      input.read(reinterpret_cast<char *>(radiance.data()), radiance.size() * sizeof(float));
+      require(bool(input), "Truncated linear PBR cache capture");
+      for (auto v : radiance) require(std::isfinite(v) && v >= 0, "Invalid PBR cache radiance");
+      average = {};
+      for (int y = height / 2 - 4; y < height / 2 + 4; ++y)
+        for (int x = width / 2 - 4; x < width / 2 + 4; ++x)
+          for (int c = 0; c < 3; ++c) average[c] += radiance[(y * width + x) * 3 + c] / 64;
+    }
+    std::printf("%s linear RGB: %.7f %.7f %.7f\n", name.c_str(), average[0], average[1], average[2]);
     return average;
   };
   auto capture = [&](const std::string &name, int frames) {
@@ -219,7 +253,7 @@ int main(int argc, char **argv) {
     std::printf("SHARC unavailable: %s\n", cache().unavailableReason);
     ok(api.Shutdown()); return 77;
   }
-  require(cache().active && cache().memoryBytes >= (uint64_t(1) << 18) * 40, "SHARC did not initialize");
+  require(cache().active && cache().memoryBytes >= (uint64_t(1) << 18) * 64, "Directional SHARC did not initialize");
   for (const char *primary : {"raster", "ray"}) {
     configure("primaryVisibility", primary);
     for (int scene = 0; scene < 4; ++scene) {
@@ -298,14 +332,14 @@ int main(int argc, char **argv) {
     configure("sharc", "1"); environment.radiance = {.25f, .5f, .75f};
   }
   // All-scene eligibility is independent of recent query hits or visibility.
-  enclosure.clear(); pbrOnly = true;
+  enclosure.clear(); sharpOnly = true;
   configure("denoiser", "reblur-sh"); configure("taa", "1");
   for (int i = 0; i < 12; ++i) frame();
   const auto idleFrames = cache().renderedFrames, idleResets = cache().resets;
   require(cache().active && !cache().updatePaths && !cache().queryAttempts &&
           !cache().occupiedEntries && !cache().gpuTimingsAvailable &&
           cache().gpuUpdateMilliseconds == 0 && cache().gpuResolveMilliseconds == 0,
-          "PBR-only scene retained SHARC update work or stale statistics");
+          "Sharp-only scene retained SHARC update work or stale statistics");
   const auto temporalFrames = temporal().historyFrames;
   for (int i = 0; i < 8; ++i) frame();
   require(cache().renderedFrames == idleFrames && cache().resets == idleResets &&
@@ -315,13 +349,76 @@ int main(int argc, char **argv) {
   enclosure.push_back(offscreenReceiver);
   for (int i = 0; i < 12; ++i) frame();
   require(cache().renderedFrames > idleFrames && cache().resets > idleResets && cache().updatePaths,
-          "Off-screen legacy receiver did not resume initialized cache updates");
+          "Off-screen eligible receiver did not resume initialized cache updates");
   dynamicOnly = true;
   for (int i = 0; i < 8; ++i) frame();
-  require(!cache().updatePaths && !cache().queryAttempts, "Dynamic legacy surfaces kept cache updates alive");
-  dynamicOnly = false; pbrOnly = false; enclosure = sides; enclosure.push_back(back);
+  require(!cache().updatePaths && !cache().queryAttempts, "Dynamic surfaces kept cache updates alive");
+  dynamicOnly = false; sharpOnly = false; enclosure = sides; enclosure.push_back(back);
   for (int i = 0; i < 96; ++i) frame();
-  require(cache().updatePaths && cache().occupiedEntries, "Legacy receivers failed to warm after resume");
+  require(cache().updatePaths && cache().occupiedEntries, "Eligible receivers failed to warm after resume");
+  if (pbrScene) {
+    remixapi_TextureInfo texture{};
+    texture.sType = REMIXAPI_STRUCT_TYPE_TEXTURE_INFO; texture.hash = next++;
+    texture.width = texture.height = texture.depth = texture.mipLevels = 1;
+    texture.format = REMIXAPI_FORMAT_R8G8B8A8_UNORM;
+    const uint8_t normalPixel[] = {160, 145, 248, 255};
+    texture.data = normalPixel; texture.dataSize = sizeof(normalPixel);
+    remixapi_TextureHandle normalHandle{}; ok(api.CreateTexture(&texture, &normalHandle));
+    char textureName[32]; std::snprintf(textureName, sizeof(textureName), "0x%llx", (unsigned long long)texture.hash);
+    const auto normal = std::filesystem::path(textureName);
+    const uint8_t roughnessPixel[] = {204, 0, 0, 255};
+    texture.hash = next++; texture.data = roughnessPixel;
+    remixapi_TextureHandle roughnessHandle{}; ok(api.CreateTexture(&texture, &roughnessHandle));
+    std::snprintf(textureName, sizeof(textureName), "0x%llx", (unsigned long long)texture.hash);
+    const auto roughnessMap = std::filesystem::path(textureName);
+    struct Case { const char *name; remixapi_Float3D color; float roughness, metal; bool mapped, roughnessMapped; };
+    for (const auto &test : std::array<Case, 7>{{
+        {"dark", {.005f, .008f, .004f}, .8f, 0, false, false},
+        {"saturated", {.7f, .025f, .01f}, .8f, 0, false, false},
+        {"rough-metal", {.7f, .5f, .3f}, .8f, 1, false, false},
+        {"boundary-metal", {.7f, .5f, .3f}, .5f, 1, false, false},
+        {"mapped", {.6f, .4f, .2f}, .7f, 0, true, false},
+        {"roughness-map", {.6f, .4f, .2f}, .8f, 0, false, true},
+        {"mirror", {.4f, .25f, .1f}, 0, 1, false, false}}}) {
+      const auto mat = material(test.color, 1, false, true, test.roughnessMapped ? 0 : test.roughness, test.metal,
+                                test.mapped ? normal : std::filesystem::path{},
+                                test.roughnessMapped ? roughnessMap : std::filesystem::path{});
+      receiverOverride = quad(2, .5f, -2, 2, -2, 2, mat);
+      enclosure.clear();
+      // The hit surfaces must use the tested material too: primary-only metals
+      // would exercise PBR rays querying a legacy/dielectric cache instead.
+      const auto wall = test.roughness == 0 ? black : mat;
+      for (float sign : {-1.f, 1.f}) {
+        enclosure.push_back(quad(0, sign, -1, 1, -1, .5f, wall));
+        enclosure.push_back(quad(1, sign, -1, .5f, -1, 1, wall));
+      }
+      enclosure.push_back(quad(2, -1, -1, -.5f, -1, 1, wall));
+      enclosure.push_back(quad(2, -1, .5f, 1, -1, 1, wall));
+      enclosure.push_back(quad(2, -1, -.5f, .5f, -1, -.5f, wall));
+      enclosure.push_back(quad(2, -1, -.5f, .5f, .5f, 1, wall));
+      configure("primaryVisibility", "raster"); configure("bounces", test.roughness == 0 ? "1" : "4");
+      configure("denoiser", "off"); configure("taa", "0");
+      configure("accumulate", "1");
+      const auto reference = capture(std::string(test.name) + "-reference", 96);
+      configure("accumulate", "0");
+      for (int i = 0; i < 160; ++i) frame();
+      std::array<float, 3> actual{};
+      uint64_t hits = 0;
+      for (int i = 0; i < 8; ++i) {
+        const auto value = readback(std::string(test.name) + "-cache-" + std::to_string(i));
+        hits += cache().queryHits;
+        for (int c = 0; c < 3; ++c) actual[c] += value[c] / 8;
+      }
+      for (int c = 0; c < 3; ++c)
+        require(std::abs(actual[c] - reference[c]) < .01f + .12f * reference[c],
+                "PBR cache changed material energy excessively");
+      require(test.roughness == 0 ? hits == 0 : hits > 0,
+              "PBR footprint failed to distinguish rough from mirror paths");
+      std::printf("PBR %s reference %.7f %.7f %.7f cached %.7f %.7f %.7f sampled hits %llu\n",
+          test.name, reference[0], reference[1], reference[2], actual[0], actual[1], actual[2],
+          (unsigned long long)hits);
+    }
+  }
   ok(api.Shutdown());
   std::puts("SHARC diffuse reference, occlusion, transmission, fallback, controls and temporal checks passed");
 }

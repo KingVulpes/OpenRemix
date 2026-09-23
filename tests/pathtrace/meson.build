@@ -67,10 +67,10 @@ if get_option('gpu_tests')
              'REMIX_TEST_SIGNAL=0', 'REMIX_TEST_PRIMARY=raster',
              'LD_PRELOAD=' + faults.full_path(), 'REMIX_TEST_FAULT=local-blue-noise-allocation'], timeout : 300)
   endif
-  test('PBR local lighting with idle SHARC', torch_stability_test,
-    args : [meson.current_build_dir() / 'pbr-idle-sharc-scenes'],
+  test('PBR local lighting with SHARC', torch_stability_test,
+    args : [meson.current_build_dir() / 'pbr-sharc-scenes'],
     env : ['REMIX_TEST_MIXED_LIGHTS=1', 'REMIX_TEST_ADAPTIVE_LOCAL=1', 'REMIX_TEST_PBR=1',
-           'REMIX_TEST_SPLIT_LOCAL=3', 'REMIX_TEST_SHARC=1'], timeout : 300)
+           'REMIX_TEST_SPLIT_LOCAL=3', 'REMIX_TEST_SHARC=1', 'REMIX_TEST_SIGNAL=1'], timeout : 600)
   foreach pbr : ['0', '1']
     test('Separate indirect pass two bounce material ' + pbr, torch_stability_test,
       args : [meson.current_build_dir() / ('split-indirect-scenes-' + pbr)],
@@ -151,6 +151,9 @@ if get_option('gpu_tests')
     include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
   test('SHARC diffuse cache and temporal changes', sharc_test,
     args : [meson.current_build_dir() / 'sharc-scenes'], timeout : 240)
+  test('SHARC PBR cache materials and temporal changes', sharc_test,
+    args : [meson.current_build_dir() / 'sharc-pbr-scenes'],
+    env : ['REMIX_TEST_SHARC_PBR=1'], timeout : 600)
   if system == 'linux'
     foreach fault : ['sharc-compute', 'sharc-capability', 'sharc-allocation']
       test('SHARC fallback ' + fault, sharc_test,

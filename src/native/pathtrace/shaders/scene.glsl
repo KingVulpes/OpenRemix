@@ -56,6 +56,7 @@ layout(set=0,binding=3,std140) uniform Frame {
   uint64_t reuseRead, reuseWrite;
   uvec4 reuseConfig;
   uint64_t indirectResults, blueNoise;
+  vec4 firefly; // outgoing local direct / indirect luminance limits; reserved
 } frame;
 layout(set=0,binding=6) uniform sampler2D textures[512];
 vec2 materialParameters(Surface s,vec2 uv) {

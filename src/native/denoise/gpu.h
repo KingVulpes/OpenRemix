@@ -104,6 +104,7 @@ namespace remix::denoise {
     uint32_t frameIndex = 0;
     void swapFrame(FrameResources &frame, uint32_t slot);
     Frame frame{};
+    bool localFireflyFilter = false;
     bool sigma{}, local{}, split{};
     float sigmaMilliseconds{}, localMilliseconds{};
     remixapi_ShadowStatisticsEXT shadowStats{.structSize = sizeof(shadowStats)};

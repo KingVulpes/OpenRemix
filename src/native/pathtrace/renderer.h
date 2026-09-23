@@ -28,6 +28,8 @@ namespace remix {
     uint32_t separateLocalLighting = 0; // combined, shared rays, per-family rays, combined separate pass
     uint32_t localSamples = 1;
     float localIntensity = 1, localRange = 16;
+    float localDirectClamp = 0, indirectClamp = 0;
+    bool localFireflyFilter = false;
     bool localGuiding = true;
     uint32_t shadowDebug = 0;
     uint32_t debugView = 0; // display diagnostics; never selects an integrator

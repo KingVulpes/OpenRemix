@@ -109,8 +109,9 @@ namespace remix::trace::detail {
     uint64_t reuseRead = 0, reuseWrite = 0;
     uint32_t reuseConfig[4] = {}; // previous frame valid, diagnostics, ray counter address low/high
     uint64_t indirectResults = 0, blueNoise = 0;
+    float firefly[4] = {}; // outgoing local direct / indirect luminance limits; reserved
   };
-  static_assert(sizeof(Frame) == 512 && offsetof(Frame, indirectResults) == 496 && offsetof(Frame, lightGuideRead) == 384 && offsetof(Frame, lightGuideConfig) == 400 && offsetof(Frame, lightNodes) == 336 && offsetof(Frame, localConfig) == 352 && offsetof(Frame, localScale) == 368 && offsetof(Frame, skyRadiance) == 224 &&
+  static_assert(sizeof(Frame) == 528 && offsetof(Frame, firefly) == 512 && offsetof(Frame, indirectResults) == 496 && offsetof(Frame, lightGuideRead) == 384 && offsetof(Frame, lightGuideConfig) == 400 && offsetof(Frame, lightNodes) == 336 && offsetof(Frame, localConfig) == 352 && offsetof(Frame, localScale) == 368 && offsetof(Frame, skyRadiance) == 224 &&
                 offsetof(Frame, sharcHash) == 240 && offsetof(Frame, sharcConfig) == 272 &&
                 offsetof(Frame, sharcGrid) == 288 && offsetof(Frame, sharcPreviousCamera) == 304 && offsetof(Frame, sun) == 320);
   inline float linear(float c) { return c <= .04045f ? c / 12.92f : std::pow((c + .055f) / 1.055f, 2.4f); }
@@ -393,7 +394,16 @@ namespace remix {
       std::vector<uint8_t> geometry, dynamicGeometry;
       remixapi_SharcStatisticsEXT stats{.structSize = sizeof(remixapi_SharcStatisticsEXT)};
     } sharc;
+    struct LinearCapture {
+      std::unique_ptr<Buffer> readback;
+      std::string path;
+      VkExtent2D extent{};
+      bool packedPbr = false;
+    } linearCapture;
+    void captureLinear(VkCommandBuffer command);
+    void completeLinearCapture();
     struct FrameResources {
+      LinearCapture linearCapture;
       VkDescriptorSet set = VK_NULL_HANDLE;
       VkQueryPool timestamps = VK_NULL_HANDLE, compaction = VK_NULL_HANDLE,
                   sharcTimestamps = VK_NULL_HANDLE;
@@ -421,6 +431,8 @@ namespace remix {
     void sharcPipeline(const uint32_t *code, size_t size, VkPipelineLayout pipelineLayout, VkPipeline &out);
     std::vector<uint8_t> lastScene;
     uint64_t sequence = 0;
+    float previousDirectClamp = 0, previousIndirectClamp = 0;
+    bool previousFireflyFilter = false;
     std::chrono::steady_clock::time_point epoch = std::chrono::steady_clock::now();
 
     ~Gpu();

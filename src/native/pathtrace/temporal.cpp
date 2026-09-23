@@ -17,7 +17,7 @@ namespace remix {
   void PathTracer::Gpu::configureIndirect(Frame &frame, const TraceOptions &options, bool querySharc) {
     indirectPass.active = false;
     if (rrActive() || !indirectPass.mode || indirectPass.failed || !denoiser || !postSplit ||
-        !splitLightingActive || !localIlluminationActive || !options.bounces || options.pbrLocalReuse ||
+        !splitLightingActive || !localIlluminationActive || !options.bounces || (options.pbrLocalReuse && options.localDirectClamp == 0 && options.indirectClamp == 0) ||
         (indirectPass.mode == 1 && (querySharc || options.separateLocalLighting != 3)))
       return;
     try {

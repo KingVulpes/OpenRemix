@@ -1,5 +1,7 @@
 # Optional path tracing
 
+[Optional firefly suppression](features/fireflies.md) provides independent local direct and indirect luminance clamps and a PBR REBLUR experiment. All three default to disabled.
+
 EON diffuse and GGX PBR material inputs are described in [EON materials](features/eon-materials.md).
 
 Raster remains the startup default. The path tracer replaces world geometry shading

@@ -181,6 +181,7 @@ vec3 diffuseDirection(vec3 n) {
   return normalize(t*(sqrt(u)*cos(angle))+cross(n,t)*(sqrt(u)*sin(angle))+n*sqrt(1-u));
 }
 #include "brdf.glsl"
+#include "fireflies.glsl"
 #include "visibility.glsl"
 vec3 shadow(vec3 origin,vec3 direction) {
   vec3 transmission=vec3(1);
@@ -233,12 +234,15 @@ vec3 sunVisibility(Hit receiver,ivec2 pixel,out float blockerDistance) {
 }
 #include "light_bvh.glsl"
 #include "pbr_reuse.glsl"
-vec3 direct(Hit hit) {
+vec3 direct(Hit hit,bool primary) {
   vec3 toLight=-frame.lightDirection.xyz;
   float cosine=max(0,dot(hit.n,toLight));
   float distance;
   vec3 local;
-  if(!reuseLocal(hit,local))local=materialFactor(hit)*localLighting(hit,rng,1u,distance);
+  if(!reuseLocal(hit,local)) {
+    vec3 specular;
+    local=materialFactor(hit)*localLighting(hit,rng,1u,distance,false,specular,primary?frame.firefly.x:0);
+  }
   return local+(cosine>0&&any(greaterThan(frame.lightRadiance.rgb,vec3(0)))?materialBrdf(hit,toLight)*cosine*frame.lightRadiance.rgb*shadow(offsetRay(hit.p,hit.ng),toLight):vec3(0));
 }
 #if defined(SHARC_QUERY) || defined(SHARC_UPDATE_PASS)
@@ -292,12 +296,13 @@ vec3 continuation(Hit primary,out vec3 firstDirection,out float firstDistance,ou
       result+=throughput*cached;break; // Cached outgoing radiance already includes this hit's direct light.
     }
 #endif
-    result+=throughput*direct(hit);
+    result+=throughput*direct(hit,false);
     if(++bounce>=frame.config.y)break;
     throughput*=materialSample(hit,direction);previousVertex=hit.p;origin=offsetRay(hit.p,hit.ng);layers=0;
     if(!any(greaterThan(throughput,vec3(0))))break;
   }
   specular=result*specularWeight/max(weight,vec3(1e-20));
+  clampLighting(primary,result,specular,frame.firefly.y);
   return result;
 }
 vec3 continuation(Hit primary,out vec3 firstDirection,out float firstDistance) {
@@ -352,7 +357,7 @@ void updateCache(ivec2 pixel) {
       if(bounce!=0)SharcSetThroughput(state,hit.color.rgb);
       origin=offsetRay(hit.p,-hit.ng);continue;
     }
-    vec3 lighting=direct(hit);
+    vec3 lighting=direct(hit,false);
     if(hit.cacheable&&!hit.blended) {
       if(!SharcUpdateHit(parameters,state,cacheHit(hit),lighting,random()))break;
     } else {
@@ -706,7 +711,7 @@ void main() {
     for(uint layer=0;layer<count;++layer) {
       Hit hit;hit.p=sheets[layer].p;hit.n=sheets[layer].n;hit.color=sheets[layer].color;
       hit.ng=sheets[layer].ng;hit.rm=sheets[layer].rm;hit.pbr=sheets[layer].pbr;hit.wo=-direction;
-      vec3 surfaceLight=direct(hit)+sheets[layer].emission;
+      vec3 surfaceLight=direct(hit,true)+sheets[layer].emission;
       if(sharedIndirect.a!=0)surfaceLight+=materialFactor(hit)*sharedIndirect.rgb;
       else for(uint i=0;i<frame.config.x;++i){vec3 d;float t;surfaceLight+=materialFactor(hit)*continuation(hit,d,t)/float(frame.config.x);}
 #ifdef TEMPORAL

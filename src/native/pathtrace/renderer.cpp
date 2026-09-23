@@ -8,6 +8,7 @@ namespace remix {
 
   void PathTracer::Gpu::swapFrame(FrameResources &frame) {
     using std::swap;
+    swap(linearCapture, frame.linearCapture);
     swap(rayProfile.readback, frame.rayReadback);
     swap(rayProfile.pending, frame.rayPending);
     swap(pbrReuse.readback, frame.reuseReadback);
@@ -139,7 +140,7 @@ namespace remix {
                               .arrayLayers = 1,
                               .samples = VK_SAMPLE_COUNT_1_BIT,
                               .tiling = VK_IMAGE_TILING_OPTIMAL,
-                              .usage = VK_IMAGE_USAGE_STORAGE_BIT |
+                              .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                                        (colorAttachment ? VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT : 0u),
                               .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     check(vkCreateImage(device, &info, nullptr, &out->handle));

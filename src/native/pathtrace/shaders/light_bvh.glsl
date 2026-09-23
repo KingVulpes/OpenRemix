@@ -192,9 +192,9 @@ float localLuminance(vec3 value) { return dot(value,vec3(.2126,.7152,.0722)); }
 // Stratified light candidates for very small sets (RT Gems II, ch. 22-23).
 // One sphere direction per light, then a weighted reservoir and ONE visibility
 // query. E[physical / p] is the sum of these candidates; their expectation is
-// the original sphere integral. No radiance clamp or extra visibility samples.
+// the original sphere integral. Clamping, when requested, follows visibility and all weights.
 vec3 smallLocalLighting(LightNodes nodes,LightEmitters emitters,Hit hit,uint state,uint samples,
-                        uint guideKey,uint preferred,float guideMix,out float lightDistance,bool angular,vec2 blue,uint noiseBase,out vec3 specular) {
+                        uint guideKey,uint preferred,float guideMix,out float lightDistance,bool angular,vec2 blue,uint noiseBase,out vec3 specular,float threshold) {
   specular=vec3(0);vec3 result=vec3(0);float distanceWeight=0;lightDistance=0;
   for(uint sampleIndex=0;sampleIndex<samples;++sampleIndex) {
     LocalCandidate selected,preferredSample;
@@ -216,8 +216,9 @@ vec3 smallLocalLighting(LightNodes nodes,LightEmitters emitters,Hit hit,uint sta
     float pdf=(1-mixWeight)*localLuminance(selected.physical)/total+(selectedIndex==preferred?mixWeight:0);
     vec3 estimate=selected.physical/pdf;
     vec3 visibility=localVisibility(offsetRay(hit.p,hit.ng),selected.endpoint);
-    result+=estimate*visibility;
-    specular+=selected.specular/pdf*visibility;
+    vec3 contribution=estimate*visibility,specularContribution=selected.specular/pdf*visibility;
+    clampLighting(hit,contribution,specularContribution,threshold);
+    result+=contribution;specular+=specularContribution;
     if(enableLocalGuiding&&guideKey!=0&&(hash(state^0xd1b54a35u)&63u)==0)
       trainLightGuide(guideKey,selectedIndex,guided,visibility,selected.physical,false);
     float weight=localLuminance(estimate);lightDistance+=selected.distance*weight;distanceWeight+=weight;
@@ -232,9 +233,9 @@ vec3 smallLocalLighting(LightNodes nodes,LightEmitters emitters,Hit hit,uint sta
 // Stratifying the BVH variate preserves that expectation and reduces repeated
 // draws from the same bright cluster. Visibility is always evaluated afresh;
 // zero candidates remain in M. History changes only the proposal distribution;
-// no radiance/shadow reuse, clamping or extra visibility rays.
+// no radiance/shadow reuse or extra visibility rays.
 vec3 resampledLocalLighting(LightNodes nodes,LightEmitters emitters,Hit hit,uint state,
-                           uint samples,uint count,out float lightDistance,bool useGuide,vec2 blue,uint noiseBase,out vec3 specular) {
+                           uint samples,uint count,out float lightDistance,bool useGuide,vec2 blue,uint noiseBase,out vec3 specular,float threshold) {
   specular=vec3(0);vec3 result=vec3(0);float distanceWeight=0;lightDistance=0;
   uint guideKey=0,preferred=0,guideRoot=0;float guideMix=0,rootPdf=1;
   if(enableLocalGuiding&&useGuide&&frame.lightGuideWrite!=0) {
@@ -288,8 +289,9 @@ vec3 resampledLocalLighting(LightNodes nodes,LightEmitters emitters,Hit hit,uint
     if(total<=0)continue;
     vec3 estimate=selected.physical*(total/(float(count)*localLuminance(selected.physical)));
     vec3 visibility=localVisibility(offsetRay(hit.p,hit.ng),selected.endpoint);
-    result+=estimate*visibility;
-    specular+=selected.specular*(total/(float(count)*localLuminance(selected.physical)))*visibility;
+    vec3 contribution=estimate*visibility,specularContribution=selected.specular*(total/(float(count)*localLuminance(selected.physical)))*visibility;
+    clampLighting(hit,contribution,specularContribution,threshold);
+    result+=contribution;specular+=specularContribution;
     if(enableLocalGuiding&&guideKey!=0&&(hash(state^0xd1b54a35u)&63u)==0)
       trainLightGuide(guideKey,selectedIndex,selectedGuided,visibility,selectedPhysical,true);
     float weight=localLuminance(estimate);
@@ -299,12 +301,12 @@ vec3 resampledLocalLighting(LightNodes nodes,LightEmitters emitters,Hit hit,uint
   specular/=float(samples);return result/float(samples);
 }
 vec3 familyLocalLighting(LightNodes nodes,LightEmitters emitters,Hit hit,uint state,
-                         out float distance,bool guide,uint noiseBase,out vec3 specular) {
+                         out float distance,bool guide,uint noiseBase,out vec3 specular,float threshold) {
   vec2 blue=localEmitterNoise(true);
   uint candidates=max(uint(frame.localScale.z),1u);
   if(nodes.data[0].links.w<=4)
-    return smallLocalLighting(nodes,emitters,hit,state,1u,0u,0u,0,distance,true,blue,noiseBase,specular);
-  return resampledLocalLighting(nodes,emitters,hit,state,1u,candidates,distance,guide,blue,noiseBase,specular);
+    return smallLocalLighting(nodes,emitters,hit,state,1u,0u,0u,0,distance,true,blue,noiseBase,specular,threshold);
+  return resampledLocalLighting(nodes,emitters,hit,state,1u,candidates,distance,guide,blue,noiseBase,specular,threshold);
 }
 // Separate direct signals. Equal-budget mode chooses a family with known
 // probability and writes zero to the other signal. Per-family mode samples
@@ -328,6 +330,7 @@ void splitLocalLighting(Hit hit,uint state,uint samples,out vec3 torch,out vec3 
   float torchWeight=0,emissionWeight=0;
   state=hash(state^0x931a4bf5u);
   for(uint i=0;i<adaptiveSamples;++i) {
+    vec3 oneTorch=vec3(0),oneEmission=vec3(0),oneTorchSpecular=vec3(0),oneEmissionSpecular=vec3(0);
     bool both=hasTorch&&hasEmission;
     // Complementary pixels provide each history with nearby valid samples.
     // A frame-wide random phase avoids a persistent spatial selection bias.
@@ -337,17 +340,20 @@ void splitLocalLighting(Hit hit,uint state,uint samples,out vec3 torch,out vec3 
     if(hasTorch&&chooseTorch) {
       float distance;vec3 specular;
       vec3 value=familyLocalLighting(LightNodes(frame.torchNodes),LightEmitters(frame.torchEmitters),
-          hit,hash(state^0x746f7263u),distance,false,128u+i*8u,specular)*scale;
-      torchSpecular+=specular*scale;
-      torch+=value;torchDistance+=distance;torchWeight+=distance>0?1:0;
+          hit,hash(state^0x746f7263u),distance,false,128u+i*8u,specular,0)*scale;
+      oneTorchSpecular=specular*scale;
+      oneTorch=value;torchDistance+=distance;torchWeight+=distance>0?1:0;
     }
     if(hasEmission&&(frame.splitLocal.x==2||!both||!chooseTorch)) {
       float distance;vec3 specular;
       vec3 value=familyLocalLighting(LightNodes(frame.emissiveNodes),LightEmitters(frame.emissiveEmitters),
-          hit,hash(state^0xe315ac47u),distance,true,256u+i*8u,specular)*scale;
-      emissionSpecular+=specular*scale;
-      emission+=value;emissionDistance+=distance;emissionWeight+=distance>0?1:0;
+          hit,hash(state^0xe315ac47u),distance,true,256u+i*8u,specular,0)*scale;
+      oneEmissionSpecular=specular*scale;
+      oneEmission=value;emissionDistance+=distance;emissionWeight+=distance>0?1:0;
     }
+    float limitScale=fireflyScale(hit,oneTorch+oneEmission,frame.firefly.x);
+    torch+=oneTorch*limitScale;emission+=oneEmission*limitScale;
+    torchSpecular+=oneTorchSpecular*limitScale;emissionSpecular+=oneEmissionSpecular*limitScale;
     state=hash(state+0x9e3779b9u);
   }
   torch/=float(adaptiveSamples);emission/=float(adaptiveSamples);
@@ -363,7 +369,7 @@ void splitLocalLighting(Hit hit,uint state,uint samples,out vec3 torch,out vec3 
   splitLocalLighting(hit,state,samples,torch,emission,torchDistance,emissionDistance,torchSpecular,emissionSpecular);
 }
 // Returns material-demodulated total radiance and its specular component.
-vec3 localLighting(Hit hit,uint state,uint samples,out float lightDistance,bool useGuiding,out vec3 specular) {
+vec3 localLighting(Hit hit,uint state,uint samples,out float lightDistance,bool useGuiding,out vec3 specular,float threshold) {
   specular=vec3(0);lightDistance=0;
   if(!enableLocalLights||frame.localConfig.x==0||samples==0)return vec3(0);
   LightNodes nodes=LightNodes(frame.lightNodes);
@@ -377,7 +383,7 @@ vec3 localLighting(Hit hit,uint state,uint samples,out float lightDistance,bool 
   // continuation and transparent-sheet stack on the established estimator.
   if(enableLightResampling&&useGuiding&&frame.localScale.z>1)
     return resampledLocalLighting(nodes,emitters,hit,hash(state^0x746f7263u),adaptiveSamples,
-                                  adaptiveCandidates,lightDistance,true,blue,0u,specular);
+                                  adaptiveCandidates,lightDistance,true,blue,0u,specular,threshold);
   uint guideKey=0,preferred=0;
   float guideMix=0,preferredPdf=-1;
   if(enableLocalGuiding&&useGuiding&&frame.lightGuideWrite!=0) {
@@ -386,7 +392,7 @@ vec3 localLighting(Hit hit,uint state,uint samples,out float lightDistance,bool 
   }
   state=hash(state^0x746f7263u);
   if(enableSmallLights&&nodes.data[0].links.w<=4)
-    return smallLocalLighting(nodes,emitters,hit,state,adaptiveSamples,guideKey,preferred,guideMix,lightDistance,useGuiding,blue,0u,specular);
+    return smallLocalLighting(nodes,emitters,hit,state,adaptiveSamples,guideKey,preferred,guideMix,lightDistance,useGuiding,blue,0u,specular,threshold);
   vec3 result=vec3(0);float distanceWeight=0;
   for(uint sampleIndex=0;sampleIndex<adaptiveSamples;++sampleIndex) {
     bool guided=guideMix>0&&lightRandom(state)<guideMix;
@@ -413,8 +419,9 @@ vec3 localLighting(Hit hit,uint state,uint samples,out float lightDistance,bool 
       if(localLuminance(candidate.physical)<=0)continue;
       vec3 estimate=candidate.physical/selectionPdf;
       vec3 visibility=localVisibility(offsetRay(hit.p,hit.ng),candidate.endpoint);
-      result+=estimate*visibility;
-      specular+=candidate.specular/selectionPdf*visibility;
+      vec3 contribution=estimate*visibility,specularContribution=candidate.specular/selectionPdf*visibility;
+      clampLighting(hit,contribution,specularContribution,threshold);
+      result+=contribution;specular+=specularContribution;
       if(enableLocalGuiding&&useGuiding&&guideKey!=0&&(hash(state^0xd1b54a35u)&63u)==0)
         trainLightGuide(guideKey,index,guided,visibility,candidate.physical,false);
       float weight=localLuminance(estimate);
@@ -450,8 +457,9 @@ vec3 localLighting(Hit hit,uint state,uint samples,out float lightDistance,bool 
     vec3 physical=materialResponse(hit,direction,specularResponse)*scale;
     vec3 estimate=physical/selectionPdf;
     vec3 visibility=localVisibility(offsetRay(hit.p,hit.ng),hit.p+direction*distance);
-    result+=estimate*visibility;
-    specular+=specularResponse*scale/selectionPdf*visibility;
+    vec3 contribution=estimate*visibility,specularContribution=specularResponse*scale/selectionPdf*visibility;
+    clampLighting(hit,contribution,specularContribution,threshold);
+    result+=contribution;specular+=specularContribution;
     if(enableLocalGuiding&&useGuiding&&guideKey!=0&&(hash(state^0xd1b54a35u)&63u)==0)
       trainLightGuide(guideKey,index,guided,visibility,physical,false);
     float weight=dot(estimate,vec3(.2126,.7152,.0722));
@@ -459,6 +467,9 @@ vec3 localLighting(Hit hit,uint state,uint samples,out float lightDistance,bool 
   }
   lightDistance=distanceWeight>0?lightDistance/distanceWeight:0;
   specular/=float(adaptiveSamples);return result/float(adaptiveSamples);
+}
+vec3 localLighting(Hit hit,uint state,uint samples,out float lightDistance,bool useGuiding,out vec3 specular) {
+  return localLighting(hit,state,samples,lightDistance,useGuiding,specular,useGuiding?frame.firefly.x:0);
 }
 vec3 localLighting(Hit hit,uint state,uint samples,out float lightDistance,bool useGuiding) {
   vec3 specular;

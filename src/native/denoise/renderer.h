@@ -78,7 +78,7 @@ namespace remix::denoise {
     void selectFrame(uint32_t slot);
     upscale::Input image(ImageSlot slot) const;
     void begin(VkCommandBuffer command, const Frame &frame, const scene::Matrix &projection,
-               const scene::Matrix &previousProjection, VkImageView world, VkImageView sky);
+               const scene::Matrix &previousProjection, VkImageView world, VkImageView sky, bool localFireflyFilter = false);
     void beginConfidence(VkCommandBuffer command);
     void record(VkCommandBuffer command);
     void submitted();

@@ -364,9 +364,10 @@ namespace remix::denoise {
   }
   VkDescriptorSet Renderer::inputs() const { return m_gpu->inputs; }
   void Renderer::begin(VkCommandBuffer command, const Frame &frame, const scene::Matrix &projection,
-                       const scene::Matrix &previousProjection, VkImageView world, VkImageView sky) {
+                       const scene::Matrix &previousProjection, VkImageView world, VkImageView sky, bool localFireflyFilter) {
     auto &g = *m_gpu;
     g.frame = frame;
+    g.localFireflyFilter = localFireflyFilter;
     g.frame.flags[0] |= !g.initialized;
     if (g.timingPending) {
       uint64_t values[9];

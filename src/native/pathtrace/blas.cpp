@@ -5,6 +5,7 @@ namespace remix {
   using namespace trace::detail;
 
   void PathTracer::Gpu::complete(VkCommandBuffer command) {
+    completeLinearCapture();
     completeLightGuiding();
     completePbrReuse();
     completeRayProfile();

@@ -282,3 +282,21 @@ if get_option('gpu_tests')
     args : [meson.current_build_dir() / 'dlss-water'],
     env : ['REMIX_TEST_RR_REUSE=1'], timeout : 300)
 endif
+
+if get_option('gpu_tests')
+  fireflies_test = executable('remix-fireflies-test', 'fireflies.cpp',
+    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
+  test('Local firefly controls HDR and history resets', fireflies_test,
+    args : [meson.current_build_dir() / 'firefly-scenes'],
+    env : ['REMIX_TEST_FIREFLY_RESETS=1'], timeout : 300)
+endif
+
+if get_option('gpu_tests')
+  foreach family : ['torch', 'emissive', 'mixed']
+    test('Firefly outgoing luminance ' + family, fireflies_test,
+      args : [meson.current_build_dir() / ('firefly-' + family)],
+      env : ['REMIX_TEST_FIREFLY_FAMILY=' + family, 'REMIX_TEST_FIREFLY_DIRECT=0.1',
+             'REMIX_TEST_FIREFLY_INDIRECT=0.05', 'REMIX_TEST_FIREFLY_LOCAL_SAMPLES=4',
+             'REMIX_TEST_FIREFLY_PRIMARY=ray', 'REMIX_TEST_FIREFLY_SPLIT=2'], timeout : 300)
+  endforeach
+endif

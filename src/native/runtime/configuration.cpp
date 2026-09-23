@@ -92,6 +92,16 @@ namespace remix {
       m_traceOptions.denoiser = !std::strcmp(value, "reblur-sh");
       return REMIXAPI_ERROR_CODE_SUCCESS;
     }
+    if (!std::strcmp(key, "localDirectClamp") || !std::strcmp(key, "indirectClamp")) {
+      float threshold = 0;
+      const char *end = value + std::strlen(value);
+      const auto parsed = std::from_chars(value, end, threshold);
+      if (parsed.ec != std::errc{} || parsed.ptr != end || !std::isfinite(threshold) ||
+          threshold < 0 || threshold > 1000000)
+        return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+      (!std::strcmp(key, "localDirectClamp") ? m_traceOptions.localDirectClamp : m_traceOptions.indirectClamp) = threshold;
+      return REMIXAPI_ERROR_CODE_SUCCESS;
+    }
     if (!std::strcmp(key, "localIntensity") || !std::strcmp(key, "localRange")) {
       const bool range = !std::strcmp(key, "localRange");
       float intensity = 0;
@@ -158,6 +168,8 @@ namespace remix {
       m_traceOptions.emissiveCandidates = number;
     else if (!std::strcmp(key, "separateLocalLighting") && number <= 3)
       m_traceOptions.separateLocalLighting = number;
+    else if (!std::strcmp(key, "localFireflyFilter") && number <= 1)
+      m_traceOptions.localFireflyFilter = number != 0;
     else if (!std::strcmp(key, "localDenoiser") && number <= 1)
       m_traceOptions.localDenoiser = number != 0;
     else if (!std::strcmp(key, "localGuiding") && number <= 1)

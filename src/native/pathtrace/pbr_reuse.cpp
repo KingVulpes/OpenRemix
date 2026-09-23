@@ -8,7 +8,8 @@ void PathTracer::Gpu::configurePbrReuse(VkCommandBuffer command, Frame &frame,
                                         uint64_t signature, bool stable) {
   if (!options.pbrLocalReuse)
     pbrReuse.failed = false;
-  pbrReuse.active = !pbrReuse.failed && options.pbrLocalReuse && denoiser &&
+  pbrReuse.active = !pbrReuse.failed && options.pbrLocalReuse &&
+                    options.localDirectClamp == 0 && options.indirectClamp == 0 && denoiser &&
                     postReblur && !options.accumulate && options.samples == 1 &&
                     options.bounces && frame.localConfig[0];
   if (!pbrReuse.active) {

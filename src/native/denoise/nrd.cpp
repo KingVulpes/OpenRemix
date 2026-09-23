@@ -196,6 +196,12 @@ namespace remix::denoise {
         settings.hitDistanceReconstructionMode = nrd::HitDistanceReconstructionMode::AREA_3X3;
         settings.diffusePrepassBlurRadius = 4.f;
         settings.specularPrepassBlurRadius = 8.f;
+        if (localFireflyFilter && frame.local[1]) {
+          settings.diffusePrepassBlurRadius = 0.f;
+          // Retain the specular prepass hit distance used for motion tracking,
+          // while temporal accumulation receives the original radiance.
+          settings.usePrepassOnlyForSpecularMotionEstimation = true;
+        }
         settings.maxBlurRadius = 16.f;
         if (frame.local[0] && frame.local[2])
           settings.maxAccumulatedFrameNum = std::min(settings.maxAccumulatedFrameNum, 8u);

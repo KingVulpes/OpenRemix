@@ -21,6 +21,14 @@ namespace remix {
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestamps, 0);
     }
     complete(command);
+    if (options.localDirectClamp != previousDirectClamp || options.indirectClamp != previousIndirectClamp ||
+        options.localFireflyFilter != previousFireflyFilter) {
+      history.clear();
+      stats.accumulationCount = 0;
+      previousDirectClamp = options.localDirectClamp;
+      previousIndirectClamp = options.indirectClamp;
+      previousFireflyFilter = options.localFireflyFilter;
+    }
     rendered = false;
     pendingTime = std::chrono::steady_clock::now();
     const uint64_t integrator =
@@ -325,9 +333,12 @@ namespace remix {
     frame.target[3] = options.rasterPrimary;
     // Reserved private word; included in scene-change detection. Raw/reference
     // and multi-sample rendering retain one estimator at every surface pixel.
-    frame.jitter[2] = options.waterIndirectReuse && denoiser && (postTaa || upscaler) && !options.accumulate &&
+    frame.jitter[2] = options.waterIndirectReuse && options.indirectClamp == 0 && denoiser && (postTaa || upscaler) && !options.accumulate &&
                       options.samples == 1 && options.bounces > 0;
+    frame.firefly[0] = options.localDirectClamp;
+    frame.firefly[1] = options.indirectClamp;
     append(&frame, sizeof(frame));
+    append(&options.localFireflyFilter, sizeof(options.localFireflyFilter));
     append(&lightBvh.generation, sizeof(lightBvh.generation));
     append(&integrator, sizeof(integrator));
     append(&options.validation, sizeof(options.validation));
@@ -342,7 +353,7 @@ namespace remix {
     append(&temporalEpoch, sizeof(temporalEpoch));
     configureSharc(frame, options, temporalEpoch, std::move(staticGeometry), std::move(dynamicGeometry), hasCacheReceivers);
     // An unchanged world can reuse its cached output once both histories are warm.
-    if (scene == lastScene && !options.accumulate && !debugView && denoiser && !denoiser->statistics().redrawRequested &&
+    if (scene == lastScene && !std::getenv("REMIX_PATH_LINEAR_CAPTURE") && !options.accumulate && !debugView && denoiser && !denoiser->statistics().redrawRequested &&
         !history.reset() && !(upscaler && upscaler->statistics().frames < 128) && !(sharc.stats.active && sharc.hasReceivers && sharc.warmFrames < 2 * options.sharcAccumulationFrames))
       return;
     const bool sceneChanged = scene != lastScene;
@@ -482,6 +493,9 @@ namespace remix {
     configureIndirect(frame, options, querySharc);
     beginRayProfile(command, frame);
     frame.config[2] = uint32_t(sequence++);
+    // Opt-in diagnostic offset for independently seeded HDR references.
+    if (const auto *seed = std::getenv("REMIX_PATH_SAMPLE_SEED"))
+      frame.config[2] += uint32_t(std::strtoul(seed, nullptr, 10));
     frame.config[3] = uint32_t(stats.accumulationCount);
     hostBuffer(uniform, &frame, sizeof(frame), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
     stats.samplesPerPixel = options.samples;
@@ -577,7 +591,8 @@ namespace remix {
     recordSharc(command, options);
     if (denoiser)
       denoiser->begin(command, temporalFrame, pendingProjection,
-                      history.reset() ? pendingProjection : previousProjection, world->view, sky->view);
+                      history.reset() ? pendingProjection : previousProjection, world->view, sky->view,
+                      options.localFireflyFilter && (postLocalDenoise || options.bounces > 0));
     stageTime(5);
     // Idle caches have no eligible hit in either TLAS. Select the ordinary
     // shader so unused hash-grid code does not reserve tracing registers.
@@ -657,6 +672,7 @@ namespace remix {
                        {denoiser->image(denoise::RrDiffuse), denoiser->image(denoise::RrSpecular),
                         denoiser->image(denoise::RrNormal), denoiser->image(denoise::RrHitDistance)}, resources.view());
     }
+    captureLinear(command);
     finishPbrReuse(command);
     finishRayProfile(command);
     finishLightGuiding(command);

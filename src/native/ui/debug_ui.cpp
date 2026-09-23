@@ -1,6 +1,9 @@
 #include "runtime/runtime.h"
 #include "ui/context.h"
 
+#include <algorithm>
+#include <cmath>
+#include <utility>
 #include <imgui.h>
 #include <imgui_impl_sdl3.h>
 #include <imgui_impl_vulkan.h>
@@ -113,12 +116,12 @@ namespace remix {
           ImGui::BeginDisabled(fsr.active);
           ImGui::Checkbox("Native resolution TAA", &m_traceOptions.taa);
           ImGui::EndDisabled();
-          ImGui::BeginDisabled(rrActive);
+          ImGui::BeginDisabled(rrActive || m_traceOptions.indirectClamp > 0);
           ImGui::Checkbox("Reuse water indirect samples", &m_traceOptions.waterIndirectReuse);
           ImGui::EndDisabled();
           if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Shares diffuse lighting across small flat water patches with TAA or FSR.\nEdges, overlapping layers and raw reference rendering retain full sampling.");
-          ImGui::BeginDisabled(rrActive);
+          ImGui::BeginDisabled(rrActive || m_traceOptions.localDirectClamp > 0 || m_traceOptions.indirectClamp > 0);
           ImGui::Checkbox("Experimental PBR lighting reuse", &m_traceOptions.pbrLocalReuse);
           ImGui::EndDisabled();
           if (ImGui::IsItemHovered())
@@ -129,7 +132,28 @@ namespace remix {
           ImGui::Checkbox("Progressive accumulation", &m_traceOptions.accumulate);
           if (m_traceOptions.accumulate)
             ImGui::TextUnformatted("Raw reference: requested denoiser and TAA resume afterward.");
+          for (auto [label, threshold] : {std::pair{"Local direct clamp", &m_traceOptions.localDirectClamp},
+                                         std::pair{"Indirect clamp", &m_traceOptions.indirectClamp}}) {
+            float value = *threshold;
+            if (ImGui::InputFloat(label, &value, 0.f, 0.f, "%.6g") && std::isfinite(value))
+              *threshold = std::clamp(value, 0.f, 1000000.f);
+            if (ImGui::IsItemHovered())
+              ImGui::SetTooltip("Linear scene luminance, 0 disables (maximum 1,000,000).\nLower values suppress more brightness, including legitimate highlights.");
+          }
           auto denoising = denoisingStatistics();
+          const bool fireflyFilterActive = denoising.activeDenoiser && !rrActive &&
+              (m_traceOptions.localDenoiser || m_traceOptions.bounces > 0) &&
+              m_traceOptions.localLights && m_traceOptions.localIntensity > 0 &&
+              localLightStatistics().activeLights > 0;
+          ImGui::BeginDisabled(!fireflyFilterActive);
+          ImGui::Checkbox("PBR local-light firefly filter (REBLUR)", &m_traceOptions.localFireflyFilter);
+          ImGui::EndDisabled();
+          if (!fireflyFilterActive)
+            ImGui::TextUnformatted("PBR local-light firefly filter inactive: requires REBLUR receiving local lighting.");
+          if (m_traceOptions.localDirectClamp > 0 || m_traceOptions.indirectClamp > 0)
+            ImGui::TextUnformatted("Clamping bypasses experimental PBR lighting reuse.");
+          if (m_traceOptions.indirectClamp > 0)
+            ImGui::TextUnformatted("Indirect clamping bypasses water irradiance sharing.");
           if (denoising.unavailableReason[0])
             ImGui::TextWrapped("%s", denoising.unavailableReason);
           ImGui::Text("NRD %s, TAA %s | history %llu, resets %llu", denoising.activeDenoiser ? "on" : "off",

@@ -47,6 +47,7 @@ layout(constant_id=9) const bool separateIndirect=false;
 layout(constant_id=8) const bool firstOpaqueHit=false;
 layout(constant_id=7) const bool enableRayProfile=false;
 layout(constant_id=6) const bool enablePbrReuse=false;
+layout(constant_id=10) const bool enableRussianRoulette=false;
 layout(constant_id=5) const bool enableAngularEmitters=false;
 #ifdef SPLIT_LOCAL_PASS
 layout(constant_id=4) const bool enableSplitLighting=true;
@@ -312,9 +313,11 @@ bool cacheRadiance(Hit hit,float footprint,out vec3 radiance) {
 }
 #endif
 vec3 continuation(Hit primary,out vec3 firstDirection,out float firstDistance,out vec3 specular) {
+  profilePath(0u);
+  uint rouletteState=enableRussianRoulette?hash(rng^0x726f756cu):0u;
   vec3 specularWeight;
   vec3 weight=materialSample(primary,firstDirection,specularWeight);firstDistance=0;specular=vec3(0);
-  if(primary.pbr&&!any(greaterThan(weight,vec3(0))))return vec3(0);
+  if(primary.pbr&&!any(greaterThan(weight,vec3(0)))){profilePath(6u);return vec3(0);}
   vec3 direction=firstDirection,origin=offsetRay(primary.p,primary.ng);
   vec3 throughput=primary.pbr?weight/max(materialFactor(primary),vec3(1e-6)):vec3(1),result=vec3(0);
   vec3 previousVertex=primary.p;
@@ -322,27 +325,45 @@ vec3 continuation(Hit primary,out vec3 firstDirection,out float firstDistance,ou
   float footprintScale=cacheFootprint(primary);
 #endif
   uint bounce=0,layers=0;
+  if(frame.config.y==0)profilePath(8u);
   for(uint step=0;step<164&&bounce<frame.config.y;++step) {
+    if(layers==0)profilePath(1u+bounce);
     Hit hit=secondaryHit(origin,direction);
     if(bounce==0)firstDistance+=hit.t;
-    if(hit.t==1e30) { result+=throughput*frame.skyRadiance.rgb;break; }
+    if(hit.t==1e30) { result+=throughput*frame.skyRadiance.rgb;profilePath(5u);break; }
     if(hit.blended&&random()>=hit.color.a) {
-      if(++layers>=32)break;
+      if(++layers>=32){profilePath(9u);break;}
       throughput*=hit.color.rgb;origin=offsetRay(hit.p,-hit.ng);continue;
     }
 #ifdef SHARC_QUERY
     vec3 cached;
     if(cacheRadiance(hit,length(hit.p-previousVertex)*footprintScale,cached)) {
-      result+=throughput*cached;break; // Cached outgoing radiance already includes this hit's direct light.
+      result+=throughput*cached;profilePath(7u);break; // Cached outgoing radiance already includes this hit's direct light.
     }
 #endif
     result+=throughput*direct(hit,false);
-    if(++bounce>=frame.config.y)break;
+    if(++bounce>=frame.config.y){profilePath(8u);break;}
     throughput*=materialSample(hit,direction);previousVertex=hit.p;origin=offsetRay(hit.p,hit.ng);layers=0;
 #ifdef SHARC_QUERY
     footprintScale=cacheFootprint(hit);
 #endif
-    if(!any(greaterThan(throughput,vec3(0))))break;
+    if(!any(greaterThan(throughput,vec3(0)))){profilePath(6u);break;}
+    if(enableRussianRoulette&&frame.pathConfig.x!=0&&bounce>=frame.pathConfig.y) {
+      // Undo primary material demodulation. This includes the next sampled
+      // BRDF/PDF, transmission tint and compensation from earlier survivors.
+      vec3 beta=throughput*materialFactor(primary);
+      float maximum=max(beta.x,max(beta.y,beta.z));
+      if(maximum<=0){profilePath(6u);break;}
+      float p=max(.05,pow(clamp(maximum,0,1),.25));
+      profilePath(10u);
+      if(p<1) {
+        rouletteState=hash(rouletteState+0x9e3779b9u);
+        float choice=float(rouletteState>>8)*(1.0/16777216.0);
+        if(choice>=p){profilePath(12u);break;}
+        throughput/=p;
+      }
+      profilePath(11u);
+    }
   }
   specular=result*specularWeight/max(weight,vec3(1e-20));
   clampLighting(primary,result,specular,frame.firefly.y);
@@ -530,6 +551,13 @@ void main() {
     else
       splitLocalLighting(hit,state,frame.localConfig.y,torch,emissive,torchDistance,emissiveDistance,torchSpecular,emissiveSpecular);
     storeReuse(pixel,hit,materialFactor(hit)*(torch+emissive));
+    // Capture the unfiltered signal before PBR routing clears or remodulates
+    // the local buffers. The opaque pass already wrote black for empty pixels.
+    if(frame.splitLocal.w==6) {
+      uvec4 background=imageLoad(backgroundTransmission,pixel);
+      background.rgb=floatBitsToUint(torch+emissive);
+      imageStore(backgroundTransmission,pixel,background);
+    }
     if(hit.pbr) {
       if(temporal.flags.y!=0&&temporal.local.x!=0) {
         addPbrLocal(pixel,hit,torch+emissive,torchSpecular+emissiveSpecular,nearestDistance(torchDistance,emissiveDistance));
@@ -545,11 +573,6 @@ void main() {
   float ed=normal.a>0?REBLUR_FrontEnd_GetNormHitDist(emissiveDistance,z,temporal.hitDistance.xyz,1):0;
   imageStore(localInput,pixel,REBLUR_FrontEnd_PackRadianceAndNormHitDist(torch,td,true));
   imageStore(emissiveInput,pixel,REBLUR_FrontEnd_PackRadianceAndNormHitDist(emissive,ed,true));
-  if(frame.splitLocal.w==6) {
-    uvec4 background=imageLoad(backgroundTransmission,pixel);
-    background.rgb=floatBitsToUint(torch+emissive);
-    imageStore(backgroundTransmission,pixel,background);
-  }
   return;
 #elif defined(SHARC_UPDATE_PASS)
   updateCache(pixel);return;

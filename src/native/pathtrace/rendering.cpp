@@ -33,11 +33,14 @@ namespace remix {
     }
     rendered = false;
     pendingTime = std::chrono::steady_clock::now();
+    rouletteActive = options.russianRoulette && options.rouletteMinBounces < options.bounces && !rouletteFailed;
     const uint64_t integrator =
         options.samples | uint64_t(options.bounces) << 8 | uint64_t(options.accumulate) << 16 |
         uint64_t(bool(denoiser) && postReblur) << 17 | uint64_t(bool(denoiser) && postTaa) << 18 |
         uint64_t(options.rasterPrimary) << 19 | uint64_t(bool(sharc.stats.active)) << 20 |
-        uint64_t(options.sharcDebug) << 21 | uint64_t(options.pbrLocalReuse) << 22;
+        uint64_t(options.sharcDebug) << 21 | uint64_t(options.pbrLocalReuse) << 22 |
+        uint64_t(options.russianRoulette) << 23 | uint64_t(options.rouletteMinBounces) << 24 |
+        uint64_t(rouletteFailed) << 27;
     history.begin(resources.temporalEpoch(), integrator, extent.width, extent.height);
     pendingVertices.clear();
     std::vector<trace::InstanceInput> inputs[2];
@@ -365,6 +368,8 @@ namespace remix {
                       options.samples == 1 && options.bounces > 0;
     frame.firefly[0] = options.localDirectClamp;
     frame.firefly[1] = options.indirectClamp;
+    frame.pathConfig[0] = rouletteActive;
+    frame.pathConfig[1] = options.rouletteMinBounces;
     append(&frame, sizeof(frame));
     append(&options.localFireflyFilter, sizeof(options.localFireflyFilter));
     append(&lightBvh.generation, sizeof(lightBvh.generation));

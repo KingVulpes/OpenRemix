@@ -72,8 +72,22 @@ namespace remix {
           int samples = int(m_traceOptions.samples), bounces = int(m_traceOptions.bounces);
           if (ImGui::SliderInt("Samples / pixel", &samples, 1, 16))
             m_traceOptions.samples = uint32_t(samples);
-          if (ImGui::SliderInt("Indirect bounces", &bounces, 0, 4))
+          if (ImGui::SliderInt("Maximum indirect bounces", &bounces, 0, 4))
             m_traceOptions.bounces = uint32_t(bounces);
+          if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Maximum traced indirect surface interactions per sample.\nMisses and cache hits can end tracing earlier; SHARC may supply a longer cached tail.");
+          ImGui::Checkbox("Adaptive indirect termination", &m_traceOptions.russianRoulette);
+          if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Probabilistically stop low-contribution paths and compensate survivors.\nMay reduce tracing work but increase noise; the maximum bounce limit always applies.");
+          ImGui::BeginDisabled(!m_traceOptions.russianRoulette);
+          int minimumBounces = int(m_traceOptions.rouletteMinBounces);
+          if (ImGui::SliderInt("Bounces before adaptive termination", &minimumBounces, 1, 4))
+            m_traceOptions.rouletteMinBounces = uint32_t(minimumBounces);
+          ImGui::EndDisabled();
+          if (m_traceOptions.russianRoulette && m_traceOptions.rouletteMinBounces >= m_traceOptions.bounces)
+            ImGui::TextUnformatted("Adaptive termination inactive: minimum reaches the maximum bounce limit.");
+          if (m_traceOptions.russianRoulette && m_pathTracer && !m_pathTracer->adaptiveTerminationAvailable())
+            ImGui::TextUnformatted("Adaptive termination unavailable: using fixed-limit tracing.");
           ImGui::BeginDisabled(rrActive);
           ImGui::Checkbox("REBLUR diffuse SH", &m_traceOptions.denoiser);
           ImGui::Checkbox("SIGMA sun shadows", &m_traceOptions.sigma);

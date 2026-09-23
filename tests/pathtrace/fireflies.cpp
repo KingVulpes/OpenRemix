@@ -99,6 +99,10 @@ int main(int argc, char **argv) {
     }
     for (const char *value : {"2", "yes", "-1"})
       invalid("localFireflyFilter", value);
+    for (const char *value : {"2", "-1", "yes", "", "nan", "1junk"})
+      invalid("russianRoulette", value);
+    for (const char *value : {"0", "5", "-1", "1.5", "inf", "1junk"})
+      invalid("rouletteMinBounces", value);
   }
   config("upscaler", "off");
   config("sharc", "0");
@@ -342,6 +346,8 @@ int main(int argc, char **argv) {
     config(key, option(env, fallback));
   config("dlssQuality", "native-aa");
   if (!baseline) {
+    config("russianRoulette", option("REMIX_TEST_FIREFLY_ROULETTE", "0"));
+    config("rouletteMinBounces", option("REMIX_TEST_FIREFLY_ROULETTE_MIN", "1"));
     config("localDirectClamp", option("REMIX_TEST_FIREFLY_DIRECT", "0"));
     config("indirectClamp", option("REMIX_TEST_FIREFLY_INDIRECT", "0"));
     config("localFireflyFilter", option("REMIX_TEST_FIREFLY_FILTER", "0"));
@@ -443,6 +449,33 @@ int main(int argc, char **argv) {
              << " reconstruction_frames=" << r.evaluatedFrames << " reconstruction_failures=" << r.failures
              << '\n';
     metadata << "reconstruction_reason=" << r.fallbackReason << '\n';
+    if (std::getenv("REMIX_TEST_ROULETTE_RESETS") && !baseline) {
+      config("bounces", "4");
+      config("russianRoulette", "0");
+      config("rouletteMinBounces", "1");
+      for (const char *accumulate : {"1", "0"}) {
+        config("accumulate", accumulate);
+        config("denoiser", *accumulate == '1' ? "off" : "reblur-sh");
+        config("taa", *accumulate == '1' ? "0" : "1");
+        for (const auto &[key, value] : std::initializer_list<std::pair<const char *, const char *>>{
+                 {"russianRoulette", "1"}, {"rouletteMinBounces", "2"},
+                 {"rouletteMinBounces", "4"}, {"russianRoulette", "0"}, {"rouletteMinBounces", "1"}}) {
+          for (unsigned i = 0; i < 8; ++i) frame();
+          ok(remixapi_GetDenoisingStatisticsEXT(&d));
+          const auto resets = d.historyResets;
+          config(key, value);
+          frame();
+          ok(remixapi_GetTracingStatisticsEXT(&t));
+          if (*accumulate == '1')
+            require(t.accumulationCount <= 2, "Adaptive control did not reset accumulation");
+          else {
+            for (unsigned i = 0; i < 4; ++i) frame();
+            ok(remixapi_GetDenoisingStatisticsEXT(&d));
+            require(d.historyResets > resets, "Adaptive control did not reset temporal history");
+          }
+        }
+      }
+    }
     if (std::getenv("REMIX_TEST_FIREFLY_RESETS") && !baseline) {
       config("accumulate", "1");
       for (unsigned i = 0; i < 5; ++i)

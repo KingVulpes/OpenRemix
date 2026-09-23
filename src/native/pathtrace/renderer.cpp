@@ -80,6 +80,7 @@ namespace remix {
   }
 
   void PathTracer::selectFrame(uint32_t slot) { m_gpu->selectFrame(slot); }
+  bool PathTracer::adaptiveTerminationAvailable() const { return !m_gpu->rouletteFailed; }
   void PathTracer::resetPerformance() {
     m_gpu->performance = {.structSize = sizeof(remixapi_FramePerformanceEXT)};
   }

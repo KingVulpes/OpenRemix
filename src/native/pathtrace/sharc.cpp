@@ -27,6 +27,7 @@ namespace remix {
     check(result);
     lightingPipelines[out] = {code, size, pipelineLayout};
     lightingPipelines[out].supportsGuiding = &out == &sharc.query || &out == &sharc.temporal;
+    lightingPipelines[out].supportsRoulette = &out != &sharc.update;
   }
 
   void PathTracer::Gpu::destroySharc(bool temporalOnly) {

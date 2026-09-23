@@ -10,6 +10,8 @@ if get_option('gpu_tests')
     include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
   test('Live diagnostics preserve lighting histories', debug_views_test,
     args : [meson.current_build_dir() / 'debug-view-scenes'], timeout : 300)
+  test('PBR local diagnostics preserve zero-bounce lighting', debug_views_test,
+    args : [meson.current_build_dir() / 'debug-view-pbr-scenes', 'pbr'], timeout : 300)
   adaptive_sampling_test = executable('remix-adaptive-sampling-test', 'adaptive_sampling.cpp',
     include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
   test('Adaptive light budget continuity and configured floors', adaptive_sampling_test,
@@ -292,6 +294,9 @@ if get_option('gpu_tests')
   test('Local firefly controls HDR and history resets', fireflies_test,
     args : [meson.current_build_dir() / 'firefly-scenes'],
     env : ['REMIX_TEST_FIREFLY_RESETS=1'], timeout : 300)
+  test('Adaptive indirect controls and history resets', fireflies_test,
+    args : [meson.current_build_dir() / 'adaptive-indirect-scenes'],
+    env : ['REMIX_TEST_ROULETTE_RESETS=1'], timeout : 300)
 endif
 
 if get_option('gpu_tests')

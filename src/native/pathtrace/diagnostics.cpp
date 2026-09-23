@@ -11,11 +11,14 @@ namespace remix {
     if (const char *path = std::getenv("REMIX_PATH_LINEAR_CAPTURE")) {
       auto source = world->handle;
       linearCapture.packedPbr = false;
+      linearCapture.hitDistance = false;
       if (const auto *signal = std::getenv("REMIX_PATH_LINEAR_SIGNAL"); signal && denoiser) {
-        if (!std::strcmp(signal, "diffuse") || !std::strcmp(signal, "specular")) {
+        if (!std::strcmp(signal, "diffuse") || !std::strcmp(signal, "specular") ||
+            !std::strcmp(signal, "hit-distance")) {
           source = denoiser->image(!std::strcmp(signal, "diffuse") ? denoise::Sh0 : denoise::PbrSpecularInput)
                        .image;
           linearCapture.packedPbr = true;
+          linearCapture.hitDistance = !std::strcmp(signal, "hit-distance");
         }
       }
       const VkDeviceSize size =
@@ -60,6 +63,12 @@ namespace remix {
               const auto offset = (VkDeviceSize(y) * linearCapture.extent.width + x) * 4;
               if (linearCapture.packedPbr) {
                 const auto *pixels = static_cast<const uint16_t *>(mapped) + offset;
+                if (linearCapture.hitDistance) {
+                  const float distance = half(pixels[3]);
+                  const float rgb[] = {distance, distance, distance};
+                  std::fwrite(rgb, sizeof(float), 3, file);
+                  continue;
+                }
                 const float Y = half(pixels[0]), Co = half(pixels[1]), Cg = half(pixels[2]);
                 // NRD packed radiance uses YCoCg, and each lobe has its own material factor.
                 const float rgb[] = {std::max(0.f, Y - Cg + Co), std::max(0.f, Y + Cg),

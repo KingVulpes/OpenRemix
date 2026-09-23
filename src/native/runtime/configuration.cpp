@@ -138,6 +138,10 @@ namespace remix {
       m_traceOptions.samples = number;
     else if (!std::strcmp(key, "bounces") && number <= 4)
       m_traceOptions.bounces = number;
+    else if (!std::strcmp(key, "russianRoulette") && number <= 1)
+      m_traceOptions.russianRoulette = number != 0;
+    else if (!std::strcmp(key, "rouletteMinBounces") && number >= 1 && number <= 4)
+      m_traceOptions.rouletteMinBounces = number;
     else if (!std::strcmp(key, "accumulate") && number <= 1)
       m_traceOptions.accumulate = number != 0;
     else if (!std::strcmp(key, "sigma") && number <= 1)

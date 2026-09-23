@@ -8,6 +8,8 @@
 namespace remix {
   struct TraceOptions {
     uint32_t samples = 1, bounces = 2;
+    bool russianRoulette = false;
+    uint32_t rouletteMinBounces = 1;
     bool accumulate = false, forceRebuild = false;
     bool denoiser = true, taa = true, validation = false;
     upscale::Mode upscaler = upscale::Mode::Auto;
@@ -72,6 +74,7 @@ namespace remix {
                  scene::TraceFrame &scene);
     void record(VkCommandBuffer command);
     remixapi_TracingStatisticsEXT statistics() const;
+    bool adaptiveTerminationAvailable() const;
     void resetPerformance();
     remixapi_FramePerformanceEXT performance() const;
 

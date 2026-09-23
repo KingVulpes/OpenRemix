@@ -57,6 +57,7 @@ layout(set=0,binding=3,std140) uniform Frame {
   uvec4 reuseConfig;
   uint64_t indirectResults, blueNoise;
   vec4 firefly; // outgoing local direct / indirect luminance limits; reserved
+  uvec4 pathConfig; // adaptive termination, minimum completed bounces, reserved
 } frame;
 layout(set=0,binding=6) uniform sampler2D textures[512];
 vec2 materialParameters(Surface s,vec2 uv) {

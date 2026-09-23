@@ -110,8 +110,9 @@ namespace remix::trace::detail {
     uint32_t reuseConfig[4] = {}; // previous frame valid, diagnostics, ray counter address low/high
     uint64_t indirectResults = 0, blueNoise = 0;
     float firefly[4] = {}; // outgoing local direct / indirect luminance limits; reserved
+    uint32_t pathConfig[4] = {}; // adaptive termination, minimum completed bounces, reserved
   };
-  static_assert(sizeof(Frame) == 528 && offsetof(Frame, firefly) == 512 && offsetof(Frame, indirectResults) == 496 && offsetof(Frame, lightGuideRead) == 384 && offsetof(Frame, lightGuideConfig) == 400 && offsetof(Frame, lightNodes) == 336 && offsetof(Frame, localConfig) == 352 && offsetof(Frame, localScale) == 368 && offsetof(Frame, skyRadiance) == 224 &&
+  static_assert(sizeof(Frame) == 544 && offsetof(Frame, pathConfig) == 528 && offsetof(Frame, firefly) == 512 && offsetof(Frame, indirectResults) == 496 && offsetof(Frame, lightGuideRead) == 384 && offsetof(Frame, lightGuideConfig) == 400 && offsetof(Frame, lightNodes) == 336 && offsetof(Frame, localConfig) == 352 && offsetof(Frame, localScale) == 368 && offsetof(Frame, skyRadiance) == 224 &&
                 offsetof(Frame, sharcHash) == 240 && offsetof(Frame, sharcConfig) == 272 &&
                 offsetof(Frame, sharcGrid) == 288 && offsetof(Frame, sharcPreviousCamera) == 304 && offsetof(Frame, sun) == 320);
   inline float linear(float c) { return c <= .04045f ? c / 12.92f : std::pow((c + .055f) / 1.055f, 2.4f); }
@@ -202,6 +203,7 @@ namespace remix {
       std::map<uint32_t, std::pair<VkPipeline, bool>> specialized;
       bool attempted = false, guidingAttempted = false;
       bool supportsGuiding = true;
+      bool supportsRoulette = true;
       bool preferFirstHit = true;
       VkPipeline smallSet[2] = {};
       bool smallAttempted[2] = {};
@@ -231,6 +233,7 @@ namespace remix {
     bool localResamplingActive = false;
     bool localAngularActive = false;
     bool localGuidingActive = false;
+    bool rouletteActive = false, rouletteFailed = false;
     VkPipeline selectLightingPipeline(VkPipeline pipeline, bool combinedDirect = false, bool separateIndirect = false);
     void forgetLightingPipeline(VkPipeline pipeline);
     VkShaderModule shaders[3] = {};
@@ -417,7 +420,7 @@ namespace remix {
       std::unique_ptr<Buffer> readback;
       std::string path;
       VkExtent2D extent{};
-      bool packedPbr = false;
+      bool packedPbr = false, hitDistance = false;
     } linearCapture;
     void captureLinear(VkCommandBuffer command);
     void completeLinearCapture();

@@ -39,7 +39,9 @@ only its previous Vulkan 1.1 graphics/presentation capabilities.
 | --- | --- | --- |
 | `primaryVisibility` | `raster`, `ray` | raster |
 | `samples` | 1–16 samples per pixel per presentation | 1 |
-| `bounces` | 0–4 indirect diffuse bounces | 2 |
+| `bounces` | 0–4 maximum indirect bounces per sample | 2 |
+| `russianRoulette` | `0`, `1`, `false`, `true`; adaptive indirect termination | false |
+| `rouletteMinBounces` | 1–4 completed bounces before adaptive termination | 1 |
 | `accumulate` | `0`, `1`, `false`, `true` | false |
 | `denoiser` | `off`, `reblur-sh` | reblur-sh |
 | `taa` | `0`, `1`, `false`, `true` | true |
@@ -48,6 +50,42 @@ only its previous Vulkan 1.1 graphics/presentation capabilities.
 | `forceRebuild` | Same booleans; rebuild dynamic TLAS for profiling | false |
 | `sky` | Same booleans; indirect environment illumination | true |
 | `sharc` | Same booleans; [diffuse and rough PBR radiance cache](features/sharc.md) | true |
+
+F12 exposes **Maximum indirect bounces**, **Adaptive indirect termination**, and
+**Bounces before adaptive termination**. The maximum remains a hard limit on
+traced surface interactions for each sample. At zero there is no indirect light;
+at one the first indirect hit and its lighting are retained. Transparent-sheet
+traversal has its own 32-layer limit. A SHARC hit can return cached lighting from
+paths longer than the remaining traced depth.
+
+Adaptive termination is opt-in and inactive when its minimum is at least the
+maximum. After the minimum completed hits, it uses Russian roulette to stop some
+low-throughput paths before the next segment. Surviving paths receive reciprocal
+probability compensation. The conservative probability is
+`max(0.05, pow(clamp(max(beta.r, beta.g, beta.b), 0, 1), 0.25))`, where `beta` is
+physical throughput including the next sampled BRDF/PDF, transmission tint and
+previous compensation. Zero-energy paths stop without a random draw. An independent
+random stream preserves surviving paths' BRDF samples; diffuse and specular share
+the same compensation. SHARC training keeps its existing fixed-depth estimator.
+
+This preserves the expected unclamped radiance but increases sampling variance.
+Brightness clamps and denoisers can react differently to compensated tails;
+REBLUR may show more noise or unstable highlights. Savings depend on path depth,
+materials and cache hits, and may be small at two bounces. The default stays off.
+Changing either control resets temporal histories and progressive accumulation.
+The disabled shader is specialized to remove roulette work. If the adaptive
+pipeline cannot be created, tracing uses the fixed limit and F12 reports it.
+This option is independent of DLSS Ray Reconstruction.
+
+`REMIX_RAY_PROFILE` adds sampled continuation starts, depths, exit reasons and
+roulette tests/survivors/stops for each pass, separately from shadow rays. Counters
+sample one pixel in 64 and exclude SHARC training and confidence replay. Use
+`scripts/experiments/indirect_termination.py` for fixed-mode equivalence, depth and
+termination accounting, integration checks, independently seeded HDR comparisons,
+and denoiser motion captures. Run capture and ray diagnostics separately from timing.
+`REMIX_PATH_LINEAR_SIGNAL=hit-distance` captures the PBR specular input's normalized
+first-hit distance in RGB for comparisons before filtering; disable local lighting
+when isolating continuation distances.
 
 The last distant light drawn during a frame is selected, including zero radiance.
 Direction specifies the direction light travels; radiance and color are linear.

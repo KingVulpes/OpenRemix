@@ -23,7 +23,8 @@ namespace {
   }
 }
 int main(int argc, char **argv) {
-  require(argc == 2, "Supply screenshot directory");
+  const bool pbrOnly = argc == 3 && std::string(argv[2]) == "pbr";
+  require(argc == 2 || pbrOnly, "Supply screenshot directory and optional pbr mode");
   const auto directory = std::filesystem::absolute(argv[1]);
   std::filesystem::create_directories(directory);
   remixapi_Interface api{};
@@ -56,17 +57,21 @@ int main(int argc, char **argv) {
   uint64_t next = 1;
   std::vector<remixapi_MaterialHandle> materials;
   std::vector<remixapi_MeshHandle> meshes;
-  auto quad = [&](float z, remixapi_Float3D color, float alpha) {
+  auto quad = [&](float z, remixapi_Float3D color, float alpha, float emission = 0.f) {
+    remixapi_MaterialInfoPbrEXT pbr{};
+    pbr.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_PBR_EXT; pbr.enabled = pbrOnly;
     remixapi_MaterialInfoOpaqueEXT opaque{};
     opaque.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_EXT;
+    opaque.pNext = &pbr; opaque.roughnessConstant = .65f;
     opaque.albedoConstant = color; opaque.opacityConstant = alpha; opaque.alphaTestType = 7;
     remixapi_MaterialInfo mat{};
     mat.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO; mat.hash = next++; mat.pNext = &opaque;
+    mat.emissiveIntensity = emission; mat.emissiveColorConstant = color;
     remixapi_MaterialHandle material{}; ok(api.CreateMaterial(&mat, &material)); materials.push_back(material);
     remixapi_HardcodedVertex v[4]{};
     for (int i = 0; i < 4; ++i) {
-      v[i].position[0] = i == 0 || i == 3 ? -2.f : 2.f;
-      v[i].position[1] = i < 2 ? -2.f : 2.f;
+      v[i].position[0] = emission ? (i == 0 || i == 3 ? -.8f : -.4f) : (i == 0 || i == 3 ? -2.f : 2.f);
+      v[i].position[1] = emission ? (i < 2 ? -.8f : -.4f) : (i < 2 ? -2.f : 2.f);
       v[i].position[2] = z;
       v[i].color = 0xffffffff;
     }
@@ -81,6 +86,7 @@ int main(int argc, char **argv) {
   };
   const auto receiver = quad(2, {.3f, .6f, .9f}, 1);
   const auto glass = quad(1, {.1f, 1, .2f}, .5f);
+  const auto emitter = pbrOnly ? quad(1, {0, 0, 1}, 1, 4) : nullptr;
   remixapi_CameraEnvironmentEXT environment{};
   environment.sType = REMIXAPI_STRUCT_TYPE_CAMERA_ENVIRONMENT_EXT;
   environment.enabled = 1; environment.radiance = {.2f, .4f, .6f};
@@ -101,7 +107,7 @@ int main(int argc, char **argv) {
   sphere.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_SPHERE_EXT; sphere.position = {0, 0, 1}; sphere.radius = .05f;
   light.pNext = &sphere; light.hash = next++; light.radiance = {40, 0, 0};
   remixapi_LightHandle torch{}; ok(api.CreateLight(&light, &torch));
-  bool showGlass = false;
+  bool showGlass = false, showTorch = true, showEmitter = false;
   auto draw = [&](remixapi_MeshHandle mesh) {
     remixapi_InstanceIdentityEXT id{};
     id.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_IDENTITY_EXT;
@@ -117,8 +123,11 @@ int main(int argc, char **argv) {
   };
   auto frame = [&] {
     ok(api.PumpEvents()); ok(api.SetupCamera(&camera));
-    ok(api.DrawLightInstance(sun)); ok(api.DrawLightInstance(torch)); draw(receiver);
+    ok(api.DrawLightInstance(sun));
+    if (showTorch) ok(api.DrawLightInstance(torch));
+    draw(receiver);
     if (showGlass) draw(glass);
+    if (showEmitter) draw(emitter);
     ok(api.Present(nullptr));
   };
   auto stats = [&] {
@@ -141,8 +150,39 @@ int main(int argc, char **argv) {
     stbi_image_free(data); return image;
   };
   auto sample = [&](const Image &image) { return image[(height / 2 - 10) * width + width / 2 + 10]; };
+  auto localMean = [&](const Image &image) {
+    // A mixed-light pixel can select only one family. Average a receiver patch
+    // clear of the visible emitter so both sampled families have coverage.
+    Color result{};
+    for (int y = height / 2 - 16; y < height / 2 - 4; ++y)
+      for (int x = width / 2 + 4; x < width / 2 + 16; ++x)
+        for (unsigned c = 0; c < 3; ++c) result[c] += image[y * width + x][c] / 144.f;
+    return result;
+  };
   Image referenceIds;
-  for (const char *primary : {"raster", "ray"}) for (unsigned mode = 0; mode < 4; ++mode) {
+  if (pbrOnly) {
+    config("bounces", "0"); config("taa", "0");
+    config("denoiser", "reblur-sh"); config("localSamples", "16");
+    config("localFireflyFilter", "1");
+    for (const char *primary : {"raster", "ray"}) for (unsigned family = 0; family < 3; ++family) {
+      config("primaryVisibility", primary);
+      showTorch = family != 1; showEmitter = family != 0;
+      for (const char *split : {"0", "1", "2", "3"}) for (const char *filtered : {"0", "1"}) {
+        config("separateLocalLighting", split); config("localDenoiser", filtered);
+        config("debugView", "0");
+        for (unsigned i = 0; i < 8; ++i) frame();
+        const auto initial = stats();
+        const auto prefix = std::string(primary) + "-pbr-" + std::to_string(family) + "-split" + split + "-filter" + filtered;
+        const auto local = localMean(capture(prefix + "-local", 6));
+        if (showTorch) require(local[0] > .005f, "PBR torch lighting absent from raw local diagnostic");
+        if (showEmitter) require(local[2] > .005f, "PBR emissive lighting absent from raw local diagnostic");
+        near(sample(capture(prefix + "-indirect", 7)), {0, 0, 0}, .001f, "PBR zero-bounce indirect debug not black");
+        require(stats().historyResets == initial.historyResets, "PBR diagnostics reset lighting history");
+        require(stats().activeDenoiser == initial.activeDenoiser, "PBR diagnostics changed active denoiser");
+        std::printf("PBR local diagnostics verified: %s\n", prefix.c_str());
+      }
+    }
+  } else for (const char *primary : {"raster", "ray"}) for (unsigned mode = 0; mode < 4; ++mode) {
     config("primaryVisibility", primary);
     config("denoiser", mode >= 2 ? "reblur-sh" : "off");
     config("taa", mode ? "1" : "0");

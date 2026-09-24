@@ -215,6 +215,11 @@ extern "C" VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceProperties(VkPhysicalDe
 extern "C" VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceFeatures2(VkPhysicalDevice device,
                                                                    VkPhysicalDeviceFeatures2 *features) {
   reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(resolve("vkGetPhysicalDeviceFeatures2"))(device, features);
+  if (fault("pathtrace-capability")) {
+    for (auto *next = static_cast<VkBaseOutStructure *>(features->pNext); next; next = next->pNext)
+      if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR)
+        reinterpret_cast<VkPhysicalDeviceRayQueryFeaturesKHR *>(next)->rayQuery = VK_FALSE;
+  }
   if (fault("sharc-capability")) {
     for (auto *next = static_cast<VkBaseOutStructure *>(features->pNext); next; next = next->pNext)
       if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES)
@@ -250,4 +255,12 @@ extern "C" VKAPI_ATTR VkResult VKAPI_CALL vkCreateBuffer(VkDevice device, const 
     return VK_ERROR_OUT_OF_DEVICE_MEMORY;
   }
   return reinterpret_cast<PFN_vkCreateBuffer>(resolve("vkCreateBuffer"))(device, info, alloc, output);
+}
+
+// Simulate display scaling without changing the desktop configuration.
+struct SDL_Window;
+extern "C" float SDL_GetWindowDisplayScale(SDL_Window *window) {
+  if (fault("ui-high-dpi")) return 2.f;
+  using GetScale = float (*)(SDL_Window *);
+  return reinterpret_cast<GetScale>(dlsym(RTLD_NEXT, "SDL_GetWindowDisplayScale"))(window);
 }

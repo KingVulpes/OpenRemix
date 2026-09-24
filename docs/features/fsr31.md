@@ -1,6 +1,6 @@
 # FSR 3.1 upscaling
 
-F12 → **Upscaling → FSR 3.1** enables AMD FidelityFX Super Resolution 3.1.4 for
+F12 → **Rendering → Reconstruction → Requested upscaler → FSR 3.1** enables AMD FidelityFX Super Resolution 3.1.4 for
 the path-traced world. The default `auto` selects DLSS + Ray Reconstruction, DLSS SR, then native rendering according to availability.
 FSR replaces TAA while active. REBLUR SH, local-light REBLUR, SIGMA and SHARC remain
 independent lighting controls. Frame generation is not included.

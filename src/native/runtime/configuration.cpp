@@ -33,193 +33,53 @@
 
 namespace remix {
   remixapi_ErrorCode RemixNativeRuntime::selectBackend(const char *value) {
-    if (!std::strcmp(value, "raster")) {
-      m_requestedBackend = 0;
-      return REMIXAPI_ERROR_CODE_SUCCESS;
-    }
-    if (std::strcmp(value, "pathtrace"))
+    auto next = m_profiles.current();
+    if (config::set(next, "rtx.native.backend", value) != config::SetResult::Success)
       return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
-    if (!m_traceSupported) {
+    if (next.backend && !m_traceSupported) {
       SDL_Log("Path tracing unavailable: %s", m_traceUnavailable.c_str());
       return REMIXAPI_ERROR_CODE_FEATURE_UNAVAILABLE;
     }
-    m_requestedBackend = 1;
+    m_backendFailed = false;
+    m_profiles.edit(next);
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  }
+
+  remixapi_ErrorCode RemixNativeRuntime::configureSetting(const char *key, const char *value) {
+    auto next = m_profiles.current();
+    if (config::set(next, key, value) != config::SetResult::Success || !m_profiles.edit(next))
+      return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
     return REMIXAPI_ERROR_CODE_SUCCESS;
   }
 
   remixapi_ErrorCode RemixNativeRuntime::configureTracing(const char *key, const char *value) {
-    if (!std::strcmp(key, "upscaler")) {
-      const char *modes[] = {"off", "auto", "fsr31", "dlss"};
-      for (uint32_t i = 0; i < 4; ++i) if (!std::strcmp(value, modes[i])) {
-        m_traceOptions.upscaler = upscale::Mode(i);
-        return REMIXAPI_ERROR_CODE_SUCCESS;
-      }
-      return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
-    }
-    if (!std::strcmp(key, "dlssRayReconstruction")) {
-      if (std::strcmp(value, "0") && std::strcmp(value, "1")) return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
-      m_traceOptions.dlssRayReconstruction = !std::strcmp(value, "1");
+    if (!std::strcmp(key, "sharcReset")) {
+      unsigned number = 0;
+      const auto end = value + std::strlen(value);
+      auto parsed = std::from_chars(value, end, number);
+      if (std::strcmp(value, "true") && (parsed.ec != std::errc{} || parsed.ptr != end || number != 1))
+        return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+      ++m_sharcReset;
       return REMIXAPI_ERROR_CODE_SUCCESS;
     }
-    if (!std::strcmp(key, "fsrQuality") || !std::strcmp(key, "dlssQuality")) {
-      const char* modes[] = {"native-aa", "quality", "balanced", "performance", "ultra-performance"};
-      for (uint32_t i = 0; i < 5; ++i) {
-        if (!std::strcmp(value, modes[i])) {
-          (!std::strcmp(key, "fsrQuality") ? m_traceOptions.fsrQuality : m_traceOptions.dlssQuality) = i;
-          return REMIXAPI_ERROR_CODE_SUCCESS;
-        }
-      }
-      return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
-    }
-    if (!std::strcmp(key, "fsrSharpness")) {
-      float sharpness = 0;
-      const char* end = value + std::strlen(value);
-      auto parsed = std::from_chars(value, end, sharpness);
-      if (parsed.ec != std::errc{} || parsed.ptr != end || !std::isfinite(sharpness) || sharpness < 0 || sharpness > 1)
-        return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
-      m_traceOptions.fsrSharpness = sharpness;
-      return REMIXAPI_ERROR_CODE_SUCCESS;
-    }
-    if (!std::strcmp(key, "primaryVisibility")) {
-      if (std::strcmp(value, "raster") && std::strcmp(value, "ray"))
-        return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
-      m_traceOptions.rasterPrimary = !std::strcmp(value, "raster");
-      return REMIXAPI_ERROR_CODE_SUCCESS;
-    }
-    if (!std::strcmp(key, "denoiser")) {
-      if (std::strcmp(value, "off") && std::strcmp(value, "reblur-sh"))
-        return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
-      m_traceOptions.denoiser = !std::strcmp(value, "reblur-sh");
-      return REMIXAPI_ERROR_CODE_SUCCESS;
-    }
-    if (!std::strcmp(key, "localDirectClamp") || !std::strcmp(key, "indirectClamp")) {
-      float threshold = 0;
-      const char *end = value + std::strlen(value);
-      const auto parsed = std::from_chars(value, end, threshold);
-      if (parsed.ec != std::errc{} || parsed.ptr != end || !std::isfinite(threshold) ||
-          threshold < 0 || threshold > 1000000)
-        return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
-      (!std::strcmp(key, "localDirectClamp") ? m_traceOptions.localDirectClamp : m_traceOptions.indirectClamp) = threshold;
-      return REMIXAPI_ERROR_CODE_SUCCESS;
-    }
-    if (!std::strcmp(key, "localIntensity") || !std::strcmp(key, "localRange")) {
-      const bool range = !std::strcmp(key, "localRange");
-      float intensity = 0;
-      const char *end = value + std::strlen(value);
-      auto parsed = std::from_chars(value, end, intensity);
-      if (parsed.ec != std::errc{} || parsed.ptr != end || !std::isfinite(intensity) || intensity < 0 || intensity > (range ? 1024 : 100) ||
-          (range && intensity > 0 && intensity < .01f))
-        return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
-      (range ? m_traceOptions.localRange : m_traceOptions.localIntensity) = intensity;
-      return REMIXAPI_ERROR_CODE_SUCCESS;
-    }
-    if (!std::strcmp(key, "sunAngularDiameter")) {
-      float diameter = 0;
-      const char *end = value + std::strlen(value);
-      auto parsed = std::from_chars(value, end, diameter);
-      if (parsed.ec != std::errc{} || parsed.ptr != end || !std::isfinite(diameter) ||
-          (diameter != -1 && (diameter < 0 || diameter > 10)))
-        return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
-      m_traceOptions.sunAngularDiameter = diameter;
-      return REMIXAPI_ERROR_CODE_SUCCESS;
-    }
-    unsigned number = 0;
-    const char *end = value + std::strlen(value);
-    auto parsed = std::from_chars(value, end, number);
-    if (parsed.ec != std::errc{} || parsed.ptr != end) {
-      if (!std::strcmp(value, "true"))
-        number = 1;
-      else if (!std::strcmp(value, "false"))
-        number = 0;
-      else
-        return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
-    }
-    if (!std::strcmp(key, "samples") && number >= 1 && number <= 16)
-      m_traceOptions.samples = number;
-    else if (!std::strcmp(key, "bounces") && number <= 4)
-      m_traceOptions.bounces = number;
-    else if (!std::strcmp(key, "russianRoulette") && number <= 1)
-      m_traceOptions.russianRoulette = number != 0;
-    else if (!std::strcmp(key, "rouletteMinBounces") && number >= 1 && number <= 4)
-      m_traceOptions.rouletteMinBounces = number;
-    else if (!std::strcmp(key, "accumulate") && number <= 1)
-      m_traceOptions.accumulate = number != 0;
-    else if (!std::strcmp(key, "sigma") && number <= 1)
-      m_traceOptions.sigma = number != 0;
-    else if (!std::strcmp(key, "blueNoiseShadows") && number <= 1)
-      m_traceOptions.blueNoiseShadows = number != 0;
-    else if (!std::strcmp(key, "blueNoiseLocalLights") && number <= 1)
-      m_traceOptions.blueNoiseLocalLights = number != 0;
-    else if (!std::strcmp(key, "prism") && number <= 1)
-      m_traceOptions.prism = number != 0;
-    else if (!std::strcmp(key, "gamma22") && number <= 1)
-      m_traceOptions.gamma22 = number != 0;
-    else if (!std::strcmp(key, "localLights") && number <= 1)
-      m_traceOptions.localLights = number != 0;
-    else if (!std::strcmp(key, "torchLights") && number <= 1)
-      m_traceOptions.torchLights = number != 0;
-    else if (!std::strcmp(key, "emissiveLights") && number <= 1)
-      m_traceOptions.emissiveLights = number != 0;
-    else if (!std::strcmp(key, "adaptiveLocalSampling") && number <= 1)
-      m_traceOptions.adaptiveLocalSampling = number != 0;
-    else if (!std::strcmp(key, "stabilizeEmissiveLighting") && number <= 1)
-      m_traceOptions.stabilizeEmissiveLighting = number != 0;
-    else if (!std::strcmp(key, "emissiveSolidAngleSampling") && number <= 1)
-      m_traceOptions.emissiveSolidAngleSampling = number != 0;
-    else if (!std::strcmp(key, "freezeEmissiveRadiance") && number <= 1)
-      m_traceOptions.freezeEmissiveRadiance = number != 0;
-    else if (!std::strcmp(key, "emissiveCandidates") && number >= 1 && number <= 8)
-      m_traceOptions.emissiveCandidates = number;
-    else if (!std::strcmp(key, "separateLocalLighting") && number <= 3)
-      m_traceOptions.separateLocalLighting = number;
-    else if (!std::strcmp(key, "localFireflyFilter") && number <= 1)
-      m_traceOptions.localFireflyFilter = number != 0;
-    else if (!std::strcmp(key, "localDenoiser") && number <= 1)
-      m_traceOptions.localDenoiser = number != 0;
-    else if (!std::strcmp(key, "localGuiding") && number <= 1)
-      m_traceOptions.localGuiding = number != 0;
-    else if (!std::strcmp(key, "localSamples") && number >= 1 && number <= 16)
-      m_traceOptions.localSamples = number;
-    else if (!std::strcmp(key, "shadowDebug") && number <= 2)
-      m_traceOptions.shadowDebug = number;
-    else if (!std::strcmp(key, "debugView") && number <= 11)
-      m_traceOptions.debugView = number;
-    else if (!std::strcmp(key, "taa") && number <= 1)
-      m_traceOptions.taa = number != 0;
-    else if (!std::strcmp(key, "waterIndirectReuse") && number <= 1)
-      m_traceOptions.waterIndirectReuse = number != 0;
-    else if (!std::strcmp(key, "pbrLocalReuse") && number <= 1)
-      m_traceOptions.pbrLocalReuse = number != 0;
-    else if (!std::strcmp(key, "validation") && number <= 1)
-      m_traceOptions.validation = number != 0;
-    else if (!std::strcmp(key, "sharc") && number <= 1)
-      m_traceOptions.sharc = number != 0;
-    else if (!std::strcmp(key, "sharcDebug") && number <= 1)
-      m_traceOptions.sharcDebug = number != 0;
-    else if (!std::strcmp(key, "sharcReset") && number == 1)
-      ++m_traceOptions.sharcReset;
-    else if (!std::strcmp(key, "sharcCapacityLog2") && number >= 16 && number <= 22)
-      m_traceOptions.sharcCapacityLog2 = number;
-    else if (!std::strcmp(key, "sharcDownscale") && number >= 1 && number <= 16)
-      m_traceOptions.sharcDownscale = number;
-    else if (!std::strcmp(key, "sharcSceneScale") && number >= 1 && number <= 200)
-      m_traceOptions.sharcSceneScale = number;
-    else if (!std::strcmp(key, "sharcAccumulationFrames") && number >= 1 && number <= 1024)
-      m_traceOptions.sharcAccumulationFrames = number;
-    else if (!std::strcmp(key, "sharcStaleFrames") && number >= 8 && number <= 1024)
-      m_traceOptions.sharcStaleFrames = number;
-    else if (!std::strcmp(key, "sky") && number <= 1)
-      m_traceOptions.sky = number != 0;
-    else if (!std::strcmp(key, "forceRebuild") && number <= 1)
-      m_traceOptions.forceRebuild = number != 0;
-    else
-      return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
-    return REMIXAPI_ERROR_CODE_SUCCESS;
+    return configureSetting((std::string("rtx.native.pathtrace.") + key).c_str(), value);
+  }
+
+  void RemixNativeRuntime::applySettings() {
+    const auto &settings = m_profiles.current();
+    if (m_requestedBackend != settings.backend) m_backendFailed = false;
+    m_requestedBackend = settings.backend;
+    m_targetBackend = m_traceSupported && !m_backendFailed ? settings.backend : 0;
+    m_appliedSettings = settings;
+    m_traceOptions = settings.trace;
+    m_traceOptions.sharcReset = m_sharcReset;
+    m_vsync = settings.vsync;
+    std::copy(settings.clearColor.begin(), settings.clearColor.end(), m_clearColor);
   }
 
   upscale::Statistics RemixNativeRuntime::reconstructionStatistics() const {
     auto result = m_pathTracer ? m_pathTracer->upscalingStatistics() : upscale::Statistics{};
-    result.requested = m_traceOptions.upscaler;
+    result.requested = m_profiles.current().trace.upscaler;
     if (m_ngx) {
       const auto caps = m_ngx->capabilities();
       result.srSupported = caps.sr; result.rrSupported = caps.rr; result.sdkAvailable = caps.sdk;
@@ -231,7 +91,7 @@ namespace remix {
     remixapi_BackendCapabilitiesEXT result = {.structSize = sizeof(result),
                                               .supportedBackends = m_traceSupported ? 3u : 1u,
                                               .activeBackend = m_backend,
-                                              .requestedBackend = m_requestedBackend};
+                                              .requestedBackend = m_profiles.current().backend};
     std::strncpy(result.unavailableReason, m_traceUnavailable.c_str(), sizeof(result.unavailableReason) - 1);
     return result;
   }
@@ -240,14 +100,14 @@ namespace remix {
     auto result = m_pathTracer
                       ? m_pathTracer->statistics()
                       : remixapi_TracingStatisticsEXT{.structSize = sizeof(remixapi_TracingStatisticsEXT)};
-    result.redrawRequested = (m_backend && (result.redrawRequested || m_traceOptions.accumulate)) ||
-                             m_backend != m_requestedBackend;
+    result.redrawRequested = (m_backend && (result.redrawRequested || m_profiles.current().trace.accumulate)) ||
+                             m_backend != m_targetBackend || m_profiles.current() != m_appliedSettings;
     return result;
   }
   remixapi_SharcStatisticsEXT RemixNativeRuntime::sharcStatistics() const {
     auto result = m_pathTracer ? m_pathTracer->sharcStatistics()
                               : remixapi_SharcStatisticsEXT{.structSize = sizeof(remixapi_SharcStatisticsEXT)};
-    result.requested = m_traceOptions.sharc;
+    result.requested = m_profiles.current().trace.sharc;
     if (!m_pathTracer)
       std::strncpy(result.unavailableReason, REMIX_HAS_SHARC ? "Path tracing is inactive" : "SHARC was disabled at build time",
                    sizeof(result.unavailableReason) - 1);
@@ -256,31 +116,31 @@ namespace remix {
   remixapi_LocalLightGuidingStatisticsEXT RemixNativeRuntime::localLightGuidingStatistics() const {
     auto result = m_pathTracer ? m_pathTracer->localLightGuidingStatistics()
         : remixapi_LocalLightGuidingStatisticsEXT{.structSize = sizeof(remixapi_LocalLightGuidingStatisticsEXT)};
-    result.requested = m_traceOptions.localGuiding;
-    result.influenceRange = m_traceOptions.localRange;
+    result.requested = m_profiles.current().trace.localGuiding;
+    result.influenceRange = m_profiles.current().trace.localRange;
     return result;
   }
   remixapi_LocalLightStatisticsEXT RemixNativeRuntime::localLightStatistics() const {
     auto result = m_pathTracer ? m_pathTracer->localLightStatistics()
         : remixapi_LocalLightStatisticsEXT{.structSize = sizeof(remixapi_LocalLightStatisticsEXT)};
-    result.enabled = m_traceOptions.localLights;
-    result.samples = m_traceOptions.localSamples;
+    result.enabled = m_profiles.current().trace.localLights;
+    result.samples = m_profiles.current().trace.localSamples;
     return result;
   }
   remixapi_ShadowStatisticsEXT RemixNativeRuntime::shadowStatistics() const {
     auto result = m_pathTracer ? m_pathTracer->shadowStatistics()
                               : remixapi_ShadowStatisticsEXT{.structSize = sizeof(remixapi_ShadowStatisticsEXT)};
-    result.requested = m_traceOptions.sigma;
+    result.requested = m_profiles.current().trace.sigma;
     return result;
   }
   remixapi_DenoisingStatisticsEXT RemixNativeRuntime::denoisingStatistics() const {
     auto result =
         m_pathTracer ? m_pathTracer->denoisingStatistics()
                      : remixapi_DenoisingStatisticsEXT{.structSize = sizeof(remixapi_DenoisingStatisticsEXT)};
-    result.requestedDenoiser = m_traceOptions.denoiser;
-    result.requestedTaa = m_traceOptions.taa;
-    if (!m_pathTracer && ((m_traceOptions.denoiser && !m_denoiseCapabilities.reblurShSupported) ||
-                          (m_traceOptions.taa && !m_denoiseCapabilities.taaSupported)))
+    result.requestedDenoiser = m_profiles.current().trace.denoiser;
+    result.requestedTaa = m_profiles.current().trace.taa;
+    if (!m_pathTracer && ((m_profiles.current().trace.denoiser && !m_denoiseCapabilities.reblurShSupported) ||
+                          (m_profiles.current().trace.taa && !m_denoiseCapabilities.taaSupported)))
       std::strncpy(result.unavailableReason, m_denoiseCapabilities.unavailableReason,
                    sizeof(result.unavailableReason) - 1);
     return result;

@@ -56,6 +56,10 @@ namespace remix {
     m_frameCount = frames && std::strcmp(frames, "1") == 0 ? 1u : gpuFrameCount;
     m_srgb = !info.disableSrgbConversionForOutput;
     try {
+      m_profiles.startup();
+      m_profileUi = {};
+      m_uiState = REMIXAPI_UI_STATE_NONE;
+      if (!m_profiles.message().empty()) SDL_Log("OpenRemix profiles: %s", m_profiles.message().c_str());
       auto status = m_window.initialize(info);
       if (status != REMIXAPI_ERROR_CODE_SUCCESS) {
         return status;
@@ -83,6 +87,7 @@ namespace remix {
       if (status != REMIXAPI_ERROR_CODE_SUCCESS) {
         return finish(status);
       }
+      applySettings();
       m_raster.initializeGpu(m_physicalDevice, m_device);
       status = createFrameResources();
       if (status != REMIXAPI_ERROR_CODE_SUCCESS) {
@@ -125,6 +130,16 @@ namespace remix {
     m_vsync = false;
     m_backend = m_requestedBackend = 0;
     m_traceOptions = {};
+    m_profiles.savePanel(m_profiles.panel());
+    m_profiles = {};
+    m_appliedSettings = {};
+    m_profileUi = {};
+    m_backendFailed = false;
+    m_targetBackend = 0;
+    m_sharcReset = 0;
+    const auto defaults = config::Settings{};
+    std::copy(defaults.clearColor.begin(), defaults.clearColor.end(), m_clearColor);
+    m_input[0] = 0;
     m_traceSupported = false;
     m_denoiseCapabilities = {.structSize = sizeof(remixapi_DenoisingCapabilitiesEXT)};
     m_uiState = REMIXAPI_UI_STATE_NONE;

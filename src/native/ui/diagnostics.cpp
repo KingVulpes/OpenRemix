@@ -1,0 +1,99 @@
+#include "runtime/runtime.h"
+#include "ui/widgets.h"
+#include <algorithm>
+#include <cmath>
+#include <imgui.h>
+#include <utility>
+
+namespace remix {
+  void RemixNativeRuntime::drawDiagnosticsTab(config::Settings &settings) {
+    auto &options = settings.trace;
+    const bool rrActive =
+        m_pathTracer && m_pathTracer->upscalingStatistics().backend == upscale::Backend::DlssRr;
+    if (ImGui::CollapsingHeader("Debug views", ImGuiTreeNodeFlags_DefaultOpen)) {
+      int view = int(options.debugView);
+      if (ui::Combo(
+              "Debug view", &view,
+              "Final lighting\0Albedo\0Shading normals\0Triangle IDs\0Depth bands\0World position grid\0"
+              "Raw local lighting\0Raw indirect lighting\0Motion vectors\0Motion validity\0"
+              "Indirect lighting confidence\0TAA current-frame weight\0"))
+        options.debugView = uint32_t(view);
+      static const char *help[] = {
+          "Start with Triangle IDs and Shading normals at the problem angle, then compare Raw local "
+          "lighting. Compare both Primary visibility options above.",
+          "Unlit base color of the first visible surface. Flicker here points to visibility or material "
+          "data.",
+          "World-space shading normals: RGB = XYZ mapped to 0..1. Includes authored vertex normals and "
+          "material normal maps; missing vertex normals fall back to flat faces.",
+          "Colors identify submitted triangles. Coplanar surfaces swapping visibility change color. "
+          "Remeshing can also change IDs; palette collisions are possible.",
+          "Distance from the camera, repeating black to white every 4 world units. Sudden patches can reveal "
+          "visibility or position jumps.",
+          "World position as RGB, repeating every world unit. Look for moving discontinuities inside a flat "
+          "face.",
+          "Unfiltered direct local illumination on opaque receivers, including torches and emissives, before "
+          "albedo and transparent tint. Uses the current display tonemapper.",
+          "Unfiltered indirect illumination before albedo and transparent tint. Includes SHARC when enabled; "
+          "zero bounces is black.",
+          "Opaque motion guides: red/green = horizontal/vertical pixels, gray = zero, full range = +/-16 "
+          "pixels. Magenta = invalid motion.",
+          "Opaque motion correspondence: green = available, red = invalid/reset. This precedes per-pixel "
+          "depth/normal history rejection.",
+          "REBLUR indirect confidence: white = high trust, black = low. This is not the local-light "
+          "denoiser's history.",
+          "Actual native TAA blend weight: white = current frame only; darker = more history. Unavailable "
+          "with FSR or TAA off."};
+      ImGui::TextWrapped("%s", help[options.debugView]);
+      if (options.debugView) {
+        ImGui::TextWrapped(
+            "Diagnostics display live internal pixels without temporal filtering. Lighting histories and "
+            "requested settings keep running. FSR pixels are enlarged without filtering.");
+        ImGui::TextWrapped("Purple checkerboard means the selected signal is unavailable. Normal subpixel "
+                           "jitter remains visible at edges.");
+      }
+    }
+    int shadowView = int(options.shadowDebug);
+    if (ui::Combo("Shadow view", &shadowView, "Final lighting\0Raw visibility\0SIGMA visibility\0"))
+      options.shadowDebug = uint32_t(shadowView);
+    ImGui::BeginDisabled(rrActive);
+    ui::Checkbox("NRD validation", &options.validation);
+    ImGui::EndDisabled();
+    ui::Checkbox("Progressive accumulation", &options.accumulate);
+    if (options.accumulate)
+      ImGui::TextWrapped("%s", "Raw reference: requested denoiser and TAA resume afterward.");
+    ui::Checkbox("Force dynamic TLAS rebuild", &options.forceRebuild);
+    ui::Checkbox("Freeze emissive radiance", &options.freezeEmissiveRadiance);
+    if (ImGui::CollapsingHeader("Performance statistics", ImGuiTreeNodeFlags_DefaultOpen)) {
+      ImGui::TextWrapped("%s", m_properties.deviceName);
+      ImGui::TextWrapped("Vulkan %u.%u.%u", VK_VERSION_MAJOR(m_properties.apiVersion),
+                         VK_VERSION_MINOR(m_properties.apiVersion),
+                         VK_VERSION_PATCH(m_properties.apiVersion));
+      const auto &io = ImGui::GetIO();
+      ImGui::TextWrapped("Presentation: %.2f ms / %.1f FPS", io.Framerate > 0 ? 1000.0f / io.Framerate : 0.0f,
+                         io.Framerate);
+      ImGui::TextWrapped("Scene: %zu surface draws", m_raster.pendingDrawCount());
+      auto s = tracingStatistics();
+      ImGui::TextWrapped("Accumulated frames: %llu", (unsigned long long)s.accumulationCount);
+      ImGui::TextWrapped("BLAS builds / refits / compactions: %llu / %llu / %llu",
+                         (unsigned long long)s.blasBuilds, (unsigned long long)s.blasRefits,
+                         (unsigned long long)s.blasCompactions);
+      ImGui::TextWrapped("Static TLAS builds: %llu", (unsigned long long)s.staticTlasBuilds);
+      ImGui::TextWrapped("Dynamic TLAS builds / refits: %llu / %llu", (unsigned long long)s.dynamicTlasBuilds,
+                         (unsigned long long)s.dynamicTlasRefits);
+      ImGui::TextWrapped("Rebuild reason: %u; refits since build: %u", s.dynamicRebuildReason,
+                         s.dynamicRefitCount);
+      ImGui::TextWrapped("Acceleration memory: %.1f MiB", double(s.accelerationBytes) / (1024 * 1024));
+      if (s.gpuTimingsAvailable) {
+        ImGui::TextWrapped("GPU builds %.3f ms; tracing %.3f ms", s.gpuBuildMilliseconds,
+                           s.gpuTraceMilliseconds);
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Tracing includes sun and local shadows, indirect rays, and transparent "
+                            "sheets.\nDenoiser timings are reported separately.");
+      }
+    }
+    if (ImGui::CollapsingHeader("Input and clear color", ImGuiTreeNodeFlags_DefaultOpen)) {
+      ui::ColorEdit3("Clear color", settings.clearColor.data());
+      ui::InputText("Input", m_input, sizeof(m_input));
+    }
+  }
+} // namespace remix

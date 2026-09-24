@@ -102,3 +102,6 @@ Normal macOS builds/packages use the SDK's MoltenVK.
 
 Original project licenses remain in `LICENSE` and `LICENSE-MIT`. Current dependency
 notices are in `ThirdPartyLicenses.txt`; removed dependency notices are archived under `docs/history`. ImGui's upstream license is in `third_party/imgui/LICENSE.txt`.
+
+The [F12 developer panel and configuration profiles](docs/features/configuration-profiles.md)
+provide per-game saved settings, tabbed controls, and independent panel layout preferences.

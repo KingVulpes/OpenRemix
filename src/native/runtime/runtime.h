@@ -26,6 +26,8 @@
 #include "pathtrace/renderer.h"
 #include "platform/window.h"
 #include "runtime/screenshot.h"
+#include "runtime/profiles.h"
+#include "ui/profiles.h"
 #include "platform/gpu_frames.h"
 #include <remix/remix_c.h>
 #include <vector>
@@ -65,7 +67,7 @@ namespace remix {
     remixapi_BackendCapabilitiesEXT backendCapabilities() const;
     remixapi_TracingStatisticsEXT tracingStatistics() const;
     remixapi_SharcStatisticsEXT sharcStatistics() const;
-    void setVsync(bool enabled) { m_vsync = enabled; }
+    remixapi_ErrorCode configureSetting(const char *key, const char *value);
     remixapi_UIState uiState() const { return m_uiState; }
     void setUiState(remixapi_UIState state) {
       m_uiState = state;
@@ -98,6 +100,11 @@ namespace remix {
     bool initializeUiVulkan();
     void shutdownUiVulkan();
     void drawUi(VkCommandBuffer commandBuffer);
+    void drawRenderingTab(config::Settings &settings);
+    void drawLightingTab(config::Settings &settings);
+    void drawPostProcessingTab(config::Settings &settings);
+    void drawDiagnosticsTab(config::Settings &settings);
+    void applySettings();
     static bool processEvent(const SDL_Event *event, void *userData);
 
     RemixSdlWindow m_window;
@@ -105,6 +112,12 @@ namespace remix {
     std::shared_ptr<upscale::Ngx> m_ngx;
     std::unique_ptr<PathTracer> m_pathTracer;
     TraceOptions m_traceOptions;
+    config::Profiles m_profiles;
+    config::Settings m_appliedSettings;
+    ui::ProfileUi m_profileUi;
+    uint64_t m_sharcReset = 0;
+    uint32_t m_targetBackend = 0;
+    bool m_backendFailed = false;
     uint32_t m_backend = 0, m_requestedBackend = 0, m_instanceApiVersion = VK_API_VERSION_1_1;
     bool m_traceSupported = false;
     remixapi_DenoisingCapabilitiesEXT m_denoiseCapabilities{.structSize =

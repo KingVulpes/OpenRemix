@@ -27,7 +27,7 @@ namespace remix {
     io.IniFilename = nullptr;
     io.LogFilename = nullptr;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    ImGui::StyleColorsDark();
+    ui::toolkitStyle();
     if (!ImGui_ImplSDL3_InitForVulkan(m_window.handle())) {
       return false;
     }
@@ -40,6 +40,7 @@ namespace remix {
 
   bool RemixNativeRuntime::initializeUiVulkan() {
     UiScope scope(m_gui);
+    ui::toolkitColors(m_swapchainFormat == VK_FORMAT_R8G8B8A8_SRGB || m_swapchainFormat == VK_FORMAT_B8G8R8A8_SRGB);
     ImGui_ImplVulkan_InitInfo info = {};
     info.ApiVersion = VK_API_VERSION_1_1;
     info.Instance = m_instance;

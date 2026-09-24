@@ -14,14 +14,14 @@ and private headers together. Tests mirror these features under `tests`.
 | Folder | Owns |
 | --- | --- |
 | `api` | SDK interface assembly, exported functions, API serialization, callbacks, game values, and compatibility stubs |
-| `runtime` | Startup/shutdown, Vulkan device and swapchain lifecycle, frame presentation, backend selection, and screenshots |
+| `runtime` | Startup/shutdown, Vulkan device and swapchain lifecycle, frame presentation, backend selection, settings registry, profile persistence, and screenshots |
 | `scene` | CPU resource validation and lifetime, types/math, texture decoding, materials, meshes, cameras, instances, lights, and submitted UI geometry |
 | `raster` | GPU uploads and caches, allocation, pipelines, draw preparation, recording, and raster shaders |
 | `pathtrace` | Acceleration allocation, geometry cache, BLAS builds/compaction, TLAS builds/refits and policy, frame preparation/accumulation, rasterized primary G-buffer/depth passes, optional SHARC cache ownership/update/resolve/query, dispatch, and tracing shaders |
 | `denoise` | Independent REBLUR SH / local radiance / SIGMA instances, dispatch binding, texture pools, per-dispatch constants, confidence filtering, SH resolve, sun visibility resolve, TAA and temporal diagnostics |
 | `upscale` | NGX SR/RR and FSR 3.1 contexts, input preparation, reconstruction history, display composition and timing |
 | `platform` | SDL windows/surfaces, events, input state, and key/button translation |
-| `ui` | ImGui integration and the debug panel |
+| `ui` | ImGui integration, tab components, profile dialogs, and unsaved-action controller |
 
 Headers are included by feature, such as `scene/resources.h`. Vendor headers use
 Meson's system include directories; first-party files do not traverse vendor trees
@@ -153,3 +153,19 @@ the organization change, with SHA-256 manifests and restoration instructions. Gi
 history, linked worktrees, `ref/`, and external symlink targets were preserved. Restoring
 an old build can require its original absolute paths and source revision; archives
 are not active dependency prefixes.
+
+## Configuration ownership
+
+`runtime/settings` defines the CPU-only requested snapshot and common validation /
+serialization registry. API calls, profile loads, and UI edits use this registry.
+`runtime/profiles` owns the current and saved snapshots, transactional file loading,
+atomic saves, selection state, and independent panel preferences. Plain trace and
+upscaler option types do not depend on GPU headers.
+
+UI drawing edits a draft and commits it to the profile session. The runtime copies
+the requested snapshot before the next frame's scene preparation. Effective backend
+selection is separate, so unsupported devices and initialization failures preserve
+the request. Existing backend and temporal-history synchronization remains in the
+presentation and feature paths. Profile startup restoration precedes subsequent API
+overrides. See [configuration profiles](features/configuration-profiles.md) for the
+file format and user workflow.

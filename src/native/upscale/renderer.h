@@ -1,11 +1,11 @@
 #pragma once
 #include "platform/gpu_frames.h"
+#include "upscale/options.h"
 #include "scene/types.h"
 #include <memory>
 #include <string>
 #include <vulkan/vulkan.h>
 namespace remix::upscale {
-enum class Mode : uint32_t { Off, Auto, Fsr31, Dlss };
 enum class Backend : uint32_t { Native, Fsr31, DlssSr, DlssRr };
 const char *name(Backend backend);
 class Ngx;

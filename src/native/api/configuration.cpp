@@ -37,17 +37,13 @@ namespace remix::api {
       return g_runtime.selectBackend(value);
     if (std::strncmp(key, "rtx.native.pathtrace.", 21) == 0)
       return g_runtime.configureTracing(key + 21, value);
-    if (std::strcmp(key, "rtx.native.vsync") != 0) {
-      // Recognized legacy renderer namespace: accepted but ignored by the unlit renderer.
-      return std::strncmp(key, "rtx.", 4) == 0 ? REMIXAPI_ERROR_CODE_SUCCESS
-                                               : REMIXAPI_ERROR_CODE_FEATURE_UNAVAILABLE;
-    }
-    const bool enabled = SDL_strcasecmp(value, "true") == 0 || std::strcmp(value, "1") == 0;
-    if (!enabled && SDL_strcasecmp(value, "false") != 0 && std::strcmp(value, "0") != 0) {
-      return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
-    }
-    g_runtime.setVsync(enabled);
-    return REMIXAPI_ERROR_CODE_SUCCESS;
+    const bool clearColor = std::strlen(key) == 23 && std::strncmp(key, "rtx.native.clearColor.", 22) == 0 &&
+                            std::strchr("rgba", key[22]);
+    if (std::strcmp(key, "rtx.native.vsync") == 0 || clearColor)
+      return g_runtime.configureSetting(key, value);
+    // Recognized legacy renderer namespace: accepted but ignored by the unlit renderer.
+    return std::strncmp(key, "rtx.", 4) == 0 ? REMIXAPI_ERROR_CODE_SUCCESS
+                                           : REMIXAPI_ERROR_CODE_FEATURE_UNAVAILABLE;
   }
 
 } // namespace remix::api

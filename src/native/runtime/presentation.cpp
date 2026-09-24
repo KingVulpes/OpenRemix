@@ -91,6 +91,7 @@ namespace remix {
     if (!m_window.isVulkanSurfaceCurrent()) {
       m_recreateSurface = true;
     }
+    applySettings();
     if (state.minimized || !state.drawableWidth || !state.drawableHeight) {
       return REMIXAPI_ERROR_CODE_SUCCESS;
     }
@@ -110,7 +111,7 @@ namespace remix {
       // no GPU resources. Prepare while submitted frames run; commit lighting,
       // upload and retire resources only after the reused slot's fence.
       std::optional<scene::TraceFrame> traceScene;
-      if (m_pathTracer && m_requestedBackend)
+      if (m_pathTracer && m_targetBackend)
         traceScene = measured(p.sceneMilliseconds, [&] { return m_pathTracer->prepareScene(m_raster, m_traceOptions); });
       // Bounded waits keep unavailable surfaces and a stalled GPU from blocking the caller indefinitely.
       VkResult result = measured(p.fenceMilliseconds, [&] {
@@ -122,11 +123,11 @@ namespace remix {
       if (result != VK_SUCCESS) {
         return fail(result);
       }
-      if (m_backend != m_requestedBackend) {
+      if (m_backend != m_targetBackend) {
         result = vkDeviceWaitIdle(m_device);
         if (result != VK_SUCCESS)
           return fail(result);
-        if (m_requestedBackend) {
+        if (m_targetBackend) {
           try {
             auto tracer = std::make_unique<PathTracer>();
             tracer->initialize(m_physicalDevice, m_device, m_queueFamily);
@@ -145,11 +146,13 @@ namespace remix {
               throw;
             m_traceUnavailable = "Path tracing resource initialization failed; raster remains active";
             SDL_Log("%s", m_traceUnavailable.c_str());
-            m_requestedBackend = 0;
+            m_targetBackend = 0;
+            m_backendFailed = true;
           } catch (...) {
             m_traceUnavailable = "Path tracing resource initialization failed; raster remains active";
             SDL_Log("%s", m_traceUnavailable.c_str());
-            m_requestedBackend = 0;
+            m_targetBackend = 0;
+            m_backendFailed = true;
           }
         } else {
           m_pathTracer.reset();

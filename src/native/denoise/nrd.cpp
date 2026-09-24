@@ -142,6 +142,14 @@ namespace remix::denoise {
     nrd::CommonSettings common{};
     std::copy(projection.begin(), projection.end(), common.viewToClipMatrix);
     std::copy(previousProjection.begin(), previousProjection.end(), common.viewToClipMatrixPrev);
+    // Our projections include Vulkan's framebuffer Y flip. NRD reconstructs
+    // positions and projects history using UV Y opposite to clip-space Y,
+    // so undo that flip at this boundary for both frames. Motion and jitter
+    // already use top-left image coordinates and must keep their signs.
+    for (int column = 0; column < 4; ++column) {
+      common.viewToClipMatrix[column * 4 + 1] *= -1;
+      common.viewToClipMatrixPrev[column * 4 + 1] *= -1;
+    }
     std::copy(frame.view.begin(), frame.view.end(), common.worldToViewMatrix);
     std::copy(frame.previousView.begin(), frame.previousView.end(), common.worldToViewMatrixPrev);
     for (int i = 0; i < 2; ++i) {

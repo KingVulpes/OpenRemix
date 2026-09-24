@@ -2,6 +2,12 @@ policy_test = executable('remix-tlas-policy-test', 'tlas_policy.cpp',
   include_directories : test_includes, link_with : pathtrace_library)
 test('Tracing scene and TLAS policy', policy_test)
 if get_option('gpu_tests')
+  if get_option('nrd')
+    nrd_motion_test = executable('remix-nrd-motion-test', 'nrd_motion.cpp',
+      include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
+    test('NRD moving camera guide agreement', nrd_motion_test,
+      args : [meson.current_build_dir() / 'nrd-motion'], timeout : 300, is_parallel : false)
+  endif
   layered_depth_test = executable('remix-layered-depth-test', 'layered_depth.cpp',
     include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
   test('Raster primary close cutout depth ordering', layered_depth_test,

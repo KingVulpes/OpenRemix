@@ -90,6 +90,12 @@ layers such as biome-tinted grass overlays. Depth written to the color guides
 and final composition remains in the public camera's forward 0..1 convention,
 so raster gameplay feedback and reconstruction keep their existing inputs.
 
+NRD's integration boundary removes the Vulkan framebuffer Y flip from both
+current and previous projection matrices. NRD reconstructs positions and projects
+history with its own clip-to-image Y conversion. Motion vectors and jitter are
+already in top-left image coordinates and retain their signs; the shared Vulkan
+camera matrices used by tracing, TAA and upscaling remain unchanged.
+
 Tracing prepares CPU scene snapshots before waiting for the reused submission
 slot's fence. `scene/trace_frame` groups and validates instances, samples one animation
 time for the frame, reduces emissive textures, and constructs area emitters. Its

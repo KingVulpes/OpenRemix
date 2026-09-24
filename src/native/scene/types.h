@@ -42,6 +42,7 @@ namespace remix {
       float roughness = 1, metallic = 0;
       bool pbr = false;
       float emission[3] = {};
+      bool suppressEmissionLight = false;
       mutable std::unordered_map<uint64_t, std::array<float, 3>> emissionCache;
       float tint[4] = {1, 1, 1, 1};
       uint32_t compare = 7;

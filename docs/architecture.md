@@ -96,6 +96,12 @@ history with its own clip-to-image Y conversion. Motion vectors and jitter are
 already in top-left image coordinates and retain their signs; the shared Vulkan
 camera matrices used by tracing, TAA and upscaling remain unchanged.
 
+`MaterialInfoEmissionEXT::suppressLightGeneration` separates a material's visible
+emission from automatic area-light generation. Scene preparation skips its area
+emitters while retaining the emissive color and texture for both primary visibility
+paths. Explicit analytic lights are independent. The default remains visible and
+light-emitting; material replacement and temporal signatures include the policy.
+
 Tracing prepares CPU scene snapshots before waiting for the reused submission
 slot's fence. `scene/trace_frame` groups and validates instances, samples one animation
 time for the frame, reduces emissive textures, and constructs area emitters. Its

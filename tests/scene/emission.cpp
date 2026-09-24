@@ -1,5 +1,6 @@
 #include "scene/fixtures.h"
 #include "scene/emission.h"
+#include "scene/trace_frame.h"
 #include "scene/light_bvh.h"
 #include <cmath>
 #include <limits>
@@ -96,6 +97,33 @@ int main() {
   rejected([&]{resources.createMaterial(info,handle);});
   resources.drawInstance(instance(mesh));
   require(resources.draws()[0].material->emission[0]==2, "Rejected material replaced accepted emission");
+  info.emissiveIntensity=2;
+  remixapi_MaterialInfoEmissionEXT policy{};
+  policy.sType=REMIXAPI_STRUCT_TYPE_MATERIAL_EMISSION_EXT;
+  opaque.pNext=&policy;
+  policy.suppressLightGeneration=2;
+  rejected([&]{resources.createMaterial(info,handle);});
+  auto original=resources.draws()[0].material;
+  policy.suppressLightGeneration=1;
+  resources.createMaterial(info,handle);
+  resources.drawInstance(instance(mesh));
+  auto suppressed=resources.draws().back();
+  require(suppressed.material!=original && suppressed.material->suppressEmissionLight &&
+              suppressed.material->emission[0]==2 && !original->suppressEmissionLight,
+          "Emission policy replacement changed visible radiance or queued material");
+  SurfaceEmissionCache cache;
+  require(prepareTraceFrame({suppressed},0,false,cache).emitters.empty(),
+          "Visible-only material generated area lights");
+  policy.suppressLightGeneration=0;
+  resources.createMaterial(info,handle);
+  resources.drawInstance(instance(mesh));
+  require(prepareTraceFrame({resources.draws().back()},0,false,cache).emitters.size()==2,
+          "Re-enabling emission did not restore area lights");
+  opaque.pNext=nullptr;
+  resources.createMaterial(info,handle);
+  resources.drawInstance(instance(mesh));
+  require(!resources.draws().back().material->suppressEmissionLight,
+          "Absent emission policy did not preserve default light generation");
   // Exercise every encoded channel, including both sides of the sRGB knee.
   // Uniform texels have an analytic average independent of UV quadrature.
   m.emissionTexture = std::make_shared<Texture>();

@@ -13,6 +13,16 @@ typedef struct remixapi_MaterialInfoPbrEXT {
   remixapi_Bool enabled;
 } remixapi_MaterialInfoPbrEXT;
 
+// Optional MaterialInfo pNext. Keep the visible emissive color/map while
+// suppressing generated area lights, e.g. when an explicit analytic light
+// already represents the source. Absent/zero preserves emissive lighting.
+#define REMIXAPI_STRUCT_TYPE_MATERIAL_EMISSION_EXT ((remixapi_StructType)0x7fff100a)
+typedef struct remixapi_MaterialInfoEmissionEXT {
+  remixapi_StructType sType;
+  const void* pNext;
+  remixapi_Bool suppressLightGeneration;
+} remixapi_MaterialInfoEmissionEXT;
+
 // Optional MeshInfo pNext. An opt-in replacement of the same mesh hash may
 // reuse update-capable geometry when all surface vertex counts and index values
 // match. DestroyMesh ends that lifetime. This is a storage hint, not object or

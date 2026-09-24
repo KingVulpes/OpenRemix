@@ -16,6 +16,7 @@ namespace remix::scene {
     auto add = [&](const auto &v) { hash = hashBytes(&v, sizeof(v), hash); };
     add(m.tint);
     add(m.emission);
+    add(m.suppressEmissionLight);
     add(m.roughness);
     add(m.metallic);
     add(m.pbr);

@@ -247,6 +247,18 @@ int main(int argc, char **argv) {
       require(std::abs(capture(prefix+"emissive-visible-casting-off",16)[0]-radiance)<.015,
               "Emissive casting toggle hid the visible map");
       config("emissiveLights","1");
+      remixapi_MaterialInfoEmissionEXT policy{};
+      policy.sType=REMIXAPI_STRUCT_TYPE_MATERIAL_EMISSION_EXT;
+      policy.suppressLightGeneration=1; opaque.pNext=&policy;
+      ok(api.CreateMaterial(&info,&emitterMaterial));
+      require(std::abs(capture(prefix+"visible-only-emission",16)[0]-radiance)<.015,
+              "Per-material suppression hid the visible emissive map");
+      ok(remixapi_GetLocalLightStatisticsEXT(&stats));
+      require(stats.activeLights==0,"Visible-only material generated duplicate area lights");
+      enclosure={emitter};
+      require(capture(prefix+"visible-only-receiver",16)[0]<.004,
+              "Visible-only material still cast light");
+      opaque.pNext=nullptr; ok(api.CreateMaterial(&info,&emitterMaterial));
     }
     // A visible red/black/green/black map must retain detail even though its
     // emitter triangles still use CPU-averaged radiance.

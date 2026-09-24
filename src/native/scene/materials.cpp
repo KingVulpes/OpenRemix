@@ -87,6 +87,11 @@ namespace remix {
     for (unsigned c = 0; c < 3; ++c)
       material->emission[c] = (&info.emissiveColorConstant.x)[c] * info.emissiveIntensity;
     finite(material->emission, 3);
+    if (const auto *emission = static_cast<const remixapi_MaterialInfoEmissionEXT *>(
+            extension(info.pNext, REMIXAPI_STRUCT_TYPE_MATERIAL_EMISSION_EXT))) {
+      if (emission->suppressLightGeneration > 1) throw invalid;
+      material->suppressEmissionLight = emission->suppressLightGeneration != 0;
+    }
     if (info.emissiveTexture && *info.emissiveTexture)
       material->emissionTexture = texturePath(info.emissiveTexture);
     auto previous = m_materials.find(info.hash);
@@ -96,6 +101,7 @@ namespace remix {
       material->emissionCache = previous->second->emissionCache;
     auto equal = [&](const Material &a, const Material &b) {
       return a.texture == b.texture && a.emissionTexture == b.emissionTexture &&
+             a.suppressEmissionLight == b.suppressEmissionLight &&
              a.roughnessTexture == b.roughnessTexture && a.metallicTexture == b.metallicTexture &&
              a.normalTexture == b.normalTexture && a.roughness == b.roughness &&
              a.metallic == b.metallic && a.pbr == b.pbr &&

@@ -5,6 +5,9 @@
 #include "posix_layout.h"
 #endif
 _Static_assert(REMIXAPI_VERSION_MINOR == 1003, "ABI line");
+_Static_assert(sizeof(remixapi_MaterialInfoEmissionEXT) == 24, "Material emission extension ABI");
+_Static_assert(offsetof(remixapi_MaterialInfoEmissionEXT, suppressLightGeneration) == 16,
+               "Material emission policy alignment");
 _Static_assert(sizeof(remixapi_CameraEnvironmentEXT) == 32, "Camera environment ABI");
 _Static_assert(offsetof(remixapi_CameraEnvironmentEXT, enabled) == 16, "Camera environment enabled");
 _Static_assert(offsetof(remixapi_CameraEnvironmentEXT, radiance) == 20, "Camera environment radiance");

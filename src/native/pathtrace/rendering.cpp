@@ -332,6 +332,7 @@ namespace remix {
     localResamplingActive = localIlluminationActive && frame.localScale[2] > 1;
     frame.localScale[3] = options.localRange > 0 ? 1.f / (options.localRange * options.localRange) : 0;
     frame.camera = resources.camera();
+    primaryReverseDepth = resources.reverseDepth();
     frame.inverseCamera = scene::inverse(frame.camera);
     const auto eye = scene::inverse(resources.view());
     std::copy_n(eye.data() + 12, 3, frame.eye);

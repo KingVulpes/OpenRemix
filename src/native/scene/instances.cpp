@@ -79,6 +79,17 @@ namespace remix {
       camera[c * 4 + 1] = -camera[c * 4 + 1];
     } // Vulkan framebuffer Y.
     finite(camera.data(), 16);
+    // Reverse clip depth before multiplying by the view matrix. Subtracting
+    // already-rounded clip Z from W in the shader would retain the precision
+    // loss that makes nearby layers (such as grass-side overlays) fight.
+    std::array<float, 4> reverseDepth{};
+    for (int c = 0; c < 4; ++c) {
+      double value = 0;
+      for (int k = 0; k < 4; ++k)
+        value += (double(projection[k * 4 + 3]) - projection[k * 4 + 2]) * view[c * 4 + k];
+      reverseDepth[c] = float(value);
+    }
+    finite(reverseDepth.data(), reverseDepth.size());
     // Validate every extension before committing any camera or world state.
     std::array<float, 3> sky = {};
     if (const auto *environment = static_cast<const remixapi_CameraEnvironmentEXT *>(
@@ -100,6 +111,7 @@ namespace remix {
     }
     m_cameras[info.type] = camera;
     m_views[info.type] = view;
+    m_reverseDepth[info.type] = reverseDepth;
     m_cameraValid[info.type] = true;
   }
 

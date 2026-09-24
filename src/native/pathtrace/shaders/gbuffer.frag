@@ -9,6 +9,7 @@ layout(push_constant) uniform Draw {
   vec2 jitter;
   uint surfaceIndex;
   uint stableDepth;
+  vec4 reverseDepth;
 } draw;
 layout(location=0) in vec3 position;
 layout(location=1) flat in vec3 normal;
@@ -42,11 +43,11 @@ void main() {
 #ifdef STABLE_DEPTH
   // Blended sheets do not occlude raster particles or coplanar feedback.
   if((s.state.w&2)!=0)discard;
-  outDepth=gl_FragCoord.z;
+  outDepth=1-gl_FragCoord.z;
 #else
   vec3 n=normalize(normal);
   if(dot(n,direction)>0)n=-n;
-  outPosition=vec4(position,gl_FragCoord.z);
+  outPosition=vec4(position,1-gl_FragCoord.z);
   // Zero is the cleared background, one opaque/cutout, two a blended sheet.
   vec3 smoothNormal=shadingNormal(authoredNormal,n,normalize(-direction));
   vec3 t=tangent-smoothNormal*dot(smoothNormal,tangent);

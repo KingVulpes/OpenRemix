@@ -2,6 +2,10 @@ policy_test = executable('remix-tlas-policy-test', 'tlas_policy.cpp',
   include_directories : test_includes, link_with : pathtrace_library)
 test('Tracing scene and TLAS policy', policy_test)
 if get_option('gpu_tests')
+  layered_depth_test = executable('remix-layered-depth-test', 'layered_depth.cpp',
+    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
+  test('Raster primary close cutout depth ordering', layered_depth_test,
+    args : [meson.current_build_dir() / 'layered-depth'], timeout : 180, is_parallel : false)
   guide_cells_test = executable('remix-guide-cells-test', 'guide_cells.cpp',
     include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
   test('Colored guide cells and linear lighting energy', guide_cells_test,

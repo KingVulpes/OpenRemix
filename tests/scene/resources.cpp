@@ -129,13 +129,15 @@ namespace {
     temporal.pNext = &environment;
     r.setupCamera(cam);
     const auto accepted = r.camera(), acceptedView = r.view();
+    const auto acceptedDepth = r.reverseDepth();
     const auto acceptedSky = r.skyRadiance();
     require(acceptedSky == std::array<float, 3>{.2f, .4f, .8f}, "Linear sky was altered");
     params.position.x = 2;
     temporal.worldEpoch = 13;
     auto invalidEnvironment = [&] {
       rejected([&] { r.setupCamera(cam); });
-      require(r.camera() == accepted && r.view() == acceptedView && r.skyRadiance() == acceptedSky &&
+      require(r.camera() == accepted && r.view() == acceptedView && r.reverseDepth() == acceptedDepth &&
+                  r.skyRadiance() == acceptedSky &&
                   r.temporalEpoch().world == 7,
               "Invalid environment changed accepted camera state");
     };
@@ -168,6 +170,35 @@ namespace {
     r.setupCamera(cam);
     r.reset();
     require(r.skyRadiance() == std::array<float, 3>{}, "Reset retained sky");
+    require(r.reverseDepth() == std::array<float, 4>{0, 0, -1, 1}, "Reset retained camera depth");
+    // The private primary-depth transform must preserve clipping and retain a
+    // millimeter overlay after a translated camera, for both camera APIs.
+    for (bool parameterized : {false, true}) {
+      remixapi_CameraInfo depthCamera{};
+      depthCamera.sType = REMIXAPI_STRUCT_TYPE_CAMERA_INFO;
+      remixapi_CameraInfoParameterizedEXT depthParameters{};
+      depthParameters.sType = REMIXAPI_STRUCT_TYPE_CAMERA_INFO_PARAMETERIZED_EXT;
+      depthParameters.position = {0, 0, 4096};
+      depthParameters.right = {1, 0, 0}; depthParameters.up = {0, 1, 0};
+      depthParameters.forward = {0, 0, 1}; depthParameters.fovYInDegrees = 90;
+      depthParameters.aspect = 1; depthParameters.nearPlane = .05f; depthParameters.farPlane = 512;
+      for (int i = 0; i < 4; ++i) depthCamera.view[i][i] = 1;
+      depthCamera.view[3][2] = -4096;
+      depthCamera.projection[0][0] = depthCamera.projection[1][1] = 1;
+      depthCamera.projection[2][2] = 512.f / 511.95f;
+      depthCamera.projection[2][3] = 1;
+      depthCamera.projection[3][2] = -.05f * depthCamera.projection[2][2];
+      depthCamera.pNext = parameterized ? &depthParameters : nullptr;
+      r.setupCamera(depthCamera);
+      auto depthAt = [&](float distance) {
+        const auto &row = r.reverseDepth();
+        return (row[2] * (4096.f + distance) + row[3]) / distance;
+      };
+      require(std::abs(depthAt(.05f) - 1) < .002f && std::abs(depthAt(512)) < 1e-6f,
+              "Reversed primary depth changed clipping planes");
+      require(depthAt(64.f - .001f) > depthAt(64.f), "Reversed primary depth lost an overlay");
+    }
+    r.reset();
     remixapi_LightInfoDistantEXT distant{};
     distant.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_DISTANT_EXT;
     distant.direction = {0, -1, 0}; distant.angularDiameterDegrees = .533f;

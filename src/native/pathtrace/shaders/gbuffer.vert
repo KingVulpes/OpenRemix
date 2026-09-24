@@ -10,6 +10,7 @@ layout(push_constant) uniform Draw {
   vec2 jitter;
   uint surfaceIndex;
   uint stableDepth;
+  vec4 reverseDepth;
 } draw;
 layout(location=0) out vec3 position;
 layout(location=1) flat out vec3 normal;
@@ -44,5 +45,6 @@ void main() {
     previousPosition=(s.previousModel*vec4(previous.v[index].position.xyz,1)).xyz;
   }
   gl_Position=frame.camera*vec4(position,1);
+  gl_Position.z=dot(draw.reverseDepth,vec4(position,1));
   gl_Position.xy-=2*draw.jitter/vec2(frame.target.xy)*gl_Position.w;
 }

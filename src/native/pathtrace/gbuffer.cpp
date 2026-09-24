@@ -150,7 +150,7 @@ namespace remix {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
             .depthTestEnable = VK_TRUE,
             .depthWriteEnable = VK_TRUE,
-            .depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL,
+            .depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL,
             .maxDepthBounds = 1};
         VkPipelineColorBlendAttachmentState blend[6] = {};
         for (unsigned i = 0; i < colors; ++i)
@@ -218,7 +218,9 @@ namespace remix {
       VkClearValue clear[7] = {};
       if (pass)
         clear[0].color.float32[0] = 1;
-      clear[colors].depthStencil.depth = 1;
+      // Reverse depth keeps floating-point precision at distant close layers.
+      // The color depth output remains forward-Z for the retained raster pass.
+      clear[colors].depthStencil.depth = 0;
       VkRenderPassBeginInfo begin{.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
                                   .renderPass = primaryPass[pass],
                                   .framebuffer = primaryFramebuffer[pass],
@@ -239,7 +241,8 @@ namespace remix {
         PrimaryPush push{draw.model,
                          {pass ? 0.f : temporalFrame.jitter[0], pass ? 0.f : temporalFrame.jitter[1]},
                          draw.surfaceIndex,
-                         pass};
+                         pass,
+                         primaryReverseDepth};
         vkCmdPushConstants(command, primaryLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                            0, sizeof(push), &push);
         vkCmdDraw(command, draw.count, 1, 0, 0);

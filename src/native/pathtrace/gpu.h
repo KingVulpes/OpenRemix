@@ -286,8 +286,10 @@ namespace remix {
       scene::Matrix model;
       float jitter[2] = {};
       uint32_t surfaceIndex = 0, stableDepth = 0;
+      std::array<float, 4> reverseDepth{};
     };
-    static_assert(sizeof(PrimaryPush) == 80);
+    static_assert(sizeof(PrimaryPush) == 96);
+    std::array<float, 4> primaryReverseDepth{};
     std::vector<PrimaryDraw> primaryDraws;
     std::unique_ptr<Image> primary[7];
     VkRenderPass primaryPass[2] = {};

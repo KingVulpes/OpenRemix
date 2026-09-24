@@ -83,6 +83,13 @@ composition, and raster overlays. Shared target, backend and post-processing
 replacement drains pending GPU work. NRD descriptors and constants follow the
 submission slot; FSR uses its SDK's internal frame resource ring.
 
+Primary G-buffer and stable-depth visibility use reversed clip depth with a
+greater-or-equal depth test. `NativeResources` forms the reversed projection row
+before combining it with the view matrix, preserving separation between close
+layers such as biome-tinted grass overlays. Depth written to the color guides
+and final composition remains in the public camera's forward 0..1 convention,
+so raster gameplay feedback and reconstruction keep their existing inputs.
+
 Tracing prepares CPU scene snapshots before waiting for the reused submission
 slot's fence. `scene/trace_frame` groups and validates instances, samples one animation
 time for the frame, reduces emissive textures, and constructs area emitters. Its

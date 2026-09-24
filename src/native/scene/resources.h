@@ -42,6 +42,7 @@ namespace remix {
     const std::vector<scene::Draw> &draws() const { return m_draws; }
     const scene::Matrix &camera(uint32_t type = 0) const { return m_cameras[type]; }
     const scene::Matrix &view(uint32_t type = 0) const { return m_views[type]; }
+    const std::array<float, 4> &reverseDepth(uint32_t type = 0) const { return m_reverseDepth[type]; }
     bool cameraValid() const { return m_cameraValid[0]; }
     scene::TemporalEpoch temporalEpoch() const { return m_temporalEpoch; }
     const std::array<float, 3> &skyRadiance() const { return m_skyRadiance; }
@@ -70,6 +71,7 @@ namespace remix {
     std::unordered_map<uint64_t, std::shared_ptr<scene::Texture>> m_textures, m_uiTextures;
     std::unordered_map<std::filesystem::path, std::weak_ptr<scene::Texture>> m_paths;
     std::array<scene::Matrix, 3> m_cameras, m_views;
+    std::array<std::array<float, 4>, 3> m_reverseDepth;
     struct LightDefinition { scene::DistantLight distant; scene::SphereLight sphere; };
     std::unordered_map<uint64_t, LightDefinition> m_lights;
     std::unordered_set<uint64_t> m_frameLights;

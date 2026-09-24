@@ -38,6 +38,8 @@ namespace remix {
     for (auto &camera : m_cameras) {
       camera = identity();
     }
+    for (auto &depth : m_reverseDepth)
+      depth = {0, 0, -1, 1};
     std::fill(std::begin(m_tint), std::end(m_tint), 0.0f);
   }
 

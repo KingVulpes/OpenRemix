@@ -1,0 +1,20 @@
+#usda 1.0
+(
+    defaultPrim = "Asset"
+)
+def SkelRoot "Asset" {
+    def Mesh "mesh" (prepend apiSchemas = ["SkelBindingAPI"]) {
+        point3f[] points = [(1,0,0), (3,0,0), (3,1,0)]
+        int[] faceVertexIndices = [0,1,2]
+        int[] faceVertexCounts = [3]
+        uniform token subdivisionScheme = "none"
+        normal3f[] normals = [(1,0,0)] (interpolation = "constant")
+        texCoord2f[] primvars:st = [(0,0), (1,0), (1,1)] (interpolation = "vertex")
+        int[] primvars:skel:jointIndices = [0,1,1] (elementSize = 1; interpolation = "vertex")
+        float[] primvars:skel:jointWeights = [1,1,1] (elementSize = 1; interpolation = "vertex")
+        matrix4d primvars:skel:geomBindTransform = ((1,0,0,0), (0,1,0,0), (0,0,1,0), (0,1,0,1))
+        rel skel:skeleton = </Asset/skel>
+        double3 xformOp:translate = (10,0,0)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}

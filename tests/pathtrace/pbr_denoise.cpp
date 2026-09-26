@@ -126,6 +126,13 @@ int main(int argc, char **argv) {
   identity.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_IDENTITY_EXT;
   identity.instanceId = 1;
   identity.rasterVisible = 1;
+  remixapi_InstanceInfoBlendEXT blend{};
+  blend.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_BLEND_EXT;
+  blend.alphaBlendEnabled = 1;
+  blend.srcColorBlendFactor = blend.srcAlphaBlendFactor = 6;
+  blend.dstColorBlendFactor = blend.dstAlphaBlendFactor = 7;
+  if (std::getenv("REMIX_TEST_OPAQUE_BLEND")) identity.pNext = &blend;
+  if (std::getenv("REMIX_TEST_RAY_PRIMARY")) config("primaryVisibility", "ray");
   remixapi_InstanceInfo instance{};
   instance.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO;
   instance.pNext = &identity;
@@ -133,6 +140,19 @@ int main(int argc, char **argv) {
   instance.doubleSided = 1;
   for (int i = 0; i < 3; ++i)
     instance.transform.matrix[i][i] = 1;
+  remixapi_InstanceIdentityEXT decalIdentity = identity;
+  decalIdentity.instanceId = 2;
+  remixapi_InstanceInfoBlendEXT decalBlend = blend;
+  decalBlend.textureAlphaOperation = 3;
+  decalBlend.textureAlphaArg1Source = 1;
+  decalBlend.textureAlphaArg2Source = 3;
+  decalBlend.tFactor = 0x80ffffff;
+  decalIdentity.pNext = &decalBlend;
+  remixapi_InstanceInfo decalInstance = instance;
+  decalInstance.pNext = &decalIdentity;
+  decalInstance.categoryFlags = REMIXAPI_INSTANCE_CATEGORY_BIT_DECAL_STATIC;
+  decalInstance.transform.matrix[2][3] = -.01f;
+  const bool materialDecal = std::getenv("REMIX_TEST_MATERIAL_DECAL") != nullptr;
   std::array<remixapi_LightHandle, 3> lights{};
   remixapi_LightInfoSphereEXT sphere{};
   sphere.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_SPHERE_EXT;
@@ -168,6 +188,7 @@ int main(int argc, char **argv) {
     ok(api.PumpEvents());
     ok(api.SetupCamera(&camera));
     ok(api.DrawInstance(&instance));
+    if (materialDecal) ok(api.DrawInstance(&decalInstance));
     if (lit)
       for (auto handle : lights)
         ok(api.DrawLightInstance(handle));

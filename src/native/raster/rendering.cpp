@@ -142,8 +142,9 @@ namespace remix {
       out.push.uv[2] = float(frame % mat.columns) / mat.columns;
       out.push.uv[3] = float(frame / mat.columns) / mat.rows;
       const auto &b = draw.blend;
-      out.push.state[0] =
-          b.colorOp | b.color1 << 2 | b.color2 << 4 | b.alphaOpTexture << 6 | b.alpha1 << 8 | b.alpha2 << 10;
+      out.push.state[0] = (b.colorOp & 3u) | (b.colorOp & 4u) << 10 | (b.alphaOpTexture & 4u) << 11 |
+                          b.color1 << 2 | b.color2 << 4 | (b.alphaOpTexture & 3u) << 6 | b.alpha1 << 8 |
+                          b.alpha2 << 10;
       out.push.state[1] = draw.ignoreAlpha ? 7 : draw.alphaOverride ? draw.compare : mat.compare;
       const float reference = draw.alphaOverride ? draw.reference : mat.reference;
       std::memcpy(&out.push.state[2], &reference, sizeof(reference));
@@ -167,7 +168,8 @@ namespace remix {
     }
   }
 
-  void RasterRenderer::record(VkCommandBuffer command, bool skyOnly, bool skipSky, const float *skyJitter, VkExtent2D skyExtent) {
+  void RasterRenderer::record(VkCommandBuffer command, bool skyOnly, bool skipSky, const float *skyJitter,
+                              VkExtent2D skyExtent) {
     auto &g = *m_gpu;
     const auto extent = skyOnly && skyExtent.width ? skyExtent : g.extent;
     const VkViewport viewport = {0, 0, float(extent.width), float(extent.height), 0, 1};

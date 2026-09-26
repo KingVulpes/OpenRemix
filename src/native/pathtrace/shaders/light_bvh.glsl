@@ -1,6 +1,6 @@
 // Analytic sphere next-event estimation, RT Gems I chapter 18. The selection
 // PDF and solid-angle PDF both belong in the estimator. No light-count ray loop.
-struct LightEmitter { vec4 positionRadius; vec4 radiance; vec4 corners[3]; };
+struct LightEmitter { vec4 positionRadius; vec4 radiance; vec4 corners[3]; vec4 directionCone; vec4 shaping; };
 struct LightNode { vec4 minimumPower; vec4 maximum; uvec4 links; };
 layout(buffer_reference,std430,buffer_reference_align=16) readonly buffer LightEmitters { LightEmitter data[]; };
 layout(buffer_reference,std430,buffer_reference_align=16) readonly buffer LightNodes { LightNode data[]; };
@@ -84,6 +84,7 @@ bool localOccluder(accelerationStructureEXT scene,vec3 origin,vec3 direction,ino
     profileRay(17);
     Surface s=surfaces[rayQueryGetIntersectionInstanceCustomIndexEXT(query,false)+rayQueryGetIntersectionGeometryIndexEXT(query,false)];
     s.indices=s.traceIndices;
+    if(enableDecals&&decalSurface(s))continue; // Paint does not cast a separate sheet shadow.
     if((s.state.w&4)==0&&!rayQueryGetIntersectionFrontFaceEXT(query,false)){profileRay(20);continue;}
     profileAlpha(s,16);
     if(!acceptCandidate(s,rayQueryGetIntersectionPrimitiveIndexEXT(query,false),rayQueryGetIntersectionBarycentricsEXT(query,false))){profileRay(19);continue;}
@@ -97,16 +98,17 @@ bool localOccluder(accelerationStructureEXT scene,vec3 origin,vec3 direction,ino
   s.indices=s.traceIndices;
   if((s.state.w&2)==0)return true; // Hardware committed an opaque blocker.
   uint tri=rayQueryGetIntersectionPrimitiveIndexEXT(query,true)*3;
+  vec2 bary=rayQueryGetIntersectionBarycentricsEXT(query,true);
+  vec4 color=albedo(s,tri/3,bary);
+  if(!blendedAtAlpha(s,color.a))return true;
   vec3 a=s.vertices.v[s.indices.i[tri]].position.xyz;
   vec3 b=s.vertices.v[s.indices.i[tri+1]].position.xyz;
   vec3 c=s.vertices.v[s.indices.i[tri+2]].position.xyz;
-  vec2 bary=rayQueryGetIntersectionBarycentricsEXT(query,true);
   mat4x3 model=rayQueryGetIntersectionObjectToWorldEXT(query,true);
   hit.p=model*vec4(a+bary.x*(b-a)+bary.y*(c-a),1);
   hit.n=normalize(cross(model*vec4(b-a,0),model*vec4(c-a,0)));
   if(dot(hit.n,direction)>0)hit.n=-hit.n;
-  vec4 color=albedo(s,tri/3,bary);
-  hit.transmission=color.rgb*(1-color.a);
+  hit.transmission=transmissionColor(color.rgb,(s.state.w&32)!=0)*(1-color.a);
   return false;
 }
 vec3 localVisibility(vec3 origin,vec3 endpoint) {
@@ -128,6 +130,15 @@ vec3 localVisibility(vec3 origin,vec3 endpoint) {
 // A sphere candidate includes solid-angle weighting, but not discrete selection.
 struct LocalCandidate { vec3 physical; vec3 specular; vec3 endpoint; float distance; };
 #include "triangle_sampling.glsl"
+float emitterShaping(LightEmitter light,vec3 outgoing) {
+  float cosine=dot(light.directionCone.xyz,outgoing);
+  float outer=light.directionCone.w;
+  if(outer<=-1)return light.shaping.y>0?pow(max(cosine,0),light.shaping.y):1;
+  if(cosine<=outer)return 0;
+  float inner=cos(acos(clamp(outer,-1,1))*(1-clamp(light.shaping.x,0,1)));
+  float edge=inner>outer?smoothstep(outer,inner,cosine):1;
+  return edge*(light.shaping.y>0?pow(max(cosine,0),light.shaping.y):1);
+}
 LocalCandidate triangleCandidate(LightEmitter light,Hit hit,inout uint state,bool angular,vec2 blue,uint stream) {
   LocalCandidate result;result.physical=result.specular=vec3(0);result.endpoint=hit.p;result.distance=0;
   vec3 a=light.corners[0].xyz,b=light.corners[1].xyz,c=light.corners[2].xyz;
@@ -150,7 +161,7 @@ LocalCandidate triangleCandidate(LightEmitter light,Hit hit,inout uint state,boo
   // Uniform area PDF 1/A, converted to solid angle: d^2/(A*cosEmitter).
   float integral=spherical?(emitterCosine>0?omega*max(0,dot(hit.n,direction))/3.14159265359:0)
                            :.5*twiceArea*geometry/(3.14159265359*distance2);
-  vec3 scale=light.radiance.rgb*integral
+  vec3 scale=light.radiance.rgb*emitterShaping(light,-direction)*integral
       *localFalloff(dot(light.positionRadius.xyz-hit.p,light.positionRadius.xyz-hit.p))*frame.localScale.x;
   result.physical=materialResponse(hit,direction,result.specular)*scale;
   result.specular*=scale;
@@ -182,7 +193,7 @@ LocalCandidate localCandidate(LightEmitter light,Hit hit,inout uint state,bool a
   vec3 perpendicular=delta-direction*projected;
   float root=sqrt(max(0,radius*radius-dot(perpendicular,perpendicular)));
   float distance=max(0,inside?projected+root:projected-root);
-  vec3 scale=light.radiance.rgb*(2*oneMinusCos*cosine*attenuation)*frame.localScale.x;
+  vec3 scale=light.radiance.rgb*emitterShaping(light,-direction)*(2*oneMinusCos*cosine*attenuation)*frame.localScale.x;
   result.physical=materialResponse(hit,direction,result.specular)*scale;
   result.specular*=scale;
   result.endpoint=hit.p+direction*distance;result.distance=distance;
@@ -453,7 +464,7 @@ vec3 localLighting(Hit hit,uint state,uint samples,out float lightDistance,bool 
     float root=sqrt(max(0,radius*radius-dot(perpendicular,perpendicular)));
     float distance=max(0,inside?projected+root:projected-root);
     vec3 specularResponse;
-    vec3 scale=light.radiance.rgb*(2*oneMinusCos*cosine*attenuation)*frame.localScale.x;
+    vec3 scale=light.radiance.rgb*emitterShaping(light,-direction)*(2*oneMinusCos*cosine*attenuation)*frame.localScale.x;
     vec3 physical=materialResponse(hit,direction,specularResponse)*scale;
     vec3 estimate=physical/selectionPdf;
     vec3 visibility=localVisibility(offsetRay(hit.p,hit.ng),hit.p+direction*distance);

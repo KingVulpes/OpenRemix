@@ -1,4 +1,6 @@
 #include <remix/remix_native_ext.h>
+#include <remix/remix_editor_ext.h>
+#include <remix/remix_usd_ext.h>
 #if defined(_WIN32)
 #include "windows_layout.h"
 #else
@@ -19,4 +21,12 @@ _Static_assert(sizeof(remixapi_LocalLightStatisticsEXT) == 344, "Local light sta
 _Static_assert(sizeof(remixapi_LocalLightGuidingStatisticsEXT) == 320, "Local guiding statistics ABI");
 _Static_assert(offsetof(remixapi_LocalLightGuidingStatisticsEXT, renderedFrames) == 32, "Local guiding alignment");
 _Static_assert(offsetof(remixapi_LocalLightStatisticsEXT, generation) == 40, "Local light statistics alignment");
+_Static_assert(sizeof(remixapi_EditorSharedFrame) == 56, "Shared frame version 1 ABI");
+_Static_assert(offsetof(remixapi_EditorSharedFrame, device_uuid) == 24, "Device UUID offset");
+_Static_assert(offsetof(remixapi_EditorSharedFrame, memory_fd) == 40, "Shared memory FD offset");
+_Static_assert(sizeof(remixapi_EditorStartupEXT) == 32, "Editor startup extension ABI");
+_Static_assert(sizeof(remixapi_MaterialNormalEncodingEXT) == 24, "Normal encoding ABI");
+_Static_assert(sizeof(remixapi_USDLoadOptionsEXT) == 32, "USD load version 1 ABI");
+_Static_assert(sizeof(remixapi_USDDrawOptionsEXT) == 16, "USD draw version 1 ABI");
+_Static_assert(sizeof(remixapi_USDDiagnosticsEXT) == 1088, "USD diagnostics version 1 ABI");
 int main(void) { return 0; }

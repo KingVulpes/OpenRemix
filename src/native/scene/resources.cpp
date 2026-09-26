@@ -21,6 +21,7 @@ namespace remix {
     m_uiDraws.clear();
     m_overlay.clear();
     m_materials.clear();
+    m_modMaterials.clear();
     m_meshes.clear();
     m_textures.clear();
     m_uiTextures.clear();
@@ -32,9 +33,12 @@ namespace remix {
     m_skyRadiance = {};
     m_lights.clear();
     m_light = {};
+    m_dome = {};
     m_frameLights.clear();
     for (auto &view : m_views)
       view = identity();
+    for (auto &projection : m_projections)
+      projection = identity();
     for (auto &camera : m_cameras) {
       camera = identity();
     }
@@ -48,6 +52,7 @@ namespace remix {
     m_frameIds.clear();
     m_uiDraws.clear();
     m_light = {};
+    m_dome = {};
     m_frameLights.clear();
   }
 } // namespace remix

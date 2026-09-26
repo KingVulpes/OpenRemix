@@ -22,14 +22,15 @@
 
 #pragma once
 
-#include "raster/renderer.h"
 #include "pathtrace/renderer.h"
-#include "platform/window.h"
-#include "runtime/screenshot.h"
-#include "runtime/profiles.h"
-#include "ui/profiles.h"
 #include "platform/gpu_frames.h"
+#include "platform/window.h"
+#include "raster/renderer.h"
+#include "runtime/profiles.h"
+#include "runtime/screenshot.h"
+#include "ui/profiles.h"
 #include <remix/remix_c.h>
+#include <remix/remix_editor_ext.h>
 #include <vector>
 #include <vulkan/vulkan.h>
 
@@ -49,6 +50,9 @@ namespace remix {
     remixapi_ErrorCode present(const remixapi_PresentInfo *info);
     remixapi_ErrorCode requestScreenshot(const char *path);
     void completeScreenshot();
+    int configureSharedFrame(remixapi_EditorSharedFrame &frame);
+    bool modsDisabled() const { return m_disableMods; }
+    bool isHeadless() const { return m_headless; }
     bool isInitialized() const { return m_initialized; }
     uint64_t presentationCount() const { return m_presentationCount; }
     remixapi_FramePerformanceEXT framePerformance() const { return m_framePerformance; }
@@ -90,6 +94,8 @@ namespace remix {
     remixapi_ErrorCode createAttachments();
     remixapi_ErrorCode recordFrame(uint32_t imageIndex, scene::TraceFrame *traceScene);
     remixapi_ErrorCode fail(VkResult result = VK_ERROR_UNKNOWN);
+    void destroySharedFrame();
+    void sharedBarrier(VkCommandBuffer command, bool acquire);
     void destroySwapchain();
     void destroyVulkan();
     bool supportsDeviceExtension(VkPhysicalDevice device, const char *name) const;
@@ -147,6 +153,13 @@ namespace remix {
     VkDevice m_device = VK_NULL_HANDLE;
     VkQueue m_queue = VK_NULL_HANDLE;
     uint32_t m_queueFamily = VK_QUEUE_FAMILY_IGNORED;
+    bool m_headless = false, m_disableProfiles = false, m_disableMods = false;
+    VkImage m_sharedImage = VK_NULL_HANDLE;
+    VkDeviceMemory m_sharedMemory = VK_NULL_HANDLE;
+    VkSemaphore m_sharedReady = VK_NULL_HANDLE, m_sharedReleased = VK_NULL_HANDLE;
+    uint64_t m_sharedSize = 0;
+    uint32_t m_sharedMemoryType = 0;
+    bool m_sharedPresented = false;
     VkSwapchainKHR m_swapchain = VK_NULL_HANDLE;
     VkFormat m_swapchainFormat = VK_FORMAT_UNDEFINED;
     VkExtent2D m_swapchainExtent = {};

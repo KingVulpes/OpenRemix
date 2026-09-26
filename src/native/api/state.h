@@ -28,6 +28,8 @@
 #include <unordered_map>
 
 namespace remix::api {
+  void releaseUsdSubmissions();
+  void publishUsdReloads();
   extern remix::RemixNativeRuntime g_runtime;
   extern std::mutex g_apiMutex;
   extern bool g_frameExitRegistered;

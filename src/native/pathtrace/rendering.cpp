@@ -33,7 +33,8 @@ namespace remix {
     }
     rendered = false;
     pendingTime = std::chrono::steady_clock::now();
-    rouletteActive = options.russianRoulette && options.rouletteMinBounces < options.bounces && !rouletteFailed;
+    rouletteActive =
+        options.russianRoulette && options.rouletteMinBounces < options.bounces && !rouletteFailed;
     const uint64_t integrator =
         options.samples | uint64_t(options.bounces) << 8 | uint64_t(options.accumulate) << 16 |
         uint64_t(bool(denoiser) && postReblur) << 17 | uint64_t(bool(denoiser) && postTaa) << 18 |
@@ -45,7 +46,9 @@ namespace remix {
     pendingVertices.clear();
     std::vector<trace::InstanceInput> inputs[2];
     std::vector<TraceSurface> surfaces;
-    const auto emissionMode = options.freezeEmissiveRadiance ? 2u : options.stabilizeEmissiveLighting ? 1u : 0u;
+    const auto emissionMode = options.freezeEmissiveRadiance      ? 2u
+                              : options.stabilizeEmissiveLighting ? 1u
+                                                                  : 0u;
     primaryDraws.clear();
     std::vector<VkDescriptorImageInfo> textures;
     std::unordered_map<const Material *, uint32_t> textureIndices;
@@ -76,15 +79,18 @@ namespace remix {
       }
     uint64_t reuseSignature = 1469598103934665603ull;
     bool hasCacheReceivers = false, hasBlendedGeometry = false;
+    decalMaterialsActive = false;
     for (const auto &instance : prepared.instances) {
       const auto &draw = instance[0].draw;
       std::vector<std::shared_ptr<const scene::OpacityPartition>> partitions(draw.mesh->surfaces.size());
       for (const auto &surface : instance) {
         partitions[surface.draw.surfaceIndex] = surface.opacity;
         hasBlendedGeometry |= surface.draw.blend.enabled;
+        decalMaterialsActive |= surface.draw.decal;
         const auto &material = *surface.draw.material;
         hasCacheReceivers |= surface.draw.classification == 0 && !surface.draw.blend.enabled &&
-            (!material.pbr || material.roughnessTexture || material.roughness >= REMIX_SHARC_PBR_MIN_ROUGHNESS);
+                             (!material.pbr || material.roughnessTexture ||
+                              material.roughness >= REMIX_SHARC_PBR_MIN_ROUGHNESS);
       }
       auto &view = mesh(command, draw, partitions);
       const auto &geometry = *view.geometry;
@@ -112,7 +118,8 @@ namespace remix {
       float scale = 0;
       for (int c = 0; c < 3; ++c)
         scale = std::max(scale, std::hypot(model[c * 4], model[c * 4 + 1], model[c * 4 + 2]));
-      if (surfaces.size() > 0xffffffu) throw VK_ERROR_TOO_MANY_OBJECTS;
+      if (surfaces.size() > 0xffffffu)
+        throw VK_ERROR_TOO_MANY_OBJECTS;
       inputs[draw.classification].push_back({draw.instanceId, geometry.accel->address, draw.instanceIndex,
                                              uint32_t(surfaces.size()), model, geometry.diagonal * scale,
                                              geometry.revision});
@@ -139,16 +146,22 @@ namespace remix {
         value.pbr[0] = material.roughness;
         value.pbr[1] = material.metallic;
         value.pbr[2] = material.pbr ? 1.f : 0.f;
-        value.pbrTextures[3] = material.normalTexture && material.normalTexture->pixels.twoChannel;
-        const std::shared_ptr<scene::Texture> maps[] = {
-            material.roughnessTexture, material.metallicTexture, material.normalTexture};
+        value.pbrTextures[3] =
+            material.normalEncoding == 1
+                ? 2
+                : (material.normalEncoding == 3 ? 4 : 0) |
+                      uint32_t(material.normalTexture && material.normalTexture->pixels.twoChannel);
+        const std::shared_ptr<scene::Texture> maps[] = {material.roughnessTexture, material.metallicTexture,
+                                                        material.normalTexture};
         for (unsigned i = 0; i < 3; ++i) {
-          if (!maps[i]) continue;
+          if (!maps[i])
+            continue;
           auto [map, added] = pbrTextures.emplace(
               std::make_tuple(maps[i].get(), material.filter, material.wrapU, material.wrapV),
               uint32_t(textures.size()));
           if (added) {
-            if (textures.size() >= PathTracer::textureLimit) throw VK_ERROR_TOO_MANY_OBJECTS;
+            if (textures.size() >= PathTracer::textureLimit)
+              throw VK_ERROR_TOO_MANY_OBJECTS;
             textures.push_back(resources.sampledTexture(surface.material, maps[i], command));
             const auto fingerprint = maps[i]->fingerprint();
             append(&fingerprint, sizeof(fingerprint));
@@ -156,10 +169,13 @@ namespace remix {
           value.pbrTextures[i] = map->second + 1;
         }
         std::copy_n(material.emission, 3, value.emission);
-        if (material.emissionTexture && (material.emission[0] > 0 || material.emission[1] > 0 || material.emission[2] > 0)) {
-          auto [emitter, newTexture] = emissionTextures.emplace(surface.material.get(), uint32_t(textures.size()));
+        if (material.emissionTexture &&
+            (material.emission[0] > 0 || material.emission[1] > 0 || material.emission[2] > 0)) {
+          auto [emitter, newTexture] =
+              emissionTextures.emplace(surface.material.get(), uint32_t(textures.size()));
           if (newTexture) {
-            if (textures.size() >= PathTracer::textureLimit) throw VK_ERROR_TOO_MANY_OBJECTS;
+            if (textures.size() >= PathTracer::textureLimit)
+              throw VK_ERROR_TOO_MANY_OBJECTS;
             textures.push_back(resources.sampledEmission(surface.material, command));
             auto fingerprint = material.emissionTexture->fingerprint();
             append(&fingerprint, sizeof(fingerprint));
@@ -192,7 +208,8 @@ namespace remix {
         history.stage(temporalDraw, preparedSurface.animationFrame);
         if (options.pbrLocalReuse) {
           const uint64_t values[] = {view.fingerprint, value.debugIdentity,
-              scene::TemporalHistory::materialSignature(surface), preparedSurface.animationFrame};
+                                     scene::TemporalHistory::materialSignature(surface),
+                                     preparedSurface.animationFrame};
           reuseSignature = hashBytes(values, sizeof(values), reuseSignature);
           reuseSignature = hashBytes(model.data(), sizeof(model), reuseSignature);
         }
@@ -202,14 +219,15 @@ namespace remix {
         value.factor[1] = linear(float((b.factor >> 8) & 255) / 255);
         value.factor[2] = linear(float(b.factor & 255) / 255);
         value.factor[3] = float(b.factor >> 24) / 255;
-        value.state[0] = b.colorOp | b.color1 << 2 | b.color2 << 4 | b.alphaOpTexture << 6 | b.alpha1 << 8 |
+        value.state[0] = (b.colorOp & 3u) | (b.colorOp & 4u) << 10 | (b.alphaOpTexture & 4u) << 11 |
+                         b.color1 << 2 | b.color2 << 4 | (b.alphaOpTexture & 3u) << 6 | b.alpha1 << 8 |
                          b.alpha2 << 10;
         value.state[1] = surface.ignoreAlpha ? 7 : surface.alphaOverride ? surface.compare : material.compare;
         const float reference = surface.alphaOverride ? surface.reference : material.reference;
         std::memcpy(&value.state[2], &reference, 4);
         value.state[3] = uint32_t(surface.ignoreAlpha) | uint32_t(b.enabled) << 1 |
                          uint32_t(surface.doubleSided) << 2 | uint32_t(material.transmission) << 3 |
-                         uint32_t(draw.classification == 0) << 4;
+                         uint32_t(draw.classification == 0) << 4 | uint32_t(material.translucent && !surface.decal) << 5 | uint32_t(surface.decal) << 6;
         if (draw.classification == 0) {
           appendStatic(value.tint, sizeof(value.tint));
           appendStatic(value.factor, sizeof(value.factor));
@@ -223,7 +241,8 @@ namespace remix {
           value.triangleMap = group.triangleMap ? geometry.input->address + group.triangleMap : 0;
           value.traceIndices = geometry.input->address + group.indices;
           surfaces.push_back(value);
-        } while (groupIndex < geometry.groups.size() && geometry.groups[groupIndex].surface == surface.surfaceIndex);
+        } while (groupIndex < geometry.groups.size() &&
+                 geometry.groups[groupIndex].surface == surface.surfaceIndex);
       }
     }
     // Retire absent deformation instances after their last-use fence. Rigid
@@ -239,8 +258,10 @@ namespace remix {
     }
     for (auto it = updateViews.begin(); it != updateViews.end();) {
       auto view = meshes.find(it->second);
-      if (view == meshes.end() || view->second.updateStream.get() != it->first.first) it = updateViews.erase(it);
-      else ++it;
+      if (view == meshes.end() || view->second.updateStream.get() != it->first.first)
+        it = updateViews.erase(it);
+      else
+        ++it;
     }
     // Geometry uploads feed both AS construction and BDA reads in the compute shader.
     barrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -260,7 +281,8 @@ namespace remix {
       append(&surface, offsetof(TraceSurface, previousVertices));
     const auto tableBytes = surfaces.size() * sizeof(surfaces[0]);
     // A diagnostic placement switch replaces only this completed slot's table.
-    if (table && table->host == deviceLocalScene) table.reset();
+    if (table && table->host == deviceLocalScene)
+      table.reset();
     if (deviceLocalScene) {
       hostBuffer(tableUpload, surfaces.data(), tableBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
       if (!table || table->size < tableBytes)
@@ -277,21 +299,26 @@ namespace remix {
     emissionHistory = std::move(lighting.history);
     lightBvh = std::move(lighting.combined);
     localAngularActive = hasEmissiveLights && options.emissiveSolidAngleSampling;
-    splitLightingActive = hasEmissiveLights && options.separateLocalLighting != 0 && (!denoiser || postSplit || rrActive());
+    splitLightingActive =
+        hasEmissiveLights && options.separateLocalLighting != 0 && (!denoiser || postSplit || rrActive());
     auto uploadLights = [&](scene::LightBvh &bvh, uint64_t &uploadedGeneration,
                             std::unique_ptr<Buffer> &nodes, std::unique_ptr<Buffer> &emitters) {
-      if ((!nodes || nodes->host == deviceLocalScene || uploadedGeneration != bvh.generation) && !bvh.nodes().empty()) {
+      if ((!nodes || nodes->host == deviceLocalScene || uploadedGeneration != bvh.generation) &&
+          !bvh.nodes().empty()) {
         uploadedGeneration = bvh.generation;
         if (deviceLocalScene) {
           nodes = upload(command, bvh.nodes().data(), bvh.nodes().size() * sizeof(scene::LightNode),
                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-          emitters = upload(command, bvh.emitters().data(), bvh.emitters().size() * sizeof(scene::LightEmitter),
-                            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+          emitters =
+              upload(command, bvh.emitters().data(), bvh.emitters().size() * sizeof(scene::LightEmitter),
+                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
         } else {
           // This slot's fence has completed; replace GPU-only allocations before
           // hostBuffer tries to map them when a diagnostic switches back.
-          if (nodes && !nodes->host) nodes.reset();
-          if (emitters && !emitters->host) emitters.reset();
+          if (nodes && !nodes->host)
+            nodes.reset();
+          if (emitters && !emitters->host)
+            emitters.reset();
           hostBuffer(nodes, bvh.nodes().data(), bvh.nodes().size() * sizeof(scene::LightNode),
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
           hostBuffer(emitters, bvh.emitters().data(), bvh.emitters().size() * sizeof(scene::LightEmitter),
@@ -310,7 +337,8 @@ namespace remix {
     if (deviceLocalScene)
       barrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
               VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
-                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+              VK_ACCESS_SHADER_READ_BIT);
     Frame frame = {};
     frame.localConfig[0] = options.localLights && options.localIntensity > 0 ? lightBvh.active : 0;
     localIlluminationActive = frame.localConfig[0] != 0;
@@ -321,14 +349,14 @@ namespace remix {
     frame.splitLocal[3] = debugView;
     frame.localConfig[1] = options.localSamples;
     frame.localConfig[2] = uint32_t(lightBvh.lightingGeneration);
-    frame.localConfig[3] = uint32_t(lightBvh.lightingGeneration >> 32) |
-                           (options.adaptiveLocalSampling ? 0x80000000u : 0u);
+    frame.localConfig[3] =
+        uint32_t(lightBvh.lightingGeneration >> 32) | (options.adaptiveLocalSampling ? 0x80000000u : 0u);
     frame.localScale[0] = options.localIntensity;
     frame.localScale[1] = options.localRange;
     // Private, previously unused shader word: bounded candidate count. Keep
     // the established one-/many-sphere and <=4-emitter estimators unchanged.
-    frame.localScale[2] = hasEmissiveLights && lightBvh.emitters().size() > 4
-                              ? float(options.emissiveCandidates) : 1.f;
+    frame.localScale[2] =
+        hasEmissiveLights && lightBvh.emitters().size() > 4 ? float(options.emissiveCandidates) : 1.f;
     localResamplingActive = localIlluminationActive && frame.localScale[2] > 1;
     frame.localScale[3] = options.localRange > 0 ? 1.f / (options.localRange * options.localRange) : 0;
     frame.camera = resources.camera();
@@ -346,7 +374,8 @@ namespace remix {
       for (int i = 0; i < 3; ++i)
         light.radiance[i] = options.lightColor[i] * options.lightIntensity;
     }
-    const float diameter = options.sunAngularDiameter >= 0 ? options.sunAngularDiameter : light.angularDiameterDegrees;
+    const float diameter =
+        options.sunAngularDiameter >= 0 ? options.sunAngularDiameter : light.angularDiameterDegrees;
     frame.sun[0] = std::tan(diameter * (3.14159265359f / 360.f));
     frame.sun[1] = denoiser && postSigma;
     configureBlueNoise(command, frame, options);
@@ -357,6 +386,23 @@ namespace remix {
     std::copy_n(light.radiance, 3, frame.radiance);
     if (options.sky)
       std::copy_n(resources.skyRadiance().data(), 3, frame.skyRadiance);
+    if (options.sky && resources.dome().enabled) {
+      const auto &dome = resources.dome();
+      std::copy_n(dome.radiance.data(), 3, frame.skyRadiance);
+      frame.skyRadiance[3] = -1; // Uniform authored dome also draws the background.
+      for (unsigned row = 0; row < 3; ++row)
+        for (unsigned col = 0; col < 3; ++col)
+          frame.domeTransform[row][col] = dome.worldToLocal[col * 4 + row];
+      if (dome.texture) {
+        if (textures.size() >= PathTracer::textureLimit)
+          throw VK_ERROR_TOO_MANY_OBJECTS;
+        auto material = resources.defaultMaterial();
+        frame.skyRadiance[3] = float(textures.size() + 1);
+        textures.push_back(resources.sampledTexture(material, dome.texture, command));
+        auto fingerprint = dome.texture->fingerprint();
+        append(&fingerprint, sizeof(fingerprint));
+      }
+    }
     frame.config[0] = options.samples;
     frame.config[1] = options.bounces;
     frame.target[0] = extent.width;
@@ -365,8 +411,9 @@ namespace remix {
     frame.target[3] = options.rasterPrimary;
     // Reserved private word; included in scene-change detection. Raw/reference
     // and multi-sample rendering retain one estimator at every surface pixel.
-    frame.jitter[2] = options.waterIndirectReuse && options.indirectClamp == 0 && denoiser && (postTaa || upscaler) && !options.accumulate &&
-                      options.samples == 1 && options.bounces > 0;
+    frame.jitter[2] = options.waterIndirectReuse && options.indirectClamp == 0 && denoiser &&
+                      (postTaa || upscaler) && !options.accumulate && options.samples == 1 &&
+                      options.bounces > 0;
     frame.firefly[0] = options.localDirectClamp;
     frame.firefly[1] = options.indirectClamp;
     frame.pathConfig[0] = rouletteActive;
@@ -380,17 +427,23 @@ namespace remix {
     append(&options.emissiveSolidAngleSampling, sizeof(options.emissiveSolidAngleSampling));
     append(&emissionMode, sizeof(emissionMode));
     append(&options.fsrSharpness, sizeof(options.fsrSharpness));
-    const uint64_t cacheSettings[] = {options.sharcReset, options.sharcCapacityLog2, options.sharcSceneScale,
+    const uint64_t cacheSettings[] = {
+        options.sharcReset,     options.sharcCapacityLog2,       options.sharcSceneScale,
         options.sharcDownscale, options.sharcAccumulationFrames, options.sharcStaleFrames};
     append(cacheSettings, sizeof(cacheSettings));
     const auto temporalEpoch = resources.temporalEpoch();
     append(&temporalEpoch, sizeof(temporalEpoch));
-    configureSharc(frame, options, temporalEpoch, std::move(staticGeometry), std::move(dynamicGeometry), hasCacheReceivers);
-    // An unchanged world can reuse its cached output once both histories are warm.
-    if (scene == lastScene && !profileEveryFrame && !std::getenv("REMIX_PATH_LINEAR_CAPTURE") && !options.accumulate && !debugView && denoiser && !denoiser->statistics().redrawRequested &&
-        !history.reset() && !(upscaler && upscaler->statistics().frames < 128) && !(sharc.stats.active && sharc.hasReceivers && sharc.warmFrames < 2 * options.sharcAccumulationFrames))
-      return;
+    configureSharc(frame, options, temporalEpoch, std::move(staticGeometry), std::move(dynamicGeometry),
+                   hasCacheReceivers);
     const bool sceneChanged = scene != lastScene;
+    if (sceneChanged || history.reset())
+      reconstructionWarmFrames = 0;
+    // An unchanged world can reuse its cached output once both histories are warm.
+    if (scene == lastScene && !profileEveryFrame && !std::getenv("REMIX_PATH_LINEAR_CAPTURE") &&
+        !options.accumulate && !debugView && denoiser && !denoiser->statistics().redrawRequested &&
+        !history.reset() && !(upscaler && reconstructionWarmFrames < 128) &&
+        !(sharc.stats.active && sharc.hasReceivers && sharc.warmFrames < 2 * options.sharcAccumulationFrames))
+      return;
     if (sceneChanged) {
       ++stats.sceneGeneration;
       stats.accumulationCount = 0;
@@ -401,7 +454,8 @@ namespace remix {
     if (!options.accumulate || stats.accumulationCount >= 1048576)
       stats.accumulationCount = 0;
     const bool localBlueNoise = (uint32_t(frame.jitter[3]) & 2u) != 0;
-    const bool localSettingsChanged = frame.localScale[0] != previousLocalIntensity || frame.localScale[1] != previousLocalRange ||
+    const bool localSettingsChanged = frame.localScale[0] != previousLocalIntensity ||
+                                      frame.localScale[1] != previousLocalRange ||
                                       localBlueNoise != previousLocalBlueNoise;
     if (lightBvh.lightingGeneration != previousLocalGeneration || localSettingsChanged ||
         frame.localConfig[0] != previousLocalActive ||
@@ -416,18 +470,23 @@ namespace remix {
     previousLocalActive = frame.localConfig[0];
     previousLocalAdaptive = frame.localConfig[3] & 0x80000000u;
     temporalFrame = {};
-    temporalFrame.shadow[2] = std::any_of(resources.draws().begin(), resources.draws().end(),
-        [](const auto &draw) { return draw.traced() && draw.material->pbr; });
-    temporalFrame.shadow[3] = std::any_of(resources.draws().begin(), resources.draws().end(),
-        [](const auto &draw) { return draw.traced() && !draw.material->pbr; });
+    temporalFrame.shadow[2] =
+        std::any_of(resources.draws().begin(), resources.draws().end(),
+                    [](const auto &draw) { return draw.traced() && draw.material->pbr; });
+    temporalFrame.shadow[3] =
+        std::any_of(resources.draws().begin(), resources.draws().end(),
+                    [](const auto &draw) { return draw.traced() && !draw.material->pbr; });
     temporalFrame.local[0] = denoiser && postLocalDenoise;
     temporalFrame.local[1] = frame.localConfig[0];
     temporalFrame.local[2] = localResponsiveFrames;
     if (std::getenv("REMIX_EMISSIVE_DIAGNOSTICS"))
-      std::fprintf(stderr, "EMISSION mode=%u sources=%zu raw_delta=%.6f filtered_delta=%.6f response=%u generation=%llu visibility=%llu\n",
-          emissionMode, emissionHistory.size(), emissionHistory.rawChange, emissionHistory.filteredChange,
-          localResponsiveFrames, static_cast<unsigned long long>(lightBvh.lightingGeneration),
-          static_cast<unsigned long long>(lightBvh.visibilityGeneration));
+      std::fprintf(stderr,
+                   "EMISSION mode=%u sources=%zu raw_delta=%.6f filtered_delta=%.6f response=%u "
+                   "generation=%llu visibility=%llu\n",
+                   emissionMode, emissionHistory.size(), emissionHistory.rawChange,
+                   emissionHistory.filteredChange, localResponsiveFrames,
+                   static_cast<unsigned long long>(lightBvh.lightingGeneration),
+                   static_cast<unsigned long long>(lightBvh.visibilityGeneration));
     temporalFrame.local[3] = frame.splitLocal[0];
     for (unsigned i = 0; i < 2; ++i) {
       const auto &family = i ? emissiveBvh : torchBvh;
@@ -448,7 +507,7 @@ namespace remix {
     temporalFrame.view = resources.view();
     temporalFrame.inverseCamera = frame.inverseCamera;
     pendingCamera = frame.camera;
-    pendingProjection = scene::multiply(frame.camera, scene::inverse(resources.view()));
+    pendingProjection = resources.projection();
     temporalFrame.previousView = history.reset() ? resources.view() : previousView;
     temporalFrame.previousCamera = history.reset() ? frame.camera : previousCamera;
     temporalFrame.previousInverseCamera = scene::inverse(temporalFrame.previousCamera);
@@ -467,7 +526,8 @@ namespace remix {
       temporalFrame.jitter[0] = halton(uint32_t(sequence % 16) + 1, 2);
       temporalFrame.jitter[1] = halton(uint32_t(sequence % 16) + 1, 3);
     }
-    if (upscaler) upscale::jitter(temporalFrame.jitter, sequence, extent, displayExtent);
+    if (upscaler)
+      upscale::jitter(temporalFrame.jitter, sequence, extent, displayExtent);
     std::copy_n(temporalFrame.jitter, 2, frame.jitter);
     temporalFrame.jitter[2] = history.reset() ? temporalFrame.jitter[0] : previousJitter[0];
     temporalFrame.jitter[3] = history.reset() ? temporalFrame.jitter[1] : previousJitter[1];
@@ -505,7 +565,8 @@ namespace remix {
       radianceDelta += std::abs(pendingSun[i + 3] - previousSun[i + 3]);
       previousRadiance += previousSun[i + 3];
     }
-    temporalFrame.shadow[0] = directionDelta > .01f || radianceDelta > std::max(.1f, previousRadiance * .5f) ||
+    temporalFrame.shadow[0] = directionDelta > .01f ||
+                              radianceDelta > std::max(.1f, previousRadiance * .5f) ||
                               diameter != previousSun[6] || pendingSun[8] != previousSun[8];
     temporalFrame.shadow[1] = uint32_t(frame.sun[2]);
     frame.lightNodes = lightNodes ? lightNodes->address : 0;
@@ -516,13 +577,17 @@ namespace remix {
     frame.emissiveEmitters = emissiveEmitters ? emissiveEmitters->address : 0;
     configureLightGuiding(frame, options);
     if (options.pbrLocalReuse) {
-      const uint32_t settings[] = {options.localSamples, options.emissiveCandidates,
-          uint32_t(options.adaptiveLocalSampling), uint32_t(options.localGuiding),
-          options.separateLocalLighting, uint32_t(options.emissiveSolidAngleSampling), uint32_t(localBlueNoise)};
+      const uint32_t settings[] = {options.localSamples,
+                                   options.emissiveCandidates,
+                                   uint32_t(options.adaptiveLocalSampling),
+                                   uint32_t(options.localGuiding),
+                                   options.separateLocalLighting,
+                                   uint32_t(options.emissiveSolidAngleSampling),
+                                   uint32_t(localBlueNoise)};
       reuseSignature = hashBytes(settings, sizeof(settings), reuseSignature);
     }
     configurePbrReuse(command, frame, options, reuseSignature,
-        inputs[1].empty() && temporalFrame.local[2] == 0 && !history.reset());
+                      inputs[1].empty() && temporalFrame.local[2] == 0 && !history.reset());
     const bool querySharc = sharc.stats.active && (sharc.hasReceivers || options.sharcDebug);
     configureIndirect(frame, options, querySharc);
     beginRayProfile(command, frame);
@@ -537,7 +602,8 @@ namespace remix {
     stats.accumulationEnabled = options.accumulate;
     ++stats.accumulationCount;
     stats.sampleSequence = sequence;
-    stats.redrawRequested = options.accumulate || debugView ||
+    stats.redrawRequested =
+        options.accumulate || debugView ||
         (sharc.stats.active && sharc.hasReceivers && sharc.warmFrames < 2 * options.sharcAccumulationFrames);
     if (textures.empty())
       textures.push_back(resources.sampledMaterial(resources.defaultMaterial(), command));
@@ -631,18 +697,21 @@ namespace remix {
     // Idle caches have no eligible hit in either TLAS. Select the ordinary
     // shader so unused hash-grid code does not reserve tracing registers.
     // Keep the cache debug specialization available even in an empty scene.
-    const auto opaqueSource = querySharc ? (denoiser ? sharc.temporal : sharc.query) : (denoiser ? temporalCompute : compute);
+    const auto opaqueSource =
+        querySharc ? (denoiser ? sharc.temporal : sharc.query) : (denoiser ? temporalCompute : compute);
     VkPipeline opaquePipeline = VK_NULL_HANDLE;
     if (indirectPass.active) {
       opaquePipeline = selectLightingPipeline(opaqueSource, false, true);
       if (!opaquePipeline) {
         indirectPass.active = false;
         indirectPass.failed = true;
-        if (indirectPass.results) retiredBuffers.push_back(std::move(indirectPass.results));
+        if (indirectPass.results)
+          retiredBuffers.push_back(std::move(indirectPass.results));
         std::fprintf(stderr, "Separate indirect consumer unavailable; using inline tracing\n");
       }
     }
-    if (!opaquePipeline) opaquePipeline = selectLightingPipeline(opaqueSource);
+    if (!opaquePipeline)
+      opaquePipeline = selectLightingPipeline(opaqueSource);
     const auto opaqueKey = selectedLightingKey;
     VkPipeline indirectPipeline = VK_NULL_HANDLE;
     uint32_t indirectKey = UINT32_MAX;
@@ -657,8 +726,8 @@ namespace remix {
       // Scratch is queue-ordered across frame slots. Publish last frame's reads
       // before overwriting, then publish this producer to the opaque consumer.
       barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-              VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
-              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT);
+              VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+              VK_ACCESS_SHADER_WRITE_BIT);
       indirectPipeline = selectLightingPipeline(indirectPass.pipeline[querySharc]);
       indirectKey = selectedLightingKey;
       vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, indirectPipeline);
@@ -680,9 +749,9 @@ namespace remix {
               VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
     }
     stageTime(7);
-    const auto transparencyPipeline = selectLightingPipeline(
-        querySharc ? (denoiser ? sharc.temporalTransparency : sharc.transparency)
-                   : (denoiser ? temporalTransparencyCompute : transparencyCompute));
+    const auto transparencyPipeline =
+        selectLightingPipeline(querySharc ? (denoiser ? sharc.temporalTransparency : sharc.transparency)
+                                          : (denoiser ? temporalTransparencyCompute : transparencyCompute));
     const auto transparencyKey = selectedLightingKey;
     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, transparencyPipeline);
     vkCmdDispatch(command, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
@@ -695,7 +764,8 @@ namespace remix {
       if (postReblur) {
         barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
-        vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, selectLightingPipeline(querySharc ? sharc.confidence : confidenceCompute));
+        vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE,
+                          selectLightingPipeline(querySharc ? sharc.confidence : confidenceCompute));
         vkCmdDispatch(command, ((extent.width + 4) / 5 + 7) / 8, ((extent.height + 4) / 5 + 7) / 8, 1);
       }
       stageTime(8);
@@ -705,14 +775,33 @@ namespace remix {
     }
     stageTime(9);
     if (stateProfile) {
-      const uint64_t values[] = {frame.config[2], frameIndex, uint64_t(querySharc), uint64_t(deviceLocalScene), uint64_t(indirectPass.active),
-          uint64_t(opaquePipeline), opaqueKey, uint64_t(indirectPipeline), indirectKey,
-          uint64_t(transparencyPipeline), transparencyKey,
-          tlas[0].accel ? tlas[0].accel->address : 0, tlas[1].accel ? tlas[1].accel->address : 0,
-          table->address, uint64_t(table->memory), table->size, uniform->address, uint64_t(uniform->memory),
-          frame.lightNodes, frame.lightEmitters, frame.sharcHash, frame.sharcAccumulation, frame.sharcResolved,
-          frame.indirectResults, stats.sceneGeneration, stats.staticTlasBuilds,
-          hashBytes(surfaces.data(), surfaces.size() * sizeof(surfaces[0]))};
+      const uint64_t values[] = {frame.config[2],
+                                 frameIndex,
+                                 uint64_t(querySharc),
+                                 uint64_t(deviceLocalScene),
+                                 uint64_t(indirectPass.active),
+                                 uint64_t(opaquePipeline),
+                                 opaqueKey,
+                                 uint64_t(indirectPipeline),
+                                 indirectKey,
+                                 uint64_t(transparencyPipeline),
+                                 transparencyKey,
+                                 tlas[0].accel ? tlas[0].accel->address : 0,
+                                 tlas[1].accel ? tlas[1].accel->address : 0,
+                                 table->address,
+                                 uint64_t(table->memory),
+                                 table->size,
+                                 uniform->address,
+                                 uint64_t(uniform->memory),
+                                 frame.lightNodes,
+                                 frame.lightEmitters,
+                                 frame.sharcHash,
+                                 frame.sharcAccumulation,
+                                 frame.sharcResolved,
+                                 frame.indirectResults,
+                                 stats.sceneGeneration,
+                                 stats.staticTlasBuilds,
+                                 hashBytes(surfaces.data(), surfaces.size() * sizeof(surfaces[0]))};
       traceState.clear();
       for (auto value : values) {
         traceState += std::to_string(value);
@@ -728,10 +817,11 @@ namespace remix {
     if (upscaler) {
       upscaler->record(command, denoiser->image(denoise::Composed), denoiser->image(denoise::Depth),
                        denoiser->image(denoise::Motion), denoiser->image(denoise::Transmission),
-                       pendingProjection, temporalFrame.jitter, temporalFrame.timing[0],
-                       options.fsrSharpness, temporalFrame.flags[0],
+                       pendingProjection, temporalFrame.jitter, temporalFrame.timing[0], options.fsrSharpness,
+                       temporalFrame.flags[0],
                        {denoiser->image(denoise::RrDiffuse), denoiser->image(denoise::RrSpecular),
-                        denoiser->image(denoise::RrNormal), denoiser->image(denoise::RrHitDistance)}, resources.view());
+                        denoiser->image(denoise::RrNormal), denoiser->image(denoise::RrHitDistance)},
+                       resources.view());
     }
     captureLinear(command);
     finishPbrReuse(command);
@@ -780,11 +870,12 @@ namespace remix {
         for (const auto &surface : instance) {
           const auto &partition = surface.opacity;
           mixed += partition->key[0] == 2;
-          for (unsigned i = 0; i < scene::OpacityPartition::Count; ++i) reasons[i] += partition->reasons[i];
+          for (unsigned i = 0; i < scene::OpacityPartition::Count; ++i)
+            reasons[i] += partition->reasons[i];
         }
       std::fprintf(stderr, "OPACITY mixed_surfaces=%llu", static_cast<unsigned long long>(mixed));
-      const char *names[] = {"solid", "one_sided", "blended", "transmission", "alpha_test", "invalid",
-                             "missing_texture", "texture_boundary", "texture_cutout"};
+      const char *names[] = {"solid",   "one_sided",       "blended",          "transmission",  "alpha_test",
+                             "invalid", "missing_texture", "texture_boundary", "texture_cutout"};
       for (unsigned i = 0; i < scene::OpacityPartition::Count; ++i)
         std::fprintf(stderr, " %s=%llu", names[i], static_cast<unsigned long long>(reasons[i]));
       std::fprintf(stderr, "\n");
@@ -817,36 +908,46 @@ namespace remix {
       const auto end = Clock::now();
       const auto count = m_gpu->opacityCache.takeStatistics();
       if (auto *file = std::fopen(profile, "a")) {
-        if (!std::ftell(file)) std::fprintf(file, "prepare_ms,opacity_ms,prune_ms,lights_ms,lookups,hits,proofs,triangles,evictions,owners,textures\n");
-        auto ms = [](auto a, auto b) { return std::chrono::duration<double, std::milli>(b-a).count(); };
-        std::fprintf(file, "%.6f,%.6f,%.6f,%.6f,%llu,%llu,%llu,%llu,%llu,%llu,%llu\n",
-                     ms(start,prepared), ms(prepared,classified), ms(classified,pruned), ms(pruned,end),
+        if (!std::ftell(file))
+          std::fprintf(file, "prepare_ms,opacity_ms,prune_ms,lights_ms,lookups,hits,proofs,triangles,"
+                             "evictions,owners,textures\n");
+        auto ms = [](auto a, auto b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
+        std::fprintf(file, "%.6f,%.6f,%.6f,%.6f,%llu,%llu,%llu,%llu,%llu,%llu,%llu\n", ms(start, prepared),
+                     ms(prepared, classified), ms(classified, pruned), ms(pruned, end),
                      (unsigned long long)count.lookups, (unsigned long long)count.hits,
                      (unsigned long long)count.proofs, (unsigned long long)count.triangles,
-                     (unsigned long long)count.evictions, (unsigned long long)count.owners, (unsigned long long)count.textures);
+                     (unsigned long long)count.evictions, (unsigned long long)count.owners,
+                     (unsigned long long)count.textures);
         std::fclose(file);
       }
     }
     return frame;
   }
 
-  void PathTracer::prepare(VkCommandBuffer command, RasterRenderer &resources,
-                           const TraceOptions &options, scene::TraceFrame &scene) {
+  void PathTracer::prepare(VkCommandBuffer command, RasterRenderer &resources, const TraceOptions &options,
+                           scene::TraceFrame &scene) {
     m_gpu->prepare(command, resources, options, scene);
   }
 
   void PathTracer::record(VkCommandBuffer command) {
     auto &g = *m_gpu;
-    if (g.upscaler && !g.debugView) { g.upscaler->composite(command, g.encodeOutput, g.prism, g.gamma22, g.hardwareSrgb); return; }
+    if (g.upscaler && !g.debugView) {
+      g.upscaler->composite(command, g.encodeOutput, g.prism, g.gamma22, g.hardwareSrgb);
+      return;
+    }
     VkViewport viewport = {0, 0, float(g.displayExtent.width), float(g.displayExtent.height), 0, 1};
     VkRect2D scissor = {{0, 0}, g.displayExtent};
     vkCmdSetViewport(command, 0, 1, &viewport);
     vkCmdSetScissor(command, 0, 1, &scissor);
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, g.layout, 0, 1, &g.set, 0, nullptr);
     for (uint32_t i = 0; i < 2; ++i) {
-      const uint32_t push[] = {i, uint32_t(g.encodeOutput), uint32_t(g.prism),
-                               uint32_t(g.gamma22), uint32_t(g.hardwareSrgb),
-                               g.displayExtent.width, g.displayExtent.height};
+      const uint32_t push[] = {i,
+                               uint32_t(g.encodeOutput),
+                               uint32_t(g.prism),
+                               uint32_t(g.gamma22),
+                               uint32_t(g.hardwareSrgb),
+                               g.displayExtent.width,
+                               g.displayExtent.height};
       vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, g.composite[i]);
       vkCmdPushConstants(command, g.layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), push);
       vkCmdDraw(command, 3, 1, 0, 0);

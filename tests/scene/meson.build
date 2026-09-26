@@ -20,3 +20,5 @@ test('PBR material validation and texture lifetime', pbr_test)
 opacity_test = executable('remix-opacity-test', 'opacity.cpp',
   include_directories : test_includes, link_with : scene_library)
 test('Opaque traversal atlas coverage and snapshot ownership', opacity_test)
+usd_lights_test = executable('remix-usd-lights-test', 'usd_lights.cpp', include_directories : test_includes, link_with : scene_library)
+test('USD light conversion and BC4 BC6H assets', usd_lights_test)

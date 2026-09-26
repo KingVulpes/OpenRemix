@@ -58,8 +58,15 @@ layout(set=0,binding=3,std140) uniform Frame {
   uint64_t indirectResults, blueNoise;
   vec4 firefly; // outgoing local direct / indirect luminance limits; reserved
   uvec4 pathConfig; // adaptive termination, minimum completed bounces, reserved
+  vec4 domeTransform[3];
 } frame;
-layout(set=0,binding=6) uniform sampler2D textures[512];
+layout(set=0,binding=6) uniform sampler2D textures[4096];
+vec3 environmentRadiance(vec3 direction) {
+  if(frame.skyRadiance.w<=0)return frame.skyRadiance.rgb;
+  vec3 d=normalize(vec3(dot(frame.domeTransform[0].xyz,direction),dot(frame.domeTransform[1].xyz,direction),dot(frame.domeTransform[2].xyz,direction)));
+  vec2 uv=vec2(atan(d.z,d.x)/(2*3.14159265359)+.5,acos(clamp(d.y,-1,1))/3.14159265359);
+  return frame.skyRadiance.rgb*textureLod(textures[nonuniformEXT(uint(frame.skyRadiance.w)-1)],uv,0).rgb;
+}
 vec2 materialParameters(Surface s,vec2 uv) {
   uv=uv*s.uv.xy+s.uv.zw;
   return clamp(vec2(s.pbrTextures.x==0?s.pbr.x:textureLod(textures[nonuniformEXT(s.pbrTextures.x-1)],uv,0).r,
@@ -78,7 +85,9 @@ mat3 materialBasis(vec3 n,vec3 e1,vec3 e2,vec2 u1,vec2 u2) {
 vec3 materialNormal(Surface s,vec2 uv,mat3 basis,vec3 wo) {
   if(s.pbrTextures.z==0)return basis[2];
   vec3 local=textureLod(textures[nonuniformEXT(s.pbrTextures.z-1)],uv*s.uv.xy+s.uv.zw,0).xyz*2-1;
-  if(s.pbrTextures.w!=0)local.z=sqrt(max(0,1-dot(local.xy,local.xy)));
+  if((s.pbrTextures.w&1)!=0)local.z=sqrt(max(0,1-dot(local.xy,local.xy)));
+  if(s.pbrTextures.w==2) { local.xy=vec2(local.x+local.y,local.x-local.y)*.5; local.z=1-abs(local.x)-abs(local.y); }
+  if((s.pbrTextures.w&4)!=0)local.y=-local.y;
   if(dot(local,local)<1e-8)return basis[2];
   vec3 n=normalize(basis*vec3(local.xy,max(local.z,.001)));
   // A backfacing mapped normal cannot define a reflective hemisphere for wo.
@@ -104,7 +113,11 @@ vec3 linearColor(vec3 c) {
 vec4 arg(uint index, vec4 texel, vec4 vertex, vec4 factor) {
   return index == 1 ? texel : index == 2 ? vertex : index == 3 ? factor : vec4(1);
 }
-vec4 combine(uint op, vec4 a, vec4 b) { return op == 1 ? a : op == 2 ? b : a * b; }
+vec4 combine(uint op, vec4 a, vec4 b) { return op == 1 ? a : op == 2 ? b : op == 6 ? min(a+b,vec4(1)) : min(a*b*(op==4||op==7?2:op==5?4:1),vec4(1)); }
+// Captured alpha blending represents coverage: uncovered texels transmit the
+// background unchanged, regardless of their RGB. Only authored thin-sheet
+// materials (constant opacity or glass) retain the colored-transmission model.
+vec3 transmissionColor(vec3 color, bool tinted) { return tinted ? color : vec3(1); }
 // Candidate intersections need opacity only. In particular, do not linearize
 // vertex RGB or evaluate the color combiner before knowing the closest hit.
 float materialAlpha(Surface s, vec2 uv, float vertex) {
@@ -114,8 +127,8 @@ float materialAlpha(Surface s, vec2 uv, float vertex) {
   uint first=(op>>8)&3,second=(op>>10)&3;
   float a=first==1?texel:first==2?vertex:first==3?s.factor.a:1;
   float b=second==1?texel:second==2?vertex:second==3?s.factor.a:1;
-  uint combineOp=(op>>6)&3;
-  float alpha=(combineOp==1?a:combineOp==2?b:a*b)*s.tint.a;
+  uint combineOp=((op>>6)&3)|((op>>11)&4);
+  float alpha=(combineOp==1?a:combineOp==2?b:combineOp==6?min(a+b,1):min(a*b*(combineOp==4||combineOp==7?2:combineOp==5?4:1),1))*s.tint.a;
   if ((s.state.w&8)!=0) alpha*=.2;
   return clamp(alpha,0,1);
 }
@@ -123,15 +136,24 @@ vec4 materialColor(Surface s, vec2 uv, vec4 vertex) {
   vec4 texel = textureLod(textures[nonuniformEXT(s.textureState.x)], uv * s.uv.xy + s.uv.zw, 0);
   vertex.rgb = linearColor(vertex.rgb);
   uint op = s.state.x;
-  vec4 color = combine(op&3, arg((op>>2)&3,texel,vertex,s.factor), arg((op>>4)&3,texel,vertex,s.factor));
-  vec4 alpha = combine((op>>6)&3, arg((op>>8)&3,texel,vertex,s.factor), arg((op>>10)&3,texel,vertex,s.factor));
+  vec4 color = combine((op&3)|((op>>10)&4), arg((op>>2)&3,texel,vertex,s.factor), arg((op>>4)&3,texel,vertex,s.factor));
+  vec4 alpha = combine(((op>>6)&3)|((op>>11)&4), arg((op>>8)&3,texel,vertex,s.factor), arg((op>>10)&3,texel,vertex,s.factor));
   vec4 result = vec4(color.rgb, alpha.a)*s.tint;
   if ((s.state.w&8)!=0) result.a*=0.2; // Basic thin tinted-sheet approximation.
   if ((s.state.w&1)!=0) result.a=1;
   return clamp(result,0,1);
 }
+bool decalSurface(Surface s) { return (s.state.w&64u)!=0; }
+bool coverageBlended(Surface s) { return (s.state.w&34u)==2u; }
+bool blendedAtAlpha(Surface s,float a) { return (s.state.w&2u)!=0&&a<1; }
 bool alphaPass(Surface s, float a) {
   float ref=uintBitsToFloat(s.state.z); uint op=s.state.y;
   return op==7 || (op==1&&a<ref) || (op==2&&a==ref) || (op==3&&a<=ref) ||
     (op==4&&a>ref) || (op==5&&a!=ref) || (op==6&&a>=ref);
+}
+
+// Zero-coverage texels do not represent an interaction. A tinted sheet still
+// transmits its color at zero opacity and must remain in the layer traversal.
+bool visibleAlpha(Surface s,float a) {
+  return alphaPass(s,a)&&(!coverageBlended(s)||a>0);
 }

@@ -1,5 +1,5 @@
-#include "scene/resources.h"
 #include "scene/images.h"
+#include "scene/resources.h"
 #include "scene/validation.h"
 #include <remix/remix_native_ext.h>
 
@@ -111,11 +111,18 @@ namespace remix {
     }
     m_cameras[info.type] = camera;
     m_views[info.type] = view;
+    // Keep the submitted projection before view multiplication loses precision.
+    // Recovering it from camera * inverse(view) can alternate between finite
+    // and infinite far planes while moving, repeatedly rebuilding reconstruction.
+    for (int c = 0; c < 4; ++c)
+      projection[c * 4 + 1] = -projection[c * 4 + 1];
+    m_projections[info.type] = projection;
     m_reverseDepth[info.type] = reverseDepth;
     m_cameraValid[info.type] = true;
   }
 
-  void NativeResources::drawInstance(const remixapi_InstanceInfo &info) {
+  void NativeResources::drawInstance(const remixapi_InstanceInfo &info,
+                                     remixapi_MaterialHandle materialOverride) {
     auto mesh = m_meshes.find(key(info.mesh));
     if (mesh == m_meshes.end()) {
       throw invalid;
@@ -197,6 +204,10 @@ namespace remix {
         draw.depthBias = (info.categoryFlags & (REMIXAPI_INSTANCE_CATEGORY_BIT_DECAL_DYNAMIC |
                                                 REMIXAPI_INSTANCE_CATEGORY_BIT_DECAL_STATIC |
                                                 REMIXAPI_INSTANCE_CATEGORY_BIT_DECAL_SINGLE_OFFSET)) != 0;
+        draw.decal = (info.categoryFlags & (REMIXAPI_INSTANCE_CATEGORY_BIT_DECAL_STATIC |
+                                             REMIXAPI_INSTANCE_CATEGORY_BIT_DECAL_DYNAMIC |
+                                             REMIXAPI_INSTANCE_CATEGORY_BIT_DECAL_SINGLE_OFFSET |
+                                             REMIXAPI_INSTANCE_CATEGORY_BIT_DECAL_NO_OFFSET)) != 0;
         draw.material = m_default;
         if (surface->material) {
           auto it = m_materials.find(key(surface->material));
@@ -204,7 +215,13 @@ namespace remix {
             throw invalid;
           }
           draw.material = it->second;
+          if (auto replacement = m_modMaterials.find(draw.material->sourceHash ? draw.material->sourceHash
+                                                                               : key(surface->material));
+              replacement != m_modMaterials.end())
+            draw.material = replacement->second;
         }
+        if (materialOverride)
+          draw.material = m_materials.at(key(materialOverride));
         if (surface->bonesPerVertex) {
           if (!bones || bones->empty()) {
             throw invalid;

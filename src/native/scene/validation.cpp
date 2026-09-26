@@ -47,7 +47,7 @@ namespace remix::scene::detail {
       out.alpha1 = info->textureAlphaArg1Source;
       out.alpha2 = info->textureAlphaArg2Source;
     }
-    if (out.colorOp > 3 || out.alphaOpTexture > 3 || out.color1 > 3 || out.color2 > 3 || out.alpha1 > 3 ||
+    if (out.colorOp > 7 || out.alphaOpTexture > 7 || out.color1 > 3 || out.color2 > 3 || out.alpha1 > 3 ||
         out.alpha2 > 3) {
       throw unavailable;
     }

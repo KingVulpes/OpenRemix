@@ -1,5 +1,6 @@
 #include "scene/trace_frame.h"
 #include "scene/fixtures.h"
+#include "scene/opacity.h"
 #include <cmath>
 
 using namespace remix::scene;
@@ -36,6 +37,27 @@ int main() {
           "Animation changed emitter correspondence");
   require(first.emitters[0].light.radiance[0] == 1 && second.emitters[0].light.radiance[1] == 1,
           "Preparing another frame mutated pending lighting");
+
+  auto paint = draw;
+  paint.decal = true;
+  paint.doubleSided = true;
+  require(!prepareTraceFrame({paint}, 0, false, emissionCache).instances[0][0].draw.decal,
+          "Decal category turned an ordinary opaque wall into paint");
+  paint.blend.enabled = true;
+  const auto painted = prepareTraceFrame({paint}, 0, false, emissionCache);
+  const auto &preparedPaint = painted.instances[0][0];
+  OpacityCache opacity;
+  require(preparedPaint.draw.decal && !opacity.opaque(preparedPaint.draw, preparedPaint.uv),
+          "Decal entered hardware-opaque traversal and cannot resolve its receiver");
+  require(paint.blend.enabled && !first.instances[0][0].draw.decal,
+          "Preparing paint modified the submitted or pending frame");
+  paint.material = std::make_shared<Material>(*paint.material);
+  paint.material->translucent = true;
+  require(prepareTraceFrame({paint}, 0, false, emissionCache).instances[0][0].draw.decal,
+          "Constant-opacity paint was confused with glass");
+  paint.material->transmission = true;
+  const auto glass = prepareTraceFrame({paint}, 0, false, emissionCache);
+  require(!glass.instances[0][0].draw.decal, "Authored glass was converted to paint");
 
   auto legacy = draw;
   legacy.instanceId = 0;

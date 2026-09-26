@@ -39,9 +39,13 @@ rounded inverse would create false motion on stationary surfaces away from the
 world origin. The official FSR phase-count and Halton helpers
 provide subpixel offsets in render pixels. The dispatch negates the renderer's
 ray-sampling offset to match FSR's projected-geometry jitter convention.
-Device depth is reconstructed from the
-same primary surface view depth and projection, supporting either camera
-handedness. FSR is enabled only for finite perspective world cameras.
+Device depth is reconstructed from the same primary surface view depth using
+a reversed-depth projection, supporting either camera handedness. Converting the
+projection before evaluating depth preserves precision across wide capture clip
+ranges; subtracting rounded ordinary depth from one would not recover it. FSR's
+near/far endpoints are solved directly from the supplied projection, without an
+FP32 matrix inverse. Background depth is zero. FSR is enabled only for finite
+perspective world cameras.
 
 Transparent radiance follows its opaque background's motion. A preparation pass
 writes reactive and transparency/composition masks from accumulated transmission,
@@ -72,7 +76,7 @@ GLSL luma-history storage format. Private bounded-CRT shims and a Vulkan 1.1 cor
 entry-point adapter keep platform glue out of the public ABI.
 
 The embedded Vulkan permutations use FP32, HDR, unjittered render-resolution motion
-and ordinary depth. They do not force subgroup size or require FP16 to be enabled
+and inverted depth. They do not force subgroup size or require FP16 to be enabled
 on the logical device. Required formats, subgroup quad operations and unformatted
 storage writes are checked before context creation. Public SDK structures and
 exports are unchanged.

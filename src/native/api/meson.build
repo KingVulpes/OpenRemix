@@ -10,4 +10,5 @@ api_sources = files(
   'resources.cpp',
   'state.cpp',
   'ui.cpp',
+  'usd.cpp',
 )

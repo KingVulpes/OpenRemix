@@ -2,11 +2,16 @@
 #include <remix/remix_native_ext.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <limits>
 
 #define STBI_ONLY_PNG
+#define STBI_ONLY_JPEG
+#define STBI_ONLY_TGA
+#define STBI_ONLY_BMP
+#define STBI_ONLY_HDR
 #define STBI_NO_STDIO
 #define STBI_MAX_DIMENSIONS 16384
 #define STB_IMAGE_STATIC
@@ -27,6 +32,52 @@ namespace remix::scene {
       return uint32_t(data[offset]) | uint32_t(data[offset + 1]) << 8 | uint32_t(data[offset + 2]) << 16 |
              uint32_t(data[offset + 3]) << 24;
     }
+    Pixels decodeFloat(uint32_t width, uint32_t height, uint32_t mips, unsigned channels, bool half,
+                       const uint8_t *data, size_t size) {
+      if (!width || !height || width > 16384 || height > 16384 || !data || channels < 1 || channels > 4)
+        throw invalid;
+      unsigned levels = 0;
+      for (auto n = std::max(width, height); n; n >>= 1)
+        ++levels;
+      if (mips > levels)
+        throw invalid;
+      Pixels out{width, height, false, {}};
+      size_t offset = 0, total = 0;
+      for (unsigned mip = 0; mip < std::max(1u, mips); ++mip) {
+        size_t count = size_t(width) * height, bytes = count * channels * (half ? 2 : 4);
+        total += count * 20;
+        if (bytes > size - offset || total > 512u * 1024 * 1024)
+          throw invalid;
+        auto &floats = out.hdrMips.emplace_back(count * 4);
+        auto &pixels = out.mips.emplace_back(count * 4);
+        for (size_t i = 0; i < count; ++i)
+          for (unsigned c = 0; c < 4; ++c) {
+            float value = c == 3 ? 1 : 0;
+            if (c < channels || (channels == 1 && c < 3)) {
+              const size_t source = offset + (i * channels + (channels == 1 ? 0 : c)) * (half ? 2 : 4);
+              if (half) {
+                const unsigned bits = unsigned(data[source]) | (unsigned(data[source + 1]) << 8),
+                               exponent = (bits >> 10) & 31, fraction = bits & 1023;
+                value = exponent == 31 ? 0
+                                       : std::ldexp(float(fraction + (exponent ? 1024 : 0)),
+                                                    (exponent ? int(exponent) - 15 : -14) - 10);
+                if (bits & 0x8000)
+                  value = -value;
+              } else {
+                std::memcpy(&value, data + source, 4);
+                if (!std::isfinite(value))
+                  value = 0;
+              }
+            }
+            floats[i * 4 + c] = value;
+            pixels[i * 4 + c] = uint8_t(std::clamp(value, 0.f, 1.f) * 255);
+          }
+        offset += bytes;
+        width = std::max(1u, width / 2);
+        height = std::max(1u, height / 2);
+      }
+      return out;
+    }
     Pixels decode(uint32_t width, uint32_t height, uint32_t mips, bool srgb, uint32_t block, bool bgra,
                   const uint8_t *data, size_t size) {
       if (!width || !height || width > 16384 || height > 16384 || !data) {
@@ -44,14 +95,17 @@ namespace remix::scene {
       out.twoChannel = block == 5;
       size_t offset = 0, total = 0;
       for (uint32_t mip = 0; mip < mips; ++mip) {
-        const size_t bytes = block ? size_t((width + 3) / 4) * ((height + 3) / 4) * (block == 1 ? 8 : 16)
-                                   : size_t(width) * height * 4;
+        const size_t bytes =
+            block ? size_t((width + 3) / 4) * ((height + 3) / 4) * ((block == 1 || block == 4) ? 8 : 16)
+                  : size_t(width) * height * 4;
         const size_t decodedSize = size_t(width) * height * 4;
-        total += decodedSize;
+        total += decodedSize * ((block == 6 || block == 16) ? 5 : 1);
         if (offset > size || bytes > size - offset || total > 512u * 1024 * 1024) {
           throw invalid;
         }
         auto &pixels = out.mips.emplace_back(decodedSize);
+        if (block == 6 || block == 16)
+          out.hdrMips.emplace_back(decodedSize);
         if (!block) {
           std::memcpy(pixels.data(), data + offset, bytes);
           if (bgra) {
@@ -64,13 +118,35 @@ namespace remix::scene {
           for (uint32_t y = 0; y < height; y += 4) {
             for (uint32_t x = 0; x < width; x += 4) {
               alignas(8) uint8_t source[16] = {}, result[64] = {};
-              std::memcpy(source, data + cursor, block == 1 ? 8 : 16);
+              std::memcpy(source, data + cursor, (block == 1 || block == 4) ? 8 : 16);
               if (block == 1) {
                 bcdec_bc1(source, result, 16);
               } else if (block == 2) {
                 bcdec_bc2(source, result, 16);
               } else if (block == 3) {
                 bcdec_bc3(source, result, 16);
+              } else if (block == 4) {
+                uint8_t scalar[16];
+                bcdec_bc4(source, scalar, 4);
+                for (int i = 0; i < 16; ++i) {
+                  result[i * 4] = result[i * 4 + 1] = result[i * 4 + 2] = scalar[i];
+                  result[i * 4 + 3] = 255;
+                }
+              } else if (block == 6 || block == 16) {
+                float rgb[48];
+                bcdec_bc6h_float(source, rgb, 12, block == 16);
+                for (uint32_t row = 0; row < std::min(4u, height - y); ++row)
+                  for (uint32_t col = 0; col < std::min(4u, width - x); ++col) {
+                    const auto dst = (size_t(y + row) * width + x + col) * 4;
+                    for (unsigned c = 0; c < 3; ++c) {
+                      const float value = rgb[(row * 4 + col) * 3 + c];
+                      out.hdrMips.back()[dst + c] = std::isfinite(value) ? value : 0;
+                      result[(row * 4 + col) * 4 + c] =
+                          uint8_t(std::clamp(out.hdrMips.back()[dst + c], 0.f, 1.f) * 255);
+                    }
+                    out.hdrMips.back()[dst + 3] = 1;
+                    result[(row * 4 + col) * 4 + 3] = 255;
+                  }
               } else if (block == 5) {
                 uint8_t rg[32];
                 bcdec_bc5(source, rg, 8);
@@ -88,7 +164,7 @@ namespace remix::scene {
                 std::memcpy(pixels.data() + (size_t(y + row) * width + x) * 4, result + row * 16,
                             std::min(4u, width - x) * 4);
               }
-              cursor += block == 1 ? 8 : 16;
+              cursor += (block == 1 || block == 4) ? 8 : 16;
             }
           }
         }
@@ -138,6 +214,15 @@ namespace remix::scene {
     case REMIXAPI_FORMAT_BC3_UNORM:
       block = 3;
       break;
+    case REMIXAPI_FORMAT_BC4_UNORM_EXT:
+      block = 4;
+      break;
+    case REMIXAPI_FORMAT_BC6H_UFLOAT_EXT:
+      block = 6;
+      break;
+    case REMIXAPI_FORMAT_BC6H_SFLOAT_EXT:
+      block = 16;
+      break;
     case REMIXAPI_FORMAT_BC5_UNORM:
       block = 5;
       break;
@@ -186,13 +271,23 @@ namespace remix::scene {
       bool bgra = false, srgb = true, forceAlpha = false;
       size_t offset = 128;
       const uint32_t fourCC = word(data, 84);
+      unsigned floatChannels = 0;
+      bool floatHalf = false;
       if (word(data, 80) & 4) {
-        if (fourCC == 0x31545844) {
+        if (fourCC >= 111 && fourCC <= 116) {
+          floatHalf = fourCC <= 113;
+          const auto n = (fourCC - 111) % 3;
+          floatChannels = n == 0 ? 1 : n == 1 ? 2 : 4;
+          srgb = false;
+        } else if (fourCC == 0x31545844) {
           block = 1;
         } else if (fourCC == 0x33545844) {
           block = 2;
         } else if (fourCC == 0x35545844) {
           block = 3;
+        } else if (fourCC == 0x31495441 || fourCC == 0x55344342) {
+          block = 4;
+          srgb = false;
         } else if (fourCC == 0x32495441 || fourCC == 0x55354342) {
           block = 5;
           srgb = false;
@@ -202,6 +297,30 @@ namespace remix::scene {
           }
           offset = 148;
           switch (word(data, 128)) {
+          case 2:
+            floatChannels = 4;
+            break;
+          case 6:
+            floatChannels = 3;
+            break;
+          case 10:
+            floatChannels = 4;
+            floatHalf = true;
+            break;
+          case 16:
+            floatChannels = 2;
+            break;
+          case 34:
+            floatChannels = 2;
+            floatHalf = true;
+            break;
+          case 41:
+            floatChannels = 1;
+            break;
+          case 54:
+            floatChannels = 1;
+            floatHalf = true;
+            break;
           case 28:
           case 29:
             break;
@@ -220,6 +339,18 @@ namespace remix::scene {
           case 77:
           case 78:
             block = 3;
+            break;
+          case 80:
+            block = 4;
+            srgb = false;
+            break;
+          case 95:
+            block = 6;
+            srgb = false;
+            break;
+          case 96:
+            block = 16;
+            srgb = false;
             break;
           case 83:
             block = 5;
@@ -252,6 +383,9 @@ namespace remix::scene {
           throw unavailable;
         }
       }
+      if (floatChannels)
+        return decodeFloat(width, height, word(data, 28), floatChannels, floatHalf, data.data() + offset,
+                           data.size() - offset);
       auto out = decode(width, height, word(data, 28), srgb, block, bgra, data.data() + offset,
                         data.size() - offset);
       if (forceAlpha) {
@@ -267,6 +401,19 @@ namespace remix::scene {
     if (!stbi_info_from_memory(data.data(), int(data.size()), &width, &height, &channels) || width <= 0 ||
         height <= 0 || uint64_t(width) * height * 4 > 512u * 1024 * 1024) {
       throw invalid;
+    }
+    if (stbi_is_hdr_from_memory(data.data(), int(data.size()))) {
+      std::unique_ptr<float, decltype(&stbi_image_free)> hdr(
+          stbi_loadf_from_memory(data.data(), int(data.size()), &width, &height, &channels, 4),
+          stbi_image_free);
+      if (!hdr || uint64_t(width) * height * 20 > 512u * 1024 * 1024)
+        throw invalid;
+      Pixels out{
+          uint32_t(width), uint32_t(height), false, {std::vector<uint8_t>(size_t(width) * height * 4)}};
+      out.hdrMips.emplace_back(hdr.get(), hdr.get() + size_t(width) * height * 4);
+      for (size_t i = 0; i < out.mips[0].size(); ++i)
+        out.mips[0][i] = uint8_t(std::clamp(hdr.get()[i], 0.f, 1.f) * 255);
+      return out;
     }
     std::unique_ptr<stbi_uc, decltype(&stbi_image_free)> pixels(
         stbi_load_from_memory(data.data(), int(data.size()), &width, &height, &channels, 4), stbi_image_free);

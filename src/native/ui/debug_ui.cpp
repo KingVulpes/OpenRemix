@@ -8,6 +8,8 @@
 
 namespace remix {
   void RemixNativeRuntime::drawUi(VkCommandBuffer commandBuffer) {
+    if (!m_gui)
+      return;
     ui::UiScope scope(m_gui);
     if (commandBuffer) {
       ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffer);

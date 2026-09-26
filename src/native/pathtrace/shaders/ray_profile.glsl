@@ -19,7 +19,7 @@ void profileRay(uint counter) {
 void profilePath(uint event) { profileRay(24u+event); }
 // alpha_texture records texture-dependent alpha tests, not hardware fetches.
 void profileAlpha(Surface s,uint base) {
-  if(s.state.y!=0&&s.state.y!=7&&(s.state.w&1)==0) {
+  if(s.state.y!=0&&(s.state.y!=7||coverageBlended(s))&&(s.state.w&1)==0) {
     profileRay(base+2);
     uint op=(s.state.x>>6)&3u,a=(s.state.x>>8)&3u,b=(s.state.x>>10)&3u;
     if((op!=2&&a==1)||(op!=1&&b==1))profileRay(base+6);

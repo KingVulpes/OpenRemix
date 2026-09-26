@@ -1,15 +1,15 @@
 #pragma once
-#include <vulkan/vulkan.h>
-#include "raster/renderer.h"
-#include "pathtrace/options.h"
 #include "denoise/renderer.h"
+#include "pathtrace/options.h"
+#include "raster/renderer.h"
 #include "scene/trace_frame.h"
 #include <remix/remix_native_ext.h>
+#include <vulkan/vulkan.h>
 
 namespace remix {
   class PathTracer {
   public:
-    static constexpr uint32_t textureLimit = 512;
+    static constexpr uint32_t textureLimit = 4096;
     PathTracer();
     ~PathTracer();
     void initialize(VkPhysicalDevice physical, VkDevice device, uint32_t queueFamily);
@@ -18,7 +18,7 @@ namespace remix {
     VkRenderPass skyPass() const;
     upscale::Statistics upscalingStatistics() const;
     void setNgx(std::shared_ptr<upscale::Ngx> ngx);
-    void beginFrame(const TraceOptions &options, const RasterRenderer& resources);
+    void beginFrame(const TraceOptions &options, const RasterRenderer &resources);
     void selectFrame(uint32_t slot);
     void submitted();
     remixapi_ShadowStatisticsEXT shadowStatistics() const;

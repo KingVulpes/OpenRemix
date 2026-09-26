@@ -25,10 +25,10 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
-#include <charconv>
 
 namespace remix {
   namespace {
@@ -43,8 +43,9 @@ namespace remix {
   } // namespace
 
   remixapi_ErrorCode RemixNativeRuntime::createInstance() {
-    std::vector<const char *> extensions = m_window.getVulkanInstanceExtensions();
-    if (extensions.empty()) {
+    std::vector<const char *> extensions =
+        m_headless ? std::vector<const char *>{} : m_window.getVulkanInstanceExtensions();
+    if (!m_headless && extensions.empty()) {
       return REMIXAPI_ERROR_CODE_HRESULT_DXVK_INSTANCE_EXTENSION_FAIL;
     }
 #if defined(__APPLE__)
@@ -100,7 +101,7 @@ namespace remix {
 
     int bestScore = std::numeric_limits<int>::min();
     for (VkPhysicalDevice device : devices) {
-      if (!supportsDeviceExtension(device, VK_KHR_SWAPCHAIN_EXTENSION_NAME)) {
+      if (!m_headless && !supportsDeviceExtension(device, VK_KHR_SWAPCHAIN_EXTENSION_NAME)) {
         continue;
       }
 
@@ -110,8 +111,9 @@ namespace remix {
       vkGetPhysicalDeviceQueueFamilyProperties(device, &familyCount, families.data());
 
       for (uint32_t family = 0; family < familyCount; family++) {
-        VkBool32 supportsPresent = VK_FALSE;
-        vkGetPhysicalDeviceSurfaceSupportKHR(device, family, m_surface, &supportsPresent);
+        VkBool32 supportsPresent = m_headless;
+        if (!m_headless)
+          vkGetPhysicalDeviceSurfaceSupportKHR(device, family, m_surface, &supportsPresent);
         const VkQueueFlags required = VK_QUEUE_GRAPHICS_BIT;
         if ((families[family].queueFlags & required) != required || !supportsPresent) {
           continue;
@@ -144,6 +146,17 @@ namespace remix {
     };
     std::vector<const char *> extensions(std::begin(kRequiredDeviceExtensions),
                                          std::end(kRequiredDeviceExtensions));
+#if defined(__linux__)
+    if (m_headless) {
+      extensions.clear();
+      for (const char *extension :
+           {VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME, VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME}) {
+        if (!supportsDeviceExtension(selection.physicalDevice, extension))
+          return REMIXAPI_ERROR_CODE_FEATURE_UNAVAILABLE;
+        extensions.push_back(extension);
+      }
+    }
+#endif
     VkPhysicalDeviceProperties properties;
     vkGetPhysicalDeviceProperties(selection.physicalDevice, &properties);
     VkPhysicalDeviceRayQueryFeaturesKHR ray = {.sType =
@@ -193,9 +206,9 @@ namespace remix {
                   properties.limits.maxPerStageDescriptorSampledImages >= PathTracer::textureLimit &&
                   properties.limits.maxDescriptorSetSamplers >= PathTracer::textureLimit &&
                   properties.limits.maxDescriptorSetSampledImages >= PathTracer::textureLimit,
-              "512 sampled-image descriptors");
+              "4096 sampled-image descriptors");
       missing(properties.limits.maxPerStageResources >= PathTracer::textureLimit + 14,
-              "526 compute-stage resources");
+              "4110 compute-stage resources");
       missing(properties.limits.maxPerStageDescriptorStorageImages >= 10 &&
                   properties.limits.maxDescriptorSetStorageImages >= 10,
               "ten tracing storage images");
@@ -210,7 +223,8 @@ namespace remix {
         missing((target.optimalTilingFeatures & required) == required, "G-buffer attachment/storage format");
       }
       VkFormatProperties stateFormat;
-      vkGetPhysicalDeviceFormatProperties(selection.physicalDevice, VK_FORMAT_R32G32B32A32_UINT, &stateFormat);
+      vkGetPhysicalDeviceFormatProperties(selection.physicalDevice, VK_FORMAT_R32G32B32A32_UINT,
+                                          &stateFormat);
       missing((stateFormat.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) != 0,
               "RGBA32UI tracing state storage");
       VkPhysicalDeviceAccelerationStructurePropertiesKHR accelerationProperties = {
@@ -232,8 +246,8 @@ namespace remix {
     }
     m_traceSupported = m_traceUnavailable.empty();
     m_denoiseCapabilities = denoise::capabilities(selection.physicalDevice);
-    const bool sharcSupported = REMIX_HAS_SHARC && m_traceSupported &&
-        vulkan11.storageBuffer16BitAccess && vulkan12.shaderFloat16 && vulkan12.shaderBufferInt64Atomics;
+    const bool sharcSupported = REMIX_HAS_SHARC && m_traceSupported && vulkan11.storageBuffer16BitAccess &&
+                                vulkan12.shaderFloat16 && vulkan12.shaderBufferInt64Atomics;
     features.features = {};
     vulkan11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, .pNext = &vulkan12};
     vulkan12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = &acceleration};

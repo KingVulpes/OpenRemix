@@ -21,6 +21,9 @@
  */
 
 #include "api/state.h"
+#if REMIX_HAS_USD
+#include "usd/mods.h"
+#endif
 #include "api/entrypoints.h"
 
 namespace remix::api {
@@ -70,7 +73,13 @@ namespace remix::api {
     if (!info || info->sType != REMIXAPI_STRUCT_TYPE_INSTANCE_INFO) {
       return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
     }
-    return resourceCall([&](auto &raster) { raster.drawInstance(*info); });
+    return resourceCall([&](auto &raster) {
+#if REMIX_HAS_USD
+      if (remix::usd::modInstance(raster, *info))
+        return;
+#endif
+      raster.drawInstance(*info);
+    });
   }
 
   remixapi_ErrorCode REMIXAPI_CALL createLight(const remixapi_LightInfo *info,
@@ -93,7 +102,13 @@ namespace remix::api {
   remixapi_ErrorCode REMIXAPI_CALL drawLightInstance(remixapi_LightHandle handle) {
     if (!handle)
       return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
-    return resourceCall([&](auto &resources) { resources.drawLight(handle); });
+    return resourceCall([&](auto &resources) {
+#if REMIX_HAS_USD
+      if (remix::usd::modLight(resources, handle))
+        return;
+#endif
+      resources.drawLight(handle);
+    });
   }
 
   remixapi_ErrorCode REMIXAPI_CALL createTexture(const remixapi_TextureInfo *info,

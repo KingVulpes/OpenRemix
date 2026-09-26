@@ -1,5 +1,5 @@
-#include "scene/resources.h"
 #include "scene/images.h"
+#include "scene/resources.h"
 #include "scene/validation.h"
 #include <remix/remix_native_ext.h>
 
@@ -18,6 +18,12 @@ namespace remix {
       throw invalid;
     }
     auto material = std::make_shared<Material>();
+    if (auto *normal = static_cast<const remixapi_MaterialNormalEncodingEXT *>(
+            extension(info.pNext, REMIXAPI_STRUCT_TYPE_MATERIAL_NORMAL_ENCODING_EXT))) {
+      if (normal->encoding > 3)
+        throw invalid;
+      material->normalEncoding = normal->encoding;
+    }
     const auto *opaque = static_cast<const remixapi_MaterialInfoOpaqueEXT *>(
         extension(info.pNext, REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_EXT));
     const auto *translucent = static_cast<const remixapi_MaterialInfoTranslucentEXT *>(
@@ -30,8 +36,9 @@ namespace remix {
     if (opaque) {
       finite(&opaque->roughnessConstant, 1);
       finite(&opaque->metallicConstant, 1);
-      if (opaque->roughnessConstant < 0 || opaque->roughnessConstant > 1 ||
-          opaque->metallicConstant < 0 || opaque->metallicConstant > 1) throw invalid;
+      if (opaque->roughnessConstant < 0 || opaque->roughnessConstant > 1 || opaque->metallicConstant < 0 ||
+          opaque->metallicConstant > 1)
+        throw invalid;
       material->roughness = opaque->roughnessConstant;
       material->metallic = opaque->metallicConstant;
       material->roughnessTexture = dataTexturePath(opaque->roughnessTexture);
@@ -75,21 +82,24 @@ namespace remix {
     material->normalTexture = dataTexturePath(info.normalTexture);
     const auto *pbr = static_cast<const remixapi_MaterialInfoPbrEXT *>(
         extension(info.pNext, REMIXAPI_STRUCT_TYPE_MATERIAL_PBR_EXT));
-    if (pbr && (!opaque || pbr->enabled > 1)) throw invalid;
-    material->pbr = opaque && (pbr ? pbr->enabled != 0 :
-        material->roughness > 0 || material->metallic > 0 || material->roughnessTexture ||
-        material->metallicTexture || material->normalTexture);
+    if (pbr && (!opaque || pbr->enabled > 1))
+      throw invalid;
+    material->pbr =
+        opaque && (pbr ? pbr->enabled != 0
+                       : material->roughness > 0 || material->metallic > 0 || material->roughnessTexture ||
+                             material->metallicTexture || material->normalTexture);
     finite(&info.emissiveColorConstant.x, 3);
     finite(&info.emissiveIntensity, 1);
-    if (info.emissiveIntensity < 0 || info.emissiveColorConstant.x < 0 ||
-        info.emissiveColorConstant.y < 0 || info.emissiveColorConstant.z < 0)
+    if (info.emissiveIntensity < 0 || info.emissiveColorConstant.x < 0 || info.emissiveColorConstant.y < 0 ||
+        info.emissiveColorConstant.z < 0)
       throw invalid;
     for (unsigned c = 0; c < 3; ++c)
       material->emission[c] = (&info.emissiveColorConstant.x)[c] * info.emissiveIntensity;
     finite(material->emission, 3);
     if (const auto *emission = static_cast<const remixapi_MaterialInfoEmissionEXT *>(
             extension(info.pNext, REMIXAPI_STRUCT_TYPE_MATERIAL_EMISSION_EXT))) {
-      if (emission->suppressLightGeneration > 1) throw invalid;
+      if (emission->suppressLightGeneration > 1)
+        throw invalid;
       material->suppressEmissionLight = emission->suppressLightGeneration != 0;
     }
     if (info.emissiveTexture && *info.emissiveTexture)
@@ -101,13 +111,12 @@ namespace remix {
       material->emissionCache = previous->second->emissionCache;
     auto equal = [&](const Material &a, const Material &b) {
       return a.texture == b.texture && a.emissionTexture == b.emissionTexture &&
-             a.suppressEmissionLight == b.suppressEmissionLight &&
-             a.roughnessTexture == b.roughnessTexture && a.metallicTexture == b.metallicTexture &&
-             a.normalTexture == b.normalTexture && a.roughness == b.roughness &&
-             a.metallic == b.metallic && a.pbr == b.pbr &&
-             std::equal(a.emission, a.emission + 3, b.emission) &&
-             std::equal(a.tint, a.tint + 4, b.tint) && a.compare == b.compare &&
-             a.reference == b.reference && a.drawAlpha == b.drawAlpha && a.translucent == b.translucent &&
+             a.suppressEmissionLight == b.suppressEmissionLight && a.roughnessTexture == b.roughnessTexture &&
+             a.metallicTexture == b.metallicTexture && a.normalTexture == b.normalTexture &&
+             a.normalEncoding == b.normalEncoding && a.roughness == b.roughness && a.metallic == b.metallic &&
+             a.pbr == b.pbr && std::equal(a.emission, a.emission + 3, b.emission) &&
+             std::equal(a.tint, a.tint + 4, b.tint) && a.compare == b.compare && a.reference == b.reference &&
+             a.drawAlpha == b.drawAlpha && a.translucent == b.translucent &&
              a.transmission == b.transmission && a.filter == b.filter && a.wrapU == b.wrapU &&
              a.wrapV == b.wrapV && a.rows == b.rows && a.columns == b.columns && a.fps == b.fps;
     };

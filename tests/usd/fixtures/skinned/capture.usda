@@ -1,0 +1,40 @@
+#usda 1.0
+(
+    defaultPrim = "RootNode"
+    upAxis = "Z"
+    metersPerUnit = 0.01
+    customLayerData = { string lightspeed_layer_type = "capture" }
+)
+def Xform "RootNode" {
+    def Scope "meshes" {
+        def SkelRoot "mesh_0123456789ABCDEF" (prepend references = @mesh.usda@) {
+            token visibility = "invisible"
+            def Skeleton "skel" (prepend references = @skeleton.usda@</Rig/skel>) {}
+        }
+    }
+    def Scope "instances" {
+        def SkelRoot "inst_0123456789ABCDEF_0" (
+            prepend references = </RootNode/meshes/mesh_0123456789ABCDEF>
+        ) {
+            token visibility = "inherited"
+            double3 xformOp:translate = (100,0,0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+            over "skel" (prepend apiSchemas = ["SkelBindingAPI"]) {
+                rel skel:animationSource = </RootNode/instances/inst_0123456789ABCDEF_0/pose>
+            }
+            def SkelAnimation "pose" {
+                uniform token[] joints = ["root", "root/tip"]
+                float3[] translations = [(1,0,0), (2,0,0)]
+                quatf[] rotations = [(1,0,0,0), (0.70710678,0,0,0.70710678)]
+                half3[] scales = [(1,1,1), (1,1,1)]
+            }
+        }
+        def SkelRoot "inst_0123456789ABCDEF_1" (
+            prepend references = </RootNode/meshes/mesh_0123456789ABCDEF>
+        ) {
+            token visibility = "inherited"
+            double3 xformOp:translate = (0,20,0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+    }
+}

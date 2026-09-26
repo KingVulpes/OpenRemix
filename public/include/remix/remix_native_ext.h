@@ -283,3 +283,15 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetDenoisingStatisticsEXT(rem
 #ifdef __cplusplus
 }
 #endif
+
+#define REMIXAPI_STRUCT_TYPE_MATERIAL_NORMAL_ENCODING_EXT ((remixapi_StructType)0x7fff1011)
+typedef struct remixapi_MaterialNormalEncodingEXT {
+  remixapi_StructType sType;
+  const void *pNext;
+  uint32_t encoding; // 0 legacy auto XY/XYZ, 1 hemisphere-octahedral, 2 tangent DX, 3 tangent GL
+} remixapi_MaterialNormalEncodingEXT;
+
+// A private value avoids the retained 0.1003 BC5 value (139).
+#define REMIXAPI_FORMAT_BC4_UNORM_EXT ((remixapi_Format)147)
+#define REMIXAPI_FORMAT_BC6H_UFLOAT_EXT ((remixapi_Format)143)
+#define REMIXAPI_FORMAT_BC6H_SFLOAT_EXT ((remixapi_Format)144)

@@ -266,8 +266,7 @@ namespace remix {
   }
   void PathTracer::beginFrame(const TraceOptions &options, const RasterRenderer& resources) {
     auto& g = *m_gpu;
-    const bool perspective = resources.cameraValid() && upscale::supportsCamera(
-        scene::multiply(resources.camera(), scene::inverse(resources.view())));
+    const bool perspective = resources.cameraValid() && upscale::supportsCamera(resources.projection());
     const bool eligible = !options.accumulate && !options.sharcDebug && g.postCapabilities.taaSupported && perspective;
     const auto backend = !eligible || options.upscaler == upscale::Mode::Off ? upscale::Backend::Native :
         options.upscaler == upscale::Mode::Fsr31 ? upscale::Backend::Fsr31 : upscale::Backend::DlssSr;
@@ -337,6 +336,8 @@ namespace remix {
       g.pbrReuse.valid = true;
     }
     g.history.commit();
+    if (g.upscaler && g.reconstructionWarmFrames < 128)
+      ++g.reconstructionWarmFrames;
     if (g.sharc.stats.active && g.sharc.hasReceivers) {
       ++g.sharc.stats.renderedFrames;
       ++g.sharc.warmFrames;

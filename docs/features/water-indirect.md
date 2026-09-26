@@ -3,7 +3,10 @@
 Indirect lighting retains its diffuse estimator, bounce limit, alpha cutouts,
 tinted transmission and SHARC lookup rules. Candidate intersections evaluate
 opacity without the RGB material combiner or vertex-color transfer function.
-Always-accepted and always-rejected alpha comparisons avoid texture access.
+Always-rejected alpha comparisons avoid texture access. Always-accepted
+comparisons also avoid it unless coverage blending needs to reject empty texels.
+Tagged paint layers resolve into opaque receiver materials before lighting and
+do not act as independent shadow blockers; see [USD integration](usd-toolkit.md).
 Motion vertices are reconstructed for primary guides only; continuation and SHARC
 update hits do not need them.
 

@@ -20,10 +20,15 @@ namespace remix::scene {
     add(m.roughness);
     add(m.metallic);
     add(m.pbr);
-    if (m.roughnessTexture) add(m.roughnessTexture->fingerprint());
-    if (m.metallicTexture) add(m.metallicTexture->fingerprint());
-    if (m.normalTexture) add(m.normalTexture->fingerprint());
-    if (m.emissionTexture) add(m.emissionTexture->fingerprint());
+    add(m.normalEncoding);
+    if (m.roughnessTexture)
+      add(m.roughnessTexture->fingerprint());
+    if (m.metallicTexture)
+      add(m.metallicTexture->fingerprint());
+    if (m.normalTexture)
+      add(m.normalTexture->fingerprint());
+    if (m.emissionTexture)
+      add(m.emissionTexture->fingerprint());
     add(m.compare);
     add(m.reference);
     add(m.drawAlpha);
@@ -46,6 +51,7 @@ namespace remix::scene {
     add(b.alpha2);
     add(b.factor);
     add(draw.ignoreAlpha);
+    add(draw.decal);
     add(draw.alphaOverride);
     add(draw.compare);
     add(draw.reference);
@@ -68,8 +74,8 @@ namespace remix::scene {
     // topology lineage; an update/storage hint alone is insufficient.
     const bool retained = p.draw.mesh == draw.mesh && p.draw.surface == draw.surface;
     const bool corresponding = draw.mesh && p.draw.mesh && draw.mesh->motionCorrespondence &&
-        p.draw.mesh->motionCorrespondence && draw.mesh->updateStream &&
-        draw.mesh->updateStream == p.draw.mesh->updateStream;
+                               p.draw.mesh->motionCorrespondence && draw.mesh->updateStream &&
+                               draw.mesh->updateStream == p.draw.mesh->updateStream;
     if ((!retained && !corresponding) || p.draw.classification != draw.classification)
       return nullptr;
     return &p;

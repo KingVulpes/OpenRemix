@@ -1,0 +1,14 @@
+#usda 1.0
+(
+    defaultPrim = "ReferenceTarget"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+def Xform "ReferenceTarget" {
+    def Mesh "triangle" {
+        uniform token subdivisionScheme = "none"
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+    }
+}

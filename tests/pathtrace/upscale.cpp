@@ -265,6 +265,47 @@ int main(int argc, char **argv) {
   const auto ngxCaps = diagnostics().capabilities;
   const bool injected = std::getenv("REMIX_NGX_FAULT") != nullptr;
   const bool fallback = std::getenv("REMIX_TEST_FAULT") != nullptr || (ngxMode && !(ngxCaps & (rr ? 4 : 2))) || injected;
+  if (std::getenv("REMIX_TEST_CAMERA_RANGE")) {
+    if (fallback) { ok(api.Shutdown()); return 77; }
+    config("upscaler", ngxMode ? "dlss" : "fsr31");
+    config(qualityKey, "balanced");
+    remixapi_CameraInfoParameterizedEXT p{};
+    p.sType = REMIXAPI_STRUCT_TYPE_CAMERA_INFO_PARAMETERIZED_EXT; p.pNext = &epoch;
+    p.aspect = 1.25f; p.nearPlane = .01f; p.farPlane = 100000; p.fovYInDegrees = 60;
+    const float scale = 1 / std::tan(p.fovYInDegrees * .00872664625997165f);
+    for (auto &column : camera.projection) for (float &v : column) v = 0;
+    camera.projection[0][0] = scale / p.aspect; camera.projection[1][1] = scale;
+    camera.projection[2][2] = p.farPlane / (p.farPlane - p.nearPlane);
+    camera.projection[2][3] = 1;
+    camera.projection[3][2] = -p.nearPlane * camera.projection[2][2];
+    for (bool parameterized : {false, true}) {
+      camera.pNext = parameterized ? static_cast<void *>(&p) : &epoch;
+      remixapi_ReconstructionDiagnosticsEXT before{};
+      for (unsigned tick = 0; tick < 128; ++tick) {
+        const float angle = .01f * tick, c = std::cos(angle), s = std::sin(angle);
+        p.position = {1024 + .3f * tick, -8192 + .7f * tick, 4096 - .1f * tick};
+        p.right = {c, 0, -s}; p.up = {0, 1, 0}; p.forward = {s, 0, c};
+        camera.view[0][0] = c; camera.view[0][2] = s;
+        camera.view[2][0] = -s; camera.view[2][2] = c;
+        camera.view[3][0] = -c * p.position.x + s * p.position.z;
+        camera.view[3][1] = -p.position.y;
+        camera.view[3][2] = -s * p.position.x - c * p.position.z;
+        frame();
+        const auto d = diagnostics();
+        if (!tick) before = d;
+        if (d.activeBackend != (ngxMode ? (rr ? 3u : 2u) : 1u))
+          std::fprintf(stderr, "Camera frame %u (parameterized %d): %s\n", tick, parameterized, d.fallbackReason);
+        require(d.activeBackend == (ngxMode ? (rr ? 3u : 2u) : 1u), "Moving camera disabled reconstruction");
+        require(d.historyResets == before.historyResets && d.failures == before.failures,
+                "Moving camera restarted reconstruction history");
+        require(d.renderWidth == before.renderWidth && d.renderHeight == before.renderHeight &&
+                    d.evaluatedFrames == before.evaluatedFrames + tick,
+                "Moving camera rebuilt or skipped reconstruction");
+      }
+    }
+    std::puts("Wide-range camera translation and rotation retained reconstruction for both camera APIs");
+    ok(api.Shutdown()); return 0;
+  }
   if (std::getenv("REMIX_TEST_RR_DENSE")) {
     if (!(ngxCaps & 4)) { ok(api.Shutdown()); return 77; }
     remixapi_MaterialInfoOpaqueEXT opaque{};

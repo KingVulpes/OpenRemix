@@ -5,6 +5,7 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <remix/remix_c.h>
 #include <string>
@@ -22,14 +23,29 @@ namespace remix {
     NativeResources(const NativeResources &) = delete;
     NativeResources &operator=(const NativeResources &) = delete;
     void reset();
+    void clearModMaterials() { m_modMaterials.clear(); }
+    void replaceModMaterials(const std::map<uint64_t, remixapi_MaterialHandle> &handles) {
+      std::unordered_map<uint64_t, std::shared_ptr<scene::Material>> next;
+      for (auto [hash, handle] : handles)
+        if (handle)
+          next[hash] = m_materials.at(uint64_t(reinterpret_cast<uintptr_t>(handle)));
+      m_modMaterials = std::move(next);
+    }
+    void invalidateTexturePaths() { m_paths.clear(); }
+    void cacheTexturePath(const std::string &path, const std::shared_ptr<scene::Texture> &texture) {
+      m_paths[std::filesystem::absolute(std::filesystem::u8path(path)).lexically_normal()] = texture;
+    }
     void createMaterial(const remixapi_MaterialInfo &info, remixapi_MaterialHandle &handle);
+    void setMaterialSourceHash(remixapi_MaterialHandle handle, uint64_t hash) {
+      m_materials.at(uint64_t(reinterpret_cast<uintptr_t>(handle)))->sourceHash = hash;
+    }
     void destroyMaterial(remixapi_MaterialHandle handle);
     void createMesh(const remixapi_MeshInfo &info, remixapi_MeshHandle &handle);
     void destroyMesh(remixapi_MeshHandle handle);
     void createTexture(const remixapi_TextureInfo &info, remixapi_TextureHandle &handle);
     void destroyTexture(remixapi_TextureHandle handle);
     void setupCamera(const remixapi_CameraInfo &info);
-    void drawInstance(const remixapi_InstanceInfo &info);
+    void drawInstance(const remixapi_InstanceInfo &info, remixapi_MaterialHandle materialOverride = nullptr);
     void registerUiTexture(uint64_t id, uint32_t width, uint32_t height, remixapi_Format format,
                            const void *pixels, uint64_t size);
     void freeUiTexture(uint64_t id);
@@ -42,6 +58,7 @@ namespace remix {
     const std::vector<scene::Draw> &draws() const { return m_draws; }
     const scene::Matrix &camera(uint32_t type = 0) const { return m_cameras[type]; }
     const scene::Matrix &view(uint32_t type = 0) const { return m_views[type]; }
+    const scene::Matrix &projection(uint32_t type = 0) const { return m_projections[type]; }
     const std::array<float, 4> &reverseDepth(uint32_t type = 0) const { return m_reverseDepth[type]; }
     bool cameraValid() const { return m_cameraValid[0]; }
     scene::TemporalEpoch temporalEpoch() const { return m_temporalEpoch; }
@@ -50,6 +67,9 @@ namespace remix {
     void updateLight(remixapi_LightHandle handle, const remixapi_LightInfo &info);
     void destroyLight(remixapi_LightHandle handle);
     void drawLight(remixapi_LightHandle handle);
+    remixapi_LightHandle overrideLight(remixapi_LightHandle original, uint64_t hash,
+                                       const remixapi_LightInfoUSDEXT &overrides, bool transform,
+                                       remixapi_Path texture = nullptr);
     std::shared_ptr<scene::Material> defaultMaterial() {
       if (!m_default) {
         m_default = std::make_shared<scene::Material>();
@@ -57,6 +77,7 @@ namespace remix {
       }
       return m_default;
     }
+    const scene::DomeLight &dome() const { return m_dome; }
     const scene::DistantLight &light() const { return m_light; }
     std::vector<scene::SphereLight> sphereLights() const;
     bool hasSphereLights() const { return !m_frameLights.empty(); }
@@ -66,16 +87,32 @@ namespace remix {
     std::shared_ptr<scene::Texture> dataTexturePath(remixapi_Path path);
     std::shared_ptr<scene::Texture> m_white;
     std::shared_ptr<scene::Material> m_default;
-    std::unordered_map<uint64_t, std::shared_ptr<scene::Material>> m_materials;
+    std::unordered_map<uint64_t, std::shared_ptr<scene::Material>> m_materials, m_modMaterials;
     std::unordered_map<uint64_t, std::shared_ptr<scene::Mesh>> m_meshes;
     std::unordered_map<uint64_t, std::shared_ptr<scene::Texture>> m_textures, m_uiTextures;
     std::unordered_map<std::filesystem::path, std::weak_ptr<scene::Texture>> m_paths;
-    std::array<scene::Matrix, 3> m_cameras, m_views;
+    std::array<scene::Matrix, 3> m_cameras, m_views, m_projections;
     std::array<std::array<float, 4>, 3> m_reverseDepth;
-    struct LightDefinition { scene::DistantLight distant; scene::SphereLight sphere; };
+    struct LightSource {
+      remixapi_StructType type{};
+      remixapi_Transform transform{};
+      remixapi_Float3D color{1, 1, 1};
+      remixapi_Float3D direction{0, 0, -1};
+      float intensity = 1, exposure = 0, temperature = 6500, radius = .5f, width = 1, height = 1, length = 1;
+      float angle = .009250245f, cone = 3.14159265f, softness = 0, focus = 0;
+      remixapi_Bool temperatureEnabled = false;
+      std::filesystem::path texture;
+    };
+    struct LightDefinition {
+      LightSource source;
+      scene::DistantLight distant;
+      std::vector<scene::SphereLight> emitters;
+      scene::DomeLight dome;
+    };
     std::unordered_map<uint64_t, LightDefinition> m_lights;
     std::unordered_set<uint64_t> m_frameLights;
     scene::DistantLight m_light;
+    scene::DomeLight m_dome;
     std::array<bool, 3> m_cameraValid = {};
     scene::TemporalEpoch m_temporalEpoch;
     std::array<float, 3> m_skyRadiance = {};

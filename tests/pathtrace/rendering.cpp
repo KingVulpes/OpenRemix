@@ -71,8 +71,8 @@ int main(int argc, char **argv) {
   if (argc > 2 && std::string(argv[2]) == "init-failure") {
     ok(api.Present(nullptr));
     ok(remixapi_GetBackendCapabilitiesEXT(&caps));
-    require(!caps.activeBackend && !caps.requestedBackend && caps.unavailableReason[0],
-            "Tracing initialization failure did not retain raster");
+    require(!caps.activeBackend && caps.requestedBackend == 1 && caps.unavailableReason[0],
+            "Tracing initialization failure must retain the preference while raster is active");
     ok(api.Present(nullptr));
     ok(api.Shutdown());
     return 0;
@@ -688,8 +688,9 @@ int main(int argc, char **argv) {
   blend.textureColorArg1Source = 1;
   blend.textureColorArg2Source = 3;
   blend.tFactor = 0x0000ff00;
-  auto tinted = capture("tinted-transmission.png");
-  require(tinted[1] > 240 && tinted[0] < 5 && tinted[2] < 5, "Tinted primary/shadow transmission");
+  auto uncovered = capture("zero-alpha-transmission.png");
+  require(uncovered[0] > 240 && uncovered[1] > 240 && uncovered[2] > 240,
+          "Zero-coverage primary/shadow transmission was tinted by source RGB");
   // Raster gameplay feedback shares primary world depth.
   blockerId.classification = REMIXAPI_INSTANCE_RASTER_ONLY_EXT;
   blockerId.rasterVisible = 1;

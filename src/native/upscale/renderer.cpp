@@ -1,4 +1,5 @@
 #include "upscale/renderer.h"
+#include "upscale/camera.h"
 #include "upscale/sdk_backend.h"
 #include "upscale/ngx.h"
 #include "upscale/shaders/embedded.h"
@@ -176,10 +177,7 @@ bool supportsCamera(const scene::Matrix &projection) {
   if (std::abs(projection[11]) < .0001f || std::abs(projection[15]) > .0001f ||
       !projection[5])
     return false;
-  const auto inverse = scene::inverse(projection);
-  const float nearPlane = std::abs(inverse[14] / inverse[15]);
-  const float farPlane =
-      std::abs((inverse[10] + inverse[14]) / (inverse[11] + inverse[15]));
+  const auto [nearPlane, farPlane] = depthRange(projection);
   return std::isfinite(nearPlane) && std::isfinite(farPlane) && nearPlane > 0 && farPlane > nearPlane;
 }
 VkExtent2D renderSize(VkExtent2D display, uint32_t quality) {
@@ -232,7 +230,7 @@ void Renderer::initialize(VkPhysicalDevice physical, VkDevice device,
   if (backend == Backend::Fsr31) {
   VkDeviceContext vkContext{device, physical, sdkDeviceProc};
   FfxFsr3UpscalerContextDescription desc{};
-  desc.flags = FFX_FSR3UPSCALER_ENABLE_HIGH_DYNAMIC_RANGE;
+  desc.flags = FFX_FSR3UPSCALER_ENABLE_HIGH_DYNAMIC_RANGE | FFX_FSR3UPSCALER_ENABLE_DEPTH_INVERTED;
   desc.maxRenderSize = {render.width, render.height};
   desc.maxUpscaleSize = {display.width, display.height};
   g.scratch.resize((ffxGetScratchMemorySizeVK(physical, 1) + 31) / 32);
@@ -416,9 +414,10 @@ void Renderer::record(VkCommandBuffer command, Input color, Input depth,
   vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, g.prepare);
   vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, g.layout, 0,
                           1, &g.set, 0, nullptr);
+  const auto depthProjection = g.ngx ? projection : reversedDepth(projection);
   vkCmdPushConstants(command, g.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                     sizeof(projection), &projection);
-  const uint32_t prepareMode = 0;
+                     sizeof(depthProjection), &depthProjection);
+  const uint32_t prepareMode = g.ngx ? 0 : 2;
   vkCmdPushConstants(command, g.layout, VK_SHADER_STAGE_COMPUTE_BIT, sizeof(projection), 4, &prepareMode);
   vkCmdDispatch(command, (g.render.width + 7) / 8, (g.render.height + 7) / 8,
                 1);
@@ -476,10 +475,10 @@ void Renderer::record(VkCommandBuffer command, Input color, Input depth,
   desc.frameTimeDelta = milliseconds;
   desc.preExposure = 1;
   desc.reset = reset || !g.initialized;
-  auto inverse = scene::inverse(projection);
-  desc.cameraNear = std::abs(inverse[14] / inverse[15]);
-  desc.cameraFar =
-      std::abs((inverse[10] + inverse[14]) / (inverse[11] + inverse[15]));
+  const auto range = depthRange(projection);
+  // FSR names these endpoints after depth 0/1; inverted depth swaps them.
+  desc.cameraNear = range.farPlane;
+  desc.cameraFar = range.nearPlane;
   desc.cameraFovAngleVertical = 2 * std::atan(1 / std::abs(projection[5]));
   desc.viewSpaceToMetersFactor = 1;
   checkFfx(ffxFsr3UpscalerContextDispatch(&g.context, &desc));

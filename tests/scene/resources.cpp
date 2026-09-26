@@ -1,6 +1,8 @@
 #include "scene/fixtures.h"
 #include "scene/images.h"
 #include "scene/temporal.h"
+#include <cmath>
+#include <cstring>
 #include <fstream>
 #include <limits>
 #include <remix/remix_native_ext.h>
@@ -12,7 +14,18 @@ namespace {
     auto red = material(r, 1, 1, 0, 0);
     auto mesh = quad(r, 2, red);
     auto draw = instance(mesh);
+    for (auto category : {REMIXAPI_INSTANCE_CATEGORY_BIT_DECAL_STATIC,
+                           REMIXAPI_INSTANCE_CATEGORY_BIT_DECAL_DYNAMIC,
+                           REMIXAPI_INSTANCE_CATEGORY_BIT_DECAL_SINGLE_OFFSET,
+                           REMIXAPI_INSTANCE_CATEGORY_BIT_DECAL_NO_OFFSET}) {
+      auto decal = draw;
+      decal.categoryFlags = category;
+      r.drawInstance(decal);
+      require(r.draws().back().decal, "Decal category was lost during scene submission");
+      r.finishFrame();
+    }
     r.drawInstance(draw);
+
     r.destroyMesh(mesh);
     r.destroyMaterial(red);
     require(r.pendingDrawCount() == 1, "Destroy discarded queued geometry");
@@ -128,7 +141,7 @@ namespace {
     environment.radiance = {.2f, .4f, .8f};
     temporal.pNext = &environment;
     r.setupCamera(cam);
-    const auto accepted = r.camera(), acceptedView = r.view();
+    const auto accepted = r.camera(), acceptedView = r.view(), acceptedProjection = r.projection();
     const auto acceptedDepth = r.reverseDepth();
     const auto acceptedSky = r.skyRadiance();
     require(acceptedSky == std::array<float, 3>{.2f, .4f, .8f}, "Linear sky was altered");
@@ -136,7 +149,8 @@ namespace {
     temporal.worldEpoch = 13;
     auto invalidEnvironment = [&] {
       rejected([&] { r.setupCamera(cam); });
-      require(r.camera() == accepted && r.view() == acceptedView && r.reverseDepth() == acceptedDepth &&
+      require(r.camera() == accepted && r.view() == acceptedView && r.projection() == acceptedProjection &&
+                  r.reverseDepth() == acceptedDepth &&
                   r.skyRadiance() == acceptedSky &&
                   r.temporalEpoch().world == 7,
               "Invalid environment changed accepted camera state");
@@ -171,6 +185,45 @@ namespace {
     r.reset();
     require(r.skyRadiance() == std::array<float, 3>{}, "Reset retained sky");
     require(r.reverseDepth() == std::array<float, 4>{0, 0, -1, 1}, "Reset retained camera depth");
+    require(r.projection() == remix::scene::identity(), "Reset retained camera projection");
+    // Editor cameras use a very wide clipping range at capture coordinates.
+    // Translation and rotation must not corrupt the projection's far plane or
+    // perspective W, which reconstruction uses to decide whether to stay active.
+    for (bool parameterized : {false, true}) {
+      remixapi_CameraInfo moving{};
+      moving.sType = REMIXAPI_STRUCT_TYPE_CAMERA_INFO;
+      remixapi_CameraInfoParameterizedEXT p{};
+      p.sType = REMIXAPI_STRUCT_TYPE_CAMERA_INFO_PARAMETERIZED_EXT;
+      p.aspect = 16.f / 9; p.nearPlane = .01f; p.farPlane = 100000; p.fovYInDegrees = 60;
+      const float scale = 1 / std::tan(p.fovYInDegrees * .00872664625997165f);
+      moving.projection[0][0] = scale / p.aspect;
+      moving.projection[1][1] = scale;
+      moving.projection[2][2] = p.farPlane / (p.farPlane - p.nearPlane);
+      moving.projection[2][3] = 1;
+      moving.projection[3][2] = -p.nearPlane * moving.projection[2][2];
+      moving.pNext = parameterized ? &p : nullptr;
+      auto expected = remix::scene::Matrix{};
+      std::memcpy(expected.data(), moving.projection, sizeof(expected));
+      expected[5] = -expected[5];
+      for (unsigned frame = 0; frame < 128; ++frame) {
+        const float angle = .01f * frame, c = std::cos(angle), s = std::sin(angle);
+        p.position = {1024 + .3f * frame, -8192 + .7f * frame, 4096 - .1f * frame};
+        p.right = {c, 0, -s}; p.up = {0, 1, 0}; p.forward = {s, 0, c};
+        auto view = remix::scene::identity();
+        view[0] = c; view[2] = s; view[8] = -s; view[10] = c;
+        view[12] = -c * p.position.x + s * p.position.z;
+        view[13] = -p.position.y;
+        view[14] = -s * p.position.x - c * p.position.z;
+        std::memcpy(moving.view, view.data(), sizeof(view));
+        r.setupCamera(moving);
+        require(r.projection() == expected, "Camera motion changed the submitted projection");
+      }
+      moving.type = REMIXAPI_CAMERA_TYPE_SKY;
+      p.fovYInDegrees = 90; moving.projection[0][0] = .5f;
+      r.setupCamera(moving);
+      require(r.projection() == expected, "Sky camera replaced the world projection");
+      require(r.projection(REMIXAPI_CAMERA_TYPE_SKY) != expected, "Sky projection was not stored separately");
+    }
     // The private primary-depth transform must preserve clipping and retain a
     // millimeter overlay after a translated camera, for both camera APIs.
     for (bool parameterized : {false, true}) {

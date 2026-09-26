@@ -21,6 +21,9 @@
  */
 
 #include "api/state.h"
+#if REMIX_HAS_USD
+#include "usd/mods.h"
+#endif
 #include "api/entrypoints.h"
 #include <cstdlib>
 
@@ -36,11 +39,23 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_Startup(const remixapi_Startu
   const remixapi_ErrorCode status = g_runtime.initialize(*info);
   if (status == REMIXAPI_ERROR_CODE_SUCCESS) {
     g_frameExitRegistered = false;
+#if REMIX_HAS_USD
+    try {
+      remix::usd::startMods(g_runtime.modsDisabled());
+    } catch (...) {
+      remix::usd::stopMods(g_runtime.raster());
+      g_runtime.shutdown();
+      return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+    }
+#endif
   }
 #if !defined(_WIN32)
   // Register after SDL startup so this runs before SDL's process-exit window cleanup.
   if (status == REMIXAPI_ERROR_CODE_SUCCESS) {
-    if (std::atexit([] { g_runtime.shutdown(); }) != 0) {
+    if (std::atexit([] { remixapi_Shutdown(); }) != 0) {
+#if REMIX_HAS_USD
+      remix::usd::stopMods(g_runtime.raster());
+#endif
       g_runtime.shutdown();
       return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
     }
@@ -50,7 +65,11 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_Startup(const remixapi_Startu
 }
 
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_Shutdown() {
+  releaseUsdSubmissions();
   std::lock_guard lock(g_apiMutex);
+#if REMIX_HAS_USD
+  remix::usd::stopMods(g_runtime.raster());
+#endif
   remixapi_ErrorCode status = g_runtime.shutdown();
   if (status == REMIXAPI_ERROR_CODE_SUCCESS) {
     g_beginSceneCallback = nullptr;
@@ -66,10 +85,14 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_Present(const remixapi_Presen
   {
     std::lock_guard lock(g_apiMutex);
     status = g_runtime.present(info);
+#if REMIX_HAS_USD
+    if (status == REMIXAPI_ERROR_CODE_SUCCESS)
+      remix::usd::modBoundary(g_runtime.raster());
+#endif
 #if !defined(_WIN32)
     // Validation layers initialize some process-static state on the first frame.
     if (g_runtime.hasStartedFrame() && !g_frameExitRegistered) {
-      if (std::atexit([] { g_runtime.shutdown(); }) != 0) {
+      if (std::atexit([] { remixapi_Shutdown(); }) != 0) {
         g_runtime.shutdown();
         return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
       }
@@ -78,6 +101,8 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_Present(const remixapi_Presen
 #endif
     presentCallback = g_presentCallback;
   }
+  if (status == REMIXAPI_ERROR_CODE_SUCCESS)
+    publishUsdReloads();
   static thread_local bool inCallback = false;
   if (status == REMIXAPI_ERROR_CODE_SUCCESS && presentCallback && !inCallback) {
     inCallback = true;

@@ -1,0 +1,86 @@
+#usda 1.0
+(
+    defaultPrim = "RootNode"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+def Xform "RootNode" {
+    def Scope "Looks" {
+        def Material "mat_0123456789ABCDEF" {
+            token outputs:mdl:surface.connect = </RootNode/Looks/mat_0123456789ABCDEF/Shader.outputs:out>
+            def Shader "Shader" {
+                asset inputs:diffuse_texture = @alpha.dds@
+                color3f inputs:diffuse_color_constant = (1, 0, 0)
+                uint inputs:filter_mode = 0
+                uint inputs:alpha_test_type = 7
+                token outputs:out
+            }
+        }
+        def Material "Background" {
+            token outputs:mdl:surface.connect = </RootNode/Looks/Background/Shader.outputs:out>
+            def Shader "Shader" {
+                color3f inputs:diffuse_color_constant = (0, 0, 1)
+                bool inputs:enable_emission = true
+                color3f inputs:emissive_color_constant = (0, 0, 1)
+                float inputs:emissive_intensity = 0.3
+                token outputs:out
+            }
+        }
+    }
+    def DistantLight "Sun" {
+        color3f inputs:color = (1, 1, 1)
+        float inputs:intensity = 0.2
+        float inputs:angle = 0.5
+    }
+    def Scope "meshes" {
+        def Xform "mesh_0123456789ABCDEF" {
+            token visibility = "invisible"
+            def Mesh "mesh" (prepend apiSchemas = ["MaterialBindingAPI"]) {
+                rel material:binding = </RootNode/Looks/mat_0123456789ABCDEF>
+                point3f[] points = [(-0.7,-1,0), (0.7,-1,0), (0.7,1,0), (-0.7,1,0)]
+                int[] faceVertexCounts = [4]
+                int[] faceVertexIndices = [0,1,2,3]
+                float3[] normals = [(0,0,1)] (interpolation = "constant")
+                texCoord2f[] primvars:st = [(0,0), (1,0), (1,1), (0,1)] (interpolation = "vertex")
+                bool doubleSided = true
+            }
+        }
+    }
+    def Scope "instances" {
+        def Xform "inst_0123456789ABCDEF_0" (prepend references = </RootNode/meshes/mesh_0123456789ABCDEF>) {
+            token visibility = "inherited"
+            double3 xformOp:translate = (-1.7, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+            over "mesh" {
+                bool primvars:_remix_metadata:alphaTestEnabled = true
+                uint primvars:_remix_metadata:alphaTestCompareOp = 4
+                uint primvars:_remix_metadata:alphaTestReferenceValue = 128
+            }
+        }
+        def Xform "inst_0123456789ABCDEF_1" (prepend references = </RootNode/meshes/mesh_0123456789ABCDEF>) {
+            token visibility = "inherited"
+            over "mesh" {
+                bool primvars:_remix_metadata:alphaBlendEnabled = true
+                uint primvars:_remix_metadata:srcColorBlendFactor = 6
+                uint primvars:_remix_metadata:dstColorBlendFactor = 7
+            }
+        }
+        def Xform "inst_0123456789ABCDEF_2" (prepend references = </RootNode/meshes/mesh_0123456789ABCDEF>) {
+            token visibility = "inherited"
+            double3 xformOp:translate = (1.7, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+            over "mesh" {
+                bool primvars:_remix_metadata:alphaTestEnabled = false
+                uint primvars:_remix_metadata:alphaTestCompareOp = 0
+            }
+        }
+    }
+    def Mesh "Background" (prepend apiSchemas = ["MaterialBindingAPI"]) {
+        rel material:binding = </RootNode/Looks/Background>
+        point3f[] points = [(-3,-1.5,-0.5), (3,-1.5,-0.5), (3,1.5,-0.5), (-3,1.5,-0.5)]
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0,1,2,3]
+        float3[] normals = [(0,0,1)] (interpolation = "constant")
+        bool doubleSided = true
+    }
+}

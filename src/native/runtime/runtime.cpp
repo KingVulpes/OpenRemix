@@ -24,10 +24,10 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
-#include <charconv>
 
 namespace remix {
   RemixNativeRuntime::~RemixNativeRuntime() {
@@ -47,6 +47,26 @@ namespace remix {
       return REMIXAPI_ERROR_CODE_FEATURE_UNAVAILABLE;
     }
 #endif
+    m_headless = m_disableProfiles = m_disableMods = false;
+    struct Extension {
+      remixapi_StructType type;
+      const void *next;
+    };
+    for (auto p = static_cast<const Extension *>(info.pNext); p;
+         p = static_cast<const Extension *>(p->next)) {
+      if (p->type != REMIXAPI_STRUCT_TYPE_EDITOR_STARTUP_EXT)
+        continue;
+      const auto &editor = *reinterpret_cast<const remixapi_EditorStartupEXT *>(p);
+      if (editor.version != 1)
+        return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+      m_headless = editor.headless;
+      m_disableProfiles = editor.disableProfiles;
+      m_disableMods = editor.disableMods;
+    }
+#if !defined(__linux__)
+    if (m_headless)
+      return REMIXAPI_ERROR_CODE_FEATURE_UNAVAILABLE;
+#endif
     m_failed = false;
     m_deviceLost = false;
     m_presentationCount = 0;
@@ -56,11 +76,13 @@ namespace remix {
     m_frameCount = frames && std::strcmp(frames, "1") == 0 ? 1u : gpuFrameCount;
     m_srgb = !info.disableSrgbConversionForOutput;
     try {
-      m_profiles.startup();
+      if (!m_disableProfiles)
+        m_profiles.startup();
       m_profileUi = {};
       m_uiState = REMIXAPI_UI_STATE_NONE;
-      if (!m_profiles.message().empty()) SDL_Log("OpenRemix profiles: %s", m_profiles.message().c_str());
-      auto status = m_window.initialize(info);
+      if (!m_profiles.message().empty())
+        SDL_Log("OpenRemix profiles: %s", m_profiles.message().c_str());
+      auto status = m_headless ? REMIXAPI_ERROR_CODE_SUCCESS : m_window.initialize(info);
       if (status != REMIXAPI_ERROR_CODE_SUCCESS) {
         return status;
       }
@@ -74,7 +96,8 @@ namespace remix {
       if (status != REMIXAPI_ERROR_CODE_SUCCESS) {
         return finish(status);
       }
-      status = m_window.createVulkanSurface(m_instance, nullptr, m_surface);
+      status = m_headless ? REMIXAPI_ERROR_CODE_SUCCESS
+                          : m_window.createVulkanSurface(m_instance, nullptr, m_surface);
       if (status != REMIXAPI_ERROR_CODE_SUCCESS) {
         return finish(status);
       }
@@ -93,10 +116,10 @@ namespace remix {
       if (status != REMIXAPI_ERROR_CODE_SUCCESS) {
         return finish(status);
       }
-      if (!initializeUi()) {
+      if (!m_headless && !initializeUi()) {
         return finish(REMIXAPI_ERROR_CODE_GENERAL_FAILURE);
       }
-      status = recreateSwapchain();
+      status = m_headless ? REMIXAPI_ERROR_CODE_SUCCESS : recreateSwapchain();
       if (status != REMIXAPI_ERROR_CODE_SUCCESS) {
         return finish(status);
       }
@@ -130,7 +153,8 @@ namespace remix {
     m_vsync = false;
     m_backend = m_requestedBackend = 0;
     m_traceOptions = {};
-    m_profiles.savePanel(m_profiles.panel());
+    if (!m_disableProfiles)
+      m_profiles.savePanel(m_profiles.panel());
     m_profiles = {};
     m_appliedSettings = {};
     m_profileUi = {};
@@ -155,6 +179,7 @@ namespace remix {
 
   void RemixNativeRuntime::destroyVulkan() {
     destroySwapchain();
+    destroySharedFrame();
     m_screenshot.reset(m_device);
     shutdownUi();
     m_pathTracer.reset();

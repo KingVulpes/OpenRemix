@@ -11,6 +11,7 @@ void queryVisibility(accelerationStructureEXT scene,vec3 origin,vec3 direction,i
     profileRay(9);
     Surface s=surfaces[rayQueryGetIntersectionInstanceCustomIndexEXT(query,false)+rayQueryGetIntersectionGeometryIndexEXT(query,false)];
     s.indices=s.traceIndices;
+    if(enableDecals&&decalSurface(s))continue; // Paint does not cast a separate sheet shadow.
     if((s.state.w&4)==0&&!rayQueryGetIntersectionFrontFaceEXT(query,false)){profileRay(12);continue;}
     profileAlpha(s,8);
     if(!acceptCandidate(s,rayQueryGetIntersectionPrimitiveIndexEXT(query,false),rayQueryGetIntersectionBarycentricsEXT(query,false))){profileRay(11);continue;}
@@ -25,14 +26,15 @@ void queryVisibility(accelerationStructureEXT scene,vec3 origin,vec3 direction,i
   hit.blocked=(s.state.w&2)==0;
   if(hit.blocked)return;
   uint tri=rayQueryGetIntersectionPrimitiveIndexEXT(query,true)*3;
-  vec3 a=s.vertices.v[s.indices.i[tri]].position.xyz,b=s.vertices.v[s.indices.i[tri+1]].position.xyz,c=s.vertices.v[s.indices.i[tri+2]].position.xyz;
   vec2 bary=rayQueryGetIntersectionBarycentricsEXT(query,true);
+  vec4 color=albedo(s,tri/3,bary);
+  if(!blendedAtAlpha(s,color.a)){hit.blocked=true;return;}
+  vec3 a=s.vertices.v[s.indices.i[tri]].position.xyz,b=s.vertices.v[s.indices.i[tri+1]].position.xyz,c=s.vertices.v[s.indices.i[tri+2]].position.xyz;
   mat4x3 model=rayQueryGetIntersectionObjectToWorldEXT(query,true);
   hit.p=model*vec4(a+bary.x*(b-a)+bary.y*(c-a),1);
   hit.n=normalize(cross(model*vec4(b-a,0),model*vec4(c-a,0)));
   if(dot(hit.n,direction)>0)hit.n=-hit.n;
-  vec4 color=albedo(s,tri/3,bary);
-  hit.transmission=color.rgb*(1-color.a);
+  hit.transmission=transmissionColor(color.rgb,(s.state.w&32)!=0)*(1-color.a);
 }
 VisibilityHit visibilityHit(vec3 origin,vec3 direction,bool anyOpaque) {
   VisibilityHit hit;hit.t=1e30;hit.blocked=false;

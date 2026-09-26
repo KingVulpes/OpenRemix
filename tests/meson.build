@@ -11,3 +11,7 @@ subdir('runtime')
 subdir('raster')
 subdir('pathtrace')
 subdir('denoise')
+
+if get_option('usd')
+  subdir('usd')
+endif

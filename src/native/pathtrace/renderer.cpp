@@ -172,6 +172,7 @@ namespace remix {
       reconstructionResets += upscaler->statistics().resets;
     }
     upscaler.reset();
+    reconstructionWarmFrames = 0;
     lightGuiding.valid = false;
     destroyPost();
     sharc.clear = true;
@@ -525,7 +526,7 @@ namespace remix {
   remixapi_TracingStatisticsEXT PathTracer::statistics() const {
     auto result = m_gpu->stats;
     result.redrawRequested = result.accumulationEnabled ||
-        (m_gpu->upscaler && m_gpu->upscaler->statistics().frames < 128) ||
+        (m_gpu->upscaler && m_gpu->reconstructionWarmFrames < 128) ||
         (m_gpu->sharc.stats.active && m_gpu->sharc.hasReceivers && m_gpu->sharc.warmFrames < m_gpu->sharc.warmTarget);
     return result;
   }

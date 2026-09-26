@@ -1,7 +1,23 @@
 policy_test = executable('remix-tlas-policy-test', 'tlas_policy.cpp',
   include_directories : test_includes, link_with : pathtrace_library)
 test('Tracing scene and TLAS policy', policy_test)
+upscale_depth_test = executable('remix-upscale-depth-test', 'upscale_depth.cpp', include_directories : test_includes)
+test('FSR wide-frustum depth precision', upscale_depth_test)
 if get_option('gpu_tests')
+  alpha_coverage_test = executable('remix-alpha-coverage-test', 'alpha_coverage.cpp',
+    include_directories : test_includes, dependencies : [filesystem_dep], link_with : remix)
+  foreach reconstruction : ['off', 'fsr31', 'dlss']
+    test('Decal alpha coverage and shadows ' + reconstruction, alpha_coverage_test,
+      args : [meson.current_build_dir() / ('alpha-coverage-' + reconstruction)],
+      env : reconstruction == 'off' ? [] : ['REMIX_TEST_ALPHA_RECONSTRUCTION=' + reconstruction],
+      timeout : 300, is_parallel : false)
+  endforeach
+  foreach reconstruction : ['off', 'fsr31', 'dlss']
+    test('Tagged decal material coverage and receiver depth ' + reconstruction, alpha_coverage_test,
+      args : [meson.current_build_dir() / ('material-decals-' + reconstruction)],
+      env : ['REMIX_TEST_MATERIAL_DECAL=1'] + (reconstruction == 'off' ? [] : ['REMIX_TEST_ALPHA_RECONSTRUCTION=' + reconstruction]),
+      timeout : 600, is_parallel : false)
+  endforeach
   if get_option('nrd')
     nrd_motion_test = executable('remix-nrd-motion-test', 'nrd_motion.cpp',
       include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
@@ -37,6 +53,12 @@ if get_option('gpu_tests')
     args : [meson.current_build_dir() / 'fsr-scenes'], timeout : 300)
   test('PBR denoising with FSR presets motion and resizing', upscale_test,
     args : [meson.current_build_dir() / 'pbr-fsr-scenes'], env : ['REMIX_TEST_PBR=1'], timeout : 300)
+  foreach mode : ['fsr31', 'sr', 'rr']
+    test('Wide-range moving camera reconstruction ' + mode, upscale_test,
+      args : [meson.current_build_dir() / ('camera-range-' + mode)],
+      env : ['REMIX_TEST_CAMERA_RANGE=1'] + (mode == 'fsr31' ? [] : ['REMIX_TEST_NGX=' + mode]),
+      timeout : 300, is_parallel : false)
+  endforeach
   if system == 'linux'
     foreach fault : ['fsr-allocation', 'fsr-pipeline']
       test('FSR 3.1 fallback ' + fault, upscale_test,
@@ -253,6 +275,16 @@ if get_option('gpu_tests')
     include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
   test('PBR denoising noise energy and camera cuts', pbr_denoise_test,
     args : [meson.current_build_dir() / 'pbr-denoise-scenes'], timeout : 300)
+  foreach primary : ['raster', 'ray']
+    test('Opaque blended texels retain NRD ' + primary, pbr_denoise_test,
+      args : [meson.current_build_dir() / ('pbr-blend-' + primary)],
+      env : ['REMIX_TEST_OPAQUE_BLEND=1'] + (primary == 'ray' ? ['REMIX_TEST_RAY_PRIMARY=1'] : []),
+      timeout : 600, is_parallel : false)
+    test('Fractional decal material retains NRD ' + primary, pbr_denoise_test,
+      args : [meson.current_build_dir() / ('pbr-decal-' + primary)],
+      env : ['REMIX_TEST_MATERIAL_DECAL=1'] + (primary == 'ray' ? ['REMIX_TEST_RAY_PRIMARY=1'] : []),
+      timeout : 600, is_parallel : false)
+  endforeach
 endif
 
 if get_option('gpu_tests')
@@ -317,4 +349,11 @@ if get_option('gpu_tests')
              'REMIX_TEST_FIREFLY_INDIRECT=0.05', 'REMIX_TEST_FIREFLY_LOCAL_SAMPLES=4',
              'REMIX_TEST_FIREFLY_PRIMARY=ray', 'REMIX_TEST_FIREFLY_SPLIT=2'], timeout : 300)
   endforeach
+endif
+
+if get_option('gpu_tests')
+  usd_lights_gpu = executable('remix-usd-lights-gpu-test', 'usd_lights.cpp',
+    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
+  test('Authored USD light GPU fixtures', usd_lights_gpu,
+    args : [meson.current_build_dir() / 'usd-lights'], timeout : 300, is_parallel : false)
 endif

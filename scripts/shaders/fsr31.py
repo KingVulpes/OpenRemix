@@ -79,7 +79,7 @@ def process(check=False, validate=False):
                     'FFX_FSR3UPSCALER_OPTION_HDR_COLOR_INPUT':1,
                     'FFX_FSR3UPSCALER_OPTION_LOW_RESOLUTION_MOTION_VECTORS':1,
                     'FFX_FSR3UPSCALER_OPTION_JITTERED_MOTION_VECTORS':0,
-                    'FFX_FSR3UPSCALER_OPTION_INVERTED_DEPTH':0,
+                    'FFX_FSR3UPSCALER_OPTION_INVERTED_DEPTH':1,
                     'FFX_FSR3UPSCALER_OPTION_APPLY_SHARPENING':int(index == 7)}
                 binary = Path(directory) / 'shader.spv'
                 subprocess.run(['glslangValidator', '-V', '--target-env', 'vulkan1.2', '-S', 'comp', '-Os',

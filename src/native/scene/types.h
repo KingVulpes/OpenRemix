@@ -2,9 +2,9 @@
 #include <array>
 #include <cstdint>
 #include <memory>
-#include <vector>
-#include <unordered_map>
 #include <remix/remix_c.h>
+#include <unordered_map>
+#include <vector>
 
 namespace remix {
   namespace scene {
@@ -20,6 +20,7 @@ namespace remix {
       uint32_t width = 0, height = 0;
       bool srgb = true;
       std::vector<std::vector<uint8_t>> mips;
+      std::vector<std::vector<float>> hdrMips; // Linear RGBA32F, retained through upload.
       bool twoChannel = false; // BC5 stores normal X/Y; reconstruct Z when used as a normal map.
     };
     struct Texture {
@@ -36,11 +37,13 @@ namespace remix {
       float normal[3] = {}; // Zero selects the geometric-normal fallback.
     };
     struct Material {
+      uint64_t sourceHash = 0;
       std::shared_ptr<Texture> texture;
       std::shared_ptr<Texture> emissionTexture;
       std::shared_ptr<Texture> roughnessTexture, metallicTexture, normalTexture;
       float roughness = 1, metallic = 0;
       bool pbr = false;
+      uint32_t normalEncoding = 0;
       float emission[3] = {};
       bool suppressEmissionLight = false;
       mutable std::unordered_map<uint64_t, std::array<float, 3>> emissionCache;
@@ -82,7 +85,14 @@ namespace remix {
       // Triangle area emitters share the light hierarchy and stable identity path.
       uint32_t triangle = 0; // 0 sphere, 1 one-sided, 2 two-sided
       float corners[3][3] = {};
+      float direction[3] = {0, 0, -1}, coneCos = -1, softness = 0, focus = 0;
       bool operator==(const SphereLight &) const = default;
+    };
+    struct DomeLight {
+      bool enabled = false;
+      std::shared_ptr<Texture> texture;
+      Matrix worldToLocal = identity();
+      std::array<float, 3> radiance{};
     };
     struct DistantLight {
       float direction[3] = {0, -1, 0}; // Direction in which light travels.
@@ -109,6 +119,7 @@ namespace remix {
       bool doubleSided = false, ui = false, depth = true, ignoreAlpha = false;
       bool depthWriteOverride = false, depthWrite = true, depthBias = false;
       uint32_t depthCompare = 3;
+      bool decal = false;
       bool alphaOverride = false;
       uint32_t compare = 7;
       float reference = 0;

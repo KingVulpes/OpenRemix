@@ -24,10 +24,10 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
-#include <charconv>
 
 namespace remix {
   namespace {
@@ -191,8 +191,8 @@ namespace remix {
             .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
             .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
             .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-            .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            .initialLayout = m_headless ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED,
+            .finalLayout = m_headless ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
         },
         {
             .format = m_raster.depthFormat(),

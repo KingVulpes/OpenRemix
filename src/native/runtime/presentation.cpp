@@ -20,15 +20,15 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-#include "runtime/runtime.h"
 #include "platform/timing.h"
+#include "runtime/runtime.h"
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
-#include <charconv>
 #include <optional>
 
 namespace remix {
@@ -40,7 +40,8 @@ namespace remix {
       ~CompletePerformance() {
         out.presented = presentations != out.presentations;
         out.presentations = presentations;
-        if (!tracer) return;
+        if (!tracer)
+          return;
         const auto p = tracer->performance();
         out.geometryMilliseconds = p.geometryMilliseconds;
         out.allocationMilliseconds = p.allocationMilliseconds;
@@ -56,7 +57,7 @@ namespace remix {
         out.memoryAllocationBytes = p.memoryAllocationBytes;
       }
     };
-  }
+  } // namespace
   remixapi_ErrorCode RemixNativeRuntime::present(const remixapi_PresentInfo *info) {
     if (info && info->sType != REMIXAPI_STRUCT_TYPE_PRESENT_INFO) {
       return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
@@ -67,10 +68,15 @@ namespace remix {
     auto &p = m_framePerformance;
     p = {.structSize = sizeof(p), .attempts = p.attempts + 1, .presentations = m_presentationCount};
     ScopedMilliseconds presentTime{p.presentMilliseconds};
-    if (m_pathTracer) m_pathTracer->resetPerformance();
+    if (m_pathTracer)
+      m_pathTracer->resetPerformance();
     CompletePerformance completePerformance{p, m_pathTracer, m_presentationCount};
     remixapi_WindowState state = {};
-    auto status = m_window.getWindowState(state);
+    auto status = m_headless ? REMIXAPI_ERROR_CODE_SUCCESS : m_window.getWindowState(state);
+    if (m_headless) {
+      state.drawableWidth = m_swapchainExtent.width;
+      state.drawableHeight = m_swapchainExtent.height;
+    }
     if (status != REMIXAPI_ERROR_CODE_SUCCESS) {
       return status;
     }
@@ -88,7 +94,7 @@ namespace remix {
       RasterRenderer &raster;
       ~EndFrame() { raster.finishFrame(); }
     } endFrame{m_raster};
-    if (!m_window.isVulkanSurfaceCurrent()) {
+    if (!m_headless && !m_window.isVulkanSurfaceCurrent()) {
       m_recreateSurface = true;
     }
     applySettings();
@@ -96,15 +102,15 @@ namespace remix {
       return REMIXAPI_ERROR_CODE_SUCCESS;
     }
     try {
-      if (m_recreateSurface || m_rebuild || !m_swapchain || m_vsync != m_presenterVsync ||
-          state.drawableWidth != m_swapchainExtent.width ||
-          state.drawableHeight != m_swapchainExtent.height) {
+      if (!m_headless && (m_recreateSurface || m_rebuild || !m_swapchain || m_vsync != m_presenterVsync ||
+                          state.drawableWidth != m_swapchainExtent.width ||
+                          state.drawableHeight != m_swapchainExtent.height)) {
         status = recreateSwapchain();
         if (status != REMIXAPI_ERROR_CODE_SUCCESS) {
           return fail();
         }
       }
-      if (!m_swapchain) {
+      if (!m_swapchain && !m_sharedImage) {
         return REMIXAPI_ERROR_CODE_SUCCESS;
       }
       // Scene snapshots, emission reduction and staged light hierarchies use
@@ -112,13 +118,14 @@ namespace remix {
       // upload and retire resources only after the reused slot's fence.
       std::optional<scene::TraceFrame> traceScene;
       if (m_pathTracer && m_targetBackend)
-        traceScene = measured(p.sceneMilliseconds, [&] { return m_pathTracer->prepareScene(m_raster, m_traceOptions); });
+        traceScene = measured(p.sceneMilliseconds,
+                              [&] { return m_pathTracer->prepareScene(m_raster, m_traceOptions); });
       // Bounded waits keep unavailable surfaces and a stalled GPU from blocking the caller indefinitely.
       VkResult result = measured(p.fenceMilliseconds, [&] {
         return vkWaitForFences(m_device, 1, &m_frames[m_frameIndex].fence, VK_TRUE, 1000000000);
       });
       if (result == VK_TIMEOUT) {
-        return REMIXAPI_ERROR_CODE_SUCCESS;
+        return m_headless ? fail(result) : REMIXAPI_ERROR_CODE_SUCCESS;
       }
       if (result != VK_SUCCESS) {
         return fail(result);
@@ -167,8 +174,10 @@ namespace remix {
       // nonblocking; only a pending screenshot needs the preceding frame.
       m_screenshot.complete(m_device, true);
       result = measured(p.acquireMilliseconds, [&] {
-        return vkAcquireNextImageKHR(m_device, m_swapchain, 1000000000,
-                                     m_frames[m_frameIndex].imageAvailable, VK_NULL_HANDLE, &imageIndex);
+        if (m_headless)
+          return VK_SUCCESS;
+        return vkAcquireNextImageKHR(m_device, m_swapchain, 1000000000, m_frames[m_frameIndex].imageAvailable,
+                                     VK_NULL_HANDLE, &imageIndex);
       });
       if (result == VK_TIMEOUT || result == VK_NOT_READY) {
         return REMIXAPI_ERROR_CODE_SUCCESS;
@@ -183,7 +192,8 @@ namespace remix {
       }
       m_rebuild |= result == VK_SUBOPTIMAL_KHR;
       m_frameStarted = true;
-      status = measured(p.recordMilliseconds, [&] { return recordFrame(imageIndex, traceScene ? &*traceScene : nullptr); });
+      status = measured(p.recordMilliseconds,
+                        [&] { return recordFrame(imageIndex, traceScene ? &*traceScene : nullptr); });
       if (status != REMIXAPI_ERROR_CODE_SUCCESS) {
         return fail();
       }
@@ -191,24 +201,37 @@ namespace remix {
       if (result != VK_SUCCESS) {
         return fail(result);
       }
-      const VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+      const VkPipelineStageFlags waitStage =
+          m_headless ? VK_PIPELINE_STAGE_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
       const VkSubmitInfo submit = {
           .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-          .waitSemaphoreCount = 1,
-          .pWaitSemaphores = &m_frames[m_frameIndex].imageAvailable,
+          .waitSemaphoreCount = m_headless ? uint32_t(m_sharedPresented) : 1u,
+          .pWaitSemaphores = m_headless ? &m_sharedReleased : &m_frames[m_frameIndex].imageAvailable,
           .pWaitDstStageMask = &waitStage,
           .commandBufferCount = 1,
           .pCommandBuffers = &m_commandBuffers[m_frameIndex],
           .signalSemaphoreCount = 1,
-          .pSignalSemaphores = &m_renderFinished[imageIndex],
+          .pSignalSemaphores = m_headless ? &m_sharedReady : &m_renderFinished[imageIndex],
       };
-      result = measured(p.submitMilliseconds, [&] { return vkQueueSubmit(m_queue, 1, &submit, m_frames[m_frameIndex].fence); });
+      result = measured(p.submitMilliseconds,
+                        [&] { return vkQueueSubmit(m_queue, 1, &submit, m_frames[m_frameIndex].fence); });
       if (result != VK_SUCCESS) {
         return fail(result);
       }
       m_screenshot.submitted(m_frames[m_frameIndex].fence);
       if (m_pathTracer)
         m_pathTracer->submitted();
+      if (m_headless) {
+        // Do not acknowledge until ready is actually signaled. A worker crash
+        // after the response cannot leave Godot waiting for an unsubmitted frame.
+        result = vkWaitForFences(m_device, 1, &m_frames[m_frameIndex].fence, VK_TRUE, 30000000000ull);
+        if (result != VK_SUCCESS)
+          return fail(result);
+        m_sharedPresented = true;
+        ++m_presentationCount;
+        m_frameIndex = (m_frameIndex + 1) % m_frameCount;
+        return REMIXAPI_ERROR_CODE_SUCCESS;
+      }
       const VkPresentInfoKHR present = {
           .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
           .waitSemaphoreCount = 1,
@@ -260,8 +283,7 @@ namespace remix {
     return REMIXAPI_ERROR_CODE_SUCCESS;
   }
 
-  remixapi_ErrorCode RemixNativeRuntime::recordFrame(uint32_t imageIndex,
-                                                     scene::TraceFrame *traceScene) {
+  remixapi_ErrorCode RemixNativeRuntime::recordFrame(uint32_t imageIndex, scene::TraceFrame *traceScene) {
     auto buffer = m_commandBuffers[m_frameIndex];
     VkResult result = vkResetCommandBuffer(buffer, 0);
     if (result != VK_SUCCESS) {
@@ -275,14 +297,16 @@ namespace remix {
     if (result != VK_SUCCESS) {
       return fail(result);
     }
+    if (m_headless)
+      sharedBarrier(buffer, true);
     // GPU-only targets, histories and acceleration structures stay ordered on
     // the queue. The CPU may record ahead using its completed submission slot.
     const VkMemoryBarrier previousFrame{
         .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
         .srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
         .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT};
-    vkCmdPipelineBarrier(buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                         0, 1, &previousFrame, 0, nullptr, 0, nullptr);
+    vkCmdPipelineBarrier(buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1,
+                         &previousFrame, 0, nullptr, 0, nullptr);
     if (m_pathTracer)
       m_pathTracer->beginFrame(m_traceOptions, m_raster);
     m_raster.setSkyTarget(m_pathTracer ? m_pathTracer->skyPass() : VK_NULL_HANDLE);
@@ -291,7 +315,8 @@ namespace remix {
       // A newly enabled tracer did not exist during CPU preparation.
       std::optional<scene::TraceFrame> prepared;
       if (!traceScene) {
-        prepared = measured(m_framePerformance.sceneMilliseconds, [&] { return m_pathTracer->prepareScene(m_raster, m_traceOptions); });
+        prepared = measured(m_framePerformance.sceneMilliseconds,
+                            [&] { return m_pathTracer->prepareScene(m_raster, m_traceOptions); });
         traceScene = &*prepared;
       }
       m_pathTracer->prepare(buffer, m_raster, m_traceOptions, *traceScene);
@@ -321,6 +346,8 @@ namespace remix {
       m_screenshot.record(m_physicalDevice, m_device, buffer, m_swapchainImages[imageIndex],
                           m_swapchainExtent, m_swapchainFormat);
     }
+    if (m_headless)
+      sharedBarrier(buffer, false);
     result = vkEndCommandBuffer(buffer);
     return result == VK_SUCCESS ? REMIXAPI_ERROR_CODE_SUCCESS : fail(result);
   }

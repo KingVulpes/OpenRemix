@@ -51,3 +51,6 @@ Copyright NVIDIA Corporation and affiliates; NVIDIA SDK license.
 License: third_party/dlss/LICENSE.txt; provenance: third_party/dlss/README.remix.md.
 Packages carry the matching release libraries and license in dlss/310.9.1 beside
 libremix/remix.dll. This integration is independent of the archived RTX runtime.
+
+OpenUSD blackbody color table and spline (Pixar): src/native/scene/OpenUSD-LICENSE.txt.
+Optional OpenUSD 25.11 USD parser: Tomorrow Open Source Technology License 1.0.

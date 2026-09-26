@@ -3,7 +3,8 @@
 [Emissive maps](emissive-maps.md) also contribute triangle area sources to this
 hierarchy. The sphere-specific transport described here remains the torch path.
 
-The ray-query backend accepts unshaped `remixapi_LightInfoSphereEXT` lights. Each
+The ray-query backend accepts shaped `remixapi_LightInfoSphereEXT` lights and the
+USD/API area, distant and dome types described in [USD integration](usd-toolkit.md). Each
 sphere is an analytic, two-sided radiance source; it is not inserted into the
 geometry acceleration structures. A light contributes only in frames containing
 `DrawLightInstance`. Repeated submissions of one handle do not duplicate power.
@@ -11,9 +12,8 @@ Updates validate the complete definition before replacing accepted state. The
 existing public interface table and legacy structure layouts remain unchanged.
 
 Positions and radiance must be finite, radius and RGB must be nonnegative. A zero-radius definition retains the
-legacy no-op placeholder behavior; finite emitters require a positive radius. Supported numerical limits are radius <= 1e6, absolute position <=
-1e12, and radiance <= 1e12. Shaping is currently unsupported and rejected. USD
-light definitions retain their existing compatibility behavior.
+legacy no-op placeholder behavior; finite emitters require a positive radius. Radiance is limited to 1e12. Cone angle, softness and focus apply directional falloff
+to the existing area samples. USD light definitions share the same conversion.
 
 ## Selection and integration
 

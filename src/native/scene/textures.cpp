@@ -1,5 +1,5 @@
-#include "scene/resources.h"
 #include "scene/images.h"
+#include "scene/resources.h"
 #include "scene/validation.h"
 #include <remix/remix_native_ext.h>
 
@@ -24,6 +24,8 @@ namespace remix {
         append(&pixels.twoChannel, sizeof(bool));
         for (const auto &mip : pixels.mips)
           append(mip.data(), mip.size());
+        for (const auto &mip : pixels.hdrMips)
+          append(mip.data(), mip.size() * sizeof(float));
         contentHash = hash ? hash : 1;
       }
       return contentHash;
@@ -76,10 +78,13 @@ namespace remix {
   }
 
   std::shared_ptr<Texture> NativeResources::dataTexturePath(remixapi_Path path) {
-    if (!path || !*path) return {};
+    if (!path || !*path)
+      return {};
     auto source = texturePath(path);
-    if (!source->pixels.srgb) return source;
-    if (auto linear = source->linear.lock()) return linear;
+    if (!source->pixels.srgb)
+      return source;
+    if (auto linear = source->linear.lock())
+      return linear;
     auto linear = std::make_shared<Texture>();
     linear->pixels = source->pixels;
     linear->pixels.srgb = false; // Data maps store values, not sRGB colors.
@@ -99,7 +104,8 @@ namespace remix {
         previous->second->pixels.height != texture->pixels.height ||
         previous->second->pixels.srgb != texture->pixels.srgb ||
         previous->second->pixels.twoChannel != texture->pixels.twoChannel ||
-        previous->second->pixels.mips != texture->pixels.mips)
+        previous->second->pixels.mips != texture->pixels.mips ||
+        previous->second->pixels.hdrMips != texture->pixels.hdrMips)
       m_textures[info.hash] = std::move(texture);
     handle = reinterpret_cast<remixapi_TextureHandle>(uintptr_t(info.hash));
   }

@@ -31,7 +31,10 @@ namespace remix {
     const auto &p = source->pixels;
     const uint32_t levels = uint32_t(p.mips.size());
     TextureGpu value{source, image(p.width, p.height, levels,
-                                   p.srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM, false)};
+                                   !p.hdrMips.empty() ? VK_FORMAT_R32G32B32A32_SFLOAT
+                                   : p.srgb           ? VK_FORMAT_R8G8B8A8_SRGB
+                                                      : VK_FORMAT_R8G8B8A8_UNORM,
+                                   false)};
     std::vector<uint8_t> data;
     std::vector<VkBufferImageCopy> copies;
     uint32_t width = p.width, height = p.height;
@@ -39,7 +42,12 @@ namespace remix {
       copies.push_back({.bufferOffset = data.size(),
                         .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i, 0, 1},
                         .imageExtent = {width, height, 1}});
-      data.insert(data.end(), p.mips[i].begin(), p.mips[i].end());
+      if (p.hdrMips.empty())
+        data.insert(data.end(), p.mips[i].begin(), p.mips[i].end());
+      else {
+        const auto *begin = reinterpret_cast<const uint8_t *>(p.hdrMips[i].data());
+        data.insert(data.end(), begin, begin + p.hdrMips[i].size() * sizeof(float));
+      }
       width = std::max(1u, width / 2);
       height = std::max(1u, height / 2);
     }

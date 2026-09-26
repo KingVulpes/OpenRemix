@@ -1,11 +1,11 @@
 #pragma once
-#include "scene/opacity.h"
-#include "pathtrace/renderer.h"
 #include "pathtrace/buffer_cache.h"
+#include "pathtrace/renderer.h"
 #include "pathtrace/tlas_policy.h"
-#include "scene/light_bvh.h"
-#include "scene/emission.h"
 #include "platform/timing.h"
+#include "scene/emission.h"
+#include "scene/light_bvh.h"
+#include "scene/opacity.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -85,7 +85,7 @@ namespace remix::trace::detail {
     uint64_t previousVertices = 0, debugIdentity = 0;
     Matrix previousModel{};
     float emission[4] = {};
-    float pbr[4] = {}; // perceptual roughness, metalness, enabled, reserved
+    float pbr[4] = {};            // perceptual roughness, metalness, enabled, reserved
     uint32_t pbrTextures[4] = {}; // roughness, metalness, normal; index + 1
   };
   static_assert(sizeof(TraceSurface) == 240 && sizeof(TraceVertex) == 48);
@@ -93,7 +93,7 @@ namespace remix::trace::detail {
     Matrix inverseCamera, camera;
     float eye[4] = {}, direction[4] = {}, radiance[4] = {};
     uint32_t config[4] = {}, target[4] = {};
-    float jitter[4] = {}; // primary offset; z water reuse, w blue-noise sun/local bits
+    float jitter[4] = {};      // primary offset; z water reuse, w blue-noise sun/local bits
     float skyRadiance[4] = {}; // linear uniform environment; w reserved
     uint64_t sharcHash = 0, sharcAccumulation = 0, sharcResolved = 0, sharcCounters = 0;
     uint32_t sharcConfig[4] = {};
@@ -109,12 +109,18 @@ namespace remix::trace::detail {
     uint64_t reuseRead = 0, reuseWrite = 0;
     uint32_t reuseConfig[4] = {}; // previous frame valid, diagnostics, ray counter address low/high
     uint64_t indirectResults = 0, blueNoise = 0;
-    float firefly[4] = {}; // outgoing local direct / indirect luminance limits; reserved
+    float firefly[4] = {};       // outgoing local direct / indirect luminance limits; reserved
     uint32_t pathConfig[4] = {}; // adaptive termination, minimum completed bounces, reserved
+    float domeTransform[3][4] = {};
   };
-  static_assert(sizeof(Frame) == 544 && offsetof(Frame, pathConfig) == 528 && offsetof(Frame, firefly) == 512 && offsetof(Frame, indirectResults) == 496 && offsetof(Frame, lightGuideRead) == 384 && offsetof(Frame, lightGuideConfig) == 400 && offsetof(Frame, lightNodes) == 336 && offsetof(Frame, localConfig) == 352 && offsetof(Frame, localScale) == 368 && offsetof(Frame, skyRadiance) == 224 &&
+  static_assert(sizeof(Frame) == 592 && offsetof(Frame, pathConfig) == 528 &&
+                offsetof(Frame, firefly) == 512 && offsetof(Frame, indirectResults) == 496 &&
+                offsetof(Frame, lightGuideRead) == 384 && offsetof(Frame, lightGuideConfig) == 400 &&
+                offsetof(Frame, lightNodes) == 336 && offsetof(Frame, localConfig) == 352 &&
+                offsetof(Frame, localScale) == 368 && offsetof(Frame, skyRadiance) == 224 &&
                 offsetof(Frame, sharcHash) == 240 && offsetof(Frame, sharcConfig) == 272 &&
-                offsetof(Frame, sharcGrid) == 288 && offsetof(Frame, sharcPreviousCamera) == 304 && offsetof(Frame, sun) == 320);
+                offsetof(Frame, sharcGrid) == 288 && offsetof(Frame, sharcPreviousCamera) == 304 &&
+                offsetof(Frame, sun) == 320);
   inline float linear(float c) { return c <= .04045f ? c / 12.92f : std::pow((c + .055f) / 1.055f, 2.4f); }
   inline void barrier(VkCommandBuffer command, VkPipelineStageFlags source, VkAccessFlags writes,
                       VkPipelineStageFlags destination, VkAccessFlags reads) {
@@ -146,10 +152,11 @@ namespace remix {
       std::vector<VkDeviceSize> vertexOffsets, indexOffsets;
       std::vector<uint32_t> counts, vertexCounts;
       size_t bytes() const {
-        size_t size = content.capacity() + shading.capacity()*sizeof(std::vector<TraceVertex>) +
-            (vertexOffsets.capacity()+indexOffsets.capacity())*sizeof(VkDeviceSize) +
-            (counts.capacity()+vertexCounts.capacity())*sizeof(uint32_t);
-        for (const auto &vertices : shading) size += vertices.capacity()*sizeof(TraceVertex);
+        size_t size = content.capacity() + shading.capacity() * sizeof(std::vector<TraceVertex>) +
+                      (vertexOffsets.capacity() + indexOffsets.capacity()) * sizeof(VkDeviceSize) +
+                      (counts.capacity() + vertexCounts.capacity()) * sizeof(uint32_t);
+        for (const auto &vertices : shading)
+          size += vertices.capacity() * sizeof(TraceVertex);
         return size;
       }
     } conversion;
@@ -229,12 +236,14 @@ namespace remix {
     void completePbrReuse();
     void finishPbrReuse(VkCommandBuffer command);
     bool localFirstHitActive = false;
+    bool decalMaterialsActive = false;
     bool localIlluminationActive = false;
     bool localResamplingActive = false;
     bool localAngularActive = false;
     bool localGuidingActive = false;
     bool rouletteActive = false, rouletteFailed = false;
-    VkPipeline selectLightingPipeline(VkPipeline pipeline, bool combinedDirect = false, bool separateIndirect = false);
+    VkPipeline selectLightingPipeline(VkPipeline pipeline, bool combinedDirect = false,
+                                      bool separateIndirect = false);
     void forgetLightingPipeline(VkPipeline pipeline);
     VkShaderModule shaders[3] = {};
     VkQueryPool compaction = VK_NULL_HANDLE, timestamps = VK_NULL_HANDLE;
@@ -269,6 +278,7 @@ namespace remix {
     bool rrRequested = true;
     uint32_t failedBackends = 0;
     uint64_t reconstructionFailures = 0, reconstructedFrames = 0, reconstructionResets = 0;
+    uint32_t reconstructionWarmFrames = 0;
     bool rrActive() const { return upscaler && upscaler->statistics().backend == upscale::Backend::DlssRr; }
     TraceOptions effectiveOptions(TraceOptions options) const;
     upscale::Backend selectBackend() const;
@@ -325,7 +335,8 @@ namespace remix {
     scene::TemporalHistory history;
     std::map<scene::TemporalHistory::Key, std::shared_ptr<Buffer>> previousVertices, pendingVertices,
         retiredPreviousVertices;
-    scene::Matrix previousCamera{}, pendingCamera{}, previousView{}, previousProjection{}, pendingProjection{};
+    scene::Matrix previousCamera{}, pendingCamera{}, previousView{}, previousProjection{},
+        pendingProjection{};
     float previousJitter[2] = {};
     denoise::Frame temporalFrame{};
     uint32_t previousSeed{};
@@ -352,7 +363,8 @@ namespace remix {
       float range = 0;
       bool resampled = false;
       bool split = false;
-      remixapi_LocalLightGuidingStatisticsEXT stats{.structSize = sizeof(remixapi_LocalLightGuidingStatisticsEXT)};
+      remixapi_LocalLightGuidingStatisticsEXT stats{.structSize =
+                                                        sizeof(remixapi_LocalLightGuidingStatisticsEXT)};
     } lightGuiding;
     void configureLightGuiding(Frame &frame, const TraceOptions &options);
     void beginLightGuiding(VkCommandBuffer command);
@@ -406,7 +418,8 @@ namespace remix {
     remixapi_TracingStatisticsEXT stats = {.structSize = sizeof(remixapi_TracingStatisticsEXT)};
     struct Sharc {
       std::unique_ptr<Buffer> hash, accumulation, resolved, counters, readback;
-      VkPipeline update{}, resolve{}, query{}, transparency{}, temporal{}, temporalTransparency{}, confidence{};
+      VkPipeline update{}, resolve{}, query{}, transparency{}, temporal{}, temporalTransparency{},
+          confidence{};
       VkQueryPool timestamps{};
       bool clear = true, pending = false, attempted = false, hasReceivers = false;
       scene::TemporalEpoch epoch{};
@@ -430,9 +443,9 @@ namespace remix {
       std::string traceState;
       LinearCapture linearCapture;
       VkDescriptorSet set = VK_NULL_HANDLE;
-      VkQueryPool timestamps = VK_NULL_HANDLE, compaction = VK_NULL_HANDLE,
-                  sharcTimestamps = VK_NULL_HANDLE;
-      bool timingPending = false, sharcPending = false, guidingPending = false, reusePending = false, rayPending = false;
+      VkQueryPool timestamps = VK_NULL_HANDLE, compaction = VK_NULL_HANDLE, sharcTimestamps = VK_NULL_HANDLE;
+      bool timingPending = false, sharcPending = false, guidingPending = false, reusePending = false,
+           rayPending = false;
       std::unique_ptr<Buffer> table, uniform, scratch, topScratch, instances[2];
       std::unique_ptr<Buffer> tableUpload;
       std::unique_ptr<Buffer> lightNodes, lightEmitters, torchNodes, torchEmitters, emissiveNodes,
@@ -451,7 +464,8 @@ namespace remix {
     void beginSharc(const TraceOptions &options);
     void destroySharc(bool temporalOnly = false);
     void configureSharc(Frame &frame, const TraceOptions &options, scene::TemporalEpoch epoch,
-                        std::vector<uint8_t> geometry, std::vector<uint8_t> dynamicGeometry, bool hasReceivers);
+                        std::vector<uint8_t> geometry, std::vector<uint8_t> dynamicGeometry,
+                        bool hasReceivers);
     void recordSharc(VkCommandBuffer command, const TraceOptions &options);
     void finishSharc(VkCommandBuffer command);
     void sharcPipeline(const uint32_t *code, size_t size, VkPipelineLayout pipelineLayout, VkPipeline &out);
@@ -462,8 +476,7 @@ namespace remix {
     std::chrono::steady_clock::time_point epoch = std::chrono::steady_clock::now();
 
     ~Gpu();
-    std::shared_ptr<trace::detail::BufferCache> bufferCache =
-        std::make_shared<trace::detail::BufferCache>();
+    std::shared_ptr<trace::detail::BufferCache> bufferCache = std::make_shared<trace::detail::BufferCache>();
     uint32_t memoryType(uint32_t bits, VkMemoryPropertyFlags flags);
     std::unique_ptr<Buffer> buffer(VkDeviceSize size, VkBufferUsageFlags usage, bool host = false,
                                    bool reusable = false);

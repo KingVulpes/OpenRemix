@@ -23,6 +23,11 @@ TraceFrame prepareTraceFrame(const std::vector<Draw> &draws, double seconds, boo
     if (frame.instances.empty())
       throw REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
     auto copy = draw;
+    // Paint layers remain candidate geometry so lighting/shadow rays can resolve
+    // the receiving surface. Authored glass retains its thin-sheet semantics.
+    // As in Remix, a decal category only becomes paint when blending is on.
+    // Captures can label ordinary opaque walls with the same category.
+    copy.decal = draw.decal && draw.blend.enabled && !draw.material->transmission;
     if (!draw.instanceId) {
       if (!draw.surfaceIndex) {
         while (frame.persistentIds.count(legacy))

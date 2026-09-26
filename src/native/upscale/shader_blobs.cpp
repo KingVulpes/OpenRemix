@@ -5,11 +5,11 @@ extern "C" FfxErrorCode ffxGetPermutationBlobByIndex(FfxEffect effect,
                                                      FfxPass pass, FfxBindStage,
                                                      uint32_t flags,
                                                      FfxShaderBlob *out) {
-  // Our context uses HDR, standard depth and unjittered render-resolution
+  // Our context uses HDR, inverted depth and unjittered render-resolution
   // motion. FP32 shaders also work on devices whose logical device did not
   // enable FP16.
   if (!out || effect != FFX_EFFECT_FSR3UPSCALER || pass > 10 ||
-      (flags & (8 | 16 | 128)) || (flags & 6) != 6 || (flags & ~255u))
+      (flags & (8 | 128)) || (flags & (6 | 16)) != (6 | 16) || (flags & ~255u))
     return FFX_ERROR_INVALID_ARGUMENT;
   std::memcpy(out, &remix::upscale::blobs[pass + ((flags & 1) ? 11 : 0)],
               sizeof(*out));

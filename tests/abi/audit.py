@@ -21,6 +21,7 @@ required_exports += ['remixapi_GetReconstructionDiagnosticsEXT', 'remixapi_GetBa
              'remixapi_GetLocalLightGuidingStatisticsEXT', 'remixapi_GetLocalLightStatisticsEXT',
              'remixapi_GetShadowStatisticsEXT', 'remixapi_GetSharcStatisticsEXT',
              'remixapi_GetDenoisingCapabilitiesEXT', 'remixapi_GetDenoisingStatisticsEXT']
+required_exports += ['remixapi_EditorConfigureSharedFrame', 'remixapi_LoadUSDSceneEXT', 'remixapi_DrawUSDSceneEXT', 'remixapi_ReloadUSDSceneEXT', 'remixapi_DestroyUSDSceneEXT', 'remixapi_GetUSDDiagnosticsEXT', 'remixapi_ConfigureUSDModsEXT', 'remixapi_GetUSDModsDiagnosticEXT']
 cross_windows = library.suffix.lower() == '.dll' and sys.platform != 'win32'
 if cross_windows:
     # The host Python cannot load a PE DLL. Inspect it here; the Windows export
@@ -30,7 +31,7 @@ if cross_windows:
     for name in required_exports:
         assert name in exported, name
     needed = '\n'.join(line.lower() for line in pe.splitlines() if 'DLL Name:' in line)
-    for removed in ['ngx', 'nrd', 'usd', 'rtxio', 'dxvk', 'd3d', 'xess', 'slang']:
+    for removed in ['ngx', 'nrd', 'rtxio', 'dxvk', 'd3d', 'xess', 'slang'] + ([] if '--usd' in sys.argv else ['usd']):
         assert removed not in needed, removed
 else:
     runtime = ctypes.CDLL(str(library), **({'winmode': 0} if sys.platform == 'win32' else {}))
@@ -43,7 +44,7 @@ else:
 if sys.platform.startswith('linux') and not cross_windows:
     dynamic = subprocess.check_output(['readelf', '-d', library], text=True)
     needed = '\n'.join(line.lower() for line in dynamic.splitlines() if '(NEEDED)' in line)
-    for removed in ['ngx', 'nrd', 'usd', 'rtxio', 'dxvk', 'd3d', 'xess', 'slang']:
+    for removed in ['ngx', 'nrd', 'rtxio', 'dxvk', 'd3d', 'xess', 'slang'] + ([] if '--usd' in sys.argv else ['usd']):
         assert removed not in needed, removed
     symbols = subprocess.check_output(['nm', '-D', '--undefined-only', library], text=True)
     assert 'vkGetBufferDeviceAddress' not in symbols, 'Tracing must not require a Vulkan 1.2 loader for raster'

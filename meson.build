@@ -63,3 +63,5 @@ endif
 install_data('LICENSE', 'LICENSE-MIT', 'ThirdPartyLicenses.txt', install_dir : get_option('datadir') / 'remix/licenses')
 install_data('third_party/image/LICENSES.txt', rename : 'ImageDecoders.txt',
   install_dir : get_option('datadir') / 'remix/licenses')
+
+install_data('src/native/scene/OpenUSD-LICENSE.txt', install_dir : get_option('datadir') / 'remix/licenses')

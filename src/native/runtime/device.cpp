@@ -276,6 +276,18 @@ namespace remix {
       features.features.shaderStorageImageReadWithoutFormat = VK_TRUE;
       features.features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
     }
+    // BC sampling for "Keep BC textures compressed". The setting can change at
+    // runtime, so the feature is enabled whenever supported; enabling it alone
+    // changes no rendering.
+    {
+      VkPhysicalDeviceFeatures available{};
+      vkGetPhysicalDeviceFeatures(selection.physicalDevice, &available);
+      m_textureCompression = available.textureCompressionBC == VK_TRUE;
+      features.features.textureCompressionBC = available.textureCompressionBC;
+    }
+    // Physical-device queries need only support, not device enablement.
+    m_memoryBudget = m_instanceApiVersion >= VK_API_VERSION_1_1 &&
+                     supportsDeviceExtension(selection.physicalDevice, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
     if (!m_traceSupported)
       features.pNext = nullptr;
     const auto ngxExtensions = m_ngx->deviceExtensions(m_instance, selection.physicalDevice);

@@ -92,6 +92,8 @@ public:
   remixapi_TracingStatisticsEXT tracingStatistics() const;
   remixapi_SharcStatisticsEXT sharcStatistics() const;
   remixapi_ErrorCode configureSetting(const char *key, const char *value);
+  // GetVramStats, gated by the "Report VRAM statistics" setting.
+  remixapi_ErrorCode vramStatistics(remixapi_VramStats &stats) const;
   remixapi_UIState uiState() const { return m_uiState; }
   void setUiState(remixapi_UIState state) {
     m_uiState = state;
@@ -192,6 +194,8 @@ private:
   uint32_t m_backend = 0, m_requestedBackend = 0,
            m_instanceApiVersion = VK_API_VERSION_1_1;
   bool m_traceSupported = false;
+  bool m_textureCompression = false; // textureCompressionBC enabled on m_device.
+  bool m_memoryBudget = false;       // VK_EXT_memory_budget queries available.
   remixapi_DenoisingCapabilitiesEXT m_denoiseCapabilities{
       .structSize = sizeof(remixapi_DenoisingCapabilitiesEXT)};
   std::string m_traceUnavailable;

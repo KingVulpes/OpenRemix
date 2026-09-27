@@ -4,6 +4,7 @@
 #include "scene/types.h"
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <map>
@@ -49,7 +50,13 @@ namespace remix {
     void createMesh(const remixapi_MeshInfo &info, remixapi_MeshHandle &handle);
     void destroyMesh(remixapi_MeshHandle handle);
     void createTexture(const remixapi_TextureInfo &info, remixapi_TextureHandle &handle);
+    // Stores pixels prepared outside the API mutex (see scene::compressTexture).
+    void createTexture(const remixapi_TextureInfo &info, scene::Pixels &&pixels, remixapi_TextureHandle &handle);
     void destroyTexture(remixapi_TextureHandle handle);
+    // "Keep BC textures compressed": applies to textures created afterwards.
+    // Atomic so the API layer can choose the preparation path before locking.
+    void setKeepCompressedTextures(bool value) { m_keepCompressed.store(value, std::memory_order_relaxed); }
+    bool keepCompressedTextures() const { return m_keepCompressed.load(std::memory_order_relaxed); }
     void setupCamera(const remixapi_CameraInfo &info);
     void drawInstance(const remixapi_InstanceInfo &info, remixapi_MaterialHandle materialOverride = nullptr);
     // Retained instances (remix_fo4_ext.h). Handles are nonzero and never reused.
@@ -101,6 +108,8 @@ namespace remix {
   protected:
     std::shared_ptr<scene::Texture> texturePath(remixapi_Path path);
     std::shared_ptr<scene::Texture> dataTexturePath(remixapi_Path path);
+    void storeTexture(uint64_t hash, scene::Pixels &&pixels, remixapi_TextureHandle &handle);
+    std::atomic<bool> m_keepCompressed{false};
     std::shared_ptr<scene::Texture> m_white;
     std::shared_ptr<scene::Material> m_default;
     std::unordered_map<uint64_t, std::shared_ptr<scene::Material>> m_materials, m_modMaterials;

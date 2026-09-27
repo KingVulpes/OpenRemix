@@ -64,11 +64,30 @@ namespace remix {
     g.skin = std::move(next.skin);
   }
 
-  void RasterRenderer::initializeGpu(VkPhysicalDevice physical, VkDevice device) {
+  RasterRenderer::MemoryStatistics RasterRenderer::memoryStatistics() const {
+    MemoryStatistics result;
+    if (!m_gpu)
+      return result;
+    for (const auto &[texture, entry] : m_gpu->textures)
+      if (entry.data) {
+        result.textureBytes += entry.data->bytes;
+        ++result.textureCount;
+        if (entry.data->format >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && entry.data->format <= VK_FORMAT_BC7_SRGB_BLOCK)
+          result.compressedTextureBytes += entry.data->bytes;
+      }
+    for (const auto &[surface, entry] : m_gpu->meshes)
+      if (entry.data)
+        result.geometryBytes += entry.data->allocationSize;
+    result.pooledBytes = m_gpu->reusableBytes;
+    return result;
+  }
+
+  void RasterRenderer::initializeGpu(VkPhysicalDevice physical, VkDevice device, bool textureCompression) {
     m_gpu = std::make_unique<Gpu>();
     auto &g = *m_gpu;
     g.device = device;
     g.physical = physical;
+    g.textureCompression = textureCompression;
     vkGetPhysicalDeviceMemoryProperties(physical, &g.memory);
     vkGetPhysicalDeviceProperties(physical, &g.properties);
     for (auto format : {VK_FORMAT_D32_SFLOAT, VK_FORMAT_D16_UNORM}) {

@@ -113,7 +113,7 @@ namespace remix {
         return finish(status);
       }
       applySettings();
-      m_raster.initializeGpu(m_physicalDevice, m_device);
+      m_raster.initializeGpu(m_physicalDevice, m_device, m_textureCompression);
       status = createFrameResources();
       if (status != REMIXAPI_ERROR_CODE_SUCCESS) {
         return finish(status);

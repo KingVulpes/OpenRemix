@@ -93,5 +93,22 @@ namespace remix {
         ImGui::TextWrapped("Ray Reconstruction manages denoising and independent sampling. Saved settings "
                            "resume when it is disabled.");
     }
+    if (ImGui::CollapsingHeader("Memory")) {
+      ui::Checkbox("Keep BC textures compressed", &settings.compressedTextures);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Upload BC1-BC7 textures as GPU BC images instead of decoding them to RGBA on the CPU.\n"
+                          "Uses 4-8x less VRAM and system memory and removes the decode from CreateTexture.\n"
+                          "Applies to textures created after the change; no restart needed.");
+      if (settings.compressedTextures && !m_textureCompression)
+        ImGui::TextWrapped("%s", "This GPU cannot sample BC formats: textures are decoded once at upload.");
+      ui::Checkbox("Report VRAM statistics", &settings.vramStatistics);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Answer GetVramStats with OpenRemix's texture, geometry, acceleration-structure\n"
+                          "and denoiser allocations, plus the driver's device-local usage and budget.");
+      const auto memory = m_raster.memoryStatistics();
+      ImGui::TextDisabled("Textures: %llu, %.1f MiB (%.1f MiB BC) | geometry %.1f MiB",
+                          (unsigned long long)memory.textureCount, memory.textureBytes / 1048576.0,
+                          memory.compressedTextureBytes / 1048576.0, memory.geometryBytes / 1048576.0);
+    }
   }
 } // namespace remix

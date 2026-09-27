@@ -26,6 +26,8 @@ namespace remix {
           append(mip.data(), mip.size());
         for (const auto &mip : pixels.hdrMips)
           append(mip.data(), mip.size() * sizeof(float));
+        if (pixels.compressed)
+          append(&pixels.compressed->hash, sizeof(pixels.compressed->hash));
         contentHash = hash ? hash : 1;
       }
       return contentHash;
@@ -97,17 +99,41 @@ namespace remix {
     if (!info.hash) {
       throw invalid;
     }
+    storeTexture(info.hash,
+                 keepCompressedTextures() && isBlockCompressed(info.format) ? compressTexture(info)
+                                                                            : decodeTexture(info),
+                 handle);
+  }
+
+  void NativeResources::createTexture(const remixapi_TextureInfo &info, scene::Pixels &&pixels,
+                                      remixapi_TextureHandle &handle) {
+    if (!info.hash) {
+      throw invalid;
+    }
+    storeTexture(info.hash, std::move(pixels), handle);
+  }
+
+  void NativeResources::storeTexture(uint64_t hash, scene::Pixels &&pixels, remixapi_TextureHandle &handle) {
     auto texture = std::make_shared<Texture>();
-    texture->pixels = decodeTexture(info);
-    auto previous = m_textures.find(info.hash);
+    texture->pixels = std::move(pixels);
+    // Identical compressed resubmissions keep their uploaded image. The block
+    // hash stands in for the released payload.
+    auto sameCompressed = [](const Pixels &a, const Pixels &b) {
+      if (!a.compressed || !b.compressed)
+        return !a.compressed && !b.compressed;
+      return a.compressed->format == b.compressed->format && a.compressed->levels == b.compressed->levels &&
+             a.compressed->hash == b.compressed->hash;
+    };
+    auto previous = m_textures.find(hash);
     if (previous == m_textures.end() || previous->second->pixels.width != texture->pixels.width ||
         previous->second->pixels.height != texture->pixels.height ||
         previous->second->pixels.srgb != texture->pixels.srgb ||
         previous->second->pixels.twoChannel != texture->pixels.twoChannel ||
         previous->second->pixels.mips != texture->pixels.mips ||
-        previous->second->pixels.hdrMips != texture->pixels.hdrMips)
-      m_textures[info.hash] = std::move(texture);
-    handle = reinterpret_cast<remixapi_TextureHandle>(uintptr_t(info.hash));
+        previous->second->pixels.hdrMips != texture->pixels.hdrMips ||
+        !sameCompressed(previous->second->pixels, texture->pixels))
+      m_textures[hash] = std::move(texture);
+    handle = reinterpret_cast<remixapi_TextureHandle>(uintptr_t(hash));
   }
 
   void NativeResources::destroyTexture(remixapi_TextureHandle handle) { m_textures.erase(key(handle)); }

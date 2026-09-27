@@ -38,7 +38,16 @@ namespace remix::raster::detail {
     VkImage image = VK_NULL_HANDLE;
     VkImageView view = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    uint32_t levels = 0;
+    VkComponentMapping components = {};
+    VkDeviceSize bytes = 0; // Device allocation size, for VRAM statistics.
+    // UNORM view of an sRGB (mutable-format) image: data maps alias it.
+    VkImageView linearView = VK_NULL_HANDLE;
     ~Image() {
+      if (linearView) {
+        vkDestroyImageView(device, linearView, nullptr);
+      }
       if (view) {
         vkDestroyImageView(device, view, nullptr);
       }
@@ -96,7 +105,8 @@ namespace remix {
     };
     struct TextureGpu {
       std::weak_ptr<scene::Texture> owner;
-      std::unique_ptr<Image> data;
+      std::unique_ptr<Image> data; // Null for a linear alias of another entry's image.
+      VkImageView view = VK_NULL_HANDLE; // Sampled view: data->view or the alias.
     };
     struct MaterialGpu {
       VkDevice device;
@@ -151,9 +161,16 @@ namespace remix {
     std::unique_ptr<Buffer> geometryBuffer(const void *data, size_t size, VkBufferUsageFlags usage,
                                            VkCommandBuffer command);
     std::unique_ptr<Image> image(uint32_t width, uint32_t height, uint32_t levels, VkFormat format,
-                                 bool isDepth);
+                                 bool isDepth, VkImageCreateFlags flags = 0,
+                                 VkComponentMapping components = {});
     MeshGpu &mesh(const std::shared_ptr<scene::Surface> &source, VkCommandBuffer command);
     TextureGpu &texture(const std::shared_ptr<scene::Texture> &source, VkCommandBuffer command);
+    TextureGpu uploadPixels(const std::shared_ptr<scene::Texture> &owner, const scene::Pixels &p,
+                            VkCommandBuffer command, VkImageCreateFlags flags);
+    TextureGpu &compressedTexture(const std::shared_ptr<scene::Texture> &source, VkCommandBuffer command);
+    void copyLevels(VkCommandBuffer command, VkImage image, uint32_t levels,
+                    const std::vector<VkBufferImageCopy> &copies);
+    bool textureCompression = false; // Device enabled textureCompressionBC.
     VkDescriptorSet material(const std::shared_ptr<scene::Material> &source, VkCommandBuffer command);
     VkPipeline pipeline(const scene::Draw &draw);
   };

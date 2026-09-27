@@ -3,6 +3,7 @@ runtime_test = executable('remix-runtime-test', 'lifecycle.cpp',
 test('API stubs and failed startup cleanup', runtime_test, args : [remix.full_path()], timeout : 30)
 if get_option('gpu_tests')
   test('Vulkan presentation and lifecycle', runtime_test, args : [remix.full_path(), 'gpu'], timeout : 90)
+  test('Compressed BC textures on the GPU', runtime_test, args : [remix.full_path(), 'compressed'], timeout : 90)
   if system != 'windows'
     test('Live process exit cleanup', runtime_test, args : [remix.full_path(), 'exit'], timeout : 30)
   endif

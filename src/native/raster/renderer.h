@@ -8,7 +8,14 @@ namespace remix {
   public:
     RasterRenderer();
     ~RasterRenderer();
-    void initializeGpu(VkPhysicalDevice physical, VkDevice device);
+    // textureCompression: the device was created with textureCompressionBC, so
+    // compressed textures upload as BC images instead of a decoded fallback.
+    void initializeGpu(VkPhysicalDevice physical, VkDevice device, bool textureCompression = false);
+    struct MemoryStatistics {
+      uint64_t textureBytes = 0, textureCount = 0, compressedTextureBytes = 0;
+      uint64_t geometryBytes = 0, pooledBytes = 0;
+    };
+    MemoryStatistics memoryStatistics() const; // Device allocations owned by this renderer.
     void configureTarget(VkRenderPass pass, VkExtent2D extent, bool encodeOutput = false);
     void setSkyTarget(VkRenderPass pass);
     void destroyTarget(); // Caller has completed all submitted work.

@@ -16,12 +16,40 @@ namespace remix {
     Matrix transform(const remixapi_Transform &value);
     const void *extension(const void *next, remixapi_StructType type);
 
+    // Block-compressed texture kept compressed on the GPU ("Keep BC textures
+    // compressed"). Pixels::mips/hdrMips stay empty; CPU consumers read only the
+    // small derived data below, never a full decoded copy.
+    struct CompressedPixels {
+      uint32_t format = 0;   // remixapi_Format as submitted (a BC format)
+      uint32_t block = 0;    // 1 BC1, 3 BC3, 4 BC4, 5 BC5, 6 BC6H UF16, 16 BC6H SF16, 7 BC7
+      bool bc1Alpha = false; // BC1 RGBA semantics; BC1 RGB samples alpha as one
+      uint32_t levels = 0;   // supplied mip levels
+      uint64_t hash = 0;     // content hash of every supplied block
+      // Supplied blocks, kept only until the one-time GPU upload releases them.
+      std::vector<uint8_t> upload;
+      // One bit per mip-0 texel (row-major) whose decoded alpha is not 255.
+      // Empty when every texel is opaque. Opacity partitions read only this.
+      std::vector<uint64_t> transparent;
+      bool transparentTexel(uint32_t x, uint32_t y, uint32_t width) const {
+        if (transparent.empty())
+          return false;
+        const size_t i = size_t(y) * width + x;
+        return (transparent[i >> 6] >> (i & 63)) & 1;
+      }
+      // Small decoded level (at most 64x64 texels) for CPU emission statistics:
+      // RGBA8 like Pixels::mips, plus linear RGBA32F for BC6H.
+      uint32_t previewWidth = 0, previewHeight = 0;
+      std::vector<uint8_t> preview;
+      std::vector<float> hdrPreview;
+    };
     struct Pixels {
       uint32_t width = 0, height = 0;
       bool srgb = true;
       std::vector<std::vector<uint8_t>> mips;
       std::vector<std::vector<float>> hdrMips; // Linear RGBA32F, retained through upload.
       bool twoChannel = false; // BC5 stores normal X/Y; reconstruct Z when used as a normal map.
+      std::shared_ptr<CompressedPixels> compressed; // Set only for GPU-compressed textures.
+      uint32_t levels() const { return compressed ? compressed->levels : uint32_t(mips.size()); }
     };
     struct Texture {
       Pixels pixels;

@@ -77,7 +77,10 @@ namespace remix::api {
       return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
     }
     *stats = {};
-    return requireRenderer();
+    std::lock_guard lock(g_apiMutex);
+    // Without the "Report VRAM statistics" setting this stays the historical
+    // stub: zeroed output, FEATURE_UNAVAILABLE (or NOT_INITIALIZED).
+    return g_runtime.vramStatistics(*stats);
   }
 
 #if defined(_WIN32)

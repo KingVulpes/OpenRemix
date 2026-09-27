@@ -68,6 +68,8 @@ private:
     // the same conservative rectangle predicate as scanning the RGBA bytes.
     std::vector<uint32_t> prefix;
     bool solid(const Region &r) const {
+      if (prefix.empty())
+        return true; // Compressed texture without any non-opaque texel.
       const size_t stride = size_t(width) + 1;
       const size_t x0 = r[0], y0 = r[1], x1 = size_t(r[2]) + 1,
                    y1 = size_t(r[3]) + 1;

@@ -2,6 +2,7 @@
 #include "scene/types.h"
 #include "scene/light_bvh.h"
 #include "scene/emission.h"
+#include "scene/id_set.h"
 #include "scene/opacity.h"
 #include <algorithm>
 #include <cstdint>
@@ -23,39 +24,6 @@ struct TraceFrame {
     SphereLight light;
     uint64_t layout = 0;
     bool animated = false;
-  };
-  // Nonzero caller identities of the frame (open addressing; zero is empty).
-  class IdSet {
-  public:
-    void insert(uint64_t id) {
-      if (!id)
-        return;
-      if ((m_count + 1) * 2 > m_slots.size())
-        grow();
-      auto &slot = m_slots[locate(id)];
-      m_count += slot == 0;
-      slot = id;
-    }
-    size_t count(uint64_t id) const { return id && !m_slots.empty() && m_slots[locate(id)] == id; }
-    size_t size() const { return m_count; }
-
-  private:
-    size_t locate(uint64_t id) const {
-      const size_t mask = m_slots.size() - 1;
-      uint64_t h = id * 0x9E3779B97F4A7C15ull;
-      for (size_t slot = size_t(h ^ (h >> 29)) & mask;; slot = (slot + 1) & mask)
-        if (m_slots[slot] == id || !m_slots[slot])
-          return slot;
-    }
-    void grow() {
-      std::vector<uint64_t> old(std::max<size_t>(64, m_slots.size() * 2), 0);
-      old.swap(m_slots);
-      for (uint64_t id : old)
-        if (id)
-          m_slots[locate(id)] = id;
-    }
-    std::vector<uint64_t> m_slots;
-    size_t m_count = 0;
   };
   // Instances as ranges of one surface array: no allocation per instance.
   // instances[i] is a span of instance i's surfaces (mesh surface order).
@@ -112,7 +80,7 @@ struct TraceFrame {
   };
   double seconds = 0;
   InstanceList instances;
-  IdSet persistentIds;
+  IdSet persistentIds; // nonzero caller identities of the frame
   std::vector<Emitter> emitters;
   // Staged copies leave the last submitted lighting intact if presentation is skipped.
   struct Lighting {

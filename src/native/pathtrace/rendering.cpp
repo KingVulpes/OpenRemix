@@ -418,8 +418,8 @@ namespace remix {
       if (!temporalId)
         continue;
       for (const auto &preparedSurface : instance)
-        pendingVertices[{temporalId, preparedSurface.draw.instanceIndex, preparedSurface.draw.surfaceIndex}] =
-            view.vertices.at(preparedSurface.draw.surfaceIndex);
+        pendingVertices.emplace({temporalId, preparedSurface.draw.instanceIndex, preparedSurface.draw.surfaceIndex},
+                                view.vertices.at(preparedSurface.draw.surfaceIndex));
       for (auto &preparedSurface : instance)
         history.stage(std::move(preparedSurface.draw), temporalId, preparedSurface.animationFrame);
     }

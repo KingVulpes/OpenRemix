@@ -1,4 +1,5 @@
 #pragma once
+#include "scene/id_set.h"
 #include "scene/retained.h"
 #include "scene/temporal.h"
 #include "scene/types.h"
@@ -148,7 +149,7 @@ namespace remix {
     scene::TemporalEpoch m_temporalEpoch;
     std::array<float, 3> m_skyRadiance = {};
     std::vector<scene::Draw> m_draws, m_uiDraws, m_overlay;
-    std::unordered_set<uint64_t> m_frameIds;
+    scene::IdSet m_frameIds;
     float m_tint[4] = {};
 
     // Appends one Draw per (instance, surface) of mesh, as DrawInstance builds

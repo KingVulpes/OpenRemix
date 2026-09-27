@@ -308,7 +308,7 @@ namespace remix {
         ++stats.overCapacity; // DrawInstance's per-frame limit.
         continue;
       }
-      if (e.description.traceIdentity && !m_frameIds.insert(e.description.instanceId).second)
+      if (e.description.traceIdentity && !m_frameIds.insert(e.description.instanceId))
         continue; // Caller identity already drawn this frame.
       const size_t first = m_draws.size();
       m_draws.insert(m_draws.end(), e.records.begin(), e.records.end());

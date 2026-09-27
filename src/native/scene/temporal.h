@@ -21,6 +21,21 @@ namespace remix::scene {
       return slot != missing && m_slots[slot] ? &m_entries[m_slots[slot] - 1].second : nullptr;
     }
     const Value *find(const TemporalKey &key) const { return const_cast<TemporalTable *>(this)->find(key); }
+    // Constructs key's value in place, or replaces an existing one.
+    template <class... Arguments> Value &emplace(const TemporalKey &key, Arguments &&...arguments) {
+      if ((m_entries.size() + 1) * 2 > m_slots.size())
+        grow();
+      const uint32_t slot = locate(key);
+      if (m_slots[slot]) {
+        auto &value = m_entries[m_slots[slot] - 1].second;
+        value = Value(std::forward<Arguments>(arguments)...);
+        return value;
+      }
+      m_entries.emplace_back(std::piecewise_construct, std::forward_as_tuple(key),
+                             std::forward_as_tuple(std::forward<Arguments>(arguments)...));
+      m_slots[slot] = uint32_t(m_entries.size());
+      return m_entries.back().second;
+    }
     Value &operator[](const TemporalKey &key) {
       if ((m_entries.size() + 1) * 2 > m_slots.size())
         grow();
@@ -90,6 +105,8 @@ namespace remix::scene {
   class TemporalHistory {
   public:
     struct SurfaceHistory {
+      SurfaceHistory() = default;
+      SurfaceHistory(Draw &&draw, uint32_t textureFrame) : draw(std::move(draw)), textureFrame(textureFrame) {}
       Draw draw;
       uint32_t textureFrame = 0;
     };

@@ -1,4 +1,5 @@
 #pragma once
+#include "scene/retained.h"
 #include "scene/temporal.h"
 #include "scene/types.h"
 
@@ -23,13 +24,17 @@ namespace remix {
     NativeResources(const NativeResources &) = delete;
     NativeResources &operator=(const NativeResources &) = delete;
     void reset();
-    void clearModMaterials() { m_modMaterials.clear(); }
+    void clearModMaterials() {
+      m_modMaterials.clear();
+      ++m_modGeneration;
+    }
     void replaceModMaterials(const std::map<uint64_t, remixapi_MaterialHandle> &handles) {
       std::unordered_map<uint64_t, std::shared_ptr<scene::Material>> next;
       for (auto [hash, handle] : handles)
         if (handle)
           next[hash] = m_materials.at(uint64_t(reinterpret_cast<uintptr_t>(handle)));
       m_modMaterials = std::move(next);
+      ++m_modGeneration;
     }
     void invalidateTexturePaths() { m_paths.clear(); }
     void cacheTexturePath(const std::string &path, const std::shared_ptr<scene::Texture> &texture) {
@@ -38,6 +43,7 @@ namespace remix {
     void createMaterial(const remixapi_MaterialInfo &info, remixapi_MaterialHandle &handle);
     void setMaterialSourceHash(remixapi_MaterialHandle handle, uint64_t hash) {
       m_materials.at(uint64_t(reinterpret_cast<uintptr_t>(handle)))->sourceHash = hash;
+      ++m_modGeneration;
     }
     void destroyMaterial(remixapi_MaterialHandle handle);
     void createMesh(const remixapi_MeshInfo &info, remixapi_MeshHandle &handle);
@@ -46,6 +52,16 @@ namespace remix {
     void destroyTexture(remixapi_TextureHandle handle);
     void setupCamera(const remixapi_CameraInfo &info);
     void drawInstance(const remixapi_InstanceInfo &info, remixapi_MaterialHandle materialOverride = nullptr);
+    // Retained instances (remix_fo4_ext.h). Handles are nonzero and never reused.
+    uint64_t createRetained(const remixapi_InstanceInfo &info);
+    void updateRetained(uint64_t handle, const remixapi_InstanceInfo &info);
+    void updateRetained(const remixapi_RetainedInstanceUpdate *updates, uint32_t count);
+    void destroyRetained(const uint64_t *handles, uint32_t count);
+    void drawRetained(const float *sceneOrigin);
+    size_t retainedCount() const { return m_retained.size(); }
+    const scene::RetainedStatistics &retainedStatistics() const { return m_retainedStats; }
+    // DrawRetainedInstances calls after which a moved instance returns to static.
+    static constexpr uint64_t retainedSettleFrames = 240;
     void registerUiTexture(uint64_t id, uint32_t width, uint32_t height, remixapi_Format format,
                            const void *pixels, uint64_t size);
     void freeUiTexture(uint64_t id);
@@ -119,5 +135,31 @@ namespace remix {
     std::vector<scene::Draw> m_draws, m_uiDraws, m_overlay;
     std::unordered_set<uint64_t> m_frameIds;
     float m_tint[4] = {};
+
+    // Appends one Draw per (instance, surface) of mesh, as DrawInstance builds
+    // them. strict applies DrawInstance's rule that a surface material handle
+    // must be live; otherwise such a surface uses the default material and false
+    // is returned. resolved receives the materials the surface handles named.
+    bool buildDraws(const scene::InstanceDescription &description, const std::shared_ptr<scene::Mesh> &mesh,
+                    const scene::Matrix *models, uint32_t count,
+                    const std::shared_ptr<scene::Material> &materialOverride, bool strict,
+                    std::vector<scene::Draw> &out, std::vector<std::shared_ptr<scene::Material>> *resolved);
+    void resolveRetained(scene::RetainedInstance &entry, bool strict);
+    bool retainedStale(const scene::RetainedInstance &entry) const;
+    void setRetainedWatch(scene::RetainedInstance &entry, bool watch);
+    void placeRetained(scene::RetainedInstance &entry);
+    void classifyRetained(scene::RetainedInstance &entry, uint32_t classification);
+    void moveRetained(scene::RetainedInstance &entry);
+    // Dense table; m_retainedIndex maps a handle to its slot.
+    std::vector<scene::RetainedInstance> m_retained;
+    std::unordered_map<uint64_t, uint32_t> m_retainedIndex;
+    std::vector<scene::Matrix> m_modelScratch;
+    scene::RetainedStatistics m_retainedStats;
+    uint64_t m_nextRetained = 0, m_retainedSerial = 0;
+    // Bumped when a mesh or material handle starts resolving to a new object,
+    // and when the mod material mapping changes.
+    uint64_t m_resourceGeneration = 0, m_modGeneration = 0;
+    uint64_t m_retainedResourceGeneration = 0, m_retainedModGeneration = 0;
+    uint32_t m_retainedWatch = 0;
   };
 } // namespace remix

@@ -48,4 +48,14 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL
 remixapi_GetBackendCapabilitiesEXT(remixapi_BackendCapabilitiesEXT *out);
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL
 remixapi_GetTracingStatisticsEXT(remixapi_TracingStatisticsEXT *out);
+// Retained instances (remix_fo4_ext.h); named exports only.
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_CreateRetainedInstance(const remixapi_InstanceInfo *info,
+                                                                          uint64_t *outHandle);
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_UpdateRetainedInstance(uint64_t handle,
+                                                                          const remixapi_InstanceInfo *info);
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL
+remixapi_UpdateRetainedInstances(const remixapi_RetainedInstanceUpdate *updates, uint32_t count);
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_DestroyRetainedInstances(const uint64_t *handles,
+                                                                            uint32_t count);
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_DrawRetainedInstances(const float *sceneOrigin);
 }

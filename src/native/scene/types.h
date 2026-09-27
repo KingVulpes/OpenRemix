@@ -53,6 +53,9 @@ namespace remix {
       bool drawAlpha = false, translucent = false, transmission = false;
       uint8_t filter = 0, wrapU = 1, wrapV = 1;
       uint8_t rows = 1, columns = 1, fps = 0;
+      // Set once the handle stops resolving to this object (replaced or
+      // destroyed), so retained instances know to resolve the handle again.
+      bool retired = false;
     };
     struct Surface {
       std::vector<Vertex> vertices;
@@ -68,6 +71,7 @@ namespace remix {
       std::shared_ptr<const MeshUpdateStream> updateStream;
       bool motionCorrespondence = false;
       std::vector<std::shared_ptr<Surface>> surfaces;
+      bool retired = false; // See Material::retired.
     };
     struct Blend {
       bool enabled = false;

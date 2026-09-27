@@ -127,139 +127,200 @@ namespace remix {
     if (mesh == m_meshes.end()) {
       throw invalid;
     }
-    auto model = transform(info.transform);
+    InstanceDescription description;
+    describeInstance(info, description);
+    if (description.hidden) {
+      return;
+    }
+    if (description.traceIdentity && m_frameIds.count(description.instanceId))
+      throw invalid;
+    const uint32_t count = description.instanced ? description.instanceCount : 1;
+    if (uint64_t(count) * mesh->second->surfaces.size() + m_draws.size() > 65536) {
+      throw invalid;
+    }
+    std::shared_ptr<Material> override;
+    if (materialOverride)
+      override = m_materials.at(key(materialOverride));
+    m_modelScratch.resize(count);
+    for (uint32_t i = 0; i < count; ++i) {
+      m_modelScratch[i] = description.instanced
+                              ? multiply(description.model, transform(description.instanceValues[i]))
+                              : description.model;
+      finite(m_modelScratch[i].data(), 16);
+    }
+    std::vector<Draw> pending;
+    buildDraws(description, mesh->second, m_modelScratch.data(), count, override, true, pending, nullptr);
+    if (m_draws.capacity() < m_draws.size() + pending.size())
+      m_draws.reserve(std::max(m_draws.size() + pending.size(), m_draws.capacity() * 2));
+    if (description.traceIdentity && !pending.empty())
+      m_frameIds.insert(description.instanceId);
+    m_draws.insert(m_draws.end(), std::make_move_iterator(pending.begin()),
+                   std::make_move_iterator(pending.end()));
+  }
+
+  bool NativeResources::buildDraws(const InstanceDescription &description, const std::shared_ptr<Mesh> &mesh,
+                                   const Matrix *models, uint32_t count,
+                                   const std::shared_ptr<Material> &materialOverride, bool strict,
+                                   std::vector<Draw> &out, std::vector<std::shared_ptr<Material>> *resolved) {
+    const auto &d = description;
+    if (!m_default) {
+      m_default = std::make_shared<Material>();
+      m_default->texture = texturePath(nullptr);
+    }
+    bool complete = true;
+    for (uint32_t i = 0; i < count; ++i) {
+      for (const auto &surface : mesh->surfaces) {
+        Draw draw;
+        draw.surface = surface;
+        draw.mesh = mesh;
+        draw.surfaceIndex = uint32_t(&surface - mesh->surfaces.data());
+        draw.instanceIndex = i;
+        draw.instanceId = d.instanceId;
+        draw.classification = d.classification;
+        draw.rasterVisible = d.rasterVisible;
+        draw.model = models[i];
+        draw.bones = d.bones;
+        if (d.hasRasterState) {
+          draw.depth = d.depthTest;
+          draw.depthWriteOverride = true;
+          draw.depthWrite = d.depthWrite;
+          draw.depthCompare = d.depthCompare;
+        }
+        draw.depthBias = (d.categoryFlags & (REMIXAPI_INSTANCE_CATEGORY_BIT_DECAL_DYNAMIC |
+                                             REMIXAPI_INSTANCE_CATEGORY_BIT_DECAL_STATIC |
+                                             REMIXAPI_INSTANCE_CATEGORY_BIT_DECAL_SINGLE_OFFSET)) != 0;
+        draw.decal = (d.categoryFlags & (REMIXAPI_INSTANCE_CATEGORY_BIT_DECAL_STATIC |
+                                          REMIXAPI_INSTANCE_CATEGORY_BIT_DECAL_DYNAMIC |
+                                          REMIXAPI_INSTANCE_CATEGORY_BIT_DECAL_SINGLE_OFFSET |
+                                          REMIXAPI_INSTANCE_CATEGORY_BIT_DECAL_NO_OFFSET)) != 0;
+        draw.material = m_default;
+        if (surface->material) {
+          auto it = m_materials.find(key(surface->material));
+          if (it == m_materials.end()) {
+            if (strict) {
+              throw invalid;
+            }
+            complete = false;
+          } else {
+            if (resolved && i == 0)
+              resolved->push_back(it->second);
+            draw.material = it->second;
+            if (auto replacement = m_modMaterials.find(draw.material->sourceHash ? draw.material->sourceHash
+                                                                                 : key(surface->material));
+                replacement != m_modMaterials.end())
+              draw.material = replacement->second;
+          }
+        }
+        if (materialOverride)
+          draw.material = materialOverride;
+        if (surface->bonesPerVertex) {
+          if (!d.bones || d.bones->empty()) {
+            throw invalid;
+          }
+          for (auto index : surface->bones) {
+            if (index >= d.bones->size()) {
+              throw invalid;
+            }
+          }
+        }
+        draw.blend = d.blend;
+        if (d.hasRasterState && d.disableColorWrites)
+          draw.blend.mask = 0;
+        draw.blend.enabled |= draw.material->translucent;
+        draw.doubleSided = d.doubleSided;
+        draw.ignoreAlpha = (d.categoryFlags & REMIXAPI_INSTANCE_CATEGORY_BIT_IGNORE_ALPHA_CHANNEL) != 0;
+        if (draw.ignoreAlpha) {
+          draw.blend.enabled = false;
+        }
+        draw.alphaOverride = draw.material->drawAlpha && d.hasAlphaState;
+        if (draw.alphaOverride && d.alphaTest) {
+          draw.compare = d.alphaCompare;
+          draw.reference = d.alphaReference;
+        }
+        if (d.categoryFlags & REMIXAPI_INSTANCE_CATEGORY_BIT_VIEW_MODEL) {
+          draw.camera = REMIXAPI_CAMERA_TYPE_VIEW_MODEL;
+        } else if (d.categoryFlags & REMIXAPI_INSTANCE_CATEGORY_BIT_SKY) {
+          draw.camera = REMIXAPI_CAMERA_TYPE_SKY;
+          draw.depth = false;
+        }
+        out.push_back(std::move(draw));
+      }
+    }
+    return complete;
+  }
+} // namespace remix
+
+namespace remix::scene {
+  using namespace detail;
+
+  void describeInstance(const remixapi_InstanceInfo &info, InstanceDescription &d) {
+    d.mesh = key(info.mesh);
+    d.model = transform(info.transform);
+    d.categoryFlags = info.categoryFlags;
+    d.doubleSided = info.doubleSided != 0;
     if (info.categoryFlags & (REMIXAPI_INSTANCE_CATEGORY_BIT_HIDDEN | REMIXAPI_INSTANCE_CATEGORY_BIT_IGNORE |
                               REMIXAPI_INSTANCE_CATEGORY_BIT_FIRST_PERSON_PLAYER_SHADOW)) {
+      d.hidden = true;
       return;
     }
     const auto *alpha = static_cast<const remixapi_InstanceInfoBlendEXT *>(
         extension(info.pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_BLEND_EXT));
-    const auto state = blend(alpha);
+    d.blend = blend(alpha);
     const auto *identity = static_cast<const remixapi_InstanceIdentityEXT *>(
         extension(info.pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_IDENTITY_EXT));
     if (identity && (identity->classification > 2 || identity->rasterVisible > 1 ||
                      (!identity->instanceId && identity->classification != 2)))
       throw invalid;
-    const bool traceIdentity = identity && identity->classification != REMIXAPI_INSTANCE_RASTER_ONLY_EXT &&
-                               !(info.categoryFlags & (REMIXAPI_INSTANCE_CATEGORY_BIT_SKY |
-                                                       REMIXAPI_INSTANCE_CATEGORY_BIT_VIEW_MODEL));
-    if (traceIdentity && m_frameIds.count(identity->instanceId))
-      throw invalid;
+    if (identity) {
+      d.hasIdentity = true;
+      d.instanceId = identity->instanceId;
+      d.classification = identity->classification;
+      d.rasterVisible = identity->rasterVisible != 0;
+    }
+    d.traceIdentity = identity && identity->classification != REMIXAPI_INSTANCE_RASTER_ONLY_EXT &&
+                      !(info.categoryFlags & (REMIXAPI_INSTANCE_CATEGORY_BIT_SKY |
+                                              REMIXAPI_INSTANCE_CATEGORY_BIT_VIEW_MODEL));
     const auto *rasterState = static_cast<const remixapi_InstanceRasterStateEXT *>(
         extension(info.pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_RASTER_STATE_EXT));
     if (rasterState && (rasterState->depthTest > 1 || rasterState->depthWrite > 1 ||
                         rasterState->depthCompare > 7 || rasterState->disableColorWrites > 1)) {
       throw invalid;
     }
+    if (rasterState) {
+      d.hasRasterState = true;
+      d.depthTest = rasterState->depthTest != 0;
+      d.depthWrite = rasterState->depthWrite != 0;
+      d.depthCompare = rasterState->depthCompare;
+      d.disableColorWrites = rasterState->disableColorWrites != 0;
+    }
     if (alpha && alpha->alphaTestEnabled && alpha->alphaTestCompareOp > 7) {
       throw invalid;
     }
-    std::shared_ptr<std::vector<Matrix>> bones;
+    if (alpha) {
+      d.hasAlphaState = true;
+      d.alphaTest = alpha->alphaTestEnabled != 0;
+      d.alphaCompare = alpha->alphaTestCompareOp;
+      d.alphaReference = float(alpha->alphaTestReferenceValue) / 255;
+    }
     if (const auto *skin = static_cast<const remixapi_InstanceInfoBoneTransformsEXT *>(
             extension(info.pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_BONE_TRANSFORMS_EXT))) {
       if (skin->boneTransforms_count > 256 || (skin->boneTransforms_count && !skin->boneTransforms_values)) {
         throw invalid;
       }
-      bones = std::make_shared<std::vector<Matrix>>();
+      d.bones = std::make_shared<std::vector<Matrix>>();
       for (uint32_t i = 0; i < skin->boneTransforms_count; ++i) {
-        bones->push_back(transform(skin->boneTransforms_values[i]));
+        d.bones->push_back(transform(skin->boneTransforms_values[i]));
       }
     }
     const auto *instances = static_cast<const remixapi_InstanceInfoGpuInstancingEXT *>(
         extension(info.pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_GPU_INSTANCING_EXT));
-    const uint32_t count = instances ? instances->instanceTransforms_count : 1;
-    if (instances && count && !instances->instanceTransforms_values) {
-      throw invalid;
-    }
-    if (uint64_t(count) * mesh->second->surfaces.size() + m_draws.size() > 65536) {
-      throw invalid;
-    }
-    if (!m_default) {
-      m_default = std::make_shared<Material>();
-      m_default->texture = texturePath(nullptr);
-    }
-    std::vector<Draw> pending;
-    for (uint32_t i = 0; i < count; ++i) {
-      auto instance = instances ? multiply(model, transform(instances->instanceTransforms_values[i])) : model;
-      finite(instance.data(), 16);
-      for (const auto &surface : mesh->second->surfaces) {
-        Draw draw;
-        draw.surface = surface;
-        draw.mesh = mesh->second;
-        draw.surfaceIndex = uint32_t(&surface - mesh->second->surfaces.data());
-        draw.instanceIndex = i;
-        if (identity) {
-          draw.instanceId = identity->instanceId;
-          draw.classification = identity->classification;
-          draw.rasterVisible = identity->rasterVisible != 0;
-        }
-        draw.model = instance;
-        draw.bones = bones;
-        if (rasterState) {
-          draw.depth = rasterState->depthTest != 0;
-          draw.depthWriteOverride = true;
-          draw.depthWrite = rasterState->depthWrite != 0;
-          draw.depthCompare = rasterState->depthCompare;
-        }
-        draw.depthBias = (info.categoryFlags & (REMIXAPI_INSTANCE_CATEGORY_BIT_DECAL_DYNAMIC |
-                                                REMIXAPI_INSTANCE_CATEGORY_BIT_DECAL_STATIC |
-                                                REMIXAPI_INSTANCE_CATEGORY_BIT_DECAL_SINGLE_OFFSET)) != 0;
-        draw.decal = (info.categoryFlags & (REMIXAPI_INSTANCE_CATEGORY_BIT_DECAL_STATIC |
-                                             REMIXAPI_INSTANCE_CATEGORY_BIT_DECAL_DYNAMIC |
-                                             REMIXAPI_INSTANCE_CATEGORY_BIT_DECAL_SINGLE_OFFSET |
-                                             REMIXAPI_INSTANCE_CATEGORY_BIT_DECAL_NO_OFFSET)) != 0;
-        draw.material = m_default;
-        if (surface->material) {
-          auto it = m_materials.find(key(surface->material));
-          if (it == m_materials.end()) {
-            throw invalid;
-          }
-          draw.material = it->second;
-          if (auto replacement = m_modMaterials.find(draw.material->sourceHash ? draw.material->sourceHash
-                                                                               : key(surface->material));
-              replacement != m_modMaterials.end())
-            draw.material = replacement->second;
-        }
-        if (materialOverride)
-          draw.material = m_materials.at(key(materialOverride));
-        if (surface->bonesPerVertex) {
-          if (!bones || bones->empty()) {
-            throw invalid;
-          }
-          for (auto index : surface->bones) {
-            if (index >= bones->size()) {
-              throw invalid;
-            }
-          }
-        }
-        draw.blend = state;
-        if (rasterState && rasterState->disableColorWrites)
-          draw.blend.mask = 0;
-        draw.blend.enabled |= draw.material->translucent;
-        draw.doubleSided = info.doubleSided != 0;
-        draw.ignoreAlpha = (info.categoryFlags & REMIXAPI_INSTANCE_CATEGORY_BIT_IGNORE_ALPHA_CHANNEL) != 0;
-        if (draw.ignoreAlpha) {
-          draw.blend.enabled = false;
-        }
-        draw.alphaOverride = draw.material->drawAlpha && alpha;
-        if (draw.alphaOverride && alpha->alphaTestEnabled) {
-          draw.compare = alpha->alphaTestCompareOp;
-          draw.reference = float(alpha->alphaTestReferenceValue) / 255;
-        }
-        if (info.categoryFlags & REMIXAPI_INSTANCE_CATEGORY_BIT_VIEW_MODEL) {
-          draw.camera = REMIXAPI_CAMERA_TYPE_VIEW_MODEL;
-        } else if (info.categoryFlags & REMIXAPI_INSTANCE_CATEGORY_BIT_SKY) {
-          draw.camera = REMIXAPI_CAMERA_TYPE_SKY;
-          draw.depth = false;
-        }
-        pending.push_back(std::move(draw));
+    if (instances) {
+      if (instances->instanceTransforms_count && !instances->instanceTransforms_values) {
+        throw invalid;
       }
+      d.instanced = true;
+      d.instanceValues = instances->instanceTransforms_values;
+      d.instanceCount = instances->instanceTransforms_count;
     }
-    if (m_draws.capacity() < m_draws.size() + pending.size())
-      m_draws.reserve(std::max(m_draws.size() + pending.size(), m_draws.capacity() * 2));
-    if (traceIdentity && !pending.empty())
-      m_frameIds.insert(identity->instanceId);
-    m_draws.insert(m_draws.end(), std::make_move_iterator(pending.begin()),
-                   std::make_move_iterator(pending.end()));
   }
-} // namespace remix
+} // namespace remix::scene

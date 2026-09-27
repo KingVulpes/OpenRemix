@@ -20,6 +20,11 @@ namespace remix {
     m_frameIds.clear();
     m_uiDraws.clear();
     m_overlay.clear();
+    // Handles keep counting up: one issued before a restart never names a new instance.
+    m_retained.clear();
+    m_retainedIndex.clear();
+    m_retainedWatch = 0;
+    m_retainedStats = {};
     m_materials.clear();
     m_modMaterials.clear();
     m_meshes.clear();

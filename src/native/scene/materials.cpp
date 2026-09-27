@@ -120,10 +120,19 @@ namespace remix {
              a.transmission == b.transmission && a.filter == b.filter && a.wrapU == b.wrapU &&
              a.wrapV == b.wrapV && a.rows == b.rows && a.columns == b.columns && a.fps == b.fps;
     };
-    if (previous == m_materials.end() || !equal(*previous->second, *material))
+    if (previous == m_materials.end() || !equal(*previous->second, *material)) {
+      if (previous != m_materials.end())
+        previous->second->retired = true;
       m_materials[info.hash] = std::move(material);
+      ++m_resourceGeneration;
+    }
     handle = reinterpret_cast<remixapi_MaterialHandle>(uintptr_t(info.hash));
   }
 
-  void NativeResources::destroyMaterial(remixapi_MaterialHandle handle) { m_materials.erase(key(handle)); }
+  void NativeResources::destroyMaterial(remixapi_MaterialHandle handle) {
+    if (auto it = m_materials.find(key(handle)); it != m_materials.end()) {
+      it->second->retired = true;
+      m_materials.erase(it);
+    }
+  }
 } // namespace remix

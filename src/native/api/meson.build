@@ -8,6 +8,7 @@ api_sources = files(
   'library.cpp',
   'lifecycle.cpp',
   'resources.cpp',
+  'retained.cpp',
   'state.cpp',
   'ui.cpp',
   'usd.cpp',

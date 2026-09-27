@@ -126,10 +126,19 @@ namespace remix {
       }
       return true;
     };
-    if (previous == m_meshes.end() || !equal(*previous->second, *mesh))
+    if (previous == m_meshes.end() || !equal(*previous->second, *mesh)) {
+      if (previous != m_meshes.end())
+        previous->second->retired = true;
       m_meshes[info.hash] = std::move(mesh);
+      ++m_resourceGeneration;
+    }
     handle = reinterpret_cast<remixapi_MeshHandle>(uintptr_t(info.hash));
   }
 
-  void NativeResources::destroyMesh(remixapi_MeshHandle handle) { m_meshes.erase(key(handle)); }
+  void NativeResources::destroyMesh(remixapi_MeshHandle handle) {
+    if (auto it = m_meshes.find(key(handle)); it != m_meshes.end()) {
+      it->second->retired = true;
+      m_meshes.erase(it);
+    }
+  }
 } // namespace remix

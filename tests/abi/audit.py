@@ -21,6 +21,8 @@ required_exports += ['remixapi_GetReconstructionDiagnosticsEXT', 'remixapi_GetBa
              'remixapi_GetLocalLightGuidingStatisticsEXT', 'remixapi_GetLocalLightStatisticsEXT',
              'remixapi_GetShadowStatisticsEXT', 'remixapi_GetSharcStatisticsEXT',
              'remixapi_GetDenoisingCapabilitiesEXT', 'remixapi_GetDenoisingStatisticsEXT']
+required_exports += ['remixapi_CreateRetainedInstance', 'remixapi_UpdateRetainedInstance', 'remixapi_UpdateRetainedInstances',
+             'remixapi_DestroyRetainedInstances', 'remixapi_DrawRetainedInstances']
 required_exports += ['remixapi_EditorConfigureSharedFrame', 'remixapi_LoadUSDSceneEXT', 'remixapi_DrawUSDSceneEXT', 'remixapi_ReloadUSDSceneEXT', 'remixapi_DestroyUSDSceneEXT', 'remixapi_GetUSDDiagnosticsEXT', 'remixapi_ConfigureUSDModsEXT', 'remixapi_GetUSDModsDiagnosticEXT']
 cross_windows = library.suffix.lower() == '.dll' and sys.platform != 'win32'
 if cross_windows:

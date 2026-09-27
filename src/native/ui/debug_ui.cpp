@@ -1,5 +1,6 @@
 #include "runtime/runtime.h"
 #include "ui/context.h"
+#include "api/imgui_compat.h"
 #include <algorithm>
 #include <cmath>
 #include <imgui.h>
@@ -73,6 +74,7 @@ namespace remix {
       if (!open)
         setUiState(REMIXAPI_UI_STATE_NONE);
     }
+    remixapi_imgui_InvokeOverlayCallback();
     ImGui::Render();
     const auto &io = ImGui::GetIO();
     m_window.setGuiCapture(m_uiState != REMIXAPI_UI_STATE_NONE && io.WantCaptureKeyboard,

@@ -128,8 +128,20 @@ namespace remix::scene {
     bool reset() const { return m_reset; }
     uint64_t frames() const { return m_frames; }
     static uint64_t materialSignature(const Draw &draw);
+    // Surfaces the last committed frame traced without staging them here (the
+    // persistent static set keeps their history itself). Consulted for keys
+    // this table does not hold; a key is never in both.
+    class Fallback {
+    public:
+      virtual const SurfaceHistory *previous(const TemporalKey &key) const = 0;
+
+    protected:
+      ~Fallback() = default;
+    };
+    void setFallback(const Fallback *fallback) { m_fallback = fallback; }
 
   private:
+    const Fallback *m_fallback = nullptr;
     TemporalTable<SurfaceHistory> m_previous, m_pending;
     TemporalEpoch m_epoch{}, m_nextEpoch{};
     uint64_t m_integrator = 0, m_nextIntegrator = 0, m_frames = 0;

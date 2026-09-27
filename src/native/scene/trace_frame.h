@@ -11,6 +11,7 @@
 #include <vector>
 
 namespace remix::scene {
+class StaticScene;
 // CPU snapshots only: safe to construct while the previous GPU submission
 // is running. Temporal history and GPU uploads consume this after its fence.
 struct TraceFrame {
@@ -80,6 +81,11 @@ struct TraceFrame {
   };
   double seconds = 0;
   InstanceList instances;
+  // Each instance's first emitter (instances.size() + 1 entries).
+  std::vector<uint32_t> emitterFirst;
+  // The persistent static set (StaticScene) is traced with these instances;
+  // instances then holds only the frame's other draws.
+  bool staticUnits = false;
   IdSet persistentIds; // nonzero caller identities of the frame
   std::vector<Emitter> emitters;
   // Staged copies leave the last submitted lighting intact if presentation is skipped.
@@ -90,6 +96,8 @@ struct TraceFrame {
   } lighting;
 };
 
+// statics: a persistent static set traced alongside draws. Its identities
+// count as the frame's (legacy identities avoid them, duplicates are rejected).
 TraceFrame prepareTraceFrame(const std::vector<Draw> &draws, double seconds, bool filterEmission,
-                             SurfaceEmissionCache &emissionCache);
+                             SurfaceEmissionCache &emissionCache, const StaticScene *statics = nullptr);
 } // namespace remix::scene

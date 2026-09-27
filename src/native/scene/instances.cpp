@@ -135,7 +135,7 @@ namespace remix {
     if (description.traceIdentity && m_frameIds.count(description.instanceId))
       throw invalid;
     const uint32_t count = description.instanced ? description.instanceCount : 1;
-    if (uint64_t(count) * mesh->second->surfaces.size() + m_draws.size() > 65536) {
+    if (uint64_t(count) * mesh->second->surfaces.size() + pendingDrawCount() > 65536) {
       throw invalid;
     }
     // A USD mod's material wins over remixapi_InstanceInfoMaterialOverrideEXT.

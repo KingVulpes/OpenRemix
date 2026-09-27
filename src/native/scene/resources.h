@@ -75,6 +75,39 @@ namespace remix {
     const scene::RetainedStatistics &retainedStatistics() const { return m_retainedStats; }
     // DrawRetainedInstances calls after which a moved instance returns to static.
     static constexpr uint64_t retainedSettleFrames = 240;
+    // Persistent static set ("rtx.native.scene.persistentStatic"). While on,
+    // drawRetained keeps retained instances that staticTraceEligible accepts
+    // out of the draw list: they are members of the static set, which a
+    // consumer (the path tracer) keeps its own copy of, updated from the
+    // handles whose membership or records changed (takeStaticChanges). Takes
+    // effect at the next drawRetained; switching bumps staticEpoch.
+    void setPersistentStatic(bool enabled);
+    bool persistentStatic() const { return m_staticEnabled; }
+    // This frame's members are drawn through the static set, not m_draws.
+    // Cleared by finishFrame and by expandStatic.
+    bool staticDrawn() const { return m_staticDrawn; }
+    // Changes when a consumer must rebuild its copy from every member.
+    uint64_t staticEpoch() const { return m_staticEpoch; }
+    // Draws of this frame's static set (not in draws()), and its members with
+    // a traced emissive record.
+    size_t staticDrawCount() const { return m_staticDraws; }
+    size_t staticEmissiveCount() const { return m_staticEmissive; }
+    // Handles whose membership or records changed since the last call.
+    void takeStaticChanges(std::vector<uint64_t> &out);
+    // Current members (a consumer's full rebuild), in retained table order.
+    template <class F> void forEachStatic(F &&f) const {
+      for (const auto &entry : m_retained)
+        if (entry.member)
+          f(entry);
+    }
+    const scene::RetainedInstance *retained(uint64_t handle) const {
+      const auto found = m_retainedIndex.find(handle);
+      return found == m_retainedIndex.end() ? nullptr : &m_retained[found->second];
+    }
+    // Writes this frame's static set into the draw list exactly where replay
+    // without the set would have put it, for consumers other than the tracer
+    // (raster rendering), and clears staticDrawn.
+    void expandStatic();
     void registerUiTexture(uint64_t id, uint32_t width, uint32_t height, remixapi_Format format,
                            const void *pixels, uint64_t size);
     void freeUiTexture(uint64_t id);
@@ -82,7 +115,8 @@ namespace remix {
     void overlay(const void *pixels, uint32_t width, uint32_t height, remixapi_Format format, float opacity);
     void setTint(float r, float g, float b, float a);
     void finishFrame();
-    size_t pendingDrawCount() const { return m_draws.size(); }
+    // Surface draws of this frame, including a static set drawn separately.
+    size_t pendingDrawCount() const { return m_draws.size() + m_staticDraws; }
 
     const std::vector<scene::Draw> &draws() const { return m_draws; }
     const scene::Matrix &camera(uint32_t type = 0) const { return m_cameras[type]; }
@@ -180,5 +214,24 @@ namespace remix {
     uint64_t m_resourceGeneration = 0, m_modGeneration = 0;
     uint64_t m_retainedResourceGeneration = 0, m_retainedModGeneration = 0;
     uint32_t m_retainedWatch = 0;
+    // Bumped whenever a mesh or material is marked retired: an entry verified
+    // not stale at the current value cannot be stale.
+    uint64_t m_retireGeneration = 0;
+    // Persistent static set. m_staticPlacement: where each member drawn this
+    // frame would sit in m_draws (position, table slot), for expandStatic.
+    void joinStatic(scene::RetainedInstance &entry);
+    void leaveStatic(scene::RetainedInstance &entry);
+    void logStatic(scene::RetainedInstance &entry);
+    // Before a retained change made after this frame's replay: the frame keeps
+    // what the replay drew (in m_draws, as without the set).
+    void freezeStatic() {
+      if (m_staticDrawn)
+        expandStatic();
+    }
+    bool m_staticEnabled = false, m_staticDrawn = false;
+    uint64_t m_staticEpoch = 1;
+    size_t m_staticDraws = 0, m_staticEmissive = 0;
+    std::vector<std::pair<size_t, uint32_t>> m_staticPlacement;
+    std::vector<uint64_t> m_staticChanges;
   };
 } // namespace remix

@@ -25,6 +25,11 @@ namespace remix {
     m_retainedIndex.clear();
     m_retainedWatch = 0;
     m_retainedStats = {};
+    m_staticDrawn = false;
+    m_staticDraws = m_staticEmissive = 0;
+    m_staticPlacement.clear();
+    m_staticChanges.clear();
+    ++m_staticEpoch;
     m_materials.clear();
     m_modMaterials.clear();
     m_meshes.clear();
@@ -54,6 +59,9 @@ namespace remix {
 
   void NativeResources::finishFrame() {
     m_draws.clear();
+    m_staticDrawn = false;
+    m_staticDraws = m_staticEmissive = 0;
+    m_staticPlacement.clear();
     m_frameIds.clear();
     m_uiDraws.clear();
     m_light = {};

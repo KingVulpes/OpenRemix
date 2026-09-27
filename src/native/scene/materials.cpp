@@ -225,6 +225,7 @@ namespace remix {
     if (previous == m_materials.end() || !equal(*previous->second, *material)) {
       if (previous != m_materials.end())
         previous->second->retired = true;
+        ++m_retireGeneration;
       m_materials[info.hash] = std::move(material);
       ++m_resourceGeneration;
     }
@@ -234,6 +235,7 @@ namespace remix {
   void NativeResources::destroyMaterial(remixapi_MaterialHandle handle) {
     if (auto it = m_materials.find(key(handle)); it != m_materials.end()) {
       it->second->retired = true;
+      ++m_retireGeneration;
       m_materials.erase(it);
     }
   }

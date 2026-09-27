@@ -48,6 +48,14 @@ namespace remix::scene {
     bool watch = false;          // resolved without a live mesh or material handle
     bool moving = false;         // demoted to dynamic by a transform change
     uint64_t lastMove = 0;
+    // Persistent static set (NativeResources::setPersistentStatic). revision
+    // changes whenever the records do. member: drawn through the static set by
+    // the last replay, from the records of memberRevision. logged: the handle
+    // is in the consumer's change list.
+    uint64_t revision = 0, memberRevision = 0;
+    bool staticEligible = false, member = false, logged = false;
+    bool staticEmissive = false; // a traced record has emission (Settings' local-light detection)
+    uint64_t freshRetire = ~0ull; // NativeResources' retire generation it was last found not stale at
     uint32_t surfaceCount = 0;
     std::shared_ptr<Mesh> mesh;                       // what the mesh handle resolved to
     std::vector<std::shared_ptr<Material>> resolved;  // what the material handles resolved to
@@ -58,5 +66,14 @@ namespace remix::scene {
   // Statistics of the last DrawRetainedInstances call.
   struct RetainedStatistics {
     uint64_t registered = 0, appended = 0, draws = 0, resolved = 0, overCapacity = 0, moving = 0;
+    // Persistent static set: members drawn by this replay and their draws
+    // (both included above), and handles whose membership or records changed.
+    uint64_t staticMembers = 0, staticDraws = 0, staticChanges = 0;
   };
+
+  // Whether every record of a retained instance can be traced through the
+  // persistent static set: static, traced, not animated, rigid and not a
+  // streamed lineage. Such records have no per-frame UV animation, so their
+  // trace inputs (emitters included) change only with the records.
+  bool staticTraceEligible(const std::vector<Draw> &records);
 } // namespace remix::scene

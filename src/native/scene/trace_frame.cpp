@@ -1,12 +1,13 @@
 #include "scene/trace_frame.h"
 #include "scene/emission.h"
+#include "scene/static_scene.h"
 #include <algorithm>
 #include <cmath>
 #include <tuple>
 
 namespace remix::scene {
 TraceFrame prepareTraceFrame(const std::vector<Draw> &draws, double seconds, bool filterEmission,
-                             SurfaceEmissionCache &emissionCache) {
+                             SurfaceEmissionCache &emissionCache, const StaticScene *statics) {
   TraceFrame frame;
   frame.seconds = seconds;
   // Group whole mesh submissions, then sort persistent identities so caller
@@ -31,7 +32,7 @@ TraceFrame prepareTraceFrame(const std::vector<Draw> &draws, double seconds, boo
     copy.decal = draw.decal && draw.blend.enabled && !draw.material->transmission;
     if (!draw.instanceId) {
       if (!draw.surfaceIndex) {
-        while (frame.persistentIds.count(legacy))
+        while (frame.persistentIds.count(legacy) || (statics && statics->hasId(legacy)))
           --legacy;
         legacyId = legacy--;
       }
@@ -52,6 +53,10 @@ TraceFrame prepareTraceFrame(const std::vector<Draw> &draws, double seconds, boo
     if (a.instanceId == b.instanceId && a.instanceIndex == b.instanceIndex)
       throw REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
   }
+  if (statics)
+    for (const auto &instance : frame.instances)
+      if (statics->contains(instance[0].draw.instanceId, instance[0].draw.instanceIndex))
+        throw REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
   // Singular transforms cannot produce valid Vulkan instances or emitters.
   frame.instances.erase([](const auto &instance) {
     const auto &m = instance[0].draw.model;
@@ -59,7 +64,9 @@ TraceFrame prepareTraceFrame(const std::vector<Draw> &draws, double seconds, boo
                       m[8] * (m[1] * m[6] - m[5] * m[2]);
     return std::abs(det) < 1e-12f;
   });
-  for (auto instance : frame.instances)
+  frame.emitterFirst.reserve(frame.instances.size() + 1);
+  for (auto instance : frame.instances) {
+    frame.emitterFirst.push_back(uint32_t(frame.emitters.size()));
     for (auto &surface : instance) {
       const auto &draw = surface.draw;
       const auto &material = *draw.material;
@@ -79,6 +86,8 @@ TraceFrame prepareTraceFrame(const std::vector<Draw> &draws, double seconds, boo
                                   animated ? triangle.layout : 0, animated});
       }
     }
+  }
+  frame.emitterFirst.push_back(uint32_t(frame.emitters.size()));
   emissionCache.prune();
   return frame;
 }

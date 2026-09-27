@@ -72,7 +72,10 @@ namespace remix::scene {
                                                                            uint64_t instanceId) const {
     if (m_reset || !instanceId)
       return nullptr;
-    const auto *found = m_previous.find({instanceId, draw.instanceIndex, draw.surfaceIndex});
+    const TemporalKey key{instanceId, draw.instanceIndex, draw.surfaceIndex};
+    const auto *found = m_previous.find(key);
+    if (!found && m_fallback)
+      found = m_fallback->previous(key);
     if (!found)
       return nullptr;
     const auto &p = *found;

@@ -22,6 +22,13 @@
 // derived from their handle, so temporal history and the TLAS follow the
 // object across frames. They are classified static; a placement change demotes
 // the entry to dynamic until it has not moved for retainedSettleFrames replays.
+//
+// Persistent static set (setPersistentStatic): a replay leaves the records of
+// static entries that staticTraceEligible accepts out of the draw list. The
+// tracer keeps its own copy of them, told which handles changed (joined, left,
+// or re-resolved). Changes made after a replay first write that replay's set
+// into the draw list (freezeStatic), so a frame always traces what its replay
+// drew; expandStatic does the same for consumers other than the tracer.
 namespace remix {
   using namespace scene;
   using namespace scene::detail;
@@ -64,9 +71,21 @@ namespace remix {
     }
   } // namespace
 
+  bool scene::staticTraceEligible(const std::vector<Draw> &records) {
+    if (records.empty())
+      return false;
+    for (const auto &draw : records)
+      if (draw.classification != REMIXAPI_INSTANCE_STATIC_EXT || !draw.traced() || draw.material->fps ||
+          draw.bones || draw.mesh->updateStream)
+        return false;
+    return true;
+  }
+
   // Rebuilds the records. report: throw what DrawInstance would (create and
   // update); otherwise the caller catches and the entry draws nothing.
   void NativeResources::resolveRetained(RetainedInstance &e, bool report) {
+    ++e.revision;
+    e.staticEligible = e.staticEmissive = false;
     e.records.clear();
     e.resolved.clear();
     e.mesh.reset();
@@ -112,6 +131,13 @@ namespace remix {
     e.mesh = mesh->second;
     e.surfaceCount = uint32_t(surfaces);
     e.watch = !complete;
+    e.staticEligible = !e.callerIdentity && staticTraceEligible(e.records);
+    e.staticEmissive = std::any_of(e.records.begin(), e.records.end(), [](const Draw &draw) {
+      const auto &emission = draw.material->emission;
+      return draw.traced() && (emission[0] > 0 || emission[1] > 0 || emission[2] > 0);
+    });
+    // Resolved to live objects only: not stale.
+    e.freshRetire = m_retireGeneration;
   }
 
   bool NativeResources::retainedStale(const RetainedInstance &e) const {
@@ -131,6 +157,7 @@ namespace remix {
   }
 
   void NativeResources::placeRetained(RetainedInstance &e) {
+    ++e.revision;
     const uint32_t count = e.instanceCount();
     const bool resolved = e.records.size() == size_t(count) * e.surfaceCount;
     e.placed = true;
@@ -144,9 +171,15 @@ namespace remix {
   }
 
   void NativeResources::classifyRetained(RetainedInstance &e, uint32_t classification) {
+    ++e.revision;
     e.description.classification = classification;
     for (auto &record : e.records)
       record.classification = classification;
+    e.staticEligible = !e.callerIdentity && staticTraceEligible(e.records);
+    e.staticEmissive = std::any_of(e.records.begin(), e.records.end(), [](const Draw &draw) {
+      const auto &emission = draw.material->emission;
+      return draw.traced() && (emission[0] > 0 || emission[1] > 0 || emission[2] > 0);
+    });
   }
 
   // A moved static object leaves the static TLAS and SHARC's static geometry
@@ -189,6 +222,11 @@ namespace remix {
       next.visible = current->visible;
       next.moving = current->moving;
       next.lastMove = current->lastMove;
+      // It stays in the static set until the next replay says otherwise.
+      next.revision = current->revision;
+      next.member = current->member;
+      next.memberRevision = current->memberRevision;
+      next.logged = current->logged;
     }
     identify(next);
     // New placements for the same instances are motion; a changed instance
@@ -202,6 +240,7 @@ namespace remix {
     }
     resolveRetained(next, true);
     if (current) {
+      freezeStatic();
       m_retainedWatch -= current->watch;
       *current = std::move(next);
       m_retainedWatch += current->watch;
@@ -228,6 +267,7 @@ namespace remix {
         for (const auto &row : updates[i].transform.matrix)
           finite(row, 4);
     }
+    freezeStatic();
     for (uint32_t i = 0; i < count; ++i) {
       const auto &update = updates[i];
       const auto found = m_retainedIndex.find(update.handle);
@@ -252,6 +292,7 @@ namespace remix {
       return;
     if (!handles)
       throw invalid;
+    freezeStatic();
     for (uint32_t i = 0; i < count; ++i) {
       const auto found = m_retainedIndex.find(handles[i]);
       if (found == m_retainedIndex.end())
@@ -259,6 +300,8 @@ namespace remix {
       const uint32_t index = found->second;
       m_retainedIndex.erase(found);
       m_retainedWatch -= m_retained[index].watch;
+      if (m_retained[index].member && !m_retained[index].logged)
+        m_staticChanges.push_back(handles[i]); // Leaves the static set.
       if (index + 1 != m_retained.size()) {
         m_retained[index] = std::move(m_retained.back());
         m_retainedIndex[m_retained[index].handle] = index;
@@ -274,6 +317,11 @@ namespace remix {
       std::copy_n(sceneOrigin, 3, origin);
     }
     const bool rebase = origin[0] != 0 || origin[1] != 0 || origin[2] != 0;
+    // A second replay in one frame: the first one's static set joins the draw
+    // list, and this one proceeds as usual.
+    freezeStatic();
+    // Rebased replays move every record: they bypass the static set.
+    const bool persistent = m_staticEnabled && !rebase;
     ++m_retainedSerial;
     RetainedStatistics stats;
     stats.registered = m_retained.size();
@@ -281,8 +329,27 @@ namespace remix {
     const bool resourcesChanged = m_resourceGeneration != m_retainedResourceGeneration && m_retainedWatch;
     m_retainedModGeneration = m_modGeneration;
     m_retainedResourceGeneration = m_resourceGeneration;
-    for (auto &e : m_retained) {
-      if (modsChanged || (resourcesChanged && e.watch) || (e.visible && retainedStale(e))) {
+    const size_t changes = m_staticChanges.size();
+    for (size_t index = 0; index < m_retained.size(); ++index) {
+      auto &e = m_retained[index];
+      // What the entry resolved to can only have been retired if something was
+      // since it was last found current.
+      bool stale = false;
+      if (e.visible && e.freshRetire != m_retireGeneration) {
+        stale = retainedStale(e);
+        if (!stale)
+          e.freshRetire = m_retireGeneration;
+      }
+      struct Leave {
+        NativeResources &resources;
+        RetainedInstance &entry;
+        bool enabled;
+        ~Leave() {
+          if (enabled)
+            resources.leaveStatic(entry);
+        }
+      } leave{*this, e, m_staticEnabled};
+      if (modsChanged || (resourcesChanged && e.watch) || stale) {
         const bool watch = e.watch;
         try {
           resolveRetained(e, false);
@@ -304,12 +371,24 @@ namespace remix {
       stats.moving += e.moving;
       if (!e.visible || !e.placed || e.records.empty())
         continue;
-      if (m_draws.size() + e.records.size() > 65536) {
+      if (pendingDrawCount() + e.records.size() > 65536) {
         ++stats.overCapacity; // DrawInstance's per-frame limit.
         continue;
       }
       if (e.description.traceIdentity && !m_frameIds.insert(e.description.instanceId))
         continue; // Caller identity already drawn this frame.
+      if (persistent && e.staticEligible) {
+        leave.enabled = false;
+        m_staticPlacement.emplace_back(m_draws.size(), uint32_t(index));
+        joinStatic(e);
+        m_staticDraws += e.records.size();
+        m_staticEmissive += e.staticEmissive;
+        ++stats.appended;
+        stats.draws += e.records.size();
+        ++stats.staticMembers;
+        stats.staticDraws += e.records.size();
+        continue;
+      }
       const size_t first = m_draws.size();
       m_draws.insert(m_draws.end(), e.records.begin(), e.records.end());
       if (rebase)
@@ -319,6 +398,69 @@ namespace remix {
       ++stats.appended;
       stats.draws += e.records.size();
     }
+    m_staticDrawn = persistent;
+    stats.staticChanges = m_staticChanges.size() - changes;
     m_retainedStats = stats;
+  }
+
+  void NativeResources::logStatic(RetainedInstance &e) {
+    if (!e.logged) {
+      e.logged = true;
+      m_staticChanges.push_back(e.handle);
+    }
+  }
+
+  void NativeResources::joinStatic(RetainedInstance &e) {
+    if (!e.member || e.memberRevision != e.revision)
+      logStatic(e);
+    e.member = true;
+    e.memberRevision = e.revision;
+  }
+
+  void NativeResources::leaveStatic(RetainedInstance &e) {
+    if (e.member) {
+      logStatic(e);
+      e.member = false;
+    }
+  }
+
+  void NativeResources::setPersistentStatic(bool enabled) {
+    if (enabled == m_staticEnabled)
+      return;
+    freezeStatic();
+    m_staticEnabled = enabled;
+    ++m_staticEpoch;
+    m_staticChanges.clear();
+    for (auto &e : m_retained)
+      e.member = e.logged = false;
+  }
+
+  void NativeResources::takeStaticChanges(std::vector<uint64_t> &out) {
+    out.clear();
+    std::swap(out, m_staticChanges);
+    for (const uint64_t handle : out)
+      if (const auto found = m_retainedIndex.find(handle); found != m_retainedIndex.end())
+        m_retained[found->second].logged = false;
+  }
+
+  void NativeResources::expandStatic() {
+    if (!m_staticDrawn)
+      return;
+    std::vector<Draw> merged;
+    merged.reserve(m_draws.size() + m_staticDraws);
+    size_t next = 0;
+    for (const auto [position, index] : m_staticPlacement) {
+      merged.insert(merged.end(), std::make_move_iterator(m_draws.begin() + next),
+                    std::make_move_iterator(m_draws.begin() + position));
+      next = position;
+      const auto &records = m_retained[index].records;
+      merged.insert(merged.end(), records.begin(), records.end());
+    }
+    merged.insert(merged.end(), std::make_move_iterator(m_draws.begin() + next),
+                  std::make_move_iterator(m_draws.end()));
+    m_draws = std::move(merged);
+    m_staticDrawn = false;
+    m_staticDraws = m_staticEmissive = 0;
+    m_staticPlacement.clear();
   }
 } // namespace remix

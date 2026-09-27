@@ -44,6 +44,10 @@ namespace remix {
     }
     for (auto &depth : m_reverseDepth)
       depth = {0, 0, -1, 1};
+    m_authoredViews = m_views;
+    m_authoredCameras = m_cameras;
+    m_authoredReverseDepth = m_reverseDepth;
+    m_freeCamActive = false;
     std::fill(std::begin(m_tint), std::end(m_tint), 0.0f);
   }
 

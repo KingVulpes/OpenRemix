@@ -57,6 +57,8 @@ namespace remix {
     bool hardwareFaceCulling = false;
     // One TLAS over the static and dynamic instances: one traversal per ray.
     bool combinedTlas = false;
+    // Boolean shadow and local-light rays stop at their first blocker.
+    bool shadowEarlyOut = false;
     bool operator==(const TraceOptions &) const = default;
   };
 } // namespace remix

@@ -172,6 +172,13 @@ namespace remix {
                           "added or removed instances rebuild it over all instances (\"TLAS builds\" in the\n"
                           "GPU pass timings). Same image. Applies at the next frame.\n"
                           "rtx.native.pathtrace.combinedTlas");
+      ui::Checkbox("Shadow ray early-out", &options.shadowEarlyOut);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Shadow, sky and local-light visibility rays stop at the first blocker instead of\n"
+                          "searching for the nearest hit; translucent sheets on the way are still multiplied\n"
+                          "in, as before. SIGMA's sun shadow ray keeps its nearest-blocker search. Same image.\n"
+                          "Applies at the next frame (the specialized shaders compile in the background).\n"
+                          "rtx.native.pathtrace.shadowEarlyOut");
     }
   }
 } // namespace remix

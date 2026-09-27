@@ -150,6 +150,7 @@ namespace remix {
     uint64_t reuseSignature = tables.reuseSignature();
     const bool hasCacheReceivers = flags.receivers, hasBlendedGeometry = flags.blended;
     decalMaterialsActive = flags.decal;
+    shadowEarlyOutActive = options.shadowEarlyOut;
     // Texture descriptors in first-use order: the static prefix's (resolved
     // again only when the prefix changes) and the frame's other materials.
     {
@@ -446,6 +447,7 @@ namespace remix {
     append(&integrator, sizeof(integrator));
     append(&options.validation, sizeof(options.validation));
     append(&options.localGuiding, sizeof(options.localGuiding));
+    append(&options.shadowEarlyOut, sizeof(options.shadowEarlyOut));
     append(&options.emissiveSolidAngleSampling, sizeof(options.emissiveSolidAngleSampling));
     append(&emissionMode, sizeof(emissionMode));
     append(&options.fsrSharpness, sizeof(options.fsrSharpness));

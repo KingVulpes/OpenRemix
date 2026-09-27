@@ -41,6 +41,9 @@ layout(set=0,binding=14,rgba16f) readonly uniform image2D primaryPbr;
 layout(set=0,binding=15,rgba16f) uniform image2D meterMaterial;
 
 layout(constant_id=11) const bool enableDecals=true;
+// rtx.native.pathtrace.shadowEarlyOut: boolean visibility layers stop at the
+// first blocker (visibility.glsl). Off in pipelines not specialized for it.
+layout(constant_id=12) const bool shadowEarlyOut=false;
 layout(constant_id=0) const bool enableLocalLights=true;
 layout(constant_id=1) const bool enableLocalGuiding=true;
 layout(constant_id=2) const bool enableSmallLights=false;
@@ -239,7 +242,7 @@ vec3 diffuseDirection(vec3 n) {
 vec3 shadow(vec3 origin,vec3 direction) {
   vec3 transmission=vec3(1);
   for (uint layer=0;layer<32;++layer) {
-    VisibilityHit hit=visibilityHit(origin,direction,true);
+    VisibilityHit hit=shadowEarlyOut?earlyVisibilityHit(origin,direction,1e30,8u):visibilityHit(origin,direction,true);
     if (hit.blocked) return vec3(0);
     if (hit.t==1e30) return transmission;
     transmission*=hit.transmission;
@@ -273,6 +276,12 @@ vec3 sunVisibility(Hit receiver,ivec2 pixel,out float blockerDistance) {
   if(dot(receiver.n,direction)<=0)return vec3(0);
   vec3 transmission=vec3(1),origin=offsetRay(receiver.p,receiver.ng);
   float distance=0;blockerDistance=65504;
+#ifndef SIGMA_PASS
+  // Only SIGMA reads the blocker distance. Without it this is the same
+  // layered transmission as shadow(): zero at any blocker, otherwise the
+  // product of at most 31 sheets. Early-out layers keep that result.
+  if(shadowEarlyOut)return shadow(origin,direction);
+#endif
   for(uint layer=0;layer<32;++layer) {
     VisibilityHit hit=visibilityHit(origin,direction,false);
     if(hit.t==1e30)return transmission;

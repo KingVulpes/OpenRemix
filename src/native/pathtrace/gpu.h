@@ -221,6 +221,7 @@ namespace remix {
     void finishPbrReuse(VkCommandBuffer command);
     bool localFirstHitActive = false;
     bool decalMaterialsActive = false;
+    bool shadowEarlyOutActive = false; // rtx.native.pathtrace.shadowEarlyOut
     bool localIlluminationActive = false;
     bool localResamplingActive = false;
     bool localAngularActive = false;

@@ -46,6 +46,16 @@ layout(set=1,binding=37,rgba16f) uniform image2D rrDiffuse;
 layout(set=1,binding=38,rgba16f) uniform image2D rrSpecular;
 layout(set=1,binding=39,rgba16f) uniform image2D rrNormal;
 layout(set=1,binding=40,r32f) uniform image2D rrHitDistance;
+layout(set=1,binding=41,rgb10_a2) uniform image2D frontNormal;
+layout(set=1,binding=42,r32f) uniform image2D frontDepth;
+layout(set=1,binding=43,rgba32f) uniform image2D frontMotion;
+layout(set=1,binding=44,rgba16f) uniform image2D frontAlbedo;
+layout(set=1,binding=45,rgba16f) uniform image2D frontSpecularFactor;
+layout(set=1,binding=46,rgba16f) uniform image2D frontDiffuse;
+layout(set=1,binding=47,rgba16f) uniform image2D frontSpecular;
+layout(set=1,binding=48,rgba16f) uniform image2D frontDiffuseOutput;
+layout(set=1,binding=49,rgba16f) uniform image2D frontSpecularOutput;
+layout(set=1,binding=50,r32f) uniform image2D frontConfidence;
 layout(set=1,binding=25,std140) uniform TemporalFrame {
   mat4 view;
   mat4 previousView;
@@ -60,6 +70,7 @@ layout(set=1,binding=25,std140) uniform TemporalFrame {
   vec4 sun;
   uvec4 shadow;
   uvec4 local;
+  uvec4 translucency;
   uvec4 families;
 } temporal;
 vec3 safeRadiance(vec3 v) { return any(isnan(v))||any(isinf(v))?vec3(0):clamp(v,vec3(0),vec3(65000)); }

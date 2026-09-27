@@ -80,7 +80,18 @@ int main(int argc, char **argv) {
   if (const char *primary = std::getenv("REMIX_TEST_PRIMARY_VISIBILITY"))
     ok(api.SetConfigVariable("rtx.native.pathtrace.primaryVisibility", primary));
   if (argc > 2 && std::string(argv[2]) == "init-failure") {
-    ok(api.Present(nullptr));
+    // The injected pipeline failure arrives from asynchronous preparation.
+    // Keep presenting the fallback until that request completes.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    do {
+      ok(api.PumpEvents());
+      ok(api.Present(nullptr));
+      if (!remix::api::g_runtime.preparationStatus().pending)
+        break;
+      require(std::chrono::steady_clock::now() < deadline,
+              "Injected tracing failure did not finish preparing");
+      SDL_Delay(1);
+    } while (true);
     ok(remixapi_GetBackendCapabilitiesEXT(&caps));
     require(!caps.activeBackend && caps.requestedBackend == 1 && caps.unavailableReason[0],
             "Tracing initialization failure must retain the preference while raster is active");

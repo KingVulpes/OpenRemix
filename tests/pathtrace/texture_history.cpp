@@ -59,11 +59,6 @@ int main(int argc, char **argv) {
   config("sky", "0");
   config("localLights", "0");
   const char *ngxMode = std::getenv("REMIX_TEST_NGX");
-  if (ngxMode) {
-    remixapi_ReconstructionDiagnosticsEXT d{}; d.structSize = sizeof(d);
-    ok(remixapi_GetReconstructionDiagnosticsEXT(&d));
-    if (!(d.capabilities & (std::string(ngxMode) == "rr" ? 4 : 2))) { ok(api.Shutdown()); return 77; }
-  }
   config("upscaler", ngxMode ? "dlss" : "fsr31");
   if (ngxMode) config("dlssRayReconstruction", std::string(ngxMode) == "rr" ? "1" : "0");
   std::array<uint8_t, 128 * 128 * 4> texels{};
@@ -174,6 +169,13 @@ int main(int argc, char **argv) {
     ok(api.DrawInstance(&instance));
     ok(api.Present(nullptr));
   });
+  if (ngxMode) {
+    // NGX capabilities become available after the requested renderer prepares.
+    frame();
+    remixapi_ReconstructionDiagnosticsEXT d{}; d.structSize = sizeof(d);
+    ok(remixapi_GetReconstructionDiagnosticsEXT(&d));
+    if (!(d.capabilities & (std::string(ngxMode) == "rr" ? 4 : 2))) { ok(api.Shutdown()); return 77; }
+  }
   double lastMean = 0;
   auto capture = [&](const std::string &name) {
     auto path = (directory / (name + ".png")).string();

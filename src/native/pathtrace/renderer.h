@@ -35,6 +35,7 @@ namespace remix {
     remixapi_LocalLightStatisticsEXT localLightStatistics() const;
     remixapi_LocalLightGuidingStatisticsEXT localLightGuidingStatistics() const;
     remixapi_DenoisingStatisticsEXT denoisingStatistics() const;
+    bool translucencyDenoiserActive() const;
     remixapi_SharcStatisticsEXT sharcStatistics() const;
     void destroyTarget();
     scene::TraceFrame prepareScene(const RasterRenderer &resources, const TraceOptions &options) const;

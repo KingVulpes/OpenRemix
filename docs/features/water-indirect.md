@@ -27,11 +27,55 @@ sheet for penumbra reconstruction. Ordinary secondary sun shadows can terminate
 at any accepted opaque blocker. Zero sun radiance skips shadow queries even when
 local lights are disabled.
 
-## Water reconstruction
+## Translucent surface lighting
+
+Single visible alpha-blended surfaces use a separate shading dispatch.
+Overlapping layers use bounded front-to-back shading, retaining only the current
+sheet across continuation rays instead of an eight-sheet array. These paths
+preserve the existing alpha/tinted transmission model; they do not introduce
+dielectric refraction or change water opacity.
+
+`rtx.native.pathtrace.translucencyDenoiser` defaults to `true`. A short visibility
+pass captures the foreground normal/roughness, depth, motion, material factors,
+and history validity before opaque shading reuses the raster scratch images.
+Foreground diffuse/specular lighting has its own REBLUR instance and histories.
+Filtering precedes alpha/tint composition; emission remains unfiltered. Pixels
+with multiple visible sheets invalidate this foreground history and use the
+existing layered composition. Removing a surface or resetting the world cannot
+leave its lighting in the output. Disabling this setting preserves opaque history.
+Direct-light and continuation distances accompany the lighting estimates. A small
+foreground prefilter reduces temporal clipping of bright light-selection samples.
+
+This filter runs with NRD and before DLSS Ray Reconstruction when NRD is available.
+For RR, the combined input contains filtered foreground light and the original
+transmitted content. A single sheet with opacity at least 0.5 supplies the depth,
+motion, normal/roughness, and specular distance guides; lighter sheets retain
+background geometry guides. This dominant-layer policy is an approximation for
+mixed pixels, not a separate RR reconstruction of every layer. Raster feedback
+depth remains independent. Raw/progressive rendering bypasses this filter.
+
+`rtx.native.pathtrace.translucencyReuse` defaults to `false`. Its performance
+benefit depends on the scene and reconstruction mode, so it is opt-in. With
+ordinary NRD, opaque filtering completes before translucent continuation tracing. At an opaque
+endpoint, the single-sheet tracer can reuse this frame's filtered radiance after
+checking screen bounds, depth, normal, roughness, material family, and material
+factors. Rough PBR dielectrics additionally require closely matching view
+directions. Glossy/metallic surfaces, missing matches, off-screen hits, RR, raw
+references, and indirect clamping retain normal tracing and SHARC fallback.
+Reuse is a filtered path-tail approximation, like radiance caching; it is not an
+unbiased fixed-bounce estimator. It adds no scene rays.
+
+Both settings are exposed in F12 and save requested values in profiles. Profiles
+omitting them enable surface denoising and leave opaque reuse disabled. Pipelines
+use the device-owned cache; foreground descriptors/constants follow completed frame slots, while images and
+history remain ordered on the graphics queue. Foreground filtering time and
+memory are included in the existing denoising statistics.
+
+## Water indirect sample sharing
 
 `rtx.native.pathtrace.waterIndirectReuse` and the default-enabled F12 **Reuse water
 indirect samples** checkbox enable a small spatial approximation for diffuse irradiance.
-It activates only with working TAA, one indirect sample, nonzero bounces, and
+It activates only for non-PBR sheets with TAA or an SR upscaler, one indirect sample, nonzero bounces, and
 without progressive accumulation. Raw, NRD-only and multi-sample reference modes
 retain independent sampling at every surface pixel.
 
@@ -45,7 +89,8 @@ patches with large projected footprints.
 Two pixels on alternating diagonals trace diffuse continuations and retain their
 own irradiance; the two missing pixels reconstruct it from their mean. This halves
 the indirect ray count inside a compatible patch. Each receiver applies its own
-albedo, opacity and tint.
+albedo, opacity and tint. Shared samples carry their continuation distance into
+the foreground denoiser; a valid dark estimate is distinct from a missing sample.
 Direct sun/torch lighting, opaque background lighting and coverage remain at full
 resolution. The existing TAA resolves the final composition; its motion, clipping
 and history rules are unchanged. Irradiance variation within a compatible patch
@@ -53,10 +98,10 @@ is smoothed, so this mode is not an unbiased per-pixel reference estimator. Spar
 sampling can increase temporal noise near indirect occlusion boundaries; disable
 the checkbox for independent sampling at every pixel.
 
-Two workgroup barriers publish geometry and irradiance in the existing
-transparency dispatch. Partial workgroups participate before returning; no new
-image, frame pass, persistent history, public ABI field or device feature is
-required. The G-buffer's private normal tag distinguishes blended
+Two workgroup barriers publish geometry and irradiance in the single-sheet
+transparency dispatch. Partial workgroups participate before returning; this
+sample-sharing feature needs no additional image, frame pass, persistent history,
+public ABI field or device feature. The G-buffer's private normal tag distinguishes blended
 sheets, and a reserved private frame word carries the setting. Setting changes
 invalidate cached output without a global temporal-history reset.
 
@@ -68,6 +113,6 @@ a sparse diffuse signal instead of intermittently dropping it. NRD-Sample's
 `TraceOpaque.cs.hlsl` provides a reference for alternating sample locations and
 signal reconstruction. Its `TraceTransparent.cs.hlsl` keeps transparent transport
 separate and reuses lighting with explicit validity checks. The present renderer
-retains its existing Lambertian thin-sheet model, without introducing the sample's
+retains its existing alpha-composited Lambert/PBR surface model, without introducing the sample's
 specular/refraction or screen-history lighting model. Ray offsets retain the
 *Ray Tracing Gems I*, chapter 6, construction.

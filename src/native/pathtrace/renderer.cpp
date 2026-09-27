@@ -64,7 +64,7 @@ namespace remix {
     if (!timestamps && timestampBits && properties.limits.timestampComputeAndGraphics) {
       const VkQueryPoolCreateInfo query{.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
                                         .queryType = VK_QUERY_TYPE_TIMESTAMP,
-                                        .queryCount = 10};
+                                        .queryCount = 12};
       check(vkCreateQueryPool(device, &query, nullptr, &timestamps));
     }
     if (sharc.hash && !sharc.readback) {
@@ -122,6 +122,9 @@ namespace remix {
       vkDestroyQueryPool(device, timestamps, nullptr);
     if (compaction)
       vkDestroyQueryPool(device, compaction, nullptr);
+    forgetLightingPipeline(singleTransparencyCompute);
+    if (singleTransparencyCompute)
+      pipeline::destroyPipeline(device, singleTransparencyCompute, nullptr);
     forgetLightingPipeline(transparencyCompute);
     forgetLightingPipeline(compute);
     if (transparencyCompute)
@@ -316,13 +319,13 @@ namespace remix {
       VkQueryPoolCreateInfo query = {
           .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
           .queryType = VK_QUERY_TYPE_TIMESTAMP,
-          .queryCount = 10};
+          .queryCount = 12};
       check(vkCreateQueryPool(device, &query, nullptr, &g.timestamps));
     }
   }
 
   void PathTracer::Gpu::createRawPipelines() {
-    if (compute && transparencyCompute)
+    if (compute && transparencyCompute && singleTransparencyCompute)
       return;
     auto &g = *this;
     // Compile ordinary local lighting first; guidance is a lazy variant.
@@ -353,6 +356,8 @@ namespace remix {
     check(transparencyResult);
     g.lightingPipelines[g.transparencyCompute] = {trace::transparencyShader, sizeof(trace::transparencyShader), g.layout};
     g.lightingPipelines[g.transparencyCompute].supportsGuiding = false;
+    sharcPipeline(trace::singleTransparencyShader, sizeof(trace::singleTransparencyShader),
+                  g.layout, g.singleTransparencyCompute);
   }
 
   void PathTracer::configureTarget(VkRenderPass pass, VkExtent2D extent, bool encodeOutput,

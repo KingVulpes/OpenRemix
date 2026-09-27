@@ -5,6 +5,15 @@ upscale_depth_test = executable('remix-upscale-depth-test', 'upscale_depth.cpp',
 test('FSR wide-frustum depth precision', upscale_depth_test)
 if get_option('gpu_tests')
   subdir('upscale')
+  if system != 'windows'
+    process_exit_test = executable('remix-tracing-exit-test', 'process_exit.cpp',
+      include_directories : [test_includes, include_directories('../../samples')],
+      dependencies : [runtime_test_dep])
+    foreach mode : ['off', 'fsr31', 'sr', 'rr']
+      test('Active tracing process exit ' + mode, process_exit_test,
+        args : [mode], timeout : 600, is_parallel : false)
+    endforeach
+  endif
   alpha_coverage_test = executable('remix-alpha-coverage-test', 'alpha_coverage.cpp',
     include_directories : test_includes, dependencies : [filesystem_dep] + [runtime_test_dep])
   foreach reconstruction : ['off', 'fsr31', 'dlss']
@@ -357,4 +366,17 @@ if get_option('gpu_tests')
     include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep] + [runtime_test_dep])
   test('Authored USD light GPU fixtures', usd_lights_gpu,
     args : [meson.current_build_dir() / 'usd-lights'], timeout : 300, is_parallel : false)
+endif
+
+if get_option('gpu_tests') and get_option('nrd')
+  translucency_test = executable('remix-translucency-test', 'translucency.cpp',
+    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep] + [runtime_test_dep])
+  test('Checked translucent opaque reuse energy and rays', translucency_test,
+    args : [meson.current_build_dir() / 'translucency-reuse'],
+    env : ['REMIX_TEST_TRANSLUCENCY_REUSE=1'], timeout : 600, is_parallel : false)
+  foreach primary : ['raster', 'ray']
+    test('Translucent surface denoising and motion ' + primary, translucency_test,
+      args : [meson.current_build_dir() / ('translucency-' + primary)],
+      env : primary == 'ray' ? ['REMIX_TEST_RAY_PRIMARY=1'] : [], timeout : 600, is_parallel : false)
+  endforeach
 endif

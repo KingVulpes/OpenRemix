@@ -4,12 +4,13 @@
 // This spatial approximation is disabled for raw/progressive reference modes.
 shared vec4 waterPositions[64];
 shared vec4 waterNormals[64];
-shared vec3 waterIrradiance[64];
-vec4 waterIndirect(Hit primary,bool eligible,ivec2 pixel) {
+shared vec4 waterIrradiance[64];
+vec4 waterIndirect(Hit primary,bool eligible,ivec2 pixel,out float sharedDistance) {
+  sharedDistance=0;
   uint lane=gl_LocalInvocationIndex;
   waterPositions[lane]=vec4(primary.p,eligible&&!primary.pbr?1:0);
   waterNormals[lane]=vec4(primary.n,0);
-  waterIrradiance[lane]=vec3(0);
+  waterIrradiance[lane]=vec4(0);
   barrier();
   uint base=(gl_LocalInvocationID.y&~1u)*8+(gl_LocalInvocationID.x&~1u);
   vec3 p=waterPositions[base].xyz,n=waterNormals[base].xyz;
@@ -24,12 +25,15 @@ vec4 waterIndirect(Hit primary,bool eligible,ivec2 pixel) {
   uint source=base+phase,second=base+9-phase;
   if(compatible&&(lane==source||lane==second)) {
     vec3 direction;float distance;
-    waterIrradiance[lane]=continuation(primary,direction,distance);
+    vec3 radiance=continuation(primary,direction,distance);
+    waterIrradiance[lane]=vec4(radiance,distance);
   }
   barrier();
   if(!compatible)return vec4(0);
   // Retain the traced signal at its own pixel. Only the two missing sites use
   // the diagonal mean, preserving spatial variance for TAA's neighborhood clip.
-  return vec4(lane==source||lane==second?waterIrradiance[lane]:
-              (waterIrradiance[source]+waterIrradiance[second])*.5,1);
+  vec4 signal=lane==source||lane==second?waterIrradiance[lane]:
+              (waterIrradiance[source]+waterIrradiance[second])*.5;
+  sharedDistance=signal.w;
+  return vec4(signal.rgb,1);
 }

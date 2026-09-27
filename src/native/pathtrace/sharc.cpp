@@ -33,7 +33,7 @@ namespace remix {
   }
 
   void PathTracer::Gpu::destroySharc(bool temporalOnly) {
-    for (auto *pipeline : {&sharc.temporal, &sharc.temporalTransparency, &sharc.confidence}) {
+    for (auto *pipeline : {&sharc.temporal, &sharc.temporalTransparency, &sharc.singleTemporalTransparency, &sharc.confidence}) {
       forgetLightingPipeline(*pipeline);
       if (*pipeline)
         pipeline::destroyPipeline(device, *pipeline, nullptr);
@@ -48,7 +48,7 @@ namespace remix {
       frame.sharcTimestamps = VK_NULL_HANDLE;
       frame.sharcPending = false;
     }
-    for (auto *pipeline : {&sharc.update, &sharc.resolve, &sharc.query, &sharc.transparency}) {
+    for (auto *pipeline : {&sharc.update, &sharc.resolve, &sharc.query, &sharc.transparency, &sharc.singleTransparency}) {
       forgetLightingPipeline(*pipeline);
       if (*pipeline)
         pipeline::destroyPipeline(device, *pipeline, nullptr);
@@ -155,6 +155,8 @@ namespace remix {
         sharcPipeline(trace::sharcTransparencyShader,
                       sizeof(trace::sharcTransparencyShader), layout,
                       sharc.transparency);
+      sharcPipeline(trace::sharcSingleTransparencyShader, sizeof(trace::sharcSingleTransparencyShader), layout,
+                    sharc.singleTransparency);
       if (denoiser) {
         if (postSplit && postSigma)
           sharcPipeline(trace::sharcSplitLocalSigmaTemporalShader, sizeof(trace::sharcSplitLocalSigmaTemporalShader), temporalLayout, sharc.temporal);
@@ -170,6 +172,8 @@ namespace remix {
           sharcPipeline(trace::sharcTemporalShader, sizeof(trace::sharcTemporalShader), temporalLayout, sharc.temporal);
         sharcPipeline(trace::sharcTemporalTransparencyShader, sizeof(trace::sharcTemporalTransparencyShader), temporalLayout,
                       sharc.temporalTransparency);
+        sharcPipeline(trace::sharcSingleTemporalTransparencyShader, sizeof(trace::sharcSingleTemporalTransparencyShader), temporalLayout,
+                      sharc.singleTemporalTransparency);
         if (postReblur)
           sharcPipeline(trace::sharcConfidenceShader, sizeof(trace::sharcConfidenceShader), temporalLayout, sharc.confidence);
       }

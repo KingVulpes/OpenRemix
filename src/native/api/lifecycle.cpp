@@ -38,7 +38,7 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_Startup(const remixapi_Startu
   std::lock_guard lock(g_apiMutex);
   const remixapi_ErrorCode status = g_runtime.initialize(*info);
   if (status == REMIXAPI_ERROR_CODE_SUCCESS) {
-    g_frameExitRegistered = false;
+    g_frameExitStages = 0;
 #if REMIX_HAS_USD
     try {
       remix::usd::startMods(g_runtime.modsDisabled());
@@ -90,13 +90,23 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_Present(const remixapi_Presen
       remix::usd::modBoundary(g_runtime.raster());
 #endif
 #if !defined(_WIN32)
-    // Validation layers initialize some process-static state on the first frame.
-    if (g_runtime.hasStartedFrame() && !g_frameExitRegistered) {
+    // Validation and reconstruction SDKs initialize process-static resources on
+    // first use. Async preparation can activate them after the initial raster
+    // frame. Renew cleanup after each renderer's first use so our GPU wait and
+    // resource release precede the SDK's process-exit destructors. The mask
+    // bounds registrations per startup, independently of frame count/resizes.
+    uint32_t exitStages = g_runtime.hasStartedFrame() ? 1u : 0u;
+    if (g_runtime.backendCapabilities().activeBackend == 1)
+      exitStages |= 2u;
+    const auto reconstruction = g_runtime.reconstructionStatistics();
+    if (reconstruction.frames)
+      exitStages |= 4u << uint32_t(reconstruction.backend);
+    if (exitStages & ~g_frameExitStages) {
       if (std::atexit([] { remixapi_Shutdown(); }) != 0) {
         g_runtime.shutdown();
         return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
       }
-      g_frameExitRegistered = true;
+      g_frameExitStages |= exitStages;
     }
 #endif
     presentCallback = g_presentCallback;

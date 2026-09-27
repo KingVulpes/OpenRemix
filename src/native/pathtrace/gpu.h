@@ -180,6 +180,7 @@ namespace remix {
     VkDescriptorSet set = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
     VkPipeline transparencyCompute{}, temporalTransparencyCompute{};
+    VkPipeline singleTransparencyCompute{}, singleTemporalTransparencyCompute{}, frontGuidesCompute{};
     VkPipeline compute = VK_NULL_HANDLE, composite[2] = {};
     VkPipeline splitDirectCompute = VK_NULL_HANDLE;
     struct IndirectPass {
@@ -421,7 +422,7 @@ namespace remix {
     remixapi_TracingStatisticsEXT stats = {.structSize = sizeof(remixapi_TracingStatisticsEXT)};
     struct Sharc {
       std::unique_ptr<Buffer> hash, accumulation, resolved, counters, readback;
-      VkPipeline update{}, resolve{}, query{}, transparency{}, temporal{}, temporalTransparency{},
+      VkPipeline update{}, resolve{}, query{}, transparency{}, singleTransparency{}, temporal{}, temporalTransparency{}, singleTemporalTransparency{},
           confidence{};
       VkQueryPool timestamps{};
       bool clear = true, pending = false, attempted = false, hasReceivers = false;

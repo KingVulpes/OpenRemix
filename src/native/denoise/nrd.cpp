@@ -167,11 +167,11 @@ namespace remix::denoise {
     common.timeDeltaBetweenFrames = frame.timing[0];
     common.frameIndex = uint32_t(stats.renderedFrames);
     common.accumulationMode =
-        (frame.flags[0] || (pass.sigma && frame.shadow[0]) || !pass.wasActive)
+        (frame.flags[0] || ((pass.sigma || pass.foreground) && frame.shadow[0]) || !pass.wasActive)
             ? nrd::AccumulationMode::CLEAR_AND_RESTART : nrd::AccumulationMode::CONTINUE;
     common.enableValidation = frame.timing[1] != 0;
     common.isHistoryConfidenceAvailable = !pass.sigma && !pass.local;
-    common.enableValidation &= !pass.sigma && !pass.local;
+    common.enableValidation &= !pass.sigma && !pass.local && !pass.foreground;
     require(nrd::SetCommonSettings(*pass.instance, common));
     pass.wasActive = true;
     if (pass.sigma) {
@@ -214,8 +214,21 @@ namespace remix::denoise {
           settings.usePrepassOnlyForSpecularMotionEstimation = true;
         }
         settings.maxBlurRadius = 16.f;
-        if (frame.local[0] && frame.local[2])
+        if ((frame.local[0] || pass.foreground) && frame.local[2])
           settings.maxAccumulatedFrameNum = std::min(settings.maxAccumulatedFrameNum, 8u);
+      }
+      if (pass.foreground) {
+        // Direct light and the BRDF-mixture continuation produce both lobes at
+        // every pixel; zero radiance is an estimator result, not a skipped lobe.
+        settings.hitDistanceReconstructionMode = nrd::HitDistanceReconstructionMode::OFF;
+        // A small prepass averages valid light-selection estimates before
+        // temporal outlier rejection. The wider acceptance range preserves
+        // bright direct samples mixed into this surface's indirect signal.
+        settings.diffusePrepassBlurRadius = 2.f;
+        settings.specularPrepassBlurRadius = 4.f;
+        settings.usePrepassOnlyForSpecularMotionEstimation = false;
+        settings.fireflySuppressorMinRelativeScale = 3.f;
+        settings.fastHistoryClampingSigmaScale = 3.f;
       }
       if (pass.local) {
         const bool responsive = split ? frame.families[pass.emissive ? 3 : 2] != 0 : frame.local[2] != 0;
@@ -265,26 +278,26 @@ namespace remix::denoise {
       case R::OUT_SHADOW_TRANSLUCENCY:
         return *images[ShadowOutput];
       case R::IN_MV:
-        return *images[Motion];
+        return *images[pass.foreground ? FrontMotion : Motion];
       case R::IN_NORMAL_ROUGHNESS:
-        return *images[Normal];
+        return *images[pass.foreground ? FrontNormal : Normal];
       case R::IN_VIEWZ:
-        return *images[Depth];
+        return *images[pass.foreground ? FrontDepth : Depth];
       case R::IN_DIFF_RADIANCE_HITDIST:
-        return *images[pass.pbr ? Sh0 : pass.emissive ? EmissiveInput : LocalInput];
+        return *images[pass.foreground ? FrontDiffuse : pass.pbr ? Sh0 : pass.emissive ? EmissiveInput : LocalInput];
       case R::OUT_DIFF_RADIANCE_HITDIST:
-        return *images[pass.pbr ? PbrDiffuseOutput : pass.emissive ? EmissiveOutput : LocalOutput];
+        return *images[pass.foreground ? FrontDiffuseOutput : pass.pbr ? PbrDiffuseOutput : pass.emissive ? EmissiveOutput : LocalOutput];
       case R::IN_SPEC_RADIANCE_HITDIST:
-        return *images[PbrSpecularInput];
+        return *images[pass.foreground ? FrontSpecular : PbrSpecularInput];
       case R::OUT_SPEC_RADIANCE_HITDIST:
-        return *images[PbrSpecularOutput];
+        return *images[pass.foreground ? FrontSpecularOutput : PbrSpecularOutput];
       case R::IN_DIFF_SH0:
         return *images[Sh0];
       case R::IN_DIFF_SH1:
         return *images[Sh1];
       case R::IN_DIFF_CONFIDENCE:
       case R::IN_SPEC_CONFIDENCE:
-        return *images[Confidence];
+        return *images[pass.foreground ? FrontConfidence : Confidence];
       case R::OUT_DIFF_SH0:
         return *images[Out0];
       case R::OUT_DIFF_SH1:

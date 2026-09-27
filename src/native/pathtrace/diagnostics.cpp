@@ -20,6 +20,16 @@ namespace remix {
           linearCapture.packedPbr = true;
           linearCapture.hitDistance = !std::strcmp(signal, "hit-distance");
         }
+        if (denoiser->foregroundActive() && !std::strcmp(signal, "front-motion"))
+          source = denoiser->image(denoise::FrontMotion).image;
+        for (const auto &[name, slot] : std::initializer_list<std::pair<const char *, denoise::ImageSlot>>{
+                 {"front-diffuse", denoise::FrontDiffuse}, {"front-specular", denoise::FrontSpecular},
+                 {"front-diffuse-output", denoise::FrontDiffuseOutput},
+                 {"front-specular-output", denoise::FrontSpecularOutput}})
+          if (denoiser->foregroundActive() && !std::strcmp(signal, name)) {
+            source = denoiser->image(slot).image;
+            linearCapture.packedPbr = true;
+          }
       }
       const VkDeviceSize size =
           VkDeviceSize(extent.width) * extent.height * (linearCapture.packedPbr ? 8 : 16);

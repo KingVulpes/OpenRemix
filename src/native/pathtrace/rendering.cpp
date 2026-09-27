@@ -18,7 +18,7 @@ namespace remix {
     prism = options.prism && !falseColor;
     gamma22 = options.gamma22 && !falseColor;
     if (timestamps) {
-      vkCmdResetQueryPool(command, timestamps, 0, stageProfile ? 10 : 4);
+      vkCmdResetQueryPool(command, timestamps, 0, 12);
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestamps, 0);
     }
     complete(command);
@@ -420,6 +420,8 @@ namespace remix {
     frame.pathConfig[1] = options.rouletteMinBounces;
     append(&frame, sizeof(frame));
     append(&options.localFireflyFilter, sizeof(options.localFireflyFilter));
+    append(&options.translucencyDenoiser, sizeof(options.translucencyDenoiser));
+    append(&options.translucencyReuse, sizeof(options.translucencyReuse));
     append(&lightBvh.generation, sizeof(lightBvh.generation));
     append(&integrator, sizeof(integrator));
     append(&options.validation, sizeof(options.validation));
@@ -476,6 +478,11 @@ namespace remix {
     temporalFrame.shadow[3] =
         std::any_of(resources.draws().begin(), resources.draws().end(),
                     [](const auto &draw) { return draw.traced() && !draw.material->pbr; });
+    temporalFrame.translucency[0] = denoiser && (postReblur || (rrActive() && postCapabilities.reblurShSupported)) && options.translucencyDenoiser &&
+        std::any_of(surfaces.begin(), surfaces.end(), [](const auto &surface) { return (surface.state[3] & 2u) != 0; });
+    temporalFrame.translucency[1] = denoiser && postReblur && !rrActive() && options.translucencyReuse &&
+        options.bounces > 0 && options.indirectClamp == 0 && !debugView &&
+        std::any_of(surfaces.begin(), surfaces.end(), [](const auto &surface) { return (surface.state[3] & 2u) != 0; });
     temporalFrame.local[0] = denoiser && postLocalDenoise;
     temporalFrame.local[1] = frame.localConfig[0];
     temporalFrame.local[2] = localResponsiveFrames;
@@ -685,7 +692,7 @@ namespace remix {
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, timestamps, 2);
     beginLightGuiding(command);
     auto stageTime = [&](uint32_t query) {
-      if (timestamps && stageProfile)
+      if (timestamps)
         vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, timestamps, query);
     };
     recordPrimary(command, options.rasterPrimary);
@@ -724,6 +731,12 @@ namespace remix {
       vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, temporalLayout, 1, 1, &inputs, 0,
                               nullptr);
     }
+    if (denoiser && temporalFrame.translucency[0]) {
+      vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, frontGuidesCompute);
+      vkCmdDispatch(command, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
+      barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+    }
     if (indirectPass.active) {
       // Scratch is queue-ordered across frame slots. Publish last frame's reads
       // before overwriting, then publish this producer to the opaque consumer.
@@ -751,16 +764,7 @@ namespace remix {
               VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
     }
     stageTime(7);
-    const auto transparencyPipeline =
-        selectLightingPipeline(querySharc ? (denoiser ? sharc.temporalTransparency : sharc.transparency)
-                                          : (denoiser ? temporalTransparencyCompute : transparencyCompute));
-    const auto transparencyKey = selectedLightingKey;
-    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, transparencyPipeline);
-    vkCmdDispatch(command, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
-    if (timestamps) {
-      vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, timestamps, 3);
-      timingPending = true;
-    }
+    stageTime(10);
     if (denoiser) {
       denoiser->beginConfidence(command);
       if (postReblur) {
@@ -771,10 +775,37 @@ namespace remix {
         vkCmdDispatch(command, ((extent.width + 4) / 5 + 7) / 8, ((extent.height + 4) / 5 + 7) / 8, 1);
       }
       stageTime(8);
-      denoiser->record(command);
+      denoiser->recordOpaque(command);
+      // NRD binds its own sets and layout. Restore both tracer sets before
+      // reading the opaque result or writing foreground signals.
+      vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, temporalLayout, 0, 1, &set, 0, nullptr);
+      auto inputs = denoiser->inputs();
+      vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, temporalLayout, 1, 1, &inputs, 0, nullptr);
     } else {
       stageTime(8);
     }
+    stageTime(11);
+    const auto singleTransparencyPipeline =
+        selectLightingPipeline(querySharc ? (denoiser ? sharc.singleTemporalTransparency : sharc.singleTransparency)
+                                          : (denoiser ? singleTemporalTransparencyCompute : singleTransparencyCompute));
+    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, singleTransparencyPipeline);
+    vkCmdDispatch(command, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
+    // Single-sheet composition replaces its scratch count with stable depth (0..1).
+    // The batch shader only visits counts > 1, so these pixels remain untouched.
+    barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+    const auto transparencyPipeline =
+        selectLightingPipeline(querySharc ? (denoiser ? sharc.temporalTransparency : sharc.transparency)
+                                          : (denoiser ? temporalTransparencyCompute : transparencyCompute));
+    const auto transparencyKey = selectedLightingKey;
+    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, transparencyPipeline);
+    vkCmdDispatch(command, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
+    if (timestamps) {
+      vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, timestamps, 3);
+      timingPending = true;
+    }
+    if (denoiser)
+      denoiser->record(command);
     stageTime(9);
     if (stateProfile) {
       const uint64_t values[] = {frame.config[2],

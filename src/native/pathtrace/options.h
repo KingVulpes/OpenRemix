@@ -39,6 +39,7 @@ namespace remix {
     float sunAngularDiameter = -1; // -1 inherits the distant light's diameter.
     bool rasterPrimary = true;
     bool waterIndirectReuse = true;
+    bool translucencyDenoiser = true, translucencyReuse = false;
     bool pbrLocalReuse = false; // Experimental previous-frame secondary local lighting.
     bool sky = true;
     bool sharc = true, sharcDebug = false;

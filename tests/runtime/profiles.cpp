@@ -76,6 +76,8 @@ int main(int argc, char **argv) {
   t.sunAngularDiameter = 1.2f;
   t.rasterPrimary = false;
   t.waterIndirectReuse = false;
+  t.translucencyDenoiser = false;
+  t.translucencyReuse = true;
   t.pbrLocalReuse = true;
   t.sky = false;
   t.sharc = false;
@@ -109,6 +111,8 @@ int main(int argc, char **argv) {
   config::Settings partial;
   partial.trace.samples = 5;
   require(parsed == partial, "Omitted keys leaked previous values");
+  require(parsed.trace.translucencyDenoiser && !parsed.trace.translucencyReuse,
+          "Translucent denoising must default on and opaque reuse must be opt-in");
   require(unknown.at("future.setting") == "alpha = beta" && warnings.size() == 1,
           "Unknown key was not retained/warned");
   require(config::serialize(parsed, unknown).find("future.setting = alpha = beta") != std::string::npos,

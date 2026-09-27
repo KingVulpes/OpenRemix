@@ -25,7 +25,7 @@
 namespace remix::api {
   remix::RemixNativeRuntime g_runtime;
   std::mutex g_apiMutex;
-  bool g_frameExitRegistered = false;
+  uint32_t g_frameExitStages = 0;
   PFN_remixapi_BridgeCallback g_beginSceneCallback = nullptr;
   PFN_remixapi_BridgeCallback g_endSceneCallback = nullptr;
   PFN_remixapi_BridgeCallback g_presentCallback = nullptr;

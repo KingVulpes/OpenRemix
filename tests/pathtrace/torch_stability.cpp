@@ -69,6 +69,10 @@ int main(int argc, char **argv) {
   config("sharc", std::getenv("REMIX_TEST_SHARC") ? "1" : "0");
   config("sky", "0");
   config("sigma", "0");
+  if (const char *filter = std::getenv("REMIX_TEST_TRANSLUCENCY_DENOISER"))
+    config("translucencyDenoiser", filter);
+  if (const char *reuse = std::getenv("REMIX_TEST_TRANSLUCENCY_REUSE"))
+    config("translucencyReuse", reuse);
   const bool noiseComparison = std::getenv("REMIX_TEST_LOCAL_NOISE");
   const char *localNoise = std::getenv("REMIX_TEST_LOCAL_NOISE");
   config("blueNoiseLocalLights", localNoise ? localNoise : "1");
@@ -447,6 +451,9 @@ int main(int argc, char **argv) {
             require(normalizedError < baselineError * .85,
                     "Mixed-light RIS did not reduce raw one-ray error");
         }
+        std::printf("Torch energy primary=%s signal=%d mode=%d observed=%.9f reference=%.9f\n",
+                    primary, signal, run, observed / captureCount, expected / captureCount);
+        std::fflush(stdout);
         require(std::abs(observed - expected) < std::max(.004, expected * .12),
                 "Torch filtering changed average scene energy");
         if (std::getenv("REMIX_TEST_EMISSIVE_CLUSTERS") && run == 3 && signal == 1) {

@@ -96,6 +96,14 @@ namespace remix {
     }
     destroyIndirect();
     destroySharc(true);
+    forgetLightingPipeline(frontGuidesCompute);
+    if (frontGuidesCompute)
+      pipeline::destroyPipeline(device, frontGuidesCompute, nullptr);
+    frontGuidesCompute = VK_NULL_HANDLE;
+    forgetLightingPipeline(singleTemporalTransparencyCompute);
+    if (singleTemporalTransparencyCompute)
+      pipeline::destroyPipeline(device, singleTemporalTransparencyCompute, nullptr);
+    singleTemporalTransparencyCompute = VK_NULL_HANDLE;
     forgetLightingPipeline(temporalTransparencyCompute);
     forgetLightingPipeline(temporalCompute);
     forgetLightingPipeline(confidenceCompute);
@@ -175,7 +183,8 @@ namespace remix {
         next->initialize(physical, device, extent, reblur, queueFamily,
                          postSigma, postLocal, postLocalDenoise, postSplit,
                          rrActive(), options.validation,
-                         options.separateLocalLighting == 1);
+                         options.separateLocalLighting == 1,
+                         rrActive() && caps.reblurShSupported);
         VkDescriptorSetLayout layouts[] = {setLayout, next->inputLayout()};
         VkPipelineLayoutCreateInfo li{.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                       .setLayoutCount = 2,
@@ -218,6 +227,9 @@ namespace remix {
           make(trace::temporalShader, sizeof(trace::temporalShader), temporalCompute);
         make(trace::temporalTransparencyShader, sizeof(trace::temporalTransparencyShader),
              temporalTransparencyCompute);
+        make(trace::frontGuidesShader, sizeof(trace::frontGuidesShader), frontGuidesCompute);
+        make(trace::singleTemporalTransparencyShader, sizeof(trace::singleTemporalTransparencyShader),
+             singleTemporalTransparencyCompute);
         if (postSplit)
           make(trace::splitLocalDirectShader, sizeof(trace::splitLocalDirectShader), splitDirectCompute);
         if (reblur)
@@ -432,6 +444,9 @@ namespace remix {
     const char *reason = !result.supported ? "SIGMA is unavailable on this build/device" : g.postFailure.c_str();
     std::strncpy(result.unavailableReason, reason, sizeof(result.unavailableReason) - 1);
     return result;
+  }
+  bool PathTracer::translucencyDenoiserActive() const {
+    return m_gpu->denoiser && m_gpu->denoiser->foregroundActive();
   }
   remixapi_DenoisingStatisticsEXT PathTracer::denoisingStatistics() const {
     auto &g = *m_gpu;

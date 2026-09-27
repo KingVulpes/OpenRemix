@@ -139,6 +139,8 @@ namespace remix::config {
         TRACE(debugView, 0, 11);
         TRACE(taa, 0, 1);
         TRACE(waterIndirectReuse, 0, 1);
+        TRACE(translucencyDenoiser, 0, 1);
+        TRACE(translucencyReuse, 0, 1);
         TRACE(pbrLocalReuse, 0, 1);
         TRACE(validation, 0, 1);
         TRACE(sharc, 0, 1);

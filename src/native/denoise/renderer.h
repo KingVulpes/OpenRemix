@@ -46,9 +46,11 @@ namespace remix::denoise {
     PbrSpecularOutput,
     PbrSpecularFactor,
     RrDiffuse, RrSpecular, RrNormal, RrHitDistance,
+    FrontNormal, FrontDepth, FrontMotion, FrontAlbedo, FrontSpecularFactor,
+    FrontDiffuse, FrontSpecular, FrontDiffuseOutput, FrontSpecularOutput, FrontConfidence,
     ImageCount
   };
-  static_assert(BaseImageCount == 22 && PbrSpecularInput == 29 && ImageCount == 37,
+  static_assert(BaseImageCount == 22 && PbrSpecularInput == 29 && FrontNormal == 37 && ImageCount == 47,
                 "Update the matching inputs.glsl bindings when changing image slots");
   // Shared std140 constants. Matrices are nonjittered, in Vulkan framebuffer coordinates.
   struct Frame {
@@ -61,9 +63,10 @@ namespace remix::denoise {
     float sun[4] = {};       // direction toward sun, SIGMA active
     uint32_t shadow[4] = {}; // SIGMA reset, debug view, PBR receivers, legacy receivers
     uint32_t local[4] = {}; // denoise, active lights, responsive frames, reserved
+    uint32_t translucency[4] = {}; // foreground NRD, opaque lighting reuse, reserved
     uint32_t families[4] = {}; // torch/emissive counts, torch/emissive response frames
   };
-  static_assert(sizeof(Frame) == 464 && offsetof(Frame, families) == 448 && offsetof(Frame, local) == 432 && offsetof(Frame, sun) == 400 && offsetof(Frame, shadow) == 416);
+  static_assert(sizeof(Frame) == 480 && offsetof(Frame, families) == 464 && offsetof(Frame, local) == 432 && offsetof(Frame, sun) == 400 && offsetof(Frame, shadow) == 416);
   remixapi_DenoisingCapabilitiesEXT capabilities(VkPhysicalDevice physical);
   bool sigmaSupported(VkPhysicalDevice physical);
   bool localSupported(VkPhysicalDevice physical, bool sigma, bool split = false);
@@ -76,7 +79,7 @@ namespace remix::denoise {
                     bool sigma = false, bool local = false,
                     bool localDenoise = false, bool split = false,
                     bool rayReconstruction = false, bool validation = false,
-                    bool localReconstruction = false);
+                    bool localReconstruction = false, bool foregroundDenoise = false);
     VkDescriptorSetLayout inputLayout() const;
     VkDescriptorSet inputs() const;
     void selectFrame(uint32_t slot);
@@ -84,10 +87,12 @@ namespace remix::denoise {
     void begin(VkCommandBuffer command, const Frame &frame, const scene::Matrix &projection,
                const scene::Matrix &previousProjection, VkImageView world, VkImageView sky, bool localFireflyFilter = false);
     void beginConfidence(VkCommandBuffer command);
+    void recordOpaque(VkCommandBuffer command);
     void record(VkCommandBuffer command);
     void submitted();
     remixapi_ShadowStatisticsEXT shadowStatistics() const;
     float localMilliseconds() const;
+    bool foregroundActive() const;
     remixapi_DenoisingStatisticsEXT statistics() const;
 
   private:

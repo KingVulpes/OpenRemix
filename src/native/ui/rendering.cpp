@@ -42,7 +42,19 @@ namespace remix {
         ImGui::TextWrapped("%s", "Adaptive termination inactive: minimum reaches the maximum bounce limit.");
       if (options.russianRoulette && m_pathTracer && !m_pathTracer->adaptiveTerminationAvailable())
         ImGui::TextWrapped("%s", "Adaptive termination unavailable: using fixed-limit tracing.");
+      ui::Checkbox("Denoise translucent surfaces", &options.translucencyDenoiser);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Filters single-layer surface lighting with its own motion and depth.\n"
+                         "Uses NRD, including before DLSS RR; overlapping layers retain their existing rendering.");
+      if (options.translucencyDenoiser)
+        ImGui::TextDisabled("Surface filter: %s", m_pathTracer && m_pathTracer->translucencyDenoiserActive()
+                                               ? "active" : "inactive (requires NRD and translucent surfaces)");
       ImGui::BeginDisabled(rrActive || options.indirectClamp > 0);
+      ui::Checkbox("Reuse opaque lighting through translucency", &options.translucencyReuse);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Uses filtered lighting at closely matching opaque ray hits.\n"
+                         "Requires NRD; unmatched surfaces and raw references keep full tracing.\n"
+                         "Optional: its performance benefit depends on the scene.");
       ui::Checkbox("Reuse water indirect samples", &options.waterIndirectReuse);
       ImGui::EndDisabled();
       if (ImGui::IsItemHovered())

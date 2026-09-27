@@ -16,14 +16,14 @@ namespace remix {
     bufferCache->trimMemory(bufferMemory);
     std::erase_if(bufferMemory, [](const auto &block) { return block.use_count() == 1; });
     if (timingPending) {
-      uint64_t times[10] = {};
-      if (vkGetQueryPoolResults(device, timestamps, 0, stageProfile ? 10 : 4, sizeof(times), times, sizeof(uint64_t),
+      uint64_t times[12] = {};
+      if (vkGetQueryPoolResults(device, timestamps, 0, 12, sizeof(times), times, sizeof(uint64_t),
                                 VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
         const uint64_t mask = timestampBits >= 64 ? UINT64_MAX : (uint64_t(1) << timestampBits) - 1;
         stats.gpuBuildMilliseconds =
             float((times[1] - times[0]) & mask) * properties.limits.timestampPeriod / 1e6f;
         stats.gpuTraceMilliseconds =
-            float((times[3] - times[2]) & mask) * properties.limits.timestampPeriod / 1e6f;
+            float(((times[3] - times[2]) & mask) - ((times[11] - times[10]) & mask)) * properties.limits.timestampPeriod / 1e6f;
         stats.gpuTimingsAvailable = 1;
         if (stageProfile) {
           if (stateProfile && !traceState.empty()) {
@@ -46,7 +46,7 @@ namespace remix {
               return double((times[last] - times[first]) & mask) * properties.limits.timestampPeriod / 1e6;
             };
             std::fprintf(file, "%lld,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n", static_cast<long long>(now),
-                elapsed(2, 4), elapsed(4, 5), elapsed(5, 6), elapsed(6, 7), elapsed(7, 3), elapsed(3, 8), elapsed(8, 9), elapsed(1, 2));
+                elapsed(2, 4), elapsed(4, 5), elapsed(5, 6), elapsed(6, 7), elapsed(11, 3), elapsed(10, 8), elapsed(8, 11) + elapsed(3, 9), elapsed(1, 2));
             std::fclose(file);
           }
         }

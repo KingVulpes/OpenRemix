@@ -124,7 +124,7 @@ void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, ino
   hit.decal=enableDecals&&decalSurface(s);hit.blendedDraw=(s.state.w&2)!=0;hit.blended=blendedAtAlpha(s,hit.color.a);hit.cacheable=(s.state.w&16)!=0;
   hit.tinted=(s.state.w&32)!=0;
   hit.previousPosition=hit.p;hit.historyValid=false;
-// Transparent sheets never provide motion or NRD guides.
+// The visibility pass captures foreground and background motion before shading.
 #if defined(TEMPORAL) && !defined(TRANSPARENCY_PASS)
   if(motion&&s.previousVertices!=0) {
     Vertices previous=Vertices(s.previousVertices);
@@ -282,10 +282,18 @@ vec3 sunVisibility(Hit receiver,ivec2 pixel,out float blockerDistance) {
 }
 #include "light_bvh.glsl"
 #include "pbr_reuse.glsl"
+#if defined(TEMPORAL) && defined(SINGLE_SHEET_PASS)
+vec3 direct(Hit hit,bool primary,out vec3 specular,out float distance) {
+#else
 vec3 direct(Hit hit,bool primary,out vec3 specular) {
+#endif
   vec3 toLight=-frame.lightDirection.xyz;
   float cosine=max(0,dot(hit.n,toLight));
+#if defined(TEMPORAL) && defined(SINGLE_SHEET_PASS)
+  distance=0;
+#else
   float distance;
+#endif
   vec3 local;specular=vec3(0);
   if(!reuseLocal(hit,local)) {
     local=materialFactor(hit)*localLighting(hit,rng,primary?frame.localConfig.y:1u,distance,false,specular,primary?frame.firefly.x:0);
@@ -305,6 +313,11 @@ vec3 direct(Hit hit,bool primary,out vec3 specular) {
   }
   return local;
 }
+#if defined(TEMPORAL) && defined(SINGLE_SHEET_PASS)
+vec3 direct(Hit hit,bool primary,out vec3 specular) {
+  float distance;return direct(hit,primary,specular,distance);
+}
+#endif
 vec3 direct(Hit hit,bool primary) {
   vec3 specular;return direct(hit,primary,specular);
 }
@@ -361,6 +374,9 @@ bool cacheRadiance(Hit hit,float footprint,out vec3 radiance) {
   return found;
 }
 #endif
+#if defined(TEMPORAL) && defined(SINGLE_SHEET_PASS)
+#include "translucent_reuse.glsl"
+#endif
 vec3 continuation(Hit primary,out vec3 firstDirection,out float firstDistance,out vec3 specular) {
   profilePath(0u);
   uint rouletteState=enableRussianRoulette?hash(rng^0x726f756cu):0u;
@@ -388,6 +404,13 @@ vec3 continuation(Hit primary,out vec3 firstDirection,out float firstDistance,ou
       if(++layers>=32){profilePath(9u);break;}
       throughput*=transmissionColor(hit.color.rgb,hit.tinted);origin=offsetRay(hit.p,-hit.ng);continue;
     }
+#if defined(TEMPORAL) && defined(SINGLE_SHEET_PASS)
+    vec3 opaqueRadiance;
+    if(translucentRadiance(hit,opaqueRadiance)) {
+      result+=throughput*opaqueRadiance;
+      break;
+    }
+#endif
 #ifdef SHARC_QUERY
     vec3 cached;
     if(cacheRadiance(hit,length(hit.p-previousVertex)*footprintScale,cached)) {
@@ -503,7 +526,7 @@ void updateCache(ivec2 pixel) {
   }
 }
 #endif
-#ifdef TRANSPARENCY_PASS
+#ifdef SINGLE_SHEET_PASS
 #include "water_indirect.glsl"
 #endif
 // Accumulate exactly the same per-sample signals in either dispatch. Only
@@ -561,9 +584,19 @@ IndirectResult traceIndirect(Hit primary,vec3 diffuseFactor,vec3 specularFactor)
   result.state=rng;
   return result;
 }
+#ifdef TEMPORAL
+#include "translucency.glsl"
+#endif
 void main() {
   ivec2 pixel=ivec2(gl_GlobalInvocationID.xy);
-#ifdef INDIRECT_PASS
+#ifdef FRONT_GUIDES_PASS
+  if(any(greaterThanEqual(pixel,ivec2(frame.target.xy))))return;
+  vec3 origin,direction;
+  ray((vec2(pixel)+.5+frame.jitter.xy)/vec2(frame.target.xy)*2-1,frame.inverseCamera,origin,direction);
+  Hit primary=frame.target.w!=0?rasterPrimary(pixel,origin):closest(origin,direction);
+  frontGuides(primary,pixel);
+  return;
+#elif defined(INDIRECT_PASS)
   if(any(greaterThanEqual(pixel,ivec2(frame.target.xy))))return;
   rng=hash(uint(pixel.x)+uint(pixel.y)*frame.target.x+hash(frame.config.z));
   vec3 origin,direction;
@@ -666,6 +699,13 @@ void main() {
   while(sheetCount<32&&primary.blended) {
     ++sheetCount;origin=offsetRay(primary.p,-primary.ng);primary=closest(origin,direction);
   }
+#ifdef TEMPORAL
+  if(temporal.translucency.x!=0&&sheetCount!=1) {
+    imageStore(frontDepth,pixel,vec4(1e10));
+    imageStore(frontAlbedo,pixel,vec4(0));
+    imageStore(frontConfidence,pixel,vec4(0));
+  }
+#endif
   if(frame.firefly.z!=0)imageStore(meterMaterial,pixel,vec4(primary.t<1e30?primary.color.rgb:vec3(1),1));
   vec3 local=vec3(0),localSpecular=vec3(0);float localDistance=0;
   vec3 emissive=vec3(0),emissiveSpecular=vec3(0);float emissiveDistance=0;
@@ -823,31 +863,52 @@ void main() {
 #endif
   float signedCount=imageLoad(worldColor,pixel).a;
   uint sheetCount=uint(abs(signedCount));
+#ifndef SINGLE_SHEET_PASS
+  if(sheetCount<=1)return;
+#endif
   Hit primary;primary.p=vec3(0);primary.n=vec3(0);primary.blended=false;primary.pbr=false;
-  if(sheetCount!=0)primary=frame.target.w!=0?rasterPrimary(pixel,origin):closest(origin,direction);
+  if(sheetCount!=0
+#ifdef SINGLE_SHEET_PASS
+      &&sheetCount==1
+#endif
+     )primary=frame.target.w!=0?rasterPrimary(pixel,origin):closest(origin,direction);
   vec4 sharedIndirect=vec4(0);
+#ifdef SINGLE_SHEET_PASS
   uint directSeed=rng;
+  float sharedDistance=0;
   if(frame.jitter.z!=0)
-    sharedIndirect=waterIndirect(primary,inBounds&&signedCount==1&&primary.blended,pixel);
+    sharedIndirect=waterIndirect(primary,inBounds&&signedCount==1&&primary.blended,pixel,sharedDistance);
   rng=directSeed; // Reused GI must not change the full-resolution direct sample.
+  if(sheetCount>1)return;
+#endif
   if(!inBounds)return;
-  // Keep only shading fields, at most eight sheets at once. Separating these
-  // batches from opaque/NRD work avoids the old 32-Hit array living across both.
-  // Pretrace each batch before shading it; retain front-to-back RNG order.
-  struct Sheet { vec3 p;vec3 n;vec4 color;vec3 emission;vec3 ng;vec2 rm;bool pbr;bool tinted; };
-  Sheet sheets[8];
-  for(uint batch=0;batch<sheetCount;batch+=8) {
-    uint count=min(8,sheetCount-batch);
-    for(uint layer=0;layer<count;++layer) {
-      sheets[layer]=Sheet(primary.p,primary.n,primary.color,primary.emission,primary.ng,primary.rm,primary.pbr,primary.tinted);
-      if(batch+layer+1<sheetCount)primary=closest(offsetRay(primary.p,-primary.ng),direction);
-    }
-    for(uint layer=0;layer<count;++layer) {
-      Hit hit;hit.p=sheets[layer].p;hit.n=sheets[layer].n;hit.color=sheets[layer].color;
-      hit.ng=sheets[layer].ng;hit.rm=sheets[layer].rm;hit.pbr=sheets[layer].pbr;hit.wo=-direction;
-      vec3 surfaceLight=direct(hit,true)+sheets[layer].emission;
+#ifdef SINGLE_SHEET_PASS
+  if(sheetCount==1) {
+    Hit hit=primary;hit.wo=-direction;
+#else
+  // Traversal is deterministic and consumes no RNG. Shade front-to-back
+  // immediately, keeping only the current sheet live across continuation rays.
+  for(uint layer=0;layer<sheetCount;++layer) {
+    Hit hit=primary;hit.wo=-direction;
+#endif
+#if defined(TEMPORAL) && defined(SINGLE_SHEET_PASS)
+      vec3 surfaceSpecular;
+      float surfaceDistance;
+      vec3 surfaceLight=direct(hit,true,surfaceSpecular,surfaceDistance)+hit.emission;
+      surfaceDistance=nearestDistance(surfaceDistance,sharedDistance);
+      if(sharedIndirect.a!=0)surfaceLight+=materialFactor(hit)*sharedIndirect.rgb;
+      else for(uint i=0;i<frame.config.x;++i) {
+        vec3 d,s;float t;
+        surfaceLight+=materialFactor(hit)*continuation(hit,d,t,s)/float(frame.config.x);
+        surfaceSpecular+=materialFactor(hit)*s/float(frame.config.x);
+        surfaceDistance=nearestDistance(surfaceDistance,t);
+      }
+      frontRadiance(hit,pixel,max(surfaceLight-hit.emission,vec3(0)),surfaceSpecular,surfaceDistance);
+#else
+      vec3 surfaceLight=direct(hit,true)+hit.emission;
       if(sharedIndirect.a!=0)surfaceLight+=materialFactor(hit)*sharedIndirect.rgb;
       else for(uint i=0;i<frame.config.x;++i){vec3 d;float t;surfaceLight+=materialFactor(hit)*continuation(hit,d,t)/float(frame.config.x);}
+#endif
 #ifdef TEMPORAL
       if(temporal.hitDistance.w!=0) {
         // Deterministic material guides follow the same transparent composition
@@ -858,18 +919,26 @@ void main() {
 #endif
       if(frame.firefly.z!=0)transparentMaterial+=tint*hit.color.a*hit.color.rgb;
       transparent+=tint*hit.color.a*surfaceLight;
-      tint*=transmissionColor(hit.color.rgb,sheets[layer].tinted)*(1-hit.color.a);opacityProduct*=1-hit.color.a;
-    }
+      tint*=transmissionColor(hit.color.rgb,hit.tinted)*(1-hit.color.a);opacityProduct*=1-hit.color.a;
+#ifndef SINGLE_SHEET_PASS
+    if(layer+1<sheetCount)primary=closest(offsetRay(primary.p,-primary.ng),direction);
+#endif
   }
   if(frame.firefly.z!=0)imageStore(meterMaterial,pixel,vec4(transparentMaterial+tint*imageLoad(meterMaterial,pixel).rgb,1));
   vec3 color=transparent+tint*uintBitsToFloat(background.rgb);
 #ifdef TEMPORAL
+  vec3 foreground=transparent;
+#ifdef SINGLE_SHEET_PASS
+  // Emission and transmission remain unfiltered; NRD supplies the two surface
+  // lighting lobes during composition. Raw world output retains full radiance.
+  if(temporal.translucency.x!=0&&sheetCount==1)foreground=primary.color.a*primary.emission;
+#endif
   if(temporal.hitDistance.w!=0) {
-    imageStore(composed,pixel,vec4(safeRadiance(transparent+tint*imageLoad(composed,pixel).rgb),1));
+    imageStore(composed,pixel,vec4(safeRadiance(foreground+tint*imageLoad(composed,pixel).rgb),1));
     imageStore(rrDiffuse,pixel,vec4(transparentDiffuse+tint*imageLoad(rrDiffuse,pixel).rgb,0));
     imageStore(rrSpecular,pixel,vec4(transparentSpecular+tint*imageLoad(rrSpecular,pixel).rgb,0));
   }
-  imageStore(transparentLight,pixel,vec4(safeRadiance(transparent+tint*imageLoad(primaryPrevious,pixel).rgb),1));
+  imageStore(transparentLight,pixel,vec4(safeRadiance(foreground+tint*imageLoad(primaryPrevious,pixel).rgb),1));
   imageStore(transmittance,pixel,vec4(signedCount<0?vec3(0):tint,opacityProduct));
 #endif
   float depth=1;

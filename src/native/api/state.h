@@ -32,7 +32,7 @@ namespace remix::api {
   void publishUsdReloads();
   extern remix::RemixNativeRuntime g_runtime;
   extern std::mutex g_apiMutex;
-  extern bool g_frameExitRegistered;
+  extern uint32_t g_frameExitStages;
   extern PFN_remixapi_BridgeCallback g_beginSceneCallback;
   extern PFN_remixapi_BridgeCallback g_endSceneCallback;
   extern PFN_remixapi_BridgeCallback g_presentCallback;

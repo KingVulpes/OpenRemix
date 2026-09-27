@@ -13,6 +13,10 @@ feature availability. Device limitations and reconstruction fallbacks do not
 change the saved preferences. Changes apply before preparation of the next frame;
 backend switches and presentation changes use the existing synchronization paths.
 
+Profiles omitting `rtx.native.pathtrace.translucencyDenoiser` enable surface
+denoising by default; `rtx.native.pathtrace.translucencyReuse` is opt-in. These Boolean
+settings control [translucent surface filtering and lighting reuse](water-indirect.md).
+
 ## Storage and workflow
 
 Profiles live in `<working-directory>/openremix/profiles/`. Set `REMIX_CONFIG_DIR`

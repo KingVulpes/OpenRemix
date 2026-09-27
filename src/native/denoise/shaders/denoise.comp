@@ -36,6 +36,11 @@ bool guideHistoryValid(vec2 p,float z,vec3 normal) {
   }
   return support>.05;
 }
+vec3 filteredForeground(ivec2 p,vec4 factor) {
+  vec3 diffuse=REBLUR_BackEnd_UnpackRadianceAndNormHitDist(imageLoad(frontDiffuseOutput,p)).rgb;
+  vec3 specular=REBLUR_BackEnd_UnpackRadianceAndNormHitDist(imageLoad(frontSpecularOutput,p)).rgb;
+  return factor.a*(diffuse*factor.rgb+specular*imageLoad(frontSpecularFactor,p).rgb);
+}
 void main() {
   ivec2 p=ivec2(gl_GlobalInvocationID.xy);ivec2 size=ivec2(temporal.target.xy);
   if(pass.mode==0) {
@@ -57,6 +62,24 @@ void main() {
     return;
   }
   if(any(greaterThanEqual(p,size)))return;
+  if(pass.mode==5) {
+    vec4 factor=imageLoad(frontAlbedo,p);
+    if(factor.a>0) {
+      vec4 color=imageLoad(composed,p);
+      color.rgb=safeRadiance(color.rgb+filteredForeground(p,factor));
+      imageStore(composed,p,color);
+      // RR receives filtered surface lighting plus raw transmitted content.
+      // Track the dominant layer coherently; raster feedback depth is separate.
+      if(factor.a>=.5) {
+        imageStore(guideDepth,p,imageLoad(frontDepth,p));
+        imageStore(guideMotion,p,imageLoad(frontMotion,p));
+        imageStore(guideNormal,p,imageLoad(frontNormal,p));
+        imageStore(rrNormal,p,NRD_FrontEnd_UnpackNormalAndRoughness(imageLoad(frontNormal,p)));
+        imageStore(rrHitDistance,p,vec4(imageLoad(frontSpecularFactor,p).a));
+      }
+    }
+    return;
+  }
   if(pass.mode==1) {
     vec2 prev=vec2(p)+imageLoad(guideMotion,p).xy+temporal.jitter.xy-temporal.jitter.zw;
     float c=imageLoad(gradientB,clamp(ivec2(prev)/5,ivec2(0),imageSize(gradientB)-1)).x;
@@ -98,8 +121,16 @@ void main() {
 #endif
       color=direct+safeRadiance(indirect+local)*material.rgb+safeRadiance(specular);
     }
+    if(pass.step==0) {
+      imageStore(composed,p,vec4(safeRadiance(color),1));return;
+    }
     vec4 tr=imageLoad(transmittance,p);
-    color=safeRadiance(imageLoad(transparentLight,p).rgb+tr.rgb*color);
+    vec3 foreground=imageLoad(transparentLight,p).rgb;
+    if(temporal.translucency.x!=0) {
+      vec4 factor=imageLoad(frontAlbedo,p);
+      if(factor.a>0)foreground+=filteredForeground(p,factor);
+    }
+    color=safeRadiance(foreground+tr.rgb*color);
     if(temporal.timing.y!=0&&temporal.flags.y!=0)color=imageLoad(validation,p).rgb;
 #ifdef SIGMA_PASS
     if(temporal.shadow.y!=0)

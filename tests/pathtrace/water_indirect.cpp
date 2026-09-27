@@ -198,16 +198,19 @@ int main(int argc, char **argv) {
   require(api.SetConfigVariable("rtx.native.pathtrace.waterIndirectReuse", "2") == REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS,
           "Invalid water reuse setting accepted");
   if (std::getenv("REMIX_TEST_RR_REUSE")) {
-    remixapi_ReconstructionDiagnosticsEXT available{}; available.structSize = sizeof(available);
-    ok(remixapi_GetReconstructionDiagnosticsEXT(&available));
-    if (!(available.capabilities & 4)) { ok(api.Shutdown()); return 77; }
     for (int i = 0; i < 4; ++i) for (int j = 0; j < 4; ++j) camera.projection[i][j] = 0;
     camera.projection[0][0] = camera.projection[1][1] = 1;
     camera.projection[2][2] = 100.f / 99.95f; camera.projection[2][3] = 1;
     camera.projection[3][2] = -5.f / 99.95f;
     config("samples", "1"); config("bounces", "1"); config("accumulate", "0");
     config("denoiser", "reblur-sh"); config("taa", "1"); config("dlssQuality", "native-aa");
+    config("dlssRayReconstruction", "1"); config("upscaler", "dlss");
     enclosure = {water, shore, indirectBlocker};
+    // Discovery is asynchronous and starts only when an NGX mode is requested.
+    frame();
+    remixapi_ReconstructionDiagnosticsEXT available{}; available.structSize = sizeof(available);
+    ok(remixapi_GetReconstructionDiagnosticsEXT(&available));
+    if (!(available.capabilities & 4)) { ok(api.Shutdown()); return 77; }
     for (const char *primary : {"raster", "ray"}) {
       config("primaryVisibility", primary);
       config("upscaler", "off"); config("accumulate", "1"); config("samples", "16");

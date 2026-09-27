@@ -105,28 +105,46 @@ namespace remix {
     // slots. Descriptor slots are numbered by first use, so they stay in draw
     // order; their fingerprints form the material part of the scene signature.
     size_t partitionTotal = 0, preparedSurfaces = 0;
-    for (const auto &instance : prepared.instances) {
+    partitionOffsets.resize(prepared.instances.size());
+    for (size_t index = 0; index < prepared.instances.size(); ++index) {
+      const auto &instance = prepared.instances[index];
+      partitionOffsets[index] = partitionTotal;
       partitionTotal += instance[0].draw.mesh->surfaces.size();
       preparedSurfaces += instance.size();
     }
     partitionStorage.assign(partitionTotal, nullptr); // Stable: conversions keep pointers.
     instanceViews.resize(prepared.instances.size());
     surfaceSlots.resize(preparedSurfaces);
+    if (!workers)
+      workers = std::make_unique<WorkerPool>();
+    // Pass 0, parallel: partitions, and the views of instances whose lookup
+    // changes nothing (unstreamed and up to date); the rest look up in pass 1.
+    {
+      ScopedTicks time{geometryTicks};
+      constexpr size_t instancesPerTask = 512;
+      const size_t count = prepared.instances.size();
+      workers->run((count + instancesPerTask - 1) / instancesPerTask, [&](size_t task) {
+        for (size_t index = task * instancesPerTask; index < std::min(count, (task + 1) * instancesPerTask); ++index) {
+          const auto &instance = prepared.instances[index];
+          auto *partitions = partitionStorage.data() + partitionOffsets[index];
+          for (const auto &preparedSurface : instance)
+            partitions[preparedSurface.draw.surfaceIndex] = preparedSurface.opacity.get();
+          const auto &draw = instance[0].draw;
+          instanceViews[index] = {findView(draw, partitions, draw.mesh->surfaces.size()), -1};
+        }
+      });
+    }
     std::vector<uint8_t> materialScene;
     auto appendMaterial = [&](const void *data, size_t size) {
       const auto *bytes = static_cast<const uint8_t *>(data);
       materialScene.insert(materialScene.end(), bytes, bytes + size);
     };
     size_t pendingConversions = 0;
-    for (size_t index = 0, offset = 0, slot = 0; index < prepared.instances.size(); ++index) {
+    for (size_t index = 0, slot = 0; index < prepared.instances.size(); ++index) {
       const auto &instance = prepared.instances[index];
       const auto &draw = instance[0].draw;
-      auto *partitions = partitionStorage.data() + offset;
-      const size_t partitionCount = draw.mesh->surfaces.size();
-      offset += partitionCount;
       for (const auto &preparedSurface : instance) {
         const auto &surface = preparedSurface.draw;
-        partitions[surface.surfaceIndex] = preparedSurface.opacity.get();
         hasBlendedGeometry |= surface.blend.enabled;
         decalMaterialsActive |= surface.decal;
         const auto &material = *surface.material;
@@ -199,16 +217,17 @@ namespace remix {
         surfaceSlots[slot++] = &slots->second;
         materialTicks += ticks() - materialStart;
       }
+      if (instanceViews[index].view)
+        continue;
       if (pendingConversions == conversions.size())
         conversions.emplace_back();
       bool convert = false;
-      auto &view = meshView(draw, partitions, partitionCount, conversions[pendingConversions], convert);
+      auto &view = meshView(draw, partitionStorage.data() + partitionOffsets[index], draw.mesh->surfaces.size(),
+                            conversions[pendingConversions], convert);
       instanceViews[index] = {&view, convert ? int32_t(pendingConversions++) : -1};
     }
     // The CPU halves of this frame's conversions (skinning, BLAS input
     // assembly and hashing) run on workers.
-    if (!workers)
-      workers = std::make_unique<WorkerPool>();
     if (pendingConversions) {
       ScopedTicks time{geometryTicks};
       workers->run(pendingConversions, [&](size_t i) { convertMesh(conversions[i]); });

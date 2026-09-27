@@ -1,4 +1,5 @@
 #include "pathtrace/gpu.h"
+#include <atomic>
 
 namespace remix {
   using namespace scene;
@@ -89,6 +90,28 @@ namespace remix {
     conversion.deform = deform;
     convert = true;
     return view;
+  }
+
+  PathTracer::Gpu::MeshView *PathTracer::Gpu::findView(const Draw &draw,
+      const scene::OpacityPartition *const *partitions, size_t partitionCount) {
+    if (draw.mesh->updateStream)
+      return nullptr;
+    std::string opaque;
+    for (size_t i = 0; i < partitionCount; ++i) opaque.append(partitions[i]->key);
+    const bool skinned = draw.bones && std::any_of(draw.mesh->surfaces.begin(), draw.mesh->surfaces.end(),
+                                                  [](const auto &s) { return s->bonesPerVertex != 0; });
+    const MeshViewKey key{draw.mesh.get(), skinned ? draw.instanceId : 0, skinned ? draw.instanceIndex : 0,
+                          std::move(opaque)};
+    const auto found = meshes.find(key);
+    if (found == meshes.end())
+      return nullptr;
+    auto &view = found->second;
+    // view.owner.lock() == draw.mesh without the reference-count traffic.
+    if (view.owner.owner_before(draw.mesh) || draw.mesh.owner_before(view.owner) || view.owner.expired() ||
+        (skinned && view.bones != *draw.bones))
+      return nullptr;
+    std::atomic_ref<uint64_t>(view.lastUse).store(sequence, std::memory_order_relaxed);
+    return &view;
   }
 
   void PathTracer::Gpu::convertMesh(MeshConversion &conversion) {

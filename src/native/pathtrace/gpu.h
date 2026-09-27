@@ -462,6 +462,12 @@ namespace remix {
     };
     std::vector<InstanceView> instanceViews;
     std::vector<const scene::OpacityPartition *> partitionStorage;
+    // Read-only: the view meshView would return unchanged for a draw that is
+    // not streamed (no lineage transfer) and needs no conversion, else null.
+    // Safe to run concurrently; marks the view used this frame.
+    MeshView *findView(const scene::Draw &draw, const scene::OpacityPartition *const *partitions,
+                       size_t partitionCount);
+    std::vector<size_t> partitionOffsets;
     static void convertMesh(MeshConversion &conversion);
     void commitMesh(VkCommandBuffer command, MeshConversion &conversion);
     std::vector<MeshConversion> conversions; // reused storage; see Gpu::prepare

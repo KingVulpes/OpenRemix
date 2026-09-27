@@ -94,9 +94,13 @@ namespace remix {
   void PathTracer::resetPerformance() {
     m_gpu->performance = {.structSize = sizeof(remixapi_FramePerformanceEXT)};
     m_gpu->breakdown = {.structSize = sizeof(remixapi_FrameBreakdownEXT)};
-    m_gpu->materialTicks = m_gpu->temporalTicks = 0;
+    m_gpu->materialTicks = m_gpu->temporalTicks = m_gpu->geometryTicks = 0;
   }
-  remixapi_FramePerformanceEXT PathTracer::performance() const { return m_gpu->performance; }
+  remixapi_FramePerformanceEXT PathTracer::performance() const {
+    auto out = m_gpu->performance;
+    out.geometryMilliseconds = tickMilliseconds(m_gpu->geometryTicks);
+    return out;
+  }
   remixapi_FrameBreakdownEXT PathTracer::breakdown() const {
     auto out = m_gpu->breakdown;
     out.materialMilliseconds = tickMilliseconds(m_gpu->materialTicks);

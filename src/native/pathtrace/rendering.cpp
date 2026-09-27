@@ -64,10 +64,19 @@ namespace remix {
                                                                   : 0u;
     primaryDraws.clear();
     std::vector<VkDescriptorImageInfo> textures;
-    std::unordered_map<const Material *, uint32_t> textureIndices;
-    std::unordered_map<const Material *, uint32_t> emissionTextures;
+    const size_t materialCount = materialSlots.size();
+    materialSlots.clear();
+    materialSlots.reserve(materialCount);
     std::map<std::tuple<const scene::Texture *, uint8_t, uint8_t, uint8_t>, uint32_t> pbrTextures;
     std::vector<uint8_t> scene, staticGeometry, dynamicGeometry;
+    surfaces.reserve(reserveSurfaces);
+    primaryDraws.reserve(reserveSurfaces);
+    scene.reserve(reserveScene);
+    staticGeometry.reserve(reserveStatic);
+    dynamicGeometry.reserve(reserveDynamic);
+    inputs[0].reserve(reserveInputs[0]);
+    inputs[1].reserve(reserveInputs[1]);
+
     auto appendStatic = [&](const void *data, size_t size) {
       const auto *bytes = static_cast<const uint8_t *>(data);
       staticGeometry.insert(staticGeometry.end(), bytes, bytes + size);
@@ -94,16 +103,28 @@ namespace remix {
     bool hasCacheReceivers = false, hasBlendedGeometry = false;
     decalMaterialsActive = false;
     uint64_t geometryDigest = 1469598103934665603ull;
+    uint32_t decodedFactor = 0;
+    bool factorDecoded = false;
+    float factorValues[4] = {};
     lap(breakdown.traceSetupMilliseconds);
     breakdown.traceInstances += prepared.instances.size();
-    // Consumes the prepared draws: each surface moves into the temporal history.
-    for (auto &instance : prepared.instances) {
+    // Look up every instance's mesh view in draw order, then run the CPU halves
+    // of the conversions this frame needs (skinning, BLAS input assembly and
+    // hashing) on workers. Uploads stay in draw order in the loop below.
+    size_t partitionTotal = 0;
+    for (const auto &instance : prepared.instances)
+      partitionTotal += instance[0].draw.mesh->surfaces.size();
+    partitionStorage.assign(partitionTotal, nullptr); // Stable: conversions keep pointers.
+    instanceViews.resize(prepared.instances.size());
+    size_t pendingConversions = 0;
+    for (size_t index = 0, offset = 0; index < prepared.instances.size(); ++index) {
+      const auto &instance = prepared.instances[index];
       const auto &draw = instance[0].draw;
-      // Frame-local identities never gain history (all surfaces share the id).
-      const uint64_t temporalId = prepared.persistentIds.count(draw.instanceId) ? draw.instanceId : 0;
-      std::vector<std::shared_ptr<const scene::OpacityPartition>> partitions(draw.mesh->surfaces.size());
+      auto *partitions = partitionStorage.data() + offset;
+      const size_t partitionCount = draw.mesh->surfaces.size();
+      offset += partitionCount;
       for (const auto &surface : instance) {
-        partitions[surface.draw.surfaceIndex] = surface.opacity;
+        partitions[surface.draw.surfaceIndex] = surface.opacity.get();
         hasBlendedGeometry |= surface.draw.blend.enabled;
         decalMaterialsActive |= surface.draw.decal;
         const auto &material = *surface.draw.material;
@@ -111,7 +132,30 @@ namespace remix {
                              (!material.pbr || material.roughnessTexture ||
                               material.roughness >= REMIX_SHARC_PBR_MIN_ROUGHNESS);
       }
-      auto &view = mesh(command, draw, partitions);
+      if (pendingConversions == conversions.size())
+        conversions.emplace_back();
+      bool convert = false;
+      auto &view = meshView(draw, partitions, partitionCount, conversions[pendingConversions], convert);
+      instanceViews[index] = {&view, convert ? int32_t(pendingConversions++) : -1};
+    }
+    if (pendingConversions) {
+      ScopedTicks time{geometryTicks};
+      if (pendingConversions > 1 && !workers)
+        workers = std::make_unique<WorkerPool>();
+      if (pendingConversions > 1)
+        workers->run(pendingConversions, [&](size_t i) { convertMesh(conversions[i]); });
+      else
+        convertMesh(conversions[0]);
+    }
+    // Consumes the prepared draws: each surface moves into the temporal history.
+    for (size_t index = 0; index < prepared.instances.size(); ++index) {
+      auto &instance = prepared.instances[index];
+      const auto &draw = instance[0].draw;
+      // Frame-local identities never gain history (all surfaces share the id).
+      const uint64_t temporalId = prepared.persistentIds.count(draw.instanceId) ? draw.instanceId : 0;
+      auto &view = *instanceViews[index].view;
+      if (instanceViews[index].conversion >= 0)
+        commitMesh(command, conversions[instanceViews[index].conversion]);
       const auto &geometry = *view.geometry;
       if (digestEnabled)
         geometryDigest = hashBytes(&view.contentDigest, sizeof(view.contentDigest), geometryDigest);
@@ -154,60 +198,75 @@ namespace remix {
         const auto &surface = preparedSurface.draw;
         const auto &material = *surface.material;
         const uint64_t materialStart = ticks();
-        auto [entry, inserted] = textureIndices.emplace(surface.material.get(), uint32_t(textures.size()));
-        if (inserted) {
+        TraceSurface value;
+        // Every per-material field and descriptor slot is fixed by the first
+        // surface using the material this frame; later surfaces copy them.
+        auto [slots, firstUse] = materialSlots.try_emplace(surface.material.get());
+        if (firstUse) {
           if (textures.size() >= PathTracer::textureLimit)
             throw VK_ERROR_TOO_MANY_OBJECTS;
+          value.textureState[0] = uint32_t(textures.size());
           textures.push_back(resources.sampledMaterial(surface.material, command));
           const auto fingerprint = material.texture->fingerprint();
           append(&fingerprint, sizeof(fingerprint));
           const uint8_t sampler[] = {material.filter, material.wrapU, material.wrapV};
           append(sampler, sizeof(sampler));
-        }
-        TraceSurface value;
-        value.pbr[0] = material.roughness;
-        value.pbr[1] = material.metallic;
-        value.pbr[2] = material.pbr ? 1.f : 0.f;
-        const auto decode = scene::materialDecode(material);
-        value.material[0] = decode.flags;
-        value.material[1] = decode.specularMetal;
-        value.material[2] = uint32_t(decode.tint[0]) | uint32_t(decode.tint[1]) << 16;
-        value.material[3] = decode.tint[2];
-        value.pbrTextures[3] =
-            material.normalEncoding == 1
-                ? 2
-                : (material.normalEncoding == 3 ? 4 : 0) |
-                      uint32_t(material.normalTexture && material.normalTexture->pixels.twoChannel);
-        const std::shared_ptr<scene::Texture> maps[] = {material.roughnessTexture, material.metallicTexture,
-                                                        material.normalTexture};
-        for (unsigned i = 0; i < 3; ++i) {
-          if (!maps[i])
-            continue;
-          auto [map, added] = pbrTextures.emplace(
-              std::make_tuple(maps[i].get(), material.filter, material.wrapU, material.wrapV),
-              uint32_t(textures.size()));
-          if (added) {
-            if (textures.size() >= PathTracer::textureLimit)
-              throw VK_ERROR_TOO_MANY_OBJECTS;
-            textures.push_back(resources.sampledTexture(surface.material, maps[i], command));
-            const auto fingerprint = maps[i]->fingerprint();
-            append(&fingerprint, sizeof(fingerprint));
+          value.pbr[0] = material.roughness;
+          value.pbr[1] = material.metallic;
+          value.pbr[2] = material.pbr ? 1.f : 0.f;
+          const auto decode = scene::materialDecode(material);
+          value.material[0] = decode.flags;
+          value.material[1] = decode.specularMetal;
+          value.material[2] = uint32_t(decode.tint[0]) | uint32_t(decode.tint[1]) << 16;
+          value.material[3] = decode.tint[2];
+          value.pbrTextures[3] =
+              material.normalEncoding == 1
+                  ? 2
+                  : (material.normalEncoding == 3 ? 4 : 0) |
+                        uint32_t(material.normalTexture && material.normalTexture->pixels.twoChannel);
+          const std::shared_ptr<scene::Texture> *maps[] = {&material.roughnessTexture, &material.metallicTexture,
+                                                           &material.normalTexture};
+          for (unsigned i = 0; i < 3; ++i) {
+            const auto &map = *maps[i];
+            if (!map)
+              continue;
+            auto [index, added] = pbrTextures.emplace(
+                std::make_tuple(map.get(), material.filter, material.wrapU, material.wrapV),
+                uint32_t(textures.size()));
+            if (added) {
+              if (textures.size() >= PathTracer::textureLimit)
+                throw VK_ERROR_TOO_MANY_OBJECTS;
+              textures.push_back(resources.sampledTexture(surface.material, map, command));
+              const auto fingerprint = map->fingerprint();
+              append(&fingerprint, sizeof(fingerprint));
+            }
+            value.pbrTextures[i] = index->second + 1;
           }
-          value.pbrTextures[i] = map->second + 1;
-        }
-        std::copy_n(material.emission, 3, value.emission);
-        if (material.emissionTexture &&
-            (material.emission[0] > 0 || material.emission[1] > 0 || material.emission[2] > 0)) {
-          auto [emitter, newTexture] =
-              emissionTextures.emplace(surface.material.get(), uint32_t(textures.size()));
-          if (newTexture) {
+          std::copy_n(material.emission, 3, value.emission);
+          if (material.emissionTexture &&
+              (material.emission[0] > 0 || material.emission[1] > 0 || material.emission[2] > 0)) {
             if (textures.size() >= PathTracer::textureLimit)
               throw VK_ERROR_TOO_MANY_OBJECTS;
+            value.textureState[2] = uint32_t(textures.size()) + 1;
             textures.push_back(resources.sampledEmission(surface.material, command));
             auto fingerprint = material.emissionTexture->fingerprint();
             append(&fingerprint, sizeof(fingerprint));
           }
-          value.textureState[2] = emitter->second + 1;
+          auto &slot = slots->second;
+          slot.albedo = value.textureState[0];
+          slot.emissive = value.textureState[2];
+          std::copy_n(value.pbr, 4, slot.pbr);
+          std::copy_n(value.material, 4, slot.decode);
+          std::copy_n(value.pbrTextures, 4, slot.maps);
+          std::copy_n(value.emission, 4, slot.emission);
+        } else {
+          const auto &slot = slots->second;
+          value.textureState[0] = slot.albedo;
+          value.textureState[2] = slot.emissive;
+          std::copy_n(slot.pbr, 4, value.pbr);
+          std::copy_n(slot.decode, 4, value.material);
+          std::copy_n(slot.maps, 4, value.pbrTextures);
+          std::copy_n(slot.emission, 4, value.emission);
         }
         const uint64_t temporalStart = ticks();
         materialTicks += temporalStart - materialStart;
@@ -239,10 +298,16 @@ namespace remix {
         }
         std::copy(preparedSurface.uv.begin(), preparedSurface.uv.end(), value.uv);
         const auto &b = surface.blend;
-        value.factor[0] = linear(float((b.factor >> 16) & 255) / 255);
-        value.factor[1] = linear(float((b.factor >> 8) & 255) / 255);
-        value.factor[2] = linear(float(b.factor & 255) / 255);
-        value.factor[3] = float(b.factor >> 24) / 255;
+        // Blend factors are nearly always the same constant: decode each once.
+        if (b.factor != decodedFactor || !factorDecoded) {
+          decodedFactor = b.factor;
+          factorDecoded = true;
+          factorValues[0] = linear(float((b.factor >> 16) & 255) / 255);
+          factorValues[1] = linear(float((b.factor >> 8) & 255) / 255);
+          factorValues[2] = linear(float(b.factor & 255) / 255);
+          factorValues[3] = float(b.factor >> 24) / 255;
+        }
+        std::copy_n(factorValues, 4, value.factor);
         value.state[0] = (b.colorOp & 3u) | (b.colorOp & 4u) << 10 | (b.alphaOpTexture & 4u) << 11 |
                          b.color1 << 2 | b.color2 << 4 | (b.alphaOpTexture & 3u) << 6 | b.alpha1 << 8 |
                          b.alpha2 << 10;
@@ -258,7 +323,6 @@ namespace remix {
           appendStatic(value.state, sizeof(value.state));
           appendStatic(value.material, sizeof(value.material));
         }
-        value.textureState[0] = entry->second;
         primaryDraws.push_back(
             {model, uint32_t(surfaces.size()), uint32_t(surface.surface->indices.size()), b.enabled});
         do {
@@ -276,6 +340,11 @@ namespace remix {
       temporalTicks += ticks() - stageStart;
     }
     lap(breakdown.traceSurfacesMilliseconds);
+    reserveSurfaces = surfaces.size();
+    reserveStatic = staticGeometry.size();
+    reserveDynamic = dynamicGeometry.size();
+    reserveInputs[0] = inputs[0].size();
+    reserveInputs[1] = inputs[1].size();
     breakdown.traceSurfaces += surfaces.size();
     breakdown.primaryDraws += primaryDraws.size();
     // Retire absent deformation instances after their last-use fence. Rigid
@@ -500,6 +569,7 @@ namespace remix {
     configureSharc(frame, options, temporalEpoch, std::move(staticGeometry), std::move(dynamicGeometry),
                    hasCacheReceivers);
     lap(breakdown.sharcMilliseconds);
+    reserveScene = scene.size();
     const bool sceneChanged = scene != lastScene;
     if (sceneChanged || history.reset())
       reconstructionWarmFrames = 0;

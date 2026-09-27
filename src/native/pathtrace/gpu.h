@@ -3,6 +3,7 @@
 #include "pathtrace/renderer.h"
 #include "pathtrace/tlas_policy.h"
 #include "platform/timing.h"
+#include "platform/workers.h"
 #include "scene/emission.h"
 #include "scene/light_bvh.h"
 #include "scene/opacity.h"
@@ -152,20 +153,6 @@ namespace remix {
     using TraceVertex = trace::detail::TraceVertex;
     using TraceSurface = trace::detail::TraceSurface;
     using Frame = trace::detail::Frame;
-    struct GeometryScratch {
-      std::string content;
-      std::vector<std::vector<TraceVertex>> shading;
-      std::vector<VkDeviceSize> vertexOffsets, indexOffsets;
-      std::vector<uint32_t> counts, vertexCounts;
-      size_t bytes() const {
-        size_t size = content.capacity() + shading.capacity() * sizeof(std::vector<TraceVertex>) +
-                      (vertexOffsets.capacity() + indexOffsets.capacity()) * sizeof(VkDeviceSize) +
-                      (counts.capacity() + vertexCounts.capacity()) * sizeof(uint32_t);
-        for (const auto &vertices : shading)
-          size += vertices.capacity() * sizeof(TraceVertex);
-        return size;
-      }
-    } conversion;
 
     VkPhysicalDevice physical = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
@@ -311,6 +298,13 @@ namespace remix {
     static_assert(sizeof(PrimaryPush) == 96);
     std::array<float, 4> primaryReverseDepth{};
     std::vector<PrimaryDraw> primaryDraws;
+    // Per-material surface fields of the frame being prepared (Gpu::prepare).
+    struct MaterialSlots {
+      uint32_t albedo = 0, emissive = 0;
+      float pbr[4] = {}, emission[4] = {};
+      uint32_t decode[4] = {}, maps[4] = {};
+    };
+    std::unordered_map<const scene::Material *, MaterialSlots> materialSlots;
     std::unique_ptr<Image> primary[7];
     VkRenderPass primaryPass[2] = {};
     VkFramebuffer primaryFramebuffer[2] = {};
@@ -412,6 +406,52 @@ namespace remix {
       uint64_t fingerprint = 0, lastUse = 0;
       uint64_t contentDigest = 0; // REMIX_FRAME_DIGEST only: hash of the uploaded data.
     };
+    // CPU half of a mesh view conversion: skinning, BLAS input assembly and
+    // content hashes. Independent per view, so conversions run on workers.
+    struct GeometryScratch {
+      std::string content;
+      std::vector<std::vector<TraceVertex>> shading;
+      std::vector<VkDeviceSize> vertexOffsets, indexOffsets;
+      std::vector<uint32_t> counts, vertexCounts;
+      std::vector<GeometryGroup> groups;
+      std::vector<uint64_t> shadingHashes; // scene::fastHash of each shading buffer
+      uint64_t contentHash = 0;            // scene::fastHash of content
+      float low[3] = {}, high[3] = {};
+      size_t bytes() const {
+        size_t size = content.capacity() + shading.capacity() * sizeof(std::vector<TraceVertex>) +
+                      (vertexOffsets.capacity() + indexOffsets.capacity()) * sizeof(VkDeviceSize) +
+                      (counts.capacity() + vertexCounts.capacity()) * sizeof(uint32_t) +
+                      groups.capacity() * sizeof(GeometryGroup) + shadingHashes.capacity() * sizeof(uint64_t);
+        for (const auto &vertices : shading)
+          size += vertices.capacity() * sizeof(TraceVertex);
+        return size;
+      }
+    };
+    // A view that needs new geometry this frame (meshView), between its CPU
+    // conversion (convertMesh, any thread) and its GPU upload (commitMesh).
+    struct MeshConversion {
+      MeshView *view = nullptr;
+      const scene::Draw *draw = nullptr;
+      const scene::OpacityPartition *const *partitions = nullptr;
+      std::string opaque;
+      bool skinned = false, streaming = false, deform = false;
+      std::shared_ptr<Geometry> previousGeometry;
+      GeometryScratch data;
+    };
+    // Finds the draw's view. When it needs new geometry, prepares conversion
+    // (view state updated as the serial path does) and returns true.
+    MeshView &meshView(const scene::Draw &draw, const scene::OpacityPartition *const *partitions,
+                       size_t partitionCount, MeshConversion &conversion, bool &convert);
+    struct InstanceView {
+      MeshView *view = nullptr;
+      int32_t conversion = -1; // index into conversions, or -1
+    };
+    std::vector<InstanceView> instanceViews;
+    std::vector<const scene::OpacityPartition *> partitionStorage;
+    static void convertMesh(MeshConversion &conversion);
+    void commitMesh(VkCommandBuffer command, MeshConversion &conversion);
+    std::vector<MeshConversion> conversions; // reused storage; see Gpu::prepare
+    std::unique_ptr<WorkerPool> workers;
     struct Tlas {
       std::shared_ptr<Accel> accel;
       std::unique_ptr<Buffer> instances;
@@ -426,7 +466,17 @@ namespace remix {
     scene::OpacityCache opacityCache;
     scene::SurfaceEmissionCache surfaceEmissionCache;
     using MeshViewKey = std::tuple<const scene::Mesh *, uint64_t, uint32_t, std::string>;
-    std::map<MeshViewKey, MeshView> meshes;
+    struct MeshViewKeyHash {
+      size_t operator()(const MeshViewKey &key) const {
+        const auto &opaque = std::get<3>(key);
+        const uint64_t values[] = {uint64_t(reinterpret_cast<uintptr_t>(std::get<0>(key))), std::get<1>(key),
+                                   std::get<2>(key), scene::fastHash(opaque.data(), opaque.size())};
+        return size_t(scene::fastHash(values, sizeof(values)));
+      }
+    };
+    // Looked up once per traced instance per frame; iteration order is unused
+    // beyond collecting BLAS builds, whose results do not depend on order.
+    std::unordered_map<MeshViewKey, MeshView, MeshViewKeyHash> meshes;
     // Update lineage -> its current view. Keyed like MeshViewKey with the
     // stream in place of the mesh: skinned lineages keep one view per instance.
     using UpdateViewKey = std::tuple<const scene::MeshUpdateStream *, uint64_t, uint32_t, std::string>;
@@ -511,7 +561,10 @@ namespace remix {
     std::shared_ptr<Accel> acceleration(VkDeviceSize size, VkAccelerationStructureTypeKHR type);
     VkBuildAccelerationStructureFlagsKHR flags(bool deform) const;
     MeshView &mesh(VkCommandBuffer command, const scene::Draw &draw,
-                   const std::vector<std::shared_ptr<const scene::OpacityPartition>> &partitions);
+                   const std::vector<const scene::OpacityPartition *> &partitions);
+    uint64_t geometryTicks = 0; // FramePerformanceEXT geometry time, per-instance timer.
+    // Previous frame's sizes, reserved up front for this frame's tables.
+    size_t reserveSurfaces = 0, reserveScene = 0, reserveStatic = 0, reserveDynamic = 0, reserveInputs[2] = {};
     void complete(VkCommandBuffer command);
     void buildBottom(VkCommandBuffer command);
     std::unique_ptr<Buffer> topScratch;

@@ -782,7 +782,7 @@ void main() {
 #ifdef TEMPORAL
   float z=opaque?abs((temporal.view*vec4(primary.p,1)).z):1e10;
   vec4 mv=vec4(0);vec3 N=opaque?primary.n:vec3(0,0,1);
-  if(opaque&&primary.historyValid&&temporal.flags.x==0) {
+  if(opaque&&temporal.flags.x==0) {
     vec4 clip=frame.camera*vec4(primary.p,1),prev=temporal.previousCamera*vec4(primary.previousPosition,1);
     if(prev.w>0&&clip.w>0)mv=vec4((prev.xy/prev.w-clip.xy/clip.w)*.5*vec2(frame.target.xy),abs((temporal.previousView*vec4(primary.previousPosition,1)).z)-z,1);
   }

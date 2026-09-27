@@ -23,6 +23,8 @@ namespace remix::ui {
   REMIX_FIELD(SliderInt)
   REMIX_FIELD(SliderFloat)
   REMIX_FIELD(SliderFloat3)
+  REMIX_FIELD(DragFloat)
+  REMIX_FIELD(DragFloat3)
   REMIX_FIELD(InputFloat)
   REMIX_FIELD(InputText)
   REMIX_FIELD(ColorEdit3)

@@ -223,6 +223,8 @@ void RemixNativeRuntime::presented() {
       if (!m_swapchain) {
         return REMIXAPI_ERROR_CODE_SUCCESS;
       }
+      updateFreeCamera();
+      m_raster.applyFreeCamera(m_freeCamera);
       // The frame snapshot: from here on API calls change the next frame.
       setupTime.stop();
       measured(m_asyncCaller.captureMilliseconds, [&] { m_raster.publishFrame(frame); });
@@ -486,6 +488,8 @@ void RemixNativeRuntime::presented() {
       if (!m_swapchain && !m_sharedImage) {
         return REMIXAPI_ERROR_CODE_SUCCESS;
       }
+      updateFreeCamera();
+      m_raster.applyFreeCamera(m_freeCamera);
       prepareSettings();
       {
         // A persistent static set is traced from the tracer's own copy of it.

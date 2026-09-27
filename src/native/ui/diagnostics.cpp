@@ -212,6 +212,32 @@ namespace remix {
       ImGui::TextWrapped("%s", "Raw reference: requested denoiser and TAA resume afterward.");
     ui::Checkbox("Force dynamic TLAS rebuild", &options.forceRebuild);
     ui::Checkbox("Freeze emissive radiance", &options.freezeEmissiveRadiance);
+    if (ImGui::CollapsingHeader("Free Camera", ImGuiTreeNodeFlags_DefaultOpen)) {
+      ui::Checkbox("Enable Free Camera", &m_freeCamera.enabled);
+      if (m_freeCamera.enabled) {
+        ImGui::Indent();
+        ui::Checkbox("Lock Free Camera", &m_freeCamera.locked);
+        ui::Checkbox("Invert Y (Pitch)", &m_freeCamera.invertY);
+        ui::DragFloat3("Position offset", m_freeCamera.positionOffset.data(), 0.1f);
+        ui::DragFloat("Yaw", &m_freeCamera.yaw, 0.01f, -3.14159f, 3.14159f, "%.3f rad");
+        ui::DragFloat("Pitch", &m_freeCamera.pitch, 0.01f, -1.55f, 1.55f, "%.3f rad");
+        ui::DragFloat("Movement Speed", &m_freeCamera.speed, 0.5f, 0.1f, 500.0f, "%.1f");
+        ui::DragFloat("Turning Speed", &m_freeCamera.turningSpeed, 0.05f, 0.1f, 10.0f, "%.2f");
+        if (ImGui::Button("Reset Camera")) {
+          m_freeCamera.reset();
+        }
+        if (ImGui::CollapsingHeader("Controls Guide")) {
+          ImGui::BulletText("W / S: Move Forward / Backward");
+          ImGui::BulletText("A / D: Move Left / Right");
+          ImGui::BulletText("E / Q: Move Up / Down");
+          ImGui::BulletText("Shift: Speed boost (3x) | Ctrl: Slow precision (0.25x)");
+          ImGui::BulletText("Mouse Left-Drag: Look around (yaw & pitch)");
+          ImGui::BulletText("J / L: Turn Yaw | I / K: Tilt Pitch");
+          ImGui::BulletText("Mouse Right-Click: Reset position & angles");
+        }
+        ImGui::Unindent();
+      }
+    }
     if (ImGui::CollapsingHeader("Performance statistics", ImGuiTreeNodeFlags_DefaultOpen)) {
       ImGui::TextWrapped("%s", m_properties.deviceName);
       ImGui::TextWrapped("Vulkan %u.%u.%u", VK_VERSION_MAJOR(m_properties.apiVersion),

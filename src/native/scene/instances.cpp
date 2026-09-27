@@ -109,16 +109,104 @@ namespace remix {
           metadata ? TemporalEpoch{metadata->worldEpoch, metadata->historyResetEpoch} : TemporalEpoch{};
       m_skyRadiance = sky;
     }
-    m_cameras[info.type] = camera;
-    m_views[info.type] = view;
+    m_authoredCameras[info.type] = camera;
+    m_authoredViews[info.type] = view;
     // Keep the submitted projection before view multiplication loses precision.
     // Recovering it from camera * inverse(view) can alternate between finite
     // and infinite far planes while moving, repeatedly rebuilding reconstruction.
     for (int c = 0; c < 4; ++c)
       projection[c * 4 + 1] = -projection[c * 4 + 1];
     m_projections[info.type] = projection;
-    m_reverseDepth[info.type] = reverseDepth;
+    m_authoredReverseDepth[info.type] = reverseDepth;
     m_cameraValid[info.type] = true;
+
+    if (!m_freeCamActive || info.type != REMIXAPI_CAMERA_TYPE_WORLD) {
+      m_cameras[info.type] = camera;
+      m_views[info.type] = view;
+      m_reverseDepth[info.type] = reverseDepth;
+    }
+  }
+
+  void NativeResources::applyFreeCamera(const scene::FreeCameraState &freeCam) {
+    if (!freeCam.enabled) {
+      if (m_freeCamActive) {
+        m_freeCamActive = false;
+        m_cameras = m_authoredCameras;
+        m_views = m_authoredViews;
+        m_reverseDepth = m_authoredReverseDepth;
+      }
+      return;
+    }
+    if (!m_cameraValid[REMIXAPI_CAMERA_TYPE_WORLD]) {
+      return;
+    }
+    m_freeCamActive = true;
+
+    try {
+      const auto &baseView = m_authoredViews[REMIXAPI_CAMERA_TYPE_WORLD];
+      const auto &baseProjection = m_projections[REMIXAPI_CAMERA_TYPE_WORLD];
+
+      Matrix viewToWorld = scene::inverse(baseView);
+      const float upSign = viewToWorld[5] < 0.0f ? -1.0f : 1.0f;
+      Matrix rot = getEulerRotationMatrix(upSign * freeCam.pitch, freeCam.yaw);
+
+      Matrix viewToWorldRot = viewToWorld;
+      viewToWorldRot[12] = 0.0f;
+      viewToWorldRot[13] = 0.0f;
+      viewToWorldRot[14] = 0.0f;
+      viewToWorldRot[15] = 1.0f;
+
+      Matrix freeCamRot = multiply(viewToWorldRot, rot);
+
+      Matrix freeCamViewToWorld = freeCamRot;
+      freeCamViewToWorld[12] = viewToWorld[12] + freeCam.positionOffset[0];
+      freeCamViewToWorld[13] = viewToWorld[13] + freeCam.positionOffset[1];
+      freeCamViewToWorld[14] = viewToWorld[14] + freeCam.positionOffset[2];
+      freeCamViewToWorld[15] = 1.0f;
+
+      Matrix freeCamView = scene::inverse(freeCamViewToWorld);
+
+      Matrix unadjustedProj = baseProjection;
+      for (int c = 0; c < 4; ++c) {
+        unadjustedProj[c * 4 + 1] = -unadjustedProj[c * 4 + 1];
+      }
+
+      Matrix freeCamCamera = multiply(unadjustedProj, freeCamView);
+      for (int c = 0; c < 4; ++c) {
+        freeCamCamera[c * 4 + 1] = -freeCamCamera[c * 4 + 1];
+      }
+
+      std::array<float, 4> freeCamReverseDepth{};
+      for (int c = 0; c < 4; ++c) {
+        double value = 0;
+        for (int k = 0; k < 4; ++k)
+          value += (double(unadjustedProj[k * 4 + 3]) - unadjustedProj[k * 4 + 2]) * freeCamView[c * 4 + k];
+        freeCamReverseDepth[c] = float(value);
+      }
+
+      m_views[REMIXAPI_CAMERA_TYPE_WORLD] = freeCamView;
+      m_cameras[REMIXAPI_CAMERA_TYPE_WORLD] = freeCamCamera;
+      m_reverseDepth[REMIXAPI_CAMERA_TYPE_WORLD] = freeCamReverseDepth;
+
+      if (m_cameraValid[REMIXAPI_CAMERA_TYPE_SKY]) {
+        Matrix skyViewToWorld = freeCamRot;
+        Matrix skyView = scene::inverse(skyViewToWorld);
+        Matrix skyProj = m_projections[REMIXAPI_CAMERA_TYPE_SKY];
+        for (int c = 0; c < 4; ++c) {
+          skyProj[c * 4 + 1] = -skyProj[c * 4 + 1];
+        }
+        Matrix skyCamera = multiply(skyProj, skyView);
+        for (int c = 0; c < 4; ++c) {
+          skyCamera[c * 4 + 1] = -skyCamera[c * 4 + 1];
+        }
+        m_views[REMIXAPI_CAMERA_TYPE_SKY] = skyView;
+        m_cameras[REMIXAPI_CAMERA_TYPE_SKY] = skyCamera;
+      }
+    } catch (...) {
+      m_cameras[REMIXAPI_CAMERA_TYPE_WORLD] = m_authoredCameras[REMIXAPI_CAMERA_TYPE_WORLD];
+      m_views[REMIXAPI_CAMERA_TYPE_WORLD] = m_authoredViews[REMIXAPI_CAMERA_TYPE_WORLD];
+      m_reverseDepth[REMIXAPI_CAMERA_TYPE_WORLD] = m_authoredReverseDepth[REMIXAPI_CAMERA_TYPE_WORLD];
+    }
   }
 
   void NativeResources::drawInstance(const remixapi_InstanceInfo &info,

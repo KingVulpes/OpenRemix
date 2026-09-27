@@ -16,6 +16,8 @@
 #include <unordered_set>
 #include <vector>
 
+#include "scene/free_camera.h"
+
 namespace remix {
 
   // CPU state is serialized by the API mutex. Only the presenting thread (the
@@ -66,6 +68,7 @@ namespace remix {
     void setRefreshGeometry(bool value) { m_refreshGeometry = value; }
     bool refreshGeometry() const { return m_refreshGeometry; }
     void setupCamera(const remixapi_CameraInfo &info);
+    void applyFreeCamera(const scene::FreeCameraState &freeCam);
     void drawInstance(const remixapi_InstanceInfo &info, remixapi_MaterialHandle materialOverride = nullptr);
     // Retained instances (remix_fo4_ext.h). Handles are nonzero and never reused.
     uint64_t createRetained(const remixapi_InstanceInfo &info);
@@ -186,7 +189,9 @@ namespace remix {
     std::unordered_map<uint64_t, std::shared_ptr<scene::Texture>> m_textures, m_uiTextures;
     std::unordered_map<std::filesystem::path, std::weak_ptr<scene::Texture>> m_paths;
     std::array<scene::Matrix, 3> m_cameras, m_views, m_projections;
-    std::array<std::array<float, 4>, 3> m_reverseDepth;
+    std::array<scene::Matrix, 3> m_authoredCameras, m_authoredViews;
+    std::array<std::array<float, 4>, 3> m_reverseDepth, m_authoredReverseDepth;
+    bool m_freeCamActive = false;
     struct LightSource {
       remixapi_StructType type{};
       remixapi_Transform transform{};

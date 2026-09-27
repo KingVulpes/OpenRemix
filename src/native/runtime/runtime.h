@@ -33,6 +33,7 @@
 #include "runtime/profiles.h"
 #include "runtime/screenshot.h"
 #include "ui/profiles.h"
+#include "scene/free_camera.h"
 #include <remix/remix_c.h>
 #include <remix/remix_editor_ext.h>
 #include <atomic>
@@ -155,6 +156,8 @@ public:
       m_window.setGuiCapture(false, false);
     }
   }
+  scene::FreeCameraState &freeCamera() { return m_freeCamera; }
+  const scene::FreeCameraState &freeCamera() const { return m_freeCamera; }
 
 private:
   struct QueueSelection {
@@ -245,6 +248,7 @@ private:
                     std::shared_ptr<void> depth);
   bool preparationPending() const;
   static bool processEvent(const SDL_Event *event, void *userData);
+  void updateFreeCamera();
 
   RemixSdlWindow m_window;
   RasterRenderer m_raster;
@@ -274,6 +278,7 @@ private:
     bool memoryStatistics = false; // take m_renderedMemory ("Report VRAM statistics")
   } m_handoff;                     // caller writes before the handoff; render thread reads
   RasterRenderer::MemoryStatistics m_renderedMemory; // render-owned: after its last frame
+  scene::FreeCameraState m_freeCamera;
   std::shared_ptr<upscale::Ngx> m_ngx;
   std::unique_ptr<PathTracer> m_pathTracer;
   std::shared_ptr<postfx::State> m_exposureState;

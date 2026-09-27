@@ -305,6 +305,13 @@ namespace remix {
       uint32_t decode[4] = {}, maps[4] = {};
     };
     std::unordered_map<const scene::Material *, MaterialSlots> materialSlots;
+    std::vector<const MaterialSlots *> surfaceSlots; // per prepared surface, in draw order
+    // Each instance's ranges in the frame's surface, primary, instance and
+    // signature tables, so the tables can be filled in parallel.
+    struct InstanceLayout {
+      size_t surface = 0, primary = 0, input = 0, staticOffset = 0, dynamicOffset = 0, slot = 0;
+    };
+    std::vector<InstanceLayout> instanceLayouts;
     std::unique_ptr<Image> primary[7];
     VkRenderPass primaryPass[2] = {};
     VkFramebuffer primaryFramebuffer[2] = {};

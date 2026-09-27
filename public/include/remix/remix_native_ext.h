@@ -183,8 +183,10 @@ typedef struct remixapi_FramePerformanceEXT {
 // FramePerformanceEXT.recordMilliseconds; the named sub-phases (skinning,
 // material, temporal) are nested within their parent. FramePerformanceEXT
 // geometry time is nested within traceSurfaces and its acceleration time within
-// traceAcceleration. otherMilliseconds is the part of recordMilliseconds that
-// no phase covers. presentSetup (settings, pipelines, frame slot selection) and
+// traceAcceleration. Within traceSurfaces, material is the draw-order material
+// slot assignment and temporal the history staging; per-surface table filling
+// (including history lookups) runs on worker threads and is not split out.
+// otherMilliseconds is the part of recordMilliseconds that no phase covers. presentSetup (settings, pipelines, frame slot selection) and
 // presentRelease (history commit, snapshot and draw list release) are the
 // parts of presentMilliseconds outside scene, fence, acquire, record, submit
 // and queue present.

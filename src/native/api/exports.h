@@ -58,4 +58,6 @@ remixapi_UpdateRetainedInstances(const remixapi_RetainedInstanceUpdate *updates,
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_DestroyRetainedInstances(const uint64_t *handles,
                                                                             uint32_t count);
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_DrawRetainedInstances(const float *sceneOrigin);
+// Device-local memory pressure (remix_fo4_ext.h); named export only.
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetMemoryPressure(remixapi_MemoryPressureInfo *out_info);
 }

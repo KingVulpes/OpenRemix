@@ -175,6 +175,8 @@ namespace remix::config {
               [i](auto &s) -> auto & { return s.clearColor[i]; }, 0, 1));
         result.push_back(scalar("rtx.native.textures.keepCompressed", FIELD(compressedTextures), 0, 1));
         result.push_back(scalar("rtx.native.vramStatistics", FIELD(vramStatistics), 0, 1));
+        result.push_back(scalar("rtx.native.meshes.refreshInPlace", FIELD(refreshGeometry), 0, 1));
+        result.push_back(scalar("rtx.native.memoryPressure", FIELD(memoryPressure), 0, 1));
 #undef TRACE
 #undef FIELD
         return result;

@@ -17,6 +17,11 @@ namespace remix::config {
     bool compressedTextures = false;
     // Fill GetVramStats from OpenRemix's allocations and the driver budget.
     bool vramStatistics = false;
+    // Honour remixapi_MeshInfoRefreshGeometryEXT: a refresh keeps the mesh's
+    // update lineage, so the tracer refits its BLAS instead of rebuilding.
+    bool refreshGeometry = false;
+    // Answer remixapi_GetMemoryPressure from the driver's device-local budget.
+    bool memoryPressure = false;
     bool operator==(const Settings &) const = default;
   };
   using UnknownSettings = std::map<std::string, std::string>;

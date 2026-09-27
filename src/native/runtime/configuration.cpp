@@ -52,6 +52,7 @@ namespace remix {
       return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
     // Texture creation needs no frame boundary: later CreateTexture calls see it.
     m_raster.setKeepCompressedTextures(m_profiles.current().compressedTextures);
+    m_raster.setRefreshGeometry(m_profiles.current().refreshGeometry);
     return REMIXAPI_ERROR_CODE_SUCCESS;
   }
 
@@ -131,6 +132,7 @@ namespace remix {
     const auto &settings = m_profiles.current();
     m_requestedBackend = settings.backend;
     m_raster.setKeepCompressedTextures(settings.compressedTextures);
+    m_raster.setRefreshGeometry(settings.refreshGeometry);
     // Startup needs the requested presenter settings before there is a target.
     // Tracing settings activate in prepareSettings only after preflight
     // succeeds.
@@ -452,6 +454,26 @@ namespace remix {
         }
     }
     return REMIXAPI_ERROR_CODE_SUCCESS;
+  }
+
+  void RemixNativeRuntime::updateMemoryPressure() {
+    uint64_t usage = 0, budget = 0;
+    if (m_profiles.current().memoryPressure && m_memoryBudget) {
+      // As the fork: the largest device-local heap by budget, whole process
+      // (the host's own D3D11 resources on a shared device count too).
+      VkPhysicalDeviceMemoryBudgetPropertiesEXT heaps = {
+          .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
+      VkPhysicalDeviceMemoryProperties2 memory = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2,
+                                                  .pNext = &heaps};
+      vkGetPhysicalDeviceMemoryProperties2(m_physicalDevice, &memory);
+      for (uint32_t i = 0; i < memory.memoryProperties.memoryHeapCount; ++i)
+        if ((memory.memoryProperties.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) &&
+            heaps.heapBudget[i] > budget) {
+          usage = heaps.heapUsage[i];
+          budget = heaps.heapBudget[i];
+        }
+    }
+    m_memoryPressure.update(usage, budget, ++m_memoryPressureFrame);
   }
 
   remixapi_FeatureAvailability RemixNativeRuntime::getFeatureAvailability() const {

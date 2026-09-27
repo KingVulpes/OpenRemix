@@ -186,4 +186,20 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_SetFogState(const remixapi_Fo
 }
 
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_AutoInstancePersistentLights() { return ignoredEffect(); }
+
+// remix_fo4_ext.h: device-local memory pressure (fork semantics). Lock-free and
+// callable from any thread; all zero while "Report memory pressure" is off.
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetMemoryPressure(remixapi_MemoryPressureInfo *out_info) {
+  if (!out_info || out_info->structSize < sizeof(remixapi_MemoryPressureInfo))
+    return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+  const auto sample = g_runtime.memoryPressure();
+  out_info->structSize = sizeof(remixapi_MemoryPressureInfo);
+  out_info->level = sample.level;
+  out_info->requestHostRelease = sample.requestHostRelease;
+  out_info->frame = sample.frame;
+  out_info->usageBytes = sample.usageBytes;
+  out_info->budgetBytes = sample.budgetBytes;
+  out_info->bytesToRelease = sample.bytesToRelease;
+  return REMIXAPI_ERROR_CODE_SUCCESS;
+}
 }

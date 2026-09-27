@@ -31,12 +31,14 @@ namespace remix {
     const bool streaming = bool(draw.mesh->updateStream);
     const bool deform = skinned || streaming;
     // Each independently animated skin owns its BLAS. Opt-in CPU replacements
-    // may transfer compatible storage only from a view unused in this frame.
+    // may transfer compatible storage only from a view unused in this frame;
+    // a skinned lineage transfers per instance.
     auto key =
         std::make_tuple(draw.mesh.get(), skinned ? draw.instanceId : 0, skinned ? draw.instanceIndex : 0, opaque);
     auto &view = meshes[key];
     if (streaming && view.owner.lock() != draw.mesh) {
-      auto found = updateViews.find({draw.mesh->updateStream.get(), opaque});
+      const UpdateViewKey lineage{draw.mesh->updateStream.get(), std::get<1>(key), std::get<2>(key), opaque};
+      auto found = updateViews.find(lineage);
       if (found != updateViews.end() && found->second != key) {
         auto old = meshes.find(found->second);
         if (old != meshes.end() && old->second.updateStream == draw.mesh->updateStream &&
@@ -46,7 +48,7 @@ namespace remix {
           view = std::move(old->second); meshes.erase(old);
         }
       }
-      updateViews[{draw.mesh->updateStream.get(), opaque}] = key;
+      updateViews[lineage] = key;
     }
     view.lastUse = sequence;
     if (view.owner.lock() == draw.mesh && (!skinned || view.bones == *draw.bones))
@@ -169,8 +171,9 @@ namespace remix {
       auto &g = *view.geometry;
       g.deform = deform;
       // Refit only while the build remains spatially similar, and periodically
-      // rebuild to bound degradation from many small deformations.
-      if (update && streaming) {
+      // rebuild to bound degradation from many small deformations. Skins keep
+      // refitting as without a lineage: their bones move the whole bound.
+      if (update && streaming && !skinned) {
         const float limit = std::max(g.diagonal * .25f, .001f);
         if (g.refits >= 60) update = false;
         for (unsigned c = 0; c < 3; ++c)

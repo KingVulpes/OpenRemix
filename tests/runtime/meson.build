@@ -42,6 +42,10 @@ if get_option('gpu_tests')
   endif
 endif
 
+memory_pressure_test = executable('remix-memory-pressure-test', 'memory_pressure.cpp',
+  '../../src/native/runtime/memory_pressure.cpp', include_directories : native_include)
+test('Memory pressure levels and host release', memory_pressure_test)
+
 pipeline_test = executable('remix-pipeline-test', 'pipelines.cpp',
   include_directories : native_include, link_with : pipeline_library,
   dependencies : [vulkan_dep, threads_dep, filesystem_dep])

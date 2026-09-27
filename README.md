@@ -31,6 +31,9 @@ Optional, off by default: `rtx.native.textures.keepCompressed = 1` keeps BC1-BC7
 textures compressed on the GPU (for textures created afterwards), and
 `rtx.native.vramStatistics = 1` makes `GetVramStats` report allocations and the
 driver budget. Both are also in the ImGui Rendering tab under Memory.
+Also off by default: `rtx.native.memoryPressure = 1` answers `remixapi_GetMemoryPressure`
+(Memory), and `rtx.native.meshes.refreshInPlace = 1` honours
+`remixapi_MeshInfoRefreshGeometryEXT`, refitting a refreshed mesh's BLAS (Geometry).
 See the [native sample](samples/remix-native).
 
 ## Building

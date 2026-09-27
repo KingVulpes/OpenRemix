@@ -358,6 +358,80 @@ int main(int argc, char **argv) {
     std::puts("Mesh updates: refits, exact reuse, history, periodic/displacement rebuilds, topology and lifetime isolation passed");
     return 0;
   }
+  if (argc > 2 && std::string(argv[2]) == "mesh-refresh") {
+    // remixapi_MeshInfoRefreshGeometryEXT as the FO4 plugin uses it: a mesh
+    // created normally, then refreshed under the same hash (FaceGen morphs,
+    // particles). The first refresh starts a lineage (one build without
+    // compaction); later ones refit that BLAS in place, so the dynamic TLAS
+    // refits instead of rebuilding for a new BLAS address.
+    ok(api.SetConfigVariable("rtx.native.meshes.refreshInPlace", "1"));
+    identity.classification = REMIXAPI_INSTANCE_DYNAMIC_EXT;
+    remixapi_MeshInfoRefreshGeometryEXT refresh{};
+    refresh.sType = REMIXAPI_STRUCT_TYPE_MESH_INFO_REFRESH_GEOMETRY_EXT;
+    for (auto &v : vertices) { v.position[0] *= .3f; v.position[1] *= .3f; }
+    auto measure = [&](const char *what, remixapi_MeshHandle &handle) {
+      mesh.pNext = nullptr;
+      ok(api.CreateMesh(&mesh, &handle));
+      for (int i = 0; i < 8; ++i) frame(); // Settle builds and compaction.
+      mesh.pNext = &refresh;
+      auto edit = [&] { ok(api.CreateMesh(&mesh, &handle)); frame(); };
+      const auto before = statistics();
+      vertices[0].position[0] -= .001f; edit();
+      const auto started = statistics();
+      require(started.blasBuilds == before.blasBuilds + 1, "First refresh did not start one lineage build");
+      for (unsigned i = 0; i < 30; ++i) { vertices[0].position[0] -= .001f; edit(); }
+      for (int i = 0; i < 4; ++i) frame();
+      const auto refreshed = statistics();
+      std::printf("%s: 30 refreshes -> BLAS builds +%llu, refits +%llu, compactions +%llu, dynamic TLAS builds +%llu, "
+                  "refits +%llu\n", what,
+                  (unsigned long long)(refreshed.blasBuilds - started.blasBuilds),
+                  (unsigned long long)(refreshed.blasRefits - started.blasRefits),
+                  (unsigned long long)(refreshed.blasCompactions - started.blasCompactions),
+                  (unsigned long long)(refreshed.dynamicTlasBuilds - started.dynamicTlasBuilds),
+                  (unsigned long long)(refreshed.dynamicTlasRefits - started.dynamicTlasRefits));
+      require(refreshed.blasBuilds == started.blasBuilds && refreshed.blasRefits == started.blasRefits + 30 &&
+                  refreshed.blasCompactions == started.blasCompactions,
+              "Refreshed geometry was rebuilt or compacted instead of refitted");
+      require(refreshed.dynamicTlasBuilds == started.dynamicTlasBuilds &&
+                  refreshed.dynamicTlasRefits >= started.dynamicTlasRefits + 30,
+              "Refreshed geometry rebuilt the dynamic TLAS");
+      // Identical content is not a refresh; a changed surface count is ignored.
+      edit();
+      require(statistics().blasRefits == refreshed.blasRefits, "Identical refresh refit");
+      mesh.surfaces_count = 2;
+      remixapi_MeshInfoSurfaceTriangles pair[2] = {surface, surface};
+      mesh.surfaces_values = pair;
+      vertices[0].position[0] -= .001f; edit();
+      require(statistics().blasBuilds == refreshed.blasBuilds && statistics().blasRefits == refreshed.blasRefits,
+              "Surface-count change was not ignored");
+      mesh.surfaces_count = 1;
+      mesh.surfaces_values = &surface;
+    };
+    remixapi_MeshHandle refreshed;
+    mesh.hash = 40;
+    instance.mesh = reinterpret_cast<remixapi_MeshHandle>(uintptr_t(mesh.hash));
+    measure("Rigid refresh", refreshed);
+    // Skinned (FaceGen heads): the lineage transfers the instance's own BLAS.
+    float weights[] = {1, 1, 1, 1};
+    uint32_t bones[] = {0, 0, 0, 0};
+    surface.skinning_hasvalue = 1;
+    surface.skinning_value = {1, weights, 4, bones, 4};
+    remixapi_Transform bone = {};
+    for (int i = 0; i < 3; ++i)
+      bone.matrix[i][i] = 1;
+    remixapi_InstanceInfoBoneTransformsEXT skin = {};
+    skin.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_BONE_TRANSFORMS_EXT;
+    skin.pNext = &identity;
+    skin.boneTransforms_count = 1;
+    skin.boneTransforms_values = &bone;
+    instance.pNext = &skin;
+    mesh.hash = 41;
+    instance.mesh = reinterpret_cast<remixapi_MeshHandle>(uintptr_t(mesh.hash));
+    measure("Skinned refresh", refreshed);
+    ok(api.Shutdown());
+    std::puts("Mesh refresh: in-place refits for rigid and skinned meshes, no compaction or TLAS rebuild passed");
+    return 0;
+  }
   remixapi_DenoisingCapabilitiesEXT denoiseCaps{};
   denoiseCaps.structSize = sizeof(denoiseCaps);
   ok(remixapi_GetDenoisingCapabilitiesEXT(&denoiseCaps));

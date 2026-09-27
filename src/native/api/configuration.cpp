@@ -41,7 +41,9 @@ namespace remix::api {
                             std::strchr("rgba", key[22]);
     if (std::strcmp(key, "rtx.native.vsync") == 0 || clearColor ||
         std::strcmp(key, "rtx.native.textures.keepCompressed") == 0 ||
-        std::strcmp(key, "rtx.native.vramStatistics") == 0)
+        std::strcmp(key, "rtx.native.vramStatistics") == 0 ||
+        std::strcmp(key, "rtx.native.meshes.refreshInPlace") == 0 ||
+        std::strcmp(key, "rtx.native.memoryPressure") == 0)
       return g_runtime.configureSetting(key, value);
     // Recognized legacy renderer namespace: accepted but ignored by the unlit renderer.
     return std::strncmp(key, "rtx.", 4) == 0 ? REMIXAPI_ERROR_CODE_SUCCESS

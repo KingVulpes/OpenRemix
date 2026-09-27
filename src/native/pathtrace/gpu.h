@@ -415,7 +415,10 @@ namespace remix {
     scene::SurfaceEmissionCache surfaceEmissionCache;
     using MeshViewKey = std::tuple<const scene::Mesh *, uint64_t, uint32_t, std::string>;
     std::map<MeshViewKey, MeshView> meshes;
-    std::map<std::pair<const scene::MeshUpdateStream *, std::string>, MeshViewKey> updateViews;
+    // Update lineage -> its current view. Keyed like MeshViewKey with the
+    // stream in place of the mesh: skinned lineages keep one view per instance.
+    using UpdateViewKey = std::tuple<const scene::MeshUpdateStream *, uint64_t, uint32_t, std::string>;
+    std::map<UpdateViewKey, MeshViewKey> updateViews;
     std::vector<std::shared_ptr<Geometry>> retiredGeometry;
     std::vector<std::shared_ptr<Buffer>> retiredBuffers;
     std::vector<std::shared_ptr<Geometry>> compactPending;

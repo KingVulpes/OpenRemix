@@ -57,6 +57,11 @@ namespace remix {
     // Atomic so the API layer can choose the preparation path before locking.
     void setKeepCompressedTextures(bool value) { m_keepCompressed.store(value, std::memory_order_relaxed); }
     bool keepCompressedTextures() const { return m_keepCompressed.load(std::memory_order_relaxed); }
+    // Honour remixapi_MeshInfoRefreshGeometryEXT ("Refresh mesh geometry in
+    // place"). Off: the struct is ignored and a repeated CreateMesh replaces the
+    // mesh as before.
+    void setRefreshGeometry(bool value) { m_refreshGeometry = value; }
+    bool refreshGeometry() const { return m_refreshGeometry; }
     void setupCamera(const remixapi_CameraInfo &info);
     void drawInstance(const remixapi_InstanceInfo &info, remixapi_MaterialHandle materialOverride = nullptr);
     // Retained instances (remix_fo4_ext.h). Handles are nonzero and never reused.
@@ -110,6 +115,7 @@ namespace remix {
     std::shared_ptr<scene::Texture> dataTexturePath(remixapi_Path path);
     void storeTexture(uint64_t hash, scene::Pixels &&pixels, remixapi_TextureHandle &handle);
     std::atomic<bool> m_keepCompressed{false};
+    bool m_refreshGeometry = false;
     std::shared_ptr<scene::Texture> m_white;
     std::shared_ptr<scene::Material> m_default;
     std::unordered_map<uint64_t, std::shared_ptr<scene::Material>> m_materials, m_modMaterials;

@@ -5,6 +5,9 @@ test('Scene resources and image decoding', scene_test, args : [meson.current_bui
 retained_test = executable('remix-retained-test', 'retained.cpp',
   include_directories : test_includes, link_with : scene_library)
 test('Retained instance registration, replay and lifetimes', retained_test)
+refresh_test = executable('remix-mesh-refresh-test', 'refresh.cpp',
+  include_directories : test_includes, link_with : scene_library)
+test('Mesh refresh lineage, retained replay and correspondence', refresh_test)
 temporal_test = executable('remix-temporal-test', 'temporal.cpp',
   include_directories : test_includes, link_with : scene_library)
 test('Temporal submitted-frame ownership and correspondence', temporal_test)

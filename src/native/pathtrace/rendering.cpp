@@ -258,7 +258,7 @@ namespace remix {
     }
     for (auto it = updateViews.begin(); it != updateViews.end();) {
       auto view = meshes.find(it->second);
-      if (view == meshes.end() || view->second.updateStream.get() != it->first.first)
+      if (view == meshes.end() || view->second.updateStream.get() != std::get<0>(it->first))
         it = updateViews.erase(it);
       else
         ++it;

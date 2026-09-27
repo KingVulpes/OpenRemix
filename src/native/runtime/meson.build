@@ -6,6 +6,7 @@ runtime_sources = files(
   'profiles.cpp',
   'device.cpp',
   'frame_snapshot.cpp',
+  'memory_pressure.cpp',
   'presentation.cpp',
   'runtime.cpp',
   'screenshot.cpp',

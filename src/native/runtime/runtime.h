@@ -26,6 +26,7 @@
 #include "platform/gpu_frames.h"
 #include "platform/window.h"
 #include "raster/renderer.h"
+#include "runtime/memory_pressure.h"
 #include "runtime/pipelines.h"
 #include "runtime/profiles.h"
 #include "runtime/screenshot.h"
@@ -94,6 +95,9 @@ public:
   remixapi_ErrorCode configureSetting(const char *key, const char *value);
   // GetVramStats, gated by the "Report VRAM statistics" setting.
   remixapi_ErrorCode vramStatistics(remixapi_VramStats &stats) const;
+  // remixapi_GetMemoryPressure: lock-free, any thread. Zero while the
+  // "Report memory pressure" setting is off or VK_EXT_memory_budget is absent.
+  MemoryPressureSample memoryPressure() const { return m_memoryPressure.sample(); }
   remixapi_UIState uiState() const { return m_uiState; }
   void setUiState(remixapi_UIState state) {
     m_uiState = state;
@@ -136,6 +140,7 @@ private:
   void drawPostProcessingTab(config::Settings &settings);
   void drawDiagnosticsTab(config::Settings &settings);
   void applySettings();
+  void updateMemoryPressure();
   void prepareSettings();
   void preparePostProcessing();
   void presented();
@@ -196,6 +201,8 @@ private:
   bool m_traceSupported = false;
   bool m_textureCompression = false; // textureCompressionBC enabled on m_device.
   bool m_memoryBudget = false;       // VK_EXT_memory_budget queries available.
+  MemoryPressure m_memoryPressure;
+  uint32_t m_memoryPressureFrame = 0;
   remixapi_DenoisingCapabilitiesEXT m_denoiseCapabilities{
       .structSize = sizeof(remixapi_DenoisingCapabilitiesEXT)};
   std::string m_traceUnavailable;

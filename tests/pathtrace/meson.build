@@ -227,6 +227,8 @@ if get_option('gpu_tests')
     args : [meson.current_build_dir() / 'opacity-scenes', 'opaque-variants'], timeout : 180)
   test('Compatible mesh updates and queued version isolation', pathtrace_test,
     args : [meson.current_build_dir() / 'mesh-update-scenes', 'mesh-update'], timeout : 120)
+  test('Refreshed mesh geometry refits in place', pathtrace_test,
+    args : [meson.current_build_dir() / 'mesh-refresh-scenes', 'mesh-refresh'], timeout : 120)
   test('Geometry content reuse and shading history invalidation', pathtrace_test,
     args : [meson.current_build_dir() / 'geometry-history-scenes', 'geometry-history'], timeout : 120)
   test('Path tracing capabilities and GPU scenes', pathtrace_test,

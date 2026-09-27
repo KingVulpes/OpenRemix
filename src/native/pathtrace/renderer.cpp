@@ -31,6 +31,7 @@ namespace remix {
     swap(emissiveNodes, frame.emissiveNodes);
     swap(emissiveEmitters, frame.emissiveEmitters);
     swap(uploads, frame.uploads);
+    swap(staging, frame.staging);
     swap(retired, frame.retired);
     swap(compactPending, frame.compactPending);
     swap(retiredGeometry, frame.retiredGeometry);

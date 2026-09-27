@@ -382,6 +382,13 @@ namespace remix {
     void finishLightGuiding(VkCommandBuffer command);
     void completeLightGuiding();
     std::vector<std::unique_ptr<Buffer>> uploads;
+    // One mapped staging buffer per frame slot, filled front to back by
+    // upload(). Reset once the slot's fence has completed (complete()).
+    struct Staging {
+      std::unique_ptr<Buffer> buffer;
+      VkDeviceSize used = 0;
+    } staging;
+    VkDeviceSize stage(const void *data, size_t size);
     std::vector<std::shared_ptr<Accel>> retired;
     struct GeometryGroup {
       uint32_t surface = 0, count = 0;
@@ -529,6 +536,7 @@ namespace remix {
       std::unique_ptr<Buffer> sharcReadback, guidingReadback, reuseReadback, rayReadback;
       uint64_t lightGeneration = 0, torchGeneration = 0, emissiveGeneration = 0;
       std::vector<std::unique_ptr<Buffer>> uploads;
+      Staging staging;
       std::vector<std::shared_ptr<Accel>> retired;
       std::vector<std::shared_ptr<Geometry>> compactPending, retiredGeometry;
       std::vector<std::shared_ptr<Buffer>> retiredBuffers;

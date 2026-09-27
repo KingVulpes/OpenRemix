@@ -10,6 +10,7 @@ namespace remix {
     completePbrReuse();
     completeRayProfile();
     uploads.clear();
+    staging.used = 0;
     retiredGeometry.clear();
     retiredBuffers.clear();
     retired.clear();

@@ -459,7 +459,19 @@ namespace remix {
       std::shared_ptr<Accel> accel;
       std::unique_ptr<Buffer> instances;
       trace::TlasPolicy policy;
-    } tlas[2];
+      // Combined TLAS only: the combinedStaticStamp whose static instances
+      // this slot's instance buffer already holds (0: none).
+      uint64_t prefix = 0;
+    } tlas[3]; // static, dynamic, combined (rtx.native.pathtrace.combinedTlas)
+    // Combined TLAS: its policy and the static part's instance records, kept
+    // while the static inputs do not change.
+    trace::CombinedTlasPolicy combinedPolicy;
+    std::vector<VkAccelerationStructureInstanceKHR> combinedStatic, combinedDynamic;
+    uint64_t combinedStaticStamp = 0;
+    bool combinedStaticValid = false;
+    void buildCombinedTop(VkCommandBuffer command, const std::vector<trace::InstanceInput> &staticInputs,
+                          const std::vector<trace::InstanceInput> &dynamicInputs, bool force,
+                          uint64_t staticGeneration);
     struct ContentHash {
       size_t operator()(const std::string &content) const {
         return size_t(scene::fastHash(content.data(), content.size()));
@@ -552,7 +564,8 @@ namespace remix {
       VkQueryPool timestamps = VK_NULL_HANDLE, compaction = VK_NULL_HANDLE, sharcTimestamps = VK_NULL_HANDLE;
       bool timingPending = false, sharcPending = false, guidingPending = false, reusePending = false,
            rayPending = false;
-      std::unique_ptr<Buffer> table, uniform, scratch, topScratch, instances[2];
+      std::unique_ptr<Buffer> table, uniform, scratch, topScratch, instances[3];
+      uint64_t combinedPrefix = 0; // Tlas::prefix of the combined TLAS's instances
       std::unique_ptr<Buffer> tableUpload;
       std::unique_ptr<Buffer> lightNodes, lightEmitters, torchNodes, torchEmitters, emissiveNodes,
           emissiveEmitters;
@@ -615,11 +628,13 @@ namespace remix {
     // prefix of that generation; one the static TLAS was built from (or found
     // equal to) is not compared again.
     // faceCulling: rtx.native.pathtrace.hardwareFaceCulling (trace::instanceFlags).
+    // combined: rtx.native.pathtrace.combinedTlas; builds only tlas[2].
     void buildTop(VkCommandBuffer command, const std::vector<trace::InstanceInput> &staticInputs,
                   const std::vector<trace::InstanceInput> &dynamicInputs, bool force, uint64_t staticGeneration,
-                  bool faceCulling);
+                  bool faceCulling, bool combined);
     uint64_t tlasStaticGeneration = 0;
     bool topFaceCulling = false; // the setting the TLAS instance flags were built with
+    bool topCombined = false;    // the TLAS layout last built
     std::unique_ptr<Image> image(bool colorAttachment = false,
                                  VkFormat format = VK_FORMAT_R32G32B32A32_SFLOAT, VkExtent2D size = {});
     void destroyPost();

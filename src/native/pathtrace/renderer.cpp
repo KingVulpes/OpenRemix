@@ -48,8 +48,9 @@ namespace remix {
     swap(torchBufferGeneration, frame.torchGeneration);
     swap(emissiveBufferGeneration, frame.emissiveGeneration);
     swap(retiredPreviousVertices, frame.retiredVertices);
-    for (unsigned i = 0; i < 2; ++i)
+    for (unsigned i = 0; i < 3; ++i)
       swap(tlas[i].instances, frame.instances[i]);
+    swap(tlas[2].prefix, frame.combinedPrefix);
   }
 
   void PathTracer::Gpu::selectFrame(uint32_t slot) {

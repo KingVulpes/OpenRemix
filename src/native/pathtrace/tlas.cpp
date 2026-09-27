@@ -8,13 +8,14 @@ namespace remix {
                 trace::instanceFrontCounterClockwise == VK_GEOMETRY_INSTANCE_TRIANGLE_FRONT_COUNTERCLOCKWISE_BIT_KHR);
 
   namespace {
-    VkAccelerationStructureInstanceKHR instanceData(const trace::InstanceInput &input, bool faceCulling) {
+    VkAccelerationStructureInstanceKHR instanceData(const trace::InstanceInput &input, bool faceCulling,
+                                                    uint8_t mask = trace::allInstancesMask) {
       VkAccelerationStructureInstanceKHR instance = {};
       for (int r = 0; r < 3; ++r)
         for (int c = 0; c < 4; ++c)
           instance.transform.matrix[r][c] = input.model[c * 4 + r];
       instance.instanceCustomIndex = input.customIndex;
-      instance.mask = 255;
+      instance.mask = mask;
       instance.flags = trace::instanceFlags(input, faceCulling);
       instance.accelerationStructureReference = input.geometry;
       return instance;
@@ -23,15 +24,27 @@ namespace remix {
 
   void PathTracer::Gpu::buildTop(VkCommandBuffer command, const std::vector<trace::InstanceInput> &staticInputs,
                                  const std::vector<trace::InstanceInput> &dynamicInputs, bool force,
-                                 uint64_t staticGeneration, bool faceCulling) {
+                                 uint64_t staticGeneration, bool faceCulling, bool combined) {
     const std::vector<trace::InstanceInput> *inputs[2] = {&staticInputs, &dynamicInputs};
     ScopedMilliseconds time{performance.accelerationMilliseconds};
-    // Instance flags depend on the setting: rebuild both TLASes when it changes.
-    if (faceCulling != topFaceCulling) {
-      for (auto &top : tlas)
-        top.policy = {};
+    // Instance flags depend on hardware face culling: rebuild when it changes.
+    // A layout change starts the other layout from scratch and releases the
+    // unused TLASes after this frame (their slot's retired list).
+    if (faceCulling != topFaceCulling || combined != topCombined) {
+      for (unsigned i = 0; i < 3; ++i) {
+        tlas[i].policy = {};
+        if (combined != topCombined && (i == 2) != combined && tlas[i].accel)
+          retired.push_back(std::move(tlas[i].accel));
+      }
       tlasStaticGeneration = 0;
+      combinedPolicy = {};
+      combinedStaticValid = false;
       topFaceCulling = faceCulling;
+      topCombined = combined;
+    }
+    if (combined) {
+      buildCombinedTop(command, staticInputs, dynamicInputs, force, staticGeneration);
+      return;
     }
     VkAccelerationStructureGeometryKHR geometry[2] = {};
     VkAccelerationStructureBuildGeometryInfoKHR builds[2] = {};
@@ -116,6 +129,100 @@ namespace remix {
         ++stats.dynamicTlasBuilds;
     }
     stats.dynamicRefitCount = tlas[1].policy.refits;
+  }
+
+  // One TLAS over the static instances followed by the dynamic ones, so every
+  // ray traverses once. Static changes rebuild it; dynamic transform changes
+  // refit it (trace::CombinedTlasPolicy). The static instance records are kept
+  // while the static inputs are unchanged, and each frame slot's instance
+  // buffer keeps the static part it already holds.
+  void PathTracer::Gpu::buildCombinedTop(VkCommandBuffer command,
+                                         const std::vector<trace::InstanceInput> &staticInputs,
+                                         const std::vector<trace::InstanceInput> &dynamicInputs, bool force,
+                                         uint64_t staticGeneration) {
+    using Policy = trace::CombinedTlasPolicy;
+    auto &top = tlas[2];
+    const auto decision = combinedPolicy.decide(staticInputs, staticGeneration, dynamicInputs, force);
+    stats.dynamicRebuildReason = decision.action == Policy::Build ? decision.reason : 0;
+    if (decision.action == Policy::None) {
+      combinedPolicy.commit(staticInputs, staticGeneration, dynamicInputs, decision);
+      stats.dynamicRefitCount = combinedPolicy.dynamicPart.refits;
+      return;
+    }
+    const size_t total = staticInputs.size() + dynamicInputs.size();
+    if (total > asProperties.maxInstanceCount)
+      throw VK_ERROR_TOO_MANY_OBJECTS;
+    const auto count = uint32_t(total);
+    if (decision.staticChanged || !combinedStaticValid) {
+      combinedStatic.clear();
+      combinedStatic.reserve(staticInputs.size());
+      for (const auto &input : staticInputs)
+        combinedStatic.push_back(instanceData(input, topFaceCulling, trace::instanceMask(true, false)));
+      combinedStaticValid = true;
+      ++combinedStaticStamp;
+    }
+    combinedDynamic.clear();
+    combinedDynamic.reserve(dynamicInputs.size());
+    for (const auto &input : dynamicInputs)
+      combinedDynamic.push_back(instanceData(input, topFaceCulling, trace::instanceMask(true, true)));
+    const size_t staticBytes = combinedStatic.size() * sizeof(combinedStatic[0]);
+    const size_t bytes = staticBytes + combinedDynamic.size() * sizeof(combinedDynamic[0]);
+    bool kept = top.prefix == combinedStaticStamp;
+    if (!top.instances || top.instances->size < bytes) {
+      top.instances = buffer(bytes, inputUsage, true);
+      kept = false;
+    }
+    write(*top.instances,
+          {{combinedStatic.data(), staticBytes}, {combinedDynamic.data(), bytes - staticBytes}},
+          kept ? staticBytes : 0);
+    top.prefix = combinedStaticStamp;
+    VkAccelerationStructureGeometryKHR geometry = {.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR,
+                                                   .geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR};
+    geometry.geometry.instances = {.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR,
+                                   .data = {.deviceAddress = top.instances->address}};
+    bool update = decision.action == Policy::Update;
+    VkAccelerationStructureBuildGeometryInfoKHR build = {
+        .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
+        .type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
+        .flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR |
+                 VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR,
+        .mode = update ? VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR : VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
+        .geometryCount = 1,
+        .pGeometries = &geometry};
+    VkAccelerationStructureBuildSizesInfoKHR sizes = {.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
+    buildSizes(device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &build, &count, &sizes);
+    if (!top.accel || top.accel->size < sizes.accelerationStructureSize) {
+      if (top.accel)
+        retired.push_back(std::move(top.accel));
+      top.accel = acceleration(sizes.accelerationStructureSize, VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR);
+      // A new structure has no source to refit.
+      update = false;
+      build.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+    }
+    build.srcAccelerationStructure = update ? top.accel->handle : VK_NULL_HANDLE;
+    build.dstAccelerationStructure = top.accel->handle;
+    const VkDeviceSize alignment = asProperties.minAccelerationStructureScratchOffsetAlignment;
+    const VkDeviceSize scratchBytes = align(update ? sizes.updateScratchSize : sizes.buildScratchSize, alignment);
+    if (!topScratch || topScratch->size < scratchBytes + alignment)
+      topScratch = buffer(scratchBytes + alignment, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    build.scratchData.deviceAddress = align(topScratch->address, alignment);
+    VkAccelerationStructureBuildRangeInfoKHR range = {.primitiveCount = count};
+    const auto *ranges = &range;
+    buildAs(command, 1, &build, &ranges);
+    // A refit forced into a build commits as one, restarting the refit count.
+    auto committed = decision;
+    if (!update && committed.action == Policy::Update) {
+      committed.action = Policy::Build;
+      committed.reason = REMIXAPI_REBUILD_MEMBERSHIP_EXT;
+    }
+    combinedPolicy.commit(staticInputs, staticGeneration, dynamicInputs, committed);
+    if (decision.staticChanged)
+      ++stats.staticTlasBuilds;
+    if (update)
+      ++stats.dynamicTlasRefits;
+    else
+      ++stats.dynamicTlasBuilds;
+    stats.dynamicRefitCount = combinedPolicy.dynamicPart.refits;
   }
 
 } // namespace remix

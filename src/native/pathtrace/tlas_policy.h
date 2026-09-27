@@ -39,4 +39,33 @@ namespace remix::trace {
     bool changed(const std::vector<InstanceInput> &inputs) const;
     void commit(const std::vector<InstanceInput> &inputs, uint32_t reason);
   };
+  // Instance masks: the separate static and dynamic TLASes keep 0xff; the
+  // combined one tags its parts so a query could select either (every query
+  // uses 0xff, so it sees both, as the two traversals did).
+  constexpr uint8_t allInstancesMask = 0xff, staticInstanceMask = 1, dynamicInstanceMask = 2;
+  inline uint8_t instanceMask(bool combined, bool dynamic) {
+    return !combined ? allInstancesMask : dynamic ? dynamicInstanceMask : staticInstanceMask;
+  }
+  // rtx.native.pathtrace.combinedTlas: one TLAS over the static instances
+  // followed by the dynamic ones. Any static change rebuilds it (as it
+  // rebuilds the static TLAS); the dynamic part follows the dynamic TLAS
+  // policy: refit when only transforms moved, rebuild for membership,
+  // geometry, the refit limit, displacement or a forced rebuild.
+  struct CombinedTlasPolicy {
+    TlasPolicy staticPart, dynamicPart;
+    uint64_t staticGeneration = 0; // the static prefix generation staticPart holds; 0: compare
+    enum Action { None, Update, Build };
+    struct Decision {
+      Action action = None;
+      uint32_t reason = REMIXAPI_REBUILD_NONE_EXT;
+      bool staticChanged = false;
+    };
+    // generation: nonzero when staticInputs are the frame tables' static prefix
+    // of that generation; a generation already committed is not compared again.
+    Decision decide(const std::vector<InstanceInput> &staticInputs, uint64_t generation,
+                    const std::vector<InstanceInput> &dynamicInputs, bool force) const;
+    // After the decided work (none, refit or build) was recorded.
+    void commit(const std::vector<InstanceInput> &staticInputs, uint64_t generation,
+                const std::vector<InstanceInput> &dynamicInputs, const Decision &decision);
+  };
 } // namespace remix::trace

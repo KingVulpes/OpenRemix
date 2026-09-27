@@ -165,6 +165,13 @@ namespace remix {
                           "instances instead of the shader. Same image. Applies at the next frame: changed\n"
                           "meshes rebuild their BLAS (both variants stay in memory until a mesh is released).\n"
                           "rtx.native.pathtrace.hardwareFaceCulling");
+      ui::Checkbox("Combined acceleration structure", &options.combinedTlas);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Static and dynamic instances share one top-level acceleration structure, so every\n"
+                          "ray traverses once instead of twice. Moving instances refit it; static changes and\n"
+                          "added or removed instances rebuild it over all instances (\"TLAS builds\" in the\n"
+                          "GPU pass timings). Same image. Applies at the next frame.\n"
+                          "rtx.native.pathtrace.combinedTlas");
     }
   }
 } // namespace remix

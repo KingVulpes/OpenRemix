@@ -55,6 +55,8 @@ namespace remix {
     // One-sided surfaces become hardware-opaque in their BLAS and one-sided
     // instances reject back faces in traversal instead of in the shader.
     bool hardwareFaceCulling = false;
+    // One TLAS over the static and dynamic instances: one traversal per ray.
+    bool combinedTlas = false;
     bool operator==(const TraceOptions &) const = default;
   };
 } // namespace remix

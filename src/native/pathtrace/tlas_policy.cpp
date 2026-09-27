@@ -43,4 +43,34 @@ namespace remix::trace {
       ++refits;
     initialized = true;
   }
+  CombinedTlasPolicy::Decision CombinedTlasPolicy::decide(const std::vector<InstanceInput> &staticInputs,
+                                                          uint64_t generation,
+                                                          const std::vector<InstanceInput> &dynamicInputs,
+                                                          bool force) const {
+    Decision decision;
+    const bool known = staticPart.initialized && generation && generation == staticGeneration;
+    if (!known) {
+      // Any static difference rebuilds, as the static TLAS does.
+      decision.reason = staticPart.reason(staticInputs, false, false);
+      decision.staticChanged = decision.reason != REMIXAPI_REBUILD_NONE_EXT;
+    }
+    const uint32_t dynamicReason = dynamicPart.reason(dynamicInputs, true, force);
+    if (force || !decision.staticChanged)
+      decision.reason = dynamicReason;
+    if (decision.reason != REMIXAPI_REBUILD_NONE_EXT)
+      decision.action = Build;
+    else if (dynamicPart.changed(dynamicInputs))
+      decision.action = Update;
+    return decision;
+  }
+  void CombinedTlasPolicy::commit(const std::vector<InstanceInput> &staticInputs, uint64_t generation,
+                                  const std::vector<InstanceInput> &dynamicInputs, const Decision &decision) {
+    if (decision.staticChanged)
+      staticPart.commit(staticInputs, decision.reason);
+    staticGeneration = staticPart.initialized ? generation : 0;
+    if (decision.action == Build)
+      dynamicPart.commit(dynamicInputs, decision.reason);
+    else if (decision.action == Update)
+      dynamicPart.commit(dynamicInputs, REMIXAPI_REBUILD_NONE_EXT);
+  }
 } // namespace remix::trace

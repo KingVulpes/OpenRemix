@@ -234,7 +234,7 @@ namespace remix {
     {
       gpu::GpuScope scope(command, "TLAS builds");
       buildTop(command, tables.staticInputs(), tables.dynamicInputs(), options.forceRebuild,
-               tables.staticGeneration(), faceCulling);
+               tables.staticGeneration(), faceCulling, options.combinedTlas);
       barrier(command, buildStage, asWrite, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, asRead);
     }
     if (timestamps)
@@ -421,9 +421,12 @@ namespace remix {
     frame.config[1] = options.bounces;
     frame.target[0] = extent.width;
     frame.target[1] = extent.height;
-    // Bits 0/1: static/dynamic TLAS non-empty; bit 2: cull back faces (only
+    // Bits 0/1: TLAS bindings 0/1 non-empty (the combined TLAS is bound to
+    // both and queried once, through binding 0); bit 2: cull back faces (only
     // one-sided instances enable it, see trace::instanceFlags).
-    frame.target[2] = uint32_t(!tables.staticInputs().empty()) | uint32_t(!tables.dynamicInputs().empty()) << 1 |
+    const bool staticInstances = !tables.staticInputs().empty(), dynamicInstances = !tables.dynamicInputs().empty();
+    frame.target[2] = (topCombined ? uint32_t(staticInstances || dynamicInstances)
+                                   : uint32_t(staticInstances) | uint32_t(dynamicInstances) << 1) |
                       uint32_t(faceCulling) << 2;
     frame.target[3] = options.rasterPrimary;
     // Reserved private word; included in scene-change detection. Raw/reference
@@ -667,7 +670,7 @@ namespace remix {
       if (i < 2) {
         structures[i] = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR,
                          .accelerationStructureCount = 1,
-                         .pAccelerationStructures = &tlas[i].accel->handle};
+                         .pAccelerationStructures = &tlas[topCombined ? 2 : i].accel->handle};
         writes[i].pNext = &structures[i];
         writes[i].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
       } else if (i < 4) {

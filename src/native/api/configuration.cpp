@@ -29,7 +29,7 @@ namespace remix::api {
     if (!key || !*key || !value) {
       return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
     }
-    std::lock_guard lock(g_apiMutex);
+    auto lock = lockApi();
     if (!g_runtime.isInitialized()) {
       return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
     }

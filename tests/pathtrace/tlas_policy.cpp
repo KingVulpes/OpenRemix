@@ -22,6 +22,15 @@ namespace {
     require(policy.reason(inputs, true, false) == REMIXAPI_REBUILD_DISPLACEMENT_EXT, "Displacement recovery");
     inputs[0].geometry = 11;
     require(policy.reason(inputs, true, false) == REMIXAPI_REBUILD_GEOMETRY_EXT, "Geometry replacement rebuild");
+    {
+      // Instance flags and masks are fixed by a build; refits must not change them.
+      auto flagged = policy.previous;
+      flagged[0].facingCulled = !flagged[0].facingCulled;
+      require(policy.reason(flagged, true, false) == REMIXAPI_REBUILD_GEOMETRY_EXT, "Facing change must rebuild");
+      flagged = policy.previous;
+      flagged[0].mask = remix::trace::decalMask;
+      require(policy.reason(flagged, true, false) == REMIXAPI_REBUILD_GEOMETRY_EXT, "Mask change must rebuild");
+    }
     inputs[0].id = 2;
     require(policy.reason(inputs, true, false) == REMIXAPI_REBUILD_MEMBERSHIP_EXT, "Object lifetime rebuild");
     require(policy.reason(inputs, true, true) == REMIXAPI_REBUILD_FORCED_EXT, "Forced rebuild");

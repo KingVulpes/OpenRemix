@@ -1,7 +1,9 @@
 #pragma once
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <remix/remix_c.h>
 #include <unordered_map>
 #include <vector>
@@ -12,22 +14,62 @@ namespace remix {
     Matrix identity();
     Matrix inverse(const Matrix &matrix);
     uint64_t hashBytes(const void *bytes, size_t size, uint64_t seed = 1469598103934665603ull);
+    // Streaming 128-bit change-detection signature over appended byte ranges.
+    // The default (nothing appended) matches only another empty signature.
+    struct Signature {
+      uint64_t first = 1469598103934665603ull, second = 0x9e3779b97f4a7c15ull, bytes = 0;
+      void append(const void *data, size_t size);
+      bool operator==(const Signature &) const = default;
+    };
     Matrix multiply(const Matrix &a, const Matrix &b);
     Matrix transform(const remixapi_Transform &value);
     const void *extension(const void *next, remixapi_StructType type);
 
+    // Validated BC1-BC5/BC7 source blocks, uploaded as-is when the device samples
+    // the format. CPU consumers (coverage, emission) decode once on first use.
+    struct BlockData {
+      uint32_t block = 0; // 1-5 or 7, as in images.cpp
+      bool opaqueAlpha = false; // Raw-API BC1 RGB ignores its one-bit alpha.
+      std::vector<uint8_t> data; // All levels, tightly packed.
+      std::vector<size_t> offsets; // Per level, plus the end.
+      const std::vector<std::vector<uint8_t>> &rgba(uint32_t width, uint32_t height) const;
+      uint32_t blockBytes() const { return block == 1 || block == 4 ? 8 : 16; }
+
+    private:
+      mutable std::once_flag once;
+      mutable std::vector<std::vector<uint8_t>> decoded;
+    };
     struct Pixels {
       uint32_t width = 0, height = 0;
       bool srgb = true;
-      std::vector<std::vector<uint8_t>> mips;
+      std::vector<std::vector<uint8_t>> mips; // RGBA8; empty while `blocks` defers decoding.
       std::vector<std::vector<float>> hdrMips; // Linear RGBA32F, retained through upload.
       bool twoChannel = false; // BC5 stores normal X/Y; reconstruct Z when used as a normal map.
+      std::shared_ptr<const BlockData> blocks;
+      // RGBA8 levels for CPU consumers, decoding compressed blocks on first use.
+      const std::vector<std::vector<uint8_t>> &rgba() const { return blocks ? blocks->rgba(width, height) : mips; }
+      uint32_t levels() const { return blocks ? uint32_t(blocks->offsets.size() - 1) : uint32_t(mips.size()); }
+      bool sameContent(const Pixels &other) const;
     };
     struct Texture {
       Pixels pixels;
       mutable std::weak_ptr<Texture> linear;
       std::shared_ptr<Texture> encodedSource; // Keep a file-backed data view's weak path cache alive.
-      mutable uint64_t contentHash = 0;
+      // Computed lazily from either thread; racing computations store the same value.
+      struct CachedHash {
+        std::atomic<uint64_t> value = 0;
+        CachedHash() = default;
+        CachedHash(const CachedHash &other) : value(other.value.load(std::memory_order_relaxed)) {}
+        CachedHash &operator=(const CachedHash &other) {
+          value.store(other.value.load(std::memory_order_relaxed), std::memory_order_relaxed);
+          return *this;
+        }
+        CachedHash &operator=(uint64_t hash) {
+          value.store(hash, std::memory_order_relaxed);
+          return *this;
+        }
+      };
+      mutable CachedHash contentHash;
       uint64_t fingerprint() const;
     };
     struct Vertex {

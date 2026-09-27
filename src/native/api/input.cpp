@@ -28,7 +28,7 @@ using namespace remix::api;
 extern "C" {
 
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_PumpEvents() {
-  std::lock_guard lock(g_apiMutex);
+  auto lock = lockApi(true);
   try {
     const auto status = g_runtime.window().pumpEvents();
     if (status == REMIXAPI_ERROR_CODE_SUCCESS)
@@ -48,7 +48,7 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_PollInputEvents(remixapi_Inpu
   *outCount = 0;
   if (capacity && !events)
     return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
-  std::lock_guard lock(g_apiMutex);
+  auto lock = lockApi(true);
   return g_runtime.window().pollInputEvents(events, capacity, *outCount);
 }
 
@@ -56,12 +56,12 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetWindowMetrics(remixapi_Win
   if (!outMetrics)
     return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
   *outMetrics = {};
-  std::lock_guard lock(g_apiMutex);
+  auto lock = lockApi(true);
   return g_runtime.window().getWindowMetrics(*outMetrics);
 }
 
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_SetTextInputEnabled(remixapi_Bool enabled) {
-  std::lock_guard lock(g_apiMutex);
+  auto lock = lockApi(true);
   return g_runtime.window().setTextInputEnabled(enabled != 0);
 }
 
@@ -69,7 +69,7 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetWindowState(remixapi_Windo
   if (outState == nullptr) {
     return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
   }
-  std::lock_guard lock(g_apiMutex);
+  auto lock = lockApi(true);
   *outState = {};
   return g_runtime.window().getWindowState(*outState);
 }
@@ -78,7 +78,7 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_PollMouseState(remixapi_Mouse
   if (outState == nullptr) {
     return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
   }
-  std::lock_guard lock(g_apiMutex);
+  auto lock = lockApi(true);
   *outState = {};
   return g_runtime.window().pollMouseState(*outState);
 }
@@ -87,23 +87,23 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_IsKeyDown(remixapi_Key key, r
   if (outIsDown == nullptr) {
     return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
   }
-  std::lock_guard lock(g_apiMutex);
+  auto lock = lockApi(true);
   *outIsDown = 0;
   return g_runtime.window().isKeyDown(key, *outIsDown);
 }
 
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_SetMouseGrabbed(remixapi_Bool grabbed) {
-  std::lock_guard lock(g_apiMutex);
+  auto lock = lockApi(true);
   return g_runtime.window().setMouseGrabbed(grabbed != 0);
 }
 
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_SetCursorPosition(float x, float y) {
-  std::lock_guard lock(g_apiMutex);
+  auto lock = lockApi(true);
   return g_runtime.window().setCursorPosition(x, y);
 }
 
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_SetFullscreen(remixapi_Bool fullscreen) {
-  std::lock_guard lock(g_apiMutex);
+  auto lock = lockApi(true);
   return g_runtime.window().setFullscreen(fullscreen != 0);
 }
 }

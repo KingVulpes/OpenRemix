@@ -70,16 +70,22 @@ bool acceptCandidate(Surface s,uint triangle,vec2 bary) {
   if(s.state.y==7&&!coverageBlended(s))return true;
   if(s.state.y==0)return false;
   if((s.state.w&1)!=0)return visibleAlpha(s,1);
+  // Load indices, UVs and vertex alpha only for the operands the combiner reads.
+  uint uses=alphaOperands(s);
+  if((uses&3u)==0)return visibleAlpha(s,materialAlpha(s,vec2(0),1,false));
   uint base=triangle*3;
-  Vertex a=s.vertices.v[s.indices.i[base]],b=s.vertices.v[s.indices.i[base+1]],c=s.vertices.v[s.indices.i[base+2]];
+  uvec3 i=uvec3(s.indices.i[base],s.indices.i[base+1],s.indices.i[base+2]);
   vec3 w=vec3(1-bary.x-bary.y,bary);
-  return visibleAlpha(s,materialAlpha(s,a.uv.xy*w.x+b.uv.xy*w.y+c.uv.xy*w.z,a.color.a*w.x+b.color.a*w.y+c.color.a*w.z));
+  vec2 uv=(uses&1u)==0?vec2(0):s.vertices.v[i.x].uv.xy*w.x+s.vertices.v[i.y].uv.xy*w.y+s.vertices.v[i.z].uv.xy*w.z;
+  float vertex=(uses&2u)==0?1:s.vertices.v[i.x].color.a*w.x+s.vertices.v[i.y].color.a*w.y+s.vertices.v[i.z].color.a*w.z;
+  return visibleAlpha(s,materialAlpha(s,uv,vertex,(uses&1u)!=0));
 }
 struct Hit { float t; vec3 p; vec3 n; vec4 color; bool blended; bool blendedDraw; bool decal; bool tinted; bool cacheable; vec3 previousPosition; bool historyValid; vec3 emission; float identity; vec3 ng; vec3 wo; vec2 rm; bool pbr; };
 void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, inout Hit hit,bool motion,float minimum) {
   rayQueryEXT query;
   profileRay(0);
-  rayQueryInitializeEXT(query, scene, gl_RayFlagsNoneEXT, 255, origin, minimum, direction, hit.t);
+  // Facing-culled instances contain only one-sided surfaces; see tlas.cpp.
+  rayQueryInitializeEXT(query, scene, gl_RayFlagsCullBackFacingTrianglesEXT, 255, origin, minimum, direction, hit.t);
   while (rayQueryProceedEXT(query)) {
     if (rayQueryGetIntersectionTypeEXT(query,false)!=gl_RayQueryCandidateIntersectionTriangleEXT) continue;
     profileRay(1);

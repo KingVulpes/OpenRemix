@@ -110,7 +110,7 @@ namespace remix::trace::detail {
     uint32_t reuseConfig[4] = {}; // previous frame valid, diagnostics, ray counter address low/high
     uint64_t indirectResults = 0, blueNoise = 0;
     float firefly[4] = {};       // outgoing local direct / indirect luminance limits; reserved
-    uint32_t pathConfig[4] = {}; // adaptive termination, minimum completed bounces, reserved
+    uint32_t pathConfig[4] = {}; // adaptive termination, minimum completed bounces, shadow first hit, reserved
     float domeTransform[3][4] = {};
   };
   static_assert(sizeof(Frame) == 592 && offsetof(Frame, pathConfig) == 528 &&
@@ -337,8 +337,8 @@ namespace remix {
     std::string postFailure;
     remixapi_DenoisingCapabilitiesEXT postCapabilities{};
     scene::TemporalHistory history;
-    std::map<scene::TemporalHistory::Key, std::shared_ptr<Buffer>> previousVertices, pendingVertices,
-        retiredPreviousVertices;
+    using VertexHistory = scene::FrameIndex<scene::TemporalHistory::Key, std::shared_ptr<Buffer>>;
+    VertexHistory previousVertices, pendingVertices, retiredPreviousVertices;
     scene::Matrix previousCamera{}, pendingCamera{}, previousView{}, previousProjection{},
         pendingProjection{};
     float previousJitter[2] = {};
@@ -432,7 +432,7 @@ namespace remix {
       uint32_t localConfig[4] = {};
       float localIntensity = 0, localRange = 0;
       float previousEye[3] = {}, light[9] = {};
-      std::vector<uint8_t> geometry, dynamicGeometry;
+      scene::Signature geometry, dynamicGeometry;
       remixapi_SharcStatisticsEXT stats{.structSize = sizeof(remixapi_SharcStatisticsEXT)};
     } sharc;
     struct LinearCapture {
@@ -460,7 +460,7 @@ namespace remix {
       std::vector<std::shared_ptr<Accel>> retired;
       std::vector<std::shared_ptr<Geometry>> compactPending, retiredGeometry;
       std::vector<std::shared_ptr<Buffer>> retiredBuffers;
-      std::map<scene::TemporalHistory::Key, std::shared_ptr<Buffer>> retiredVertices;
+      VertexHistory retiredVertices;
     } frames[gpuFrameCount];
     uint32_t frameIndex = 0;
     void swapFrame(FrameResources &frame);
@@ -468,12 +468,12 @@ namespace remix {
     void beginSharc(const TraceOptions &options);
     void destroySharc(bool temporalOnly = false);
     void configureSharc(Frame &frame, const TraceOptions &options, scene::TemporalEpoch epoch,
-                        std::vector<uint8_t> geometry, std::vector<uint8_t> dynamicGeometry,
+                        const scene::Signature &geometry, const scene::Signature &dynamicGeometry,
                         bool hasReceivers);
     void recordSharc(VkCommandBuffer command, const TraceOptions &options);
     void finishSharc(VkCommandBuffer command);
     void sharcPipeline(const uint32_t *code, size_t size, VkPipelineLayout pipelineLayout, VkPipeline &out);
-    std::vector<uint8_t> lastScene;
+    scene::Signature lastScene;
     uint64_t sequence = 0;
     float previousDirectClamp = 0, previousIndirectClamp = 0;
     bool previousFireflyFilter = false;

@@ -78,8 +78,10 @@ namespace remix::scene {
       }
       return out;
     }
+    // defer: validate, then keep BC1-BC5/BC7 blocks for direct upload and lazy
+    // CPU decoding. BC6H always decodes, since HDR consumers sanitize values.
     Pixels decode(uint32_t width, uint32_t height, uint32_t mips, bool srgb, uint32_t block, bool bgra,
-                  const uint8_t *data, size_t size) {
+                  const uint8_t *data, size_t size, bool defer = false, bool opaqueAlpha = false) {
       if (!width || !height || width > 16384 || height > 16384 || !data) {
         throw invalid;
       }
@@ -94,6 +96,25 @@ namespace remix::scene {
       Pixels out{width, height, srgb, {}};
       out.twoChannel = block == 5;
       size_t offset = 0, total = 0;
+      if (defer && block && block != 6 && block != 16) {
+        auto blocks = std::make_shared<BlockData>();
+        blocks->block = block;
+        blocks->opaqueAlpha = opaqueAlpha;
+        for (uint32_t mip = 0; mip < mips; ++mip) {
+          const size_t bytes = size_t((width + 3) / 4) * ((height + 3) / 4) * blocks->blockBytes();
+          total += size_t(width) * height * 4;
+          if (offset > size || bytes > size - offset || total > 512u * 1024 * 1024)
+            throw invalid;
+          blocks->offsets.push_back(offset);
+          offset += bytes;
+          width = std::max(1u, width / 2);
+          height = std::max(1u, height / 2);
+        }
+        blocks->offsets.push_back(offset);
+        blocks->data.assign(data, data + offset);
+        out.blocks = std::move(blocks);
+        return out;
+      }
       for (uint32_t mip = 0; mip < mips; ++mip) {
         const size_t bytes =
             block ? size_t((width + 3) / 4) * ((height + 3) / 4) * ((block == 1 || block == 4) ? 8 : 16)
@@ -176,6 +197,28 @@ namespace remix::scene {
     }
   } // namespace
 
+  const std::vector<std::vector<uint8_t>> &BlockData::rgba(uint32_t width, uint32_t height) const {
+    std::call_once(once, [&] {
+      decoded = decode(width, height, uint32_t(offsets.size() - 1), true, block, false, data.data(), data.size()).mips;
+      if (opaqueAlpha)
+        for (auto &mip : decoded)
+          for (size_t i = 3; i < mip.size(); i += 4)
+            mip[i] = 255;
+    });
+    return decoded;
+  }
+
+  bool Pixels::sameContent(const Pixels &other) const {
+    if (width != other.width || height != other.height || srgb != other.srgb || twoChannel != other.twoChannel ||
+        bool(blocks) != bool(other.blocks))
+      return false;
+    if (blocks)
+      return blocks == other.blocks ||
+             (blocks->block == other.blocks->block && blocks->opaqueAlpha == other.blocks->opaqueAlpha &&
+              blocks->offsets == other.blocks->offsets && blocks->data == other.blocks->data);
+    return mips == other.mips && hdrMips == other.hdrMips;
+  }
+
   Pixels decodeTexture(const remixapi_TextureInfo &info) {
     if (info.depth > 1 || info.dataSize > SIZE_MAX) {
       throw invalid;
@@ -236,7 +279,8 @@ namespace remix::scene {
       throw unavailable;
     }
     auto result = decode(info.width, info.height, info.mipLevels, srgb, block, bgra,
-                         static_cast<const uint8_t *>(info.data), size_t(info.dataSize));
+                         static_cast<const uint8_t *>(info.data), size_t(info.dataSize), true,
+                         block == 1 && !bc1Alpha);
     // The raw API exposes BC1 RGB, whereas DDS DXT1 can also carry one-bit alpha.
     if (block == 1 && !bc1Alpha) {
       for (auto &mip : result.mips) {
@@ -387,7 +431,7 @@ namespace remix::scene {
         return decodeFloat(width, height, word(data, 28), floatChannels, floatHalf, data.data() + offset,
                            data.size() - offset);
       auto out = decode(width, height, word(data, 28), srgb, block, bgra, data.data() + offset,
-                        data.size() - offset);
+                        data.size() - offset, true);
       if (forceAlpha) {
         for (auto &mip : out.mips) {
           for (size_t i = 3; i < mip.size(); i += 4) {

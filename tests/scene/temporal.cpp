@@ -94,4 +94,20 @@ int main() {
   history.begin({2, 2}, 8, 1280, 720);
   require(history.reset(), "Resize did not clear");
   require(history.frames() == 7, "Only submitted frames should count");
+
+  remix::scene::FrameIndex<int, int> index;
+  for (int key : {5, 1, 3, 1})
+    index.insert(key, key * 10 + int(index.size()));
+  require(!index.find(5), "Unsealed index answered a lookup");
+  index.seal();
+  require(*index.find(5) == 50 && *index.find(3) == 32 && !index.find(2), "Reordered lookup");
+  require(*index.find(1) == 13 && *index.find(1) == 13, "Repeated key must keep its last value");
+  index.clear();
+  for (int key = 0; key < 64; ++key)
+    index.insert(key * 2, key);
+  index.seal();
+  bool ordered = true;
+  for (int key = 0; key < 64; ++key)
+    ordered &= index.find(key * 2) && *index.find(key * 2) == key && !index.find(key * 2 + 1);
+  require(ordered, "Submission-order lookup");
 }

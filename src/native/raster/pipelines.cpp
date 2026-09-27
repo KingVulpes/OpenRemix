@@ -31,7 +31,7 @@ namespace remix {
         ready = false;
       }
     };
-    for (const auto &draw : m_draws)
+    for (const auto &draw : m_submitted.draws)
       if (draw.rasterVisible && (!tracing || !draw.traced()))
         request(draw);
     // These draws are appended after the depth adjustment in prepare().
@@ -46,9 +46,9 @@ namespace remix {
         }
       }
     };
-    overlays(m_overlay);
-    overlays(m_uiDraws);
-    if (m_tint[3] > 0) {
+    overlays(m_submitted.overlay);
+    overlays(m_submitted.uiDraws);
+    if (m_submitted.tint[3] > 0) {
       scene::Draw tint;
       tint.ui = true;
       tint.depth = false;

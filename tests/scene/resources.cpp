@@ -289,12 +289,22 @@ namespace {
     texture.data = bc1;
     texture.dataSize = 8;
     texture.format = REMIXAPI_FORMAT_BC1_RGB_UNORM;
-    require(remix::scene::decodeTexture(texture).mips[0][3] == 255, "Raw BC1 RGB is opaque");
+    auto rgbBc1 = remix::scene::decodeTexture(texture);
+    require(rgbBc1.blocks && rgbBc1.mips.empty() && rgbBc1.levels() == 1 &&
+                rgbBc1.blocks->data == std::vector<uint8_t>(bc1, bc1 + 8),
+            "BC1 blocks were not retained for native upload");
+    require(rgbBc1.rgba()[0][3] == 255, "Raw BC1 RGB is opaque");
     texture.format = REMIXAPI_FORMAT_BC1_RGBA_UNORM_EXT;
-    require(remix::scene::decodeTexture(texture).mips[0][3] == 0, "Raw BC1 RGBA lost cutout alpha");
+    auto cutoutBc1 = remix::scene::decodeTexture(texture);
+    require(cutoutBc1.rgba()[0][3] == 0, "Raw BC1 RGBA lost cutout alpha");
+    require(!cutoutBc1.sameContent(rgbBc1) && remix::scene::decodeTexture(texture).sameContent(cutoutBc1),
+            "BC1 alpha mode is part of texture content");
     texture.format = REMIXAPI_FORMAT_BC1_RGBA_SRGB_EXT;
     auto rgbaBc1 = remix::scene::decodeTexture(texture);
-    require(rgbaBc1.srgb && rgbaBc1.mips[0][3] == 0, "sRGB BC1 changed alpha or transfer function");
+    require(rgbaBc1.srgb && rgbaBc1.rgba()[0][3] == 0, "sRGB BC1 changed alpha or transfer function");
+    texture.dataSize = 7;
+    rejected([&] { remix::scene::decodeTexture(texture); });
+    texture.dataSize = 8;
     // Tiny valid DDS fixtures cover channel masks, BC1/2/3, odd dimensions and truncation.
     auto save = [&](const char *name, const std::vector<uint8_t> &data) {
       auto path = directory / name;
@@ -329,7 +339,8 @@ namespace {
       }
       auto path = save("raster-texture.dds", dds);
       auto image = remix::scene::loadTexture(path);
-      require(image.width == 3 && image.height == 3 && image.mips[0][0] == 255 && image.mips[0][3] == 255,
+      require(image.width == 3 && image.height == 3 && image.blocks && image.rgba()[0][0] == 255 &&
+                  image.rgba()[0][3] == 255,
               "DDS block decode");
       dds.pop_back();
       save("raster-texture.dds", dds);

@@ -32,7 +32,7 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_SetGameValue(const char *key,
   if (key == nullptr || key[0] == '\0' || value == nullptr) {
     return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
   }
-  std::lock_guard lock(g_apiMutex);
+  auto lock = lockApi(true);
   try {
     g_gameValues[key] = value;
   } catch (...) {
@@ -53,7 +53,7 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetGameValue(const char *key,
   if (outBuffer && bufferSize) {
     outBuffer[0] = '\0';
   }
-  std::lock_guard lock(g_apiMutex);
+  auto lock = lockApi(true);
   const auto found = g_gameValues.find(key);
   if (found == g_gameValues.end()) {
     *outActualSize = 0;

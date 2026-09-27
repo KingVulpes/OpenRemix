@@ -105,20 +105,20 @@ namespace remix {
     if (info.type == REMIXAPI_CAMERA_TYPE_WORLD) {
       const auto *metadata = static_cast<const remixapi_CameraTemporalEXT *>(
           extension(info.pNext, REMIXAPI_STRUCT_TYPE_CAMERA_TEMPORAL_EXT));
-      m_temporalEpoch =
+      m_frame.temporalEpoch =
           metadata ? TemporalEpoch{metadata->worldEpoch, metadata->historyResetEpoch} : TemporalEpoch{};
-      m_skyRadiance = sky;
+      m_frame.skyRadiance = sky;
     }
-    m_cameras[info.type] = camera;
-    m_views[info.type] = view;
+    m_frame.cameras[info.type] = camera;
+    m_frame.views[info.type] = view;
     // Keep the submitted projection before view multiplication loses precision.
     // Recovering it from camera * inverse(view) can alternate between finite
     // and infinite far planes while moving, repeatedly rebuilding reconstruction.
     for (int c = 0; c < 4; ++c)
       projection[c * 4 + 1] = -projection[c * 4 + 1];
-    m_projections[info.type] = projection;
-    m_reverseDepth[info.type] = reverseDepth;
-    m_cameraValid[info.type] = true;
+    m_frame.projections[info.type] = projection;
+    m_frame.reverseDepth[info.type] = reverseDepth;
+    m_frame.cameraValid[info.type] = true;
   }
 
   void NativeResources::drawInstance(const remixapi_InstanceInfo &info,
@@ -143,7 +143,7 @@ namespace remix {
     const bool traceIdentity = identity && identity->classification != REMIXAPI_INSTANCE_RASTER_ONLY_EXT &&
                                !(info.categoryFlags & (REMIXAPI_INSTANCE_CATEGORY_BIT_SKY |
                                                        REMIXAPI_INSTANCE_CATEGORY_BIT_VIEW_MODEL));
-    if (traceIdentity && m_frameIds.count(identity->instanceId))
+    if (traceIdentity && m_frame.ids.count(identity->instanceId))
       throw invalid;
     const auto *rasterState = static_cast<const remixapi_InstanceRasterStateEXT *>(
         extension(info.pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_RASTER_STATE_EXT));
@@ -171,7 +171,7 @@ namespace remix {
     if (instances && count && !instances->instanceTransforms_values) {
       throw invalid;
     }
-    if (uint64_t(count) * mesh->second->surfaces.size() + m_draws.size() > 65536) {
+    if (uint64_t(count) * mesh->second->surfaces.size() + m_frame.draws.size() > 65536) {
       throw invalid;
     }
     if (!m_default) {
@@ -255,11 +255,11 @@ namespace remix {
         pending.push_back(std::move(draw));
       }
     }
-    if (m_draws.capacity() < m_draws.size() + pending.size())
-      m_draws.reserve(std::max(m_draws.size() + pending.size(), m_draws.capacity() * 2));
+    if (m_frame.draws.capacity() < m_frame.draws.size() + pending.size())
+      m_frame.draws.reserve(std::max(m_frame.draws.size() + pending.size(), m_frame.draws.capacity() * 2));
     if (traceIdentity && !pending.empty())
-      m_frameIds.insert(identity->instanceId);
-    m_draws.insert(m_draws.end(), std::make_move_iterator(pending.begin()),
+      m_frame.ids.insert(identity->instanceId);
+    m_frame.draws.insert(m_frame.draws.end(), std::make_move_iterator(pending.begin()),
                    std::make_move_iterator(pending.end()));
   }
 } // namespace remix

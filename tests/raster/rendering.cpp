@@ -258,6 +258,8 @@ namespace {
       vk(vkResetCommandBuffer(command, 0));
       const VkCommandBufferBeginInfo begin = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
       vk(vkBeginCommandBuffer(command, &begin));
+      // As in Present: publish the built frame, then prepare what was published.
+      raster.finishFrame();
       while (!raster.preparePipelines(false))
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
       raster.prepare(command);
@@ -294,7 +296,6 @@ namespace {
       std::vector<uint8_t> pixels(64 * 64 * 4);
       std::memcpy(pixels.data(), mapped, pixels.size());
       vkUnmapMemory(device, readMemory);
-      raster.finishFrame();
       return pixels;
     }
   };

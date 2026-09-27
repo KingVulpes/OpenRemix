@@ -77,8 +77,8 @@ bool localOccluder(accelerationStructureEXT scene,vec3 origin,vec3 direction,ino
   profileRay(16);
   // With no blended geometry, any hardware-opaque hit blocks the segment.
   // Scenes containing transmitting layers keep ordered closest-hit traversal.
-  uint flags=firstOpaqueHit?gl_RayFlagsTerminateOnFirstHitEXT:gl_RayFlagsNoneEXT;
-  rayQueryInitializeEXT(query,scene,flags,255,origin,0,direction,hit.t);
+  uint flags=gl_RayFlagsCullBackFacingTrianglesEXT|(firstOpaqueHit?gl_RayFlagsTerminateOnFirstHitEXT:0u);
+  rayQueryInitializeEXT(query,scene,flags,enableDecals?1u:255u,origin,0,direction,hit.t);
   while(rayQueryProceedEXT(query)) {
     if(rayQueryGetIntersectionTypeEXT(query,false)!=gl_RayQueryCandidateIntersectionTriangleEXT)continue;
     profileRay(17);

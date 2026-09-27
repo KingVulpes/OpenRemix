@@ -38,8 +38,18 @@ namespace remix::api {
   extern PFN_remixapi_BridgeCallback g_presentCallback;
   extern std::unordered_map<std::string, std::string> g_gameValues;
 
-  template <typename F> remixapi_ErrorCode resourceCall(F &&call) {
-    std::lock_guard lock(g_apiMutex);
+  // With asynchronous presentation a frame may render while the game builds the
+  // next one. Calls that only build the next frame (scene, UI, input) run
+  // concurrently; every other call waits for rendering to finish first.
+  inline std::unique_lock<std::mutex> lockApi(bool buildsFrame = false) {
+    std::unique_lock lock(g_apiMutex);
+    if (!buildsFrame)
+      g_runtime.waitRenderIdle();
+    return lock;
+  }
+
+  template <typename F> remixapi_ErrorCode resourceCall(F &&call, bool buildsFrame = true) {
+    auto lock = lockApi(buildsFrame);
     if (!g_runtime.isInitialized()) {
       return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
     }

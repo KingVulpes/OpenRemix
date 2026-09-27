@@ -31,11 +31,13 @@ namespace remix {
           for (int c = 0; c < 4; ++c)
             instance.transform.matrix[r][c] = input.model[c * 4 + r];
         instance.instanceCustomIndex = input.customIndex;
-        instance.mask = 255;
+        instance.mask = input.mask;
         const auto &m = input.model;
         const float det = m[0] * (m[5] * m[10] - m[9] * m[6]) - m[4] * (m[1] * m[10] - m[9] * m[2]) +
                           m[8] * (m[1] * m[6] - m[5] * m[2]);
-        instance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR |
+        // Culled instances match the shaders' one-sided front-face rejection,
+        // letting hardware discard back faces before candidate traversal.
+        instance.flags = (input.facingCulled ? 0u : VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR) |
                          (det > 0 ? VK_GEOMETRY_INSTANCE_TRIANGLE_FRONT_COUNTERCLOCKWISE_BIT_KHR : 0u);
         instance.accelerationStructureReference = input.geometry;
         data.push_back(instance);

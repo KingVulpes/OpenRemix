@@ -1,4 +1,5 @@
 #include "raster/gpu.h"
+#include <deque>
 
 namespace remix {
   using namespace scene;
@@ -33,20 +34,6 @@ namespace remix {
       } else
         ++it;
     }
-    prune(m_paths, [](const auto &entry) { return entry.second.expired(); });
-    std::vector<Draw> ordered;
-    for (const auto &draw : m_draws) {
-      if (draw.rasterVisible && (!tracing || !draw.traced())) {
-        auto copy = draw;
-        // Traced barycentric depth and raster interpolation can differ by ULPs.
-        // Bias coplanar EQUAL feedback toward the camera while preserving occlusion.
-        if (tracing && copy.depthCompare == 2) {
-          copy.depthCompare = 3;
-          copy.depthBias = true;
-        }
-        ordered.push_back(std::move(copy));
-      }
-    }
     auto layer = [](const Draw &d) {
       return d.ui                                          ? 3
              : d.camera == REMIXAPI_CAMERA_TYPE_SKY        ? 0
@@ -54,23 +41,47 @@ namespace remix {
                                                            : 1;
     };
     auto distance = [&](const Draw &d) {
-      const auto mvp = multiply(m_cameras[d.camera], d.model);
+      const auto mvp = multiply(m_submitted.cameras[d.camera], d.model);
       const auto &c = d.surface->center;
       const float w = mvp[3] * c[0] + mvp[7] * c[1] + mvp[11] * c[2] + mvp[15];
       const float z = mvp[2] * c[0] + mvp[6] * c[1] + mvp[10] * c[2] + mvp[14];
       const float depth = z / w;
       return std::isfinite(depth) ? depth : 0.0f;
     };
-    std::stable_sort(ordered.begin(), ordered.end(), [&](const Draw &a, const Draw &b) {
-      if (layer(a) != layer(b)) {
-        return layer(a) < layer(b);
+    // Sort references with keys evaluated once; draws themselves hold shared owners.
+    struct Entry {
+      int layer;
+      bool blended;
+      float distance;
+      const Draw *draw;
+    };
+    std::vector<Entry> ordered;
+    ordered.reserve(m_submitted.draws.size() + m_submitted.overlay.size() + m_submitted.uiDraws.size() + 1);
+    std::deque<Draw> adjusted;
+    for (const auto &draw : m_submitted.draws) {
+      if (draw.rasterVisible && (!tracing || !draw.traced())) {
+        const Draw *source = &draw;
+        // Traced barycentric depth and raster interpolation can differ by ULPs.
+        // Bias coplanar EQUAL feedback toward the camera while preserving occlusion.
+        if (tracing && draw.depthCompare == 2) {
+          auto &copy = adjusted.emplace_back(draw);
+          copy.depthCompare = 3;
+          copy.depthBias = true;
+          source = &copy;
+        }
+        ordered.push_back({layer(draw), draw.blend.enabled, draw.blend.enabled ? distance(draw) : 0.f, source});
       }
-      if (a.blend.enabled != b.blend.enabled) {
-        return !a.blend.enabled;
+    }
+    std::stable_sort(ordered.begin(), ordered.end(), [](const Entry &a, const Entry &b) {
+      if (a.layer != b.layer) {
+        return a.layer < b.layer;
       }
-      return a.blend.enabled && distance(a) > distance(b);
+      if (a.blended != b.blended) {
+        return !a.blended;
+      }
+      return a.blended && a.distance > b.distance;
     });
-    if (m_tint[3] > 0) {
+    if (m_submitted.tint[3] > 0) {
       Draw tint;
       tint.ui = true;
       tint.depth = false;
@@ -79,20 +90,22 @@ namespace remix {
       tint.canvasWidth = tint.canvasHeight = 1;
       tint.material = std::make_shared<Material>();
       tint.material->texture = texturePath(nullptr);
-      std::copy_n(m_tint, 4, tint.material->tint);
+      std::copy_n(m_submitted.tint, 4, tint.material->tint);
       tint.surface = std::make_shared<Surface>();
       tint.surface->vertices = {{{0, 0, 0}, {0, 0}, {1, 1, 1, 1}},
                                 {{1, 0, 0}, {0, 0}, {1, 1, 1, 1}},
                                 {{1, 1, 0}, {0, 0}, {1, 1, 1, 1}},
                                 {{0, 1, 0}, {0, 0}, {1, 1, 1, 1}}};
       tint.surface->indices = {0, 1, 2, 0, 2, 3};
-      ordered.push_back(std::move(tint));
+      ordered.push_back({0, false, 0, &adjusted.emplace_back(std::move(tint))});
     }
-    ordered.insert(ordered.end(), m_overlay.begin(), m_overlay.end());
-    ordered.insert(ordered.end(), m_uiDraws.begin(), m_uiDraws.end());
+    for (const auto *list : {&m_submitted.overlay, &m_submitted.uiDraws})
+      for (const auto &draw : *list)
+        ordered.push_back({0, false, 0, &draw});
     std::vector<Vertex> skinned;
     const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - g.epoch).count();
-    for (const auto &draw : ordered) {
+    for (const auto &entry : ordered) {
+      const auto &draw = *entry.draw;
       const auto &mat = *draw.material;
       auto &mesh = g.mesh(draw.surface, command);
       Gpu::Command out = {};
@@ -126,14 +139,14 @@ namespace remix {
           skinned.push_back(vertex);
         }
       }
-      out.push.mvp = multiply(m_cameras[draw.camera], draw.model);
+      out.push.mvp = multiply(m_submitted.cameras[draw.camera], draw.model);
       if (draw.ui) {
         out.push.mvp = identity();
         out.push.mvp[0] = 2.0f / draw.canvasWidth;
         out.push.mvp[5] = 2.0f / draw.canvasHeight;
         out.push.mvp[12] = out.push.mvp[13] = -1;
-      } else if (!m_cameraValid[draw.camera] && draw.camera != REMIXAPI_CAMERA_TYPE_WORLD) {
-        out.push.mvp = multiply(m_cameras[REMIXAPI_CAMERA_TYPE_WORLD], draw.model);
+      } else if (!m_submitted.cameraValid[draw.camera] && draw.camera != REMIXAPI_CAMERA_TYPE_WORLD) {
+        out.push.mvp = multiply(m_submitted.cameras[REMIXAPI_CAMERA_TYPE_WORLD], draw.model);
       }
       std::copy_n(mat.tint, 4, out.push.tint);
       const uint32_t frame = uint32_t(std::fmod(seconds * mat.fps, uint32_t(mat.rows) * mat.columns));

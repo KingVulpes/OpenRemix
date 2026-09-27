@@ -108,7 +108,7 @@ namespace remix {
       const auto &io = ImGui::GetIO();
       ImGui::TextWrapped("Presentation: %.2f ms / %.1f FPS", io.Framerate > 0 ? 1000.0f / io.Framerate : 0.0f,
                          io.Framerate);
-      ImGui::TextWrapped("Scene: %zu surface draws", m_raster.pendingDrawCount());
+      ImGui::TextWrapped("Scene: %zu surface draws", m_raster.submitted().draws.size());
       auto s = tracingStatistics();
       ImGui::TextWrapped("Accumulated frames: %llu", (unsigned long long)s.accumulationCount);
       ImGui::TextWrapped("BLAS builds / refits / compactions: %llu / %llu / %llu",

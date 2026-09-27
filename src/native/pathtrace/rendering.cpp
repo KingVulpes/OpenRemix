@@ -42,7 +42,7 @@ namespace remix {
         uint64_t(options.sharcDebug) << 21 | uint64_t(options.pbrLocalReuse) << 22 |
         uint64_t(options.russianRoulette) << 23 | uint64_t(options.rouletteMinBounces) << 24 |
         uint64_t(rouletteFailed) << 27;
-    history.begin(resources.temporalEpoch(), integrator, extent.width, extent.height);
+    history.begin(resources.submitted().temporalEpoch, integrator, extent.width, extent.height);
     pendingVertices.clear();
     std::vector<trace::InstanceInput> inputs[2];
     std::vector<TraceSurface> surfaces;
@@ -54,23 +54,17 @@ namespace remix {
     std::unordered_map<const Material *, uint32_t> textureIndices;
     std::unordered_map<const Material *, uint32_t> emissionTextures;
     std::map<std::tuple<const scene::Texture *, uint8_t, uint8_t, uint8_t>, uint32_t> pbrTextures;
-    std::vector<uint8_t> scene, staticGeometry, dynamicGeometry;
-    auto appendStatic = [&](const void *data, size_t size) {
-      const auto *bytes = static_cast<const uint8_t *>(data);
-      staticGeometry.insert(staticGeometry.end(), bytes, bytes + size);
-    };
-    auto append = [&](const void *data, size_t size) {
-      const auto *bytes = static_cast<const uint8_t *>(data);
-      scene.insert(scene.end(), bytes, bytes + size);
-    };
-    for (const auto &draw : resources.draws())
+    scene::Signature scene, staticGeometry, dynamicGeometry;
+    auto appendStatic = [&](const void *data, size_t size) { staticGeometry.append(data, size); };
+    auto append = [&](const void *data, size_t size) { scene.append(data, size); };
+    for (const auto &draw : resources.submitted().draws)
       if (draw.camera == REMIXAPI_CAMERA_TYPE_SKY) {
         append(draw.model.data(), sizeof(draw.model));
         const auto material = scene::TemporalHistory::materialSignature(draw);
         append(&material, sizeof(material));
         append(draw.surface->vertices.data(), draw.surface->vertices.size() * sizeof(scene::Vertex));
         append(draw.surface->indices.data(), draw.surface->indices.size() * sizeof(uint32_t));
-        const auto &camera = resources.camera(REMIXAPI_CAMERA_TYPE_SKY);
+        const auto &camera = resources.submitted().cameras[REMIXAPI_CAMERA_TYPE_SKY];
         append(camera.data(), sizeof(camera));
         if (draw.material->fps) {
           auto animationFrame = uint64_t(prepared.seconds * draw.material->fps);
@@ -96,10 +90,7 @@ namespace remix {
       const auto &geometry = *view.geometry;
       auto model = draw.model;
       if (draw.classification == 1) {
-        auto appendDynamic = [&](const void *data, size_t size) {
-          const auto *bytes = static_cast<const uint8_t *>(data);
-          dynamicGeometry.insert(dynamicGeometry.end(), bytes, bytes + size);
-        };
+        auto appendDynamic = [&](const void *data, size_t size) { dynamicGeometry.append(data, size); };
         appendDynamic(&draw.instanceId, sizeof(draw.instanceId));
         appendDynamic(&draw.instanceIndex, sizeof(draw.instanceIndex));
         appendDynamic(model.data(), sizeof(model));
@@ -122,7 +113,8 @@ namespace remix {
         throw VK_ERROR_TOO_MANY_OBJECTS;
       inputs[draw.classification].push_back({draw.instanceId, geometry.accel->address, draw.instanceIndex,
                                              uint32_t(surfaces.size()), model, geometry.diagonal * scale,
-                                             geometry.revision});
+                                             geometry.revision, trace::facingCulled(instance),
+                                             trace::instanceMask(instance)});
       append(model.data(), sizeof(model));
       append(&view.fingerprint, sizeof(view.fingerprint));
       append(&draw.instanceId, sizeof(draw.instanceId));
@@ -196,14 +188,13 @@ namespace remix {
         // let per-pixel depth/normal rejection, lighting confidence and TAA color
         // clipping respond to the shading that actually changed on screen.
         if (const auto *previous = history.previousGeometry(temporalDraw)) {
-          const auto old = previousVertices.find(temporalKey);
-          if (old != previousVertices.end()) {
-            value.previousVertices = old->second->address;
+          if (const auto *old = previousVertices.find(temporalKey)) {
+            value.previousVertices = (*old)->address;
             value.previousModel = previous->draw.model;
           }
         }
         if (temporalDraw.instanceId)
-          pendingVertices[temporalKey] = view.vertices.at(surface.surfaceIndex);
+          pendingVertices.insert(temporalKey, view.vertices.at(surface.surfaceIndex));
         std::copy_n(material.tint, 4, value.tint);
         history.stage(temporalDraw, preparedSurface.animationFrame);
         if (options.pbrLocalReuse) {
@@ -359,12 +350,12 @@ namespace remix {
         hasEmissiveLights && lightBvh.emitters().size() > 4 ? float(options.emissiveCandidates) : 1.f;
     localResamplingActive = localIlluminationActive && frame.localScale[2] > 1;
     frame.localScale[3] = options.localRange > 0 ? 1.f / (options.localRange * options.localRange) : 0;
-    frame.camera = resources.camera();
-    primaryReverseDepth = resources.reverseDepth();
+    frame.camera = resources.submitted().cameras[0];
+    primaryReverseDepth = resources.submitted().reverseDepth[0];
     frame.inverseCamera = scene::inverse(frame.camera);
-    const auto eye = scene::inverse(resources.view());
+    const auto eye = scene::inverse(resources.submitted().views[0]);
     std::copy_n(eye.data() + 12, 3, frame.eye);
-    auto light = resources.light();
+    auto light = resources.submitted().light;
     if (options.overrideLight) {
       float norm =
           std::hypot(options.lightDirection[0], options.lightDirection[1], options.lightDirection[2]);
@@ -385,9 +376,9 @@ namespace remix {
     std::copy_n(light.direction, 3, frame.direction);
     std::copy_n(light.radiance, 3, frame.radiance);
     if (options.sky)
-      std::copy_n(resources.skyRadiance().data(), 3, frame.skyRadiance);
-    if (options.sky && resources.dome().enabled) {
-      const auto &dome = resources.dome();
+      std::copy_n(resources.submitted().skyRadiance.data(), 3, frame.skyRadiance);
+    if (options.sky && resources.submitted().dome.enabled) {
+      const auto &dome = resources.submitted().dome;
       std::copy_n(dome.radiance.data(), 3, frame.skyRadiance);
       frame.skyRadiance[3] = -1; // Uniform authored dome also draws the background.
       for (unsigned row = 0; row < 3; ++row)
@@ -418,6 +409,8 @@ namespace remix {
     frame.firefly[1] = options.indirectClamp;
     frame.pathConfig[0] = rouletteActive;
     frame.pathConfig[1] = options.rouletteMinBounces;
+    // Without transmitting layers every accepted hit blocks, so the first found suffices.
+    frame.pathConfig[2] = !hasBlendedGeometry;
     append(&frame, sizeof(frame));
     append(&options.localFireflyFilter, sizeof(options.localFireflyFilter));
     append(&options.translucencyDenoiser, sizeof(options.translucencyDenoiser));
@@ -433,9 +426,9 @@ namespace remix {
         options.sharcReset,     options.sharcCapacityLog2,       options.sharcSceneScale,
         options.sharcDownscale, options.sharcAccumulationFrames, options.sharcStaleFrames};
     append(cacheSettings, sizeof(cacheSettings));
-    const auto temporalEpoch = resources.temporalEpoch();
+    const auto temporalEpoch = resources.submitted().temporalEpoch;
     append(&temporalEpoch, sizeof(temporalEpoch));
-    configureSharc(frame, options, temporalEpoch, std::move(staticGeometry), std::move(dynamicGeometry),
+    configureSharc(frame, options, temporalEpoch, staticGeometry, dynamicGeometry,
                    hasCacheReceivers);
     const bool sceneChanged = scene != lastScene;
     if (sceneChanged || history.reset())
@@ -449,7 +442,7 @@ namespace remix {
     if (sceneChanged) {
       ++stats.sceneGeneration;
       stats.accumulationCount = 0;
-      lastScene = std::move(scene);
+      lastScene = scene;
     }
     if (options.accumulate != bool(stats.accumulationEnabled))
       stats.accumulationCount = 0;
@@ -473,10 +466,10 @@ namespace remix {
     previousLocalAdaptive = frame.localConfig[3] & 0x80000000u;
     temporalFrame = {};
     temporalFrame.shadow[2] =
-        std::any_of(resources.draws().begin(), resources.draws().end(),
+        std::any_of(resources.submitted().draws.begin(), resources.submitted().draws.end(),
                     [](const auto &draw) { return draw.traced() && draw.material->pbr; });
     temporalFrame.shadow[3] =
-        std::any_of(resources.draws().begin(), resources.draws().end(),
+        std::any_of(resources.submitted().draws.begin(), resources.submitted().draws.end(),
                     [](const auto &draw) { return draw.traced() && !draw.material->pbr; });
     temporalFrame.translucency[0] = denoiser && (postReblur || (rrActive() && postCapabilities.reblurShSupported)) && options.translucencyDenoiser &&
         std::any_of(surfaces.begin(), surfaces.end(), [](const auto &surface) { return (surface.state[3] & 2u) != 0; });
@@ -511,11 +504,11 @@ namespace remix {
       temporalFrame.families[2] = localResponsiveFrames;
       temporalFrame.families[3] = 0;
     }
-    temporalFrame.view = resources.view();
+    temporalFrame.view = resources.submitted().views[0];
     temporalFrame.inverseCamera = frame.inverseCamera;
     pendingCamera = frame.camera;
-    pendingProjection = resources.projection();
-    temporalFrame.previousView = history.reset() ? resources.view() : previousView;
+    pendingProjection = resources.submitted().projections[0];
+    temporalFrame.previousView = history.reset() ? resources.submitted().views[0] : previousView;
     temporalFrame.previousCamera = history.reset() ? frame.camera : previousCamera;
     temporalFrame.previousInverseCamera = scene::inverse(temporalFrame.previousCamera);
     auto halton = [](uint32_t n, uint32_t base) {
@@ -854,7 +847,7 @@ namespace remix {
                        temporalFrame.flags[0],
                        {denoiser->image(denoise::RrDiffuse), denoiser->image(denoise::RrSpecular),
                         denoiser->image(denoise::RrNormal), denoiser->image(denoise::RrHitDistance)},
-                       resources.view());
+                       resources.submitted().views[0]);
     }
     captureLinear(command);
     finishPbrReuse(command);
@@ -883,7 +876,7 @@ namespace remix {
     const char *profile = std::getenv("REMIX_OPACITY_PROFILE");
     const auto start = profile ? Clock::now() : Clock::time_point{};
     auto frame = scene::prepareTraceFrame(
-        resources.draws(),
+        resources.submitted().draws,
         std::chrono::duration<double>(std::chrono::steady_clock::now() - m_gpu->epoch).count(),
         options.emissiveLights && options.localLights &&
             (options.freezeEmissiveRadiance || options.stabilizeEmissiveLighting),
@@ -891,9 +884,11 @@ namespace remix {
     const auto prepared = profile ? Clock::now() : Clock::time_point{};
     // Coverage proof is CPU-only and can overlap the previous GPU submission.
     // Keep the result on this immutable frame, alongside its animated UVs.
-    for (auto &instance : frame.instances)
+    for (auto &instance : frame.instances) {
+      const bool culled = trace::facingCulled(instance);
       for (auto &surface : instance)
-        surface.opacity = m_gpu->opacityCache.partition(surface.draw, surface.uv);
+        surface.opacity = m_gpu->opacityCache.partition(surface.draw, surface.uv, culled);
+    }
     const auto classified = profile ? Clock::now() : Clock::time_point{};
     m_gpu->opacityCache.prune();
     const auto pruned = profile ? Clock::now() : Clock::time_point{};
@@ -917,9 +912,9 @@ namespace remix {
     staged.combined = m_gpu->lightBvh;
     staged.history = m_gpu->emissionHistory;
     const auto mode = options.freezeEmissiveRadiance ? 2u : options.stabilizeEmissiveLighting ? 1u : 0u;
-    staged.history.begin(resources.temporalEpoch().world, frame.seconds,
+    staged.history.begin(resources.submitted().temporalEpoch.world, frame.seconds,
                          options.emissiveLights && options.localLights ? mode : 0u);
-    auto lights = options.torchLights ? resources.sphereLights() : std::vector<scene::SphereLight>{};
+    auto lights = options.torchLights ? resources.submittedSphereLights() : std::vector<scene::SphereLight>{};
     const auto sphereCount = lights.size();
     for (const auto &source : frame.emitters) {
       auto light = source.light;
@@ -963,7 +958,7 @@ namespace remix {
     g.postProcessing->begin(command);
     g.prepare(command, resources, options, scene);
     const auto hdr = g.upscaler && !g.debugView ? g.upscaler->output() : upscale::Input{g.world->handle, g.world->view};
-    g.postProcessing->record(command, hdr, options, resources.temporalEpoch(), g.rendered,
+    g.postProcessing->record(command, hdr, options, resources.submitted().temporalEpoch, g.rendered,
       (g.postProcessing == g.postFallback.get() && !g.retainPostExposure) || options.debugView || options.shadowDebug || options.sharcDebug || options.validation, -1, g.stats.sceneGeneration);
   }
 

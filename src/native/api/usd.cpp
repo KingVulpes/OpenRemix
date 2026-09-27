@@ -81,6 +81,7 @@ remixapi_DrawUSDSceneEXT(remixapi_USDSceneHandleEXT handle, const remixapi_USDDr
   if (!d)
     return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
   return remix::api::resourceCall([&](auto &resources) {
+    // Publishing and drawing only build the next frame.
     // Publish only before this scene's first draw at a frame boundary.
     if (resources.pendingDrawCount() == 0 && d->pending.valid() &&
         d->pending.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
@@ -121,7 +122,7 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_DestroyUSDSceneEXT(remixapi_U
     auto d = document(handle);
     if (!d)
       return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
-    std::lock_guard apiLock(remix::api::g_apiMutex);
+    auto apiLock = remix::api::lockApi();
     d->submission.reset();
     removed = std::move(d);
     documents.erase(handle);
@@ -178,7 +179,7 @@ remixapi_ConfigureUSDModsEXT(const remixapi_USDModsOptionsEXT *options) {
   if (!options || options->structSize != sizeof(*options) || options->version != 1)
     return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
 #if REMIX_HAS_USD
-  std::lock_guard lock(remix::api::g_apiMutex);
+  auto lock = remix::api::lockApi();
   return remix::usd::configureMods(options->directory, options->hostMetersPerUnit, options->hostUpAxis,
                                    options->watch);
 #else
@@ -190,7 +191,7 @@ extern "C" REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetUSDModsDiagnost
   if (!out || capacity < 1)
     return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
 #if REMIX_HAS_USD
-  std::lock_guard lock(remix::api::g_apiMutex);
+  auto lock = remix::api::lockApi();
   std::strncpy(out, remix::usd::modDiagnostic(), capacity - 1);
   out[capacity - 1] = 0;
   return REMIXAPI_ERROR_CODE_SUCCESS;
@@ -214,6 +215,7 @@ namespace remix::api {
   void releaseUsdSubmissions() {
 #if REMIX_HAS_USD
     std::scoped_lock lock(documentsMutex, g_apiMutex);
+    g_runtime.waitRenderIdle();
     for (auto &[id, document] : documents)
       document->submission.reset();
 #endif

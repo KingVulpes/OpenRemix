@@ -147,11 +147,12 @@ namespace remix {
                           ngxCapabilities.sdk &&
                           (!ngxCapabilities.initializationComplete ||
                            ngxCapabilities.sr || ngxCapabilities.rr);
-    const bool perspective = m_raster.cameraValid() &&
-                             upscale::supportsCamera(m_raster.projection());
+    const auto &submitted = m_raster.submitted();
+    const bool perspective = submitted.cameraValid[0] &&
+                             upscale::supportsCamera(submitted.projections[0]);
     const bool detectedLocal =
         m_raster.hasSphereLights() ||
-        std::any_of(m_raster.draws().begin(), m_raster.draws().end(),
+        std::any_of(submitted.draws.begin(), submitted.draws.end(),
                     [](const auto &draw) {
                       const auto &e = draw.material->emission;
                       return draw.traced() &&
@@ -343,6 +344,7 @@ namespace remix {
   }
 
   upscale::Statistics RemixNativeRuntime::reconstructionStatistics() const {
+    waitRenderIdle();
     auto result = m_pathTracer ? m_pathTracer->upscalingStatistics() : upscale::Statistics{};
     result.requested = m_profiles.current().trace.upscaler;
     if (m_ngx) {
@@ -353,6 +355,7 @@ namespace remix {
     return result;
   }
   remixapi_BackendCapabilitiesEXT RemixNativeRuntime::backendCapabilities() const {
+    waitRenderIdle();
     remixapi_BackendCapabilitiesEXT result = {.structSize = sizeof(result),
                                               .supportedBackends = m_traceSupported ? 3u : 1u,
                                               .activeBackend = m_backend,
@@ -362,6 +365,7 @@ namespace remix {
   }
 
   remixapi_TracingStatisticsEXT RemixNativeRuntime::tracingStatistics() const {
+    waitRenderIdle();
     auto result = m_pathTracer
                       ? m_pathTracer->statistics()
                       : remixapi_TracingStatisticsEXT{.structSize = sizeof(remixapi_TracingStatisticsEXT)};
@@ -374,6 +378,7 @@ namespace remix {
     return result;
   }
   remixapi_SharcStatisticsEXT RemixNativeRuntime::sharcStatistics() const {
+    waitRenderIdle();
     auto result = m_pathTracer ? m_pathTracer->sharcStatistics()
                               : remixapi_SharcStatisticsEXT{.structSize = sizeof(remixapi_SharcStatisticsEXT)};
     result.requested = m_profiles.current().trace.sharc;
@@ -383,6 +388,7 @@ namespace remix {
     return result;
   }
   remixapi_LocalLightGuidingStatisticsEXT RemixNativeRuntime::localLightGuidingStatistics() const {
+    waitRenderIdle();
     auto result = m_pathTracer ? m_pathTracer->localLightGuidingStatistics()
         : remixapi_LocalLightGuidingStatisticsEXT{.structSize = sizeof(remixapi_LocalLightGuidingStatisticsEXT)};
     result.requested = m_profiles.current().trace.localGuiding;
@@ -390,6 +396,7 @@ namespace remix {
     return result;
   }
   remixapi_LocalLightStatisticsEXT RemixNativeRuntime::localLightStatistics() const {
+    waitRenderIdle();
     auto result = m_pathTracer ? m_pathTracer->localLightStatistics()
         : remixapi_LocalLightStatisticsEXT{.structSize = sizeof(remixapi_LocalLightStatisticsEXT)};
     result.enabled = m_profiles.current().trace.localLights;
@@ -397,12 +404,14 @@ namespace remix {
     return result;
   }
   remixapi_ShadowStatisticsEXT RemixNativeRuntime::shadowStatistics() const {
+    waitRenderIdle();
     auto result = m_pathTracer ? m_pathTracer->shadowStatistics()
                               : remixapi_ShadowStatisticsEXT{.structSize = sizeof(remixapi_ShadowStatisticsEXT)};
     result.requested = m_profiles.current().trace.sigma;
     return result;
   }
   remixapi_DenoisingStatisticsEXT RemixNativeRuntime::denoisingStatistics() const {
+    waitRenderIdle();
     auto result =
         m_pathTracer ? m_pathTracer->denoisingStatistics()
                      : remixapi_DenoisingStatisticsEXT{.structSize = sizeof(remixapi_DenoisingStatisticsEXT)};
@@ -415,6 +424,7 @@ namespace remix {
     return result;
   }
   remixapi_FeatureAvailability RemixNativeRuntime::getFeatureAvailability() const {
+    waitRenderIdle();
     remixapi_FeatureAvailability result{};
 #ifdef REMIX_HAS_NRD
     result.compiledFeatures = REMIXAPI_FEATURE_NRD_BIT;

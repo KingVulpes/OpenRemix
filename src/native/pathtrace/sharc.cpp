@@ -209,7 +209,7 @@ namespace remix {
   }
 
   void PathTracer::Gpu::configureSharc(Frame &frame, const TraceOptions &options, scene::TemporalEpoch currentEpoch,
-                                      std::vector<uint8_t> geometry, std::vector<uint8_t> dynamicGeometry, bool hasReceivers) {
+                                      const scene::Signature &geometry, const scene::Signature &dynamicGeometry, bool hasReceivers) {
     if (!sharc.stats.active)
       return;
     // Eligibility covers every traced surface, including off-screen receivers.
@@ -229,7 +229,7 @@ namespace remix {
     sharc.reset = options.sharcReset;
     sharc.scale = options.sharcSceneScale;
     sharc.bounces = options.bounces;
-    sharc.geometry = std::move(geometry);
+    sharc.geometry = geometry;
     float light[9];
     std::copy_n(frame.direction, 3, light);
     std::copy_n(frame.radiance, 3, light + 3);
@@ -261,7 +261,7 @@ namespace remix {
       sharc.responsiveFrames = 32;
     else if (sharc.responsiveFrames)
       --sharc.responsiveFrames;
-    sharc.dynamicGeometry = std::move(dynamicGeometry);
+    sharc.dynamicGeometry = dynamicGeometry;
     std::copy_n(light, 9, sharc.light);
     if (sharc.clear)
       sharc.warmFrames = 0;

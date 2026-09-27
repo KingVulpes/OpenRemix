@@ -1,6 +1,7 @@
 #pragma once
+#include "scene/frame_index.h"
 #include "scene/types.h"
-#include <map>
+#include <tuple>
 #include <utility>
 
 namespace remix::scene {
@@ -14,7 +15,6 @@ namespace remix::scene {
   public:
     struct SurfaceHistory {
       Draw draw;
-      uint64_t material = 0;
       uint32_t textureFrame = 0;
     };
     using Key = std::tuple<uint64_t, uint32_t, uint32_t>;
@@ -31,7 +31,7 @@ namespace remix::scene {
     static uint64_t materialSignature(const Draw &draw);
 
   private:
-    std::map<Key, SurfaceHistory> m_previous, m_pending;
+    FrameIndex<Key, SurfaceHistory> m_previous, m_pending;
     TemporalEpoch m_epoch{}, m_nextEpoch{};
     uint64_t m_integrator = 0, m_nextIntegrator = 0, m_frames = 0;
     uint32_t m_width = 0, m_height = 0, m_nextWidth = 0, m_nextHeight = 0;

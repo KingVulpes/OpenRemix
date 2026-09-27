@@ -57,7 +57,7 @@ layout(set=0,binding=3,std140) uniform Frame {
   uvec4 reuseConfig;
   uint64_t indirectResults, blueNoise;
   vec4 firefly; // outgoing local direct / indirect luminance limits; reserved
-  uvec4 pathConfig; // adaptive termination, minimum completed bounces, reserved
+  uvec4 pathConfig; // adaptive termination, minimum completed bounces, shadow first hit, reserved
   vec4 domeTransform[3];
 } frame;
 layout(set=0,binding=6) uniform sampler2D textures[4096];
@@ -120,10 +120,16 @@ vec4 combine(uint op, vec4 a, vec4 b) { return op == 1 ? a : op == 2 ? b : op ==
 vec3 transmissionColor(vec3 color, bool tinted) { return tinted ? color : vec3(1); }
 // Candidate intersections need opacity only. In particular, do not linearize
 // vertex RGB or evaluate the color combiner before knowing the closest hit.
-float materialAlpha(Surface s, vec2 uv, float vertex) {
+// Bit 0: the combiner reads the texture; bit 1: it reads vertex alpha.
+uint alphaOperands(Surface s) {
+  uint op=s.state.x,first=(op>>8)&3,second=(op>>10)&3,combineOp=((op>>6)&3)|((op>>11)&4);
+  uint a=combineOp==2?0u:first,b=combineOp==1?0u:second;
+  return uint(a==1||b==1)|uint(a==2||b==2)<<1;
+}
+float materialAlpha(Surface s, vec2 uv, float vertex, bool sampled) {
   if ((s.state.w&1)!=0) return 1;
   uint op=s.state.x;
-  float texel=textureLod(textures[nonuniformEXT(s.textureState.x)],uv*s.uv.xy+s.uv.zw,0).a;
+  float texel=sampled?textureLod(textures[nonuniformEXT(s.textureState.x)],uv*s.uv.xy+s.uv.zw,0).a:1;
   uint first=(op>>8)&3,second=(op>>10)&3;
   float a=first==1?texel:first==2?vertex:first==3?s.factor.a:1;
   float b=second==1?texel:second==2?vertex:second==3?s.factor.a:1;

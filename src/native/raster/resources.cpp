@@ -23,6 +23,46 @@ namespace remix {
     return meshes.emplace(source.get(), std::move(value)).first->second;
   }
 
+  VkFormat RasterRenderer::Gpu::blockFormat(const Pixels &p) {
+    if (!p.blocks || !blockCompression)
+      return VK_FORMAT_UNDEFINED;
+    const bool srgb = p.srgb;
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    switch (p.blocks->block) {
+    case 1:
+      format = p.blocks->opaqueAlpha ? (srgb ? VK_FORMAT_BC1_RGB_SRGB_BLOCK : VK_FORMAT_BC1_RGB_UNORM_BLOCK)
+                                     : (srgb ? VK_FORMAT_BC1_RGBA_SRGB_BLOCK : VK_FORMAT_BC1_RGBA_UNORM_BLOCK);
+      break;
+    case 2:
+      format = srgb ? VK_FORMAT_BC2_SRGB_BLOCK : VK_FORMAT_BC2_UNORM_BLOCK;
+      break;
+    case 3:
+      format = srgb ? VK_FORMAT_BC3_SRGB_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK;
+      break;
+    case 4: // No sRGB variant: a UI override to sRGB keeps the decoded path.
+      format = srgb ? VK_FORMAT_UNDEFINED : VK_FORMAT_BC4_UNORM_BLOCK;
+      break;
+    case 5:
+      format = srgb ? VK_FORMAT_UNDEFINED : VK_FORMAT_BC5_UNORM_BLOCK;
+      break;
+    case 7:
+      format = srgb ? VK_FORMAT_BC7_SRGB_BLOCK : VK_FORMAT_BC7_UNORM_BLOCK;
+      break;
+    }
+    if (format == VK_FORMAT_UNDEFINED)
+      return format;
+    auto [it, added] = blockFormats.emplace(format, false);
+    if (added) {
+      VkFormatProperties properties;
+      vkGetPhysicalDeviceFormatProperties(physical, format, &properties);
+      constexpr VkFormatFeatureFlags required = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+                                                VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
+                                                VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+      it->second = (properties.optimalTilingFeatures & required) == required;
+    }
+    return it->second ? format : VK_FORMAT_UNDEFINED;
+  }
+
   RasterRenderer::Gpu::TextureGpu &RasterRenderer::Gpu::texture(const std::shared_ptr<Texture> &source,
                                                                 VkCommandBuffer command) {
     auto it = textures.find(source.get());
@@ -30,29 +70,48 @@ namespace remix {
       return it->second;
     }
     const auto &p = source->pixels;
-    const uint32_t levels = uint32_t(p.mips.size());
+    const uint32_t levels = p.levels();
+    const VkFormat native = blockFormat(p);
+    // BC4 decodes to gray RGB with opaque alpha; BC5 decodes to RG0 with opaque alpha, as sampled.
+    const VkComponentMapping swizzle =
+        native == VK_FORMAT_BC4_UNORM_BLOCK
+            ? VkComponentMapping{VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R,
+                                 VK_COMPONENT_SWIZZLE_ONE}
+            : VkComponentMapping{};
     TextureGpu value{source, image(p.width, p.height, levels,
-                                   !p.hdrMips.empty() ? VK_FORMAT_R32G32B32A32_SFLOAT
-                                   : p.srgb           ? VK_FORMAT_R8G8B8A8_SRGB
-                                                      : VK_FORMAT_R8G8B8A8_UNORM,
-                                   false)};
-    std::vector<uint8_t> data;
+                                   native != VK_FORMAT_UNDEFINED ? native
+                                   : !p.hdrMips.empty()          ? VK_FORMAT_R32G32B32A32_SFLOAT
+                                   : p.srgb                      ? VK_FORMAT_R8G8B8A8_SRGB
+                                                                 : VK_FORMAT_R8G8B8A8_UNORM,
+                                   false, swizzle)};
+    // Source spans per level: encoded blocks, linear floats or (possibly decoded) RGBA8.
+    std::vector<std::pair<const uint8_t *, size_t>> spans;
+    if (native != VK_FORMAT_UNDEFINED) {
+      const auto &blocks = *p.blocks;
+      for (uint32_t i = 0; i < levels; ++i)
+        spans.emplace_back(blocks.data.data() + blocks.offsets[i], blocks.offsets[i + 1] - blocks.offsets[i]);
+    } else if (!p.hdrMips.empty()) {
+      for (const auto &mip : p.hdrMips)
+        spans.emplace_back(reinterpret_cast<const uint8_t *>(mip.data()), mip.size() * sizeof(float));
+    } else {
+      for (const auto &mip : p.rgba())
+        spans.emplace_back(mip.data(), mip.size());
+    }
     std::vector<VkBufferImageCopy> copies;
+    size_t total = 0;
     uint32_t width = p.width, height = p.height;
     for (uint32_t i = 0; i < levels; ++i) {
-      copies.push_back({.bufferOffset = data.size(),
+      copies.push_back({.bufferOffset = total,
                         .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i, 0, 1},
                         .imageExtent = {width, height, 1}});
-      if (p.hdrMips.empty())
-        data.insert(data.end(), p.mips[i].begin(), p.mips[i].end());
-      else {
-        const auto *begin = reinterpret_cast<const uint8_t *>(p.hdrMips[i].data());
-        data.insert(data.end(), begin, begin + p.hdrMips[i].size() * sizeof(float));
-      }
+      total += spans[i].second;
       width = std::max(1u, width / 2);
       height = std::max(1u, height / 2);
     }
-    uploads.push_back(buffer(data.data(), data.size(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT));
+    uploads.push_back(buffer(total, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, [&](uint8_t *mapped) {
+      for (uint32_t i = 0; i < levels; ++i)
+        std::memcpy(mapped + copies[i].bufferOffset, spans[i].first, spans[i].second);
+    }));
     VkImageMemoryBarrier barrier = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                                     .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
                                     .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
@@ -104,7 +163,7 @@ namespace remix {
                                          .addressModeU = address(source->wrapU),
                                          .addressModeV = address(source->wrapV),
                                          .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-                                         .maxLod = float(source->texture->pixels.mips.size() - 1),
+                                         .maxLod = float(source->texture->pixels.levels() - 1),
                                          .borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK};
     check(pipeline::createSampler(device, &sampler, nullptr, &value->sampler));
     const VkDescriptorSetAllocateInfo allocation = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,

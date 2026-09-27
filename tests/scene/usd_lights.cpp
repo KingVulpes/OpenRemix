@@ -92,7 +92,7 @@ int main() {
     texture.dataSize = 8;
     texture.format = REMIXAPI_FORMAT_BC4_UNORM_EXT;
     auto scalar = remix::scene::decodeTexture(texture);
-    require(scalar.mips[0][0] == 255 && scalar.mips[0][1] == 255 && scalar.mips[0][3] == 255,
+    require(scalar.rgba()[0][0] == 255 && scalar.rgba()[0][1] == 255 && scalar.rgba()[0][3] == 255,
             "BC4 scalar channels");
     texture.dataSize = 16;
     texture.format = REMIXAPI_FORMAT_BC6H_UFLOAT_EXT;

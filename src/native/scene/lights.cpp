@@ -337,15 +337,15 @@ namespace remix {
     if (it == m_lights.end())
       throw invalid;
     if (it->second.distant.isDistant)
-      m_light = it->second.distant;
+      m_frame.light = it->second.distant;
     if (it->second.dome.enabled)
-      m_dome = it->second.dome;
+      m_frame.dome = it->second.dome;
     if (!it->second.emitters.empty())
-      m_frameLights.insert(key(handle));
+      m_frame.lights.insert(key(handle));
   }
-  std::vector<SphereLight> NativeResources::sphereLights() const {
+  std::vector<SphereLight> NativeResources::sphereLights(const FrameState &frame) const {
     std::vector<SphereLight> result;
-    for (auto id : m_frameLights)
+    for (auto id : frame.lights)
       if (auto it = m_lights.find(id); it != m_lights.end())
         result.insert(result.end(), it->second.emitters.begin(), it->second.emitters.end());
     return result;

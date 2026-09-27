@@ -28,7 +28,7 @@ using namespace remix::api;
 extern "C" {
 
 REMIXAPI remixapi_UIState REMIXAPI_CALL remixapi_GetUIState() {
-  std::lock_guard lock(g_apiMutex);
+  auto lock = lockApi();
   return g_runtime.uiState();
 }
 
@@ -36,7 +36,7 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_SetUIState(remixapi_UIState s
   if (state < REMIXAPI_UI_STATE_NONE || state > REMIXAPI_UI_STATE_ADVANCED) {
     return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
   }
-  std::lock_guard lock(g_apiMutex);
+  auto lock = lockApi();
   if (!g_runtime.isInitialized()) {
     return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
   }

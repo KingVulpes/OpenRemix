@@ -393,6 +393,8 @@ namespace remix {
     }
     g.retiredPreviousVertices = std::move(g.previousVertices);
     g.previousVertices = std::move(g.pendingVertices);
+    g.previousVertices.seal();
+    g.pendingVertices.clear();
     // Preserve the submitted transform exactly. Inverting its rounded inverse
     // introduces false motion even for a stationary camera, especially far
     // from the world origin.

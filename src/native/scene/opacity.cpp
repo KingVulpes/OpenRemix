@@ -17,10 +17,11 @@ namespace remix::scene {
     TextureEntries next{texture, p.width, {}};
     const size_t stride = size_t(p.width) + 1;
     next.prefix.resize(stride * (size_t(p.height) + 1));
+    const auto &level = p.rgba()[0];
     for (uint32_t y = 0; y < p.height; ++y) {
       uint32_t row = 0;
       for (uint32_t x = 0; x < p.width; ++x) {
-        row += p.mips[0][4 * (size_t(y) * p.width + x) + 3] != 255;
+        row += level[4 * (size_t(y) * p.width + x) + 3] != 255;
         next.prefix[(size_t(y) + 1) * stride + x + 1] = next.prefix[size_t(y) * stride + x + 1] + row;
       }
     }
@@ -108,7 +109,8 @@ namespace remix::scene {
   }
 
   std::shared_ptr<const OpacityPartition> OpacityCache::partition(const Draw &draw,
-                                                                  const std::array<float, 4> &uv) {
+                                                                  const std::array<float, 4> &uv,
+                                                                  bool facingCulled) {
     using P = OpacityPartition;
     if (profile)
       ++statistics.lookups;
@@ -127,16 +129,18 @@ namespace remix::scene {
       result->reasons[P::Invalid] = result->triangles;
       return result;
     }
+    const bool faces = draw.doubleSided || facingCulled;
     const uint32_t flags =
-        uint32_t(draw.doubleSided) | uint32_t(b.enabled) << 1 | uint32_t(m.transmission) << 2;
+        uint32_t(faces) | uint32_t(b.enabled) << 1 | uint32_t(m.transmission) << 2;
     const auto &texture = m.texture;
     std::array<uint32_t, 2> dimensions{};
     if (texture) {
       const auto &p = texture->pixels;
       // Resource decoding bounds dimensions to 16384; reject malformed CPU
       // snapshots too, keeping prefix counts and allocation arithmetic bounded.
-      if (p.width && p.height && p.width <= 16384 && p.height <= 16384 && !p.mips.empty() &&
-          p.mips[0].size() == size_t(p.width) * p.height * 4)
+      // Validated blocks decode to exactly this size; do not decode them for the key.
+      if (p.width && p.height && p.width <= 16384 && p.height <= 16384 && p.levels() &&
+          (p.blocks || p.mips[0].size() == size_t(p.width) * p.height * 4))
         dimensions = {p.width, p.height};
     }
     const Key key{dimensions,
@@ -186,7 +190,7 @@ namespace remix::scene {
       ++statistics.proofs;
     auto result = std::make_shared<P>();
     result->triangles = uint32_t(draw.surface->indices.size() / 3);
-    P::Reason uniform = !draw.doubleSided ? P::OneSided
+    P::Reason uniform = !faces            ? P::OneSided
                         : b.enabled       ? P::Blended
                         : m.transmission  ? P::Transmission
                                           : P::Solid;

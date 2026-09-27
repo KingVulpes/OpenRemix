@@ -153,6 +153,7 @@ namespace remix::scene {
     // 16x16 stratified area samples, only on cache misses. Black texels count in
     // the average so small masks keep their coverage and do not gain energy.
     const auto &channels = linearChannels[p.srgb];
+    const auto &level = p.hdrMips.empty() ? p.rgba()[0] : p.mips[0];
     for (const auto &w : emissionSamples) {
       float u = 0, v = 0;
       for (unsigned i = 0; i < 3; ++i) {
@@ -163,7 +164,7 @@ namespace remix::scene {
         continue;
       const auto index = 4 * (size_t(coord(v, p.height, m.wrapV)) * p.width + coord(u, p.width, m.wrapU));
       for (unsigned c = 0; c < 3; ++c) {
-        const float value = p.hdrMips.empty() ? channels[p.mips[0][index + c]] : p.hdrMips[0][index + c];
+        const float value = p.hdrMips.empty() ? channels[level[index + c]] : p.hdrMips[0][index + c];
         result[c] += value * m.emission[c] / 256;
       }
     }

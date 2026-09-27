@@ -15,7 +15,8 @@ namespace remix::trace {
     for (size_t i = 0; i < inputs.size(); ++i) {
       if (inputs[i].id != previous[i].id || inputs[i].sub != previous[i].sub)
         return REMIXAPI_REBUILD_MEMBERSHIP_EXT;
-      if (inputs[i].geometry != previous[i].geometry)
+      if (inputs[i].geometry != previous[i].geometry || inputs[i].facingCulled != previous[i].facingCulled ||
+          inputs[i].mask != previous[i].mask)
         return REMIXAPI_REBUILD_GEOMETRY_EXT;
     }
     if (!changed(inputs))

@@ -215,6 +215,10 @@ int main(int argc, char **argv) {
         ok(api.Present(nullptr));
         ok(api.Present(nullptr));
       } else {
+        // Asynchronous presentation reports a GPU-half failure on the next call.
+        const char *async = std::getenv("REMIX_ASYNC_PRESENT");
+        if (async && std::strcmp(async, "1") == 0 && status == REMIXAPI_ERROR_CODE_SUCCESS)
+          status = api.Present(nullptr);
         require(status == REMIXAPI_ERROR_CODE_GENERAL_FAILURE, "Injected frame failure did not propagate");
         require(api.Present(nullptr) == status, "Failed frame resources were reused");
       }

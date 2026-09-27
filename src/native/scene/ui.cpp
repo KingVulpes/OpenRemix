@@ -43,7 +43,7 @@ namespace remix {
 
   void NativeResources::submitUi(const remixapi_UIDrawList *info) {
     if (!info || !info->commandCount) {
-      m_uiDraws.clear();
+      m_frame.uiDraws.clear();
       return;
     }
     if (info->sType != REMIXAPI_STRUCT_TYPE_UI_DRAW_LIST || !info->pVertices || !info->pIndices ||
@@ -117,7 +117,7 @@ namespace remix {
       draw.canvasHeight = info->displayHeight;
       pending.push_back(std::move(draw));
     }
-    m_uiDraws = std::move(pending);
+    m_frame.uiDraws = std::move(pending);
   }
 
   void NativeResources::overlay(const void *pixels, uint32_t width, uint32_t height, remixapi_Format format,
@@ -126,7 +126,7 @@ namespace remix {
       throw invalid;
     }
     if (!pixels && !width && !height && opacity <= 0) {
-      m_overlay.clear();
+      m_frame.overlay.clear();
       return;
     }
     if (!pixels || !width || !height) {
@@ -161,7 +161,7 @@ namespace remix {
                               {{1, 1, 0}, {1, 1}, {1, 1, 1, 1}},
                               {{0, 1, 0}, {0, 1}, {1, 1, 1, 1}}};
     draw.surface->indices = {0, 1, 2, 0, 2, 3};
-    m_overlay = {std::move(draw)};
+    m_frame.overlay = {std::move(draw)};
   }
 
   void NativeResources::setTint(float r, float g, float b, float a) {
@@ -170,7 +170,7 @@ namespace remix {
     if (a > 1) {
       throw invalid;
     }
-    std::copy_n(values, 4, m_tint);
-    m_tint[3] = std::max(0.0f, a);
+    std::copy_n(values, 4, m_frame.tint);
+    m_frame.tint[3] = std::max(0.0f, a);
   }
 } // namespace remix

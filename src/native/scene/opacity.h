@@ -87,10 +87,12 @@ private:
 public:
   explicit OpacityCache(uint32_t subTexelPrecisionBits = 4,
                         bool profile = false);
+  // facingCulled: the draw's TLAS instance culls back faces in hardware, so a
+  // one-sided surface no longer needs candidate traversal to reject them.
   std::shared_ptr<const OpacityPartition>
-  partition(const Draw &draw, const std::array<float, 4> &uv);
-  bool opaque(const Draw &draw, const std::array<float, 4> &uv) {
-    auto result = partition(draw, uv);
+  partition(const Draw &draw, const std::array<float, 4> &uv, bool facingCulled = false);
+  bool opaque(const Draw &draw, const std::array<float, 4> &uv, bool facingCulled = false) {
+    auto result = partition(draw, uv, facingCulled);
     return result->reasons[OpacityPartition::Solid] == result->triangles;
   }
   void prune();

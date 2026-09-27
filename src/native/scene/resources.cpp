@@ -8,6 +8,7 @@
 #include <cstring>
 #include <limits>
 #include <numeric>
+#include <utility>
 
 namespace remix {
   using namespace scene;
@@ -16,43 +17,43 @@ namespace remix {
   NativeResources::NativeResources() { reset(); }
 
   void NativeResources::reset() {
-    m_draws.clear();
-    m_frameIds.clear();
-    m_uiDraws.clear();
-    m_overlay.clear();
+    m_frame = {};
+    m_submitted = {};
     m_materials.clear();
     m_modMaterials.clear();
     m_meshes.clear();
     m_textures.clear();
     m_uiTextures.clear();
     m_paths.clear();
+    m_lights.clear();
+    // Created eagerly: rendering may read these while API calls run.
     m_white.reset();
     m_default.reset();
-    m_cameraValid = {};
-    m_temporalEpoch = {};
-    m_skyRadiance = {};
-    m_lights.clear();
-    m_light = {};
-    m_dome = {};
-    m_frameLights.clear();
-    for (auto &view : m_views)
-      view = identity();
-    for (auto &projection : m_projections)
-      projection = identity();
-    for (auto &camera : m_cameras) {
-      camera = identity();
-    }
-    for (auto &depth : m_reverseDepth)
-      depth = {0, 0, -1, 1};
-    std::fill(std::begin(m_tint), std::end(m_tint), 0.0f);
+    texturePath(nullptr);
+    defaultMaterial();
   }
 
   void NativeResources::finishFrame() {
-    m_draws.clear();
-    m_frameIds.clear();
-    m_uiDraws.clear();
-    m_light = {};
-    m_dome = {};
-    m_frameLights.clear();
+    // Per-frame lists swap to keep their capacity for the next frame. Cameras,
+    // epochs, overlay and tint persist until replaced; lights are per frame.
+    std::swap(m_submitted.draws, m_frame.draws);
+    std::swap(m_submitted.uiDraws, m_frame.uiDraws);
+    std::swap(m_submitted.ids, m_frame.ids);
+    std::swap(m_submitted.lights, m_frame.lights);
+    m_frame.draws.clear();
+    m_frame.uiDraws.clear();
+    m_frame.ids.clear();
+    m_frame.lights.clear();
+    m_submitted.light = std::exchange(m_frame.light, {});
+    m_submitted.dome = std::exchange(m_frame.dome, {});
+    m_submitted.overlay = m_frame.overlay;
+    m_submitted.cameras = m_frame.cameras;
+    m_submitted.views = m_frame.views;
+    m_submitted.projections = m_frame.projections;
+    m_submitted.reverseDepth = m_frame.reverseDepth;
+    m_submitted.cameraValid = m_frame.cameraValid;
+    m_submitted.temporalEpoch = m_frame.temporalEpoch;
+    m_submitted.skyRadiance = m_frame.skyRadiance;
+    std::copy_n(m_frame.tint, 4, m_submitted.tint);
   }
 } // namespace remix

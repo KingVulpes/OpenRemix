@@ -60,15 +60,15 @@ namespace remix::scene {
   }
   const TemporalHistory::SurfaceHistory *TemporalHistory::previous(const Draw &draw) const {
     const auto *p = previousGeometry(draw);
-    return p && p->material == materialSignature(draw) ? p : nullptr;
+    return p && materialSignature(p->draw) == materialSignature(draw) ? p : nullptr;
   }
   const TemporalHistory::SurfaceHistory *TemporalHistory::previousGeometry(const Draw &draw) const {
     if (m_reset || !draw.instanceId)
       return nullptr;
-    auto it = m_previous.find({draw.instanceId, draw.instanceIndex, draw.surfaceIndex});
-    if (it == m_previous.end())
+    const auto *found = m_previous.find({draw.instanceId, draw.instanceIndex, draw.surfaceIndex});
+    if (!found)
       return nullptr;
-    const auto &p = it->second;
+    const auto &p = *found;
     // Retained meshes preserve vertex identity, including changed bones. Streamed
     // replacements need both an explicit correspondence guarantee and exact
     // topology lineage; an update/storage hint alone is insufficient.
@@ -82,11 +82,13 @@ namespace remix::scene {
   }
   void TemporalHistory::stage(const Draw &draw, uint32_t textureFrame) {
     if (draw.instanceId)
-      m_pending[{draw.instanceId, draw.instanceIndex, draw.surfaceIndex}] = {draw, materialSignature(draw),
-                                                                             textureFrame};
+      m_pending.insert({draw.instanceId, draw.instanceIndex, draw.surfaceIndex}, {draw, textureFrame});
   }
   void TemporalHistory::commit() {
-    m_previous = std::move(m_pending);
+    // Swap so the next frame's pending records reuse this frame's capacity.
+    std::swap(m_previous, m_pending);
+    m_previous.seal();
+    m_pending.clear();
     m_epoch = m_nextEpoch;
     m_integrator = m_nextIntegrator;
     m_width = m_nextWidth;

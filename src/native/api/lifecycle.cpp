@@ -35,7 +35,7 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_Startup(const remixapi_Startu
   if (info == nullptr || info->sType != REMIXAPI_STRUCT_TYPE_STARTUP_INFO) {
     return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
   }
-  std::lock_guard lock(g_apiMutex);
+  auto lock = lockApi();
   const remixapi_ErrorCode status = g_runtime.initialize(*info);
   if (status == REMIXAPI_ERROR_CODE_SUCCESS) {
     g_frameExitStages = 0;
@@ -66,7 +66,7 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_Startup(const remixapi_Startu
 
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_Shutdown() {
   releaseUsdSubmissions();
-  std::lock_guard lock(g_apiMutex);
+  auto lock = lockApi();
 #if REMIX_HAS_USD
   remix::usd::stopMods(g_runtime.raster());
 #endif
@@ -84,29 +84,45 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_Present(const remixapi_Presen
   remixapi_ErrorCode status = REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
   {
     std::lock_guard lock(g_apiMutex);
-    status = g_runtime.present(info);
-#if REMIX_HAS_USD
-    if (status == REMIXAPI_ERROR_CODE_SUCCESS)
-      remix::usd::modBoundary(g_runtime.raster());
-#endif
 #if !defined(_WIN32)
     // Validation and reconstruction SDKs initialize process-static resources on
     // first use. Async preparation can activate them after the initial raster
     // frame. Renew cleanup after each renderer's first use so our GPU wait and
     // resource release precede the SDK's process-exit destructors. The mask
     // bounds registrations per startup, independently of frame count/resizes.
-    uint32_t exitStages = g_runtime.hasStartedFrame() ? 1u : 0u;
-    if (g_runtime.backendCapabilities().activeBackend == 1)
-      exitStages |= 2u;
-    const auto reconstruction = g_runtime.reconstructionStatistics();
-    if (reconstruction.frames)
-      exitStages |= 4u << uint32_t(reconstruction.backend);
-    if (exitStages & ~g_frameExitStages) {
-      if (std::atexit([] { remixapi_Shutdown(); }) != 0) {
+    // Asynchronous presentation reads renderer state before handing off the
+    // next frame, once the previous one has finished rendering.
+    auto registerExit = [] {
+      uint32_t exitStages = g_runtime.hasStartedFrame() ? 1u : 0u;
+      if (g_runtime.backendCapabilities().activeBackend == 1)
+        exitStages |= 2u;
+      const auto reconstruction = g_runtime.reconstructionStatistics();
+      if (reconstruction.frames)
+        exitStages |= 4u << uint32_t(reconstruction.backend);
+      if (exitStages & ~g_frameExitStages) {
+        if (std::atexit([] { remixapi_Shutdown(); }) != 0)
+          return false;
+        g_frameExitStages |= exitStages;
+      }
+      return true;
+    };
+    if (g_runtime.asyncPresent()) {
+      g_runtime.waitRenderIdle();
+      if (!registerExit()) {
         g_runtime.shutdown();
         return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
       }
-      g_frameExitStages |= exitStages;
+    }
+#endif
+    status = g_runtime.present(info);
+#if REMIX_HAS_USD
+    if (status == REMIXAPI_ERROR_CODE_SUCCESS)
+      remix::usd::modBoundary(g_runtime.raster());
+#endif
+#if !defined(_WIN32)
+    if (!g_runtime.asyncPresent() && !registerExit()) {
+      g_runtime.shutdown();
+      return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
     }
 #endif
     presentCallback = g_presentCallback;
@@ -130,7 +146,7 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_Present(const remixapi_Presen
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_RegisterCallbacks(
     PFN_remixapi_BridgeCallback beginSceneCallback, PFN_remixapi_BridgeCallback endSceneCallback,
     PFN_remixapi_BridgeCallback presentCallback) {
-  std::lock_guard lock(g_apiMutex);
+  auto lock = lockApi();
   g_beginSceneCallback = beginSceneCallback;
   g_endSceneCallback = endSceneCallback;
   g_presentCallback = presentCallback;

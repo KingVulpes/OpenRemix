@@ -210,7 +210,7 @@ namespace remix {
     transmission.reset();
     extent = {};
     imagesInitialized = false;
-    lastScene.clear();
+    lastScene = {};
     stats.accumulationCount = 0;
   }
 

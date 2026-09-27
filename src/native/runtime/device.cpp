@@ -276,6 +276,12 @@ namespace remix {
       features.features.shaderStorageImageReadWithoutFormat = VK_TRUE;
       features.features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
     }
+    {
+      // Deferred BC blocks upload natively; raster falls back to decoded RGBA8 otherwise.
+      VkPhysicalDeviceFeatures available{};
+      vkGetPhysicalDeviceFeatures(selection.physicalDevice, &available);
+      features.features.textureCompressionBC = available.textureCompressionBC;
+    }
     if (!m_traceSupported)
       features.pNext = nullptr;
     const auto ngxExtensions = m_ngx->deviceExtensions(m_instance, selection.physicalDevice);

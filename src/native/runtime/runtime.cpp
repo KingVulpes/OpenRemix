@@ -31,6 +31,7 @@
 
 namespace remix {
   RemixNativeRuntime::~RemixNativeRuntime() {
+    stopRenderThread();
     if (m_device && !m_deviceLost) {
       vkDeviceWaitIdle(m_device);
     }
@@ -126,6 +127,11 @@ namespace remix {
         return finish(status);
       }
       m_initialized = true;
+      const char *async = std::getenv("REMIX_ASYNC_PRESENT");
+      // Shared-frame (headless) hosts wait for each frame synchronously.
+      m_asyncPresent = !m_headless && async && std::strcmp(async, "1") == 0;
+      if (m_asyncPresent)
+        startRenderThread();
       return REMIXAPI_ERROR_CODE_SUCCESS;
     } catch (...) {
       shutdown();
@@ -141,6 +147,7 @@ namespace remix {
         return status;
       }
     }
+    stopRenderThread();
     if (m_device && !m_deviceLost) {
       vkDeviceWaitIdle(m_device);
     }
@@ -174,7 +181,8 @@ namespace remix {
 
   remixapi_ErrorCode RemixNativeRuntime::fail(VkResult result) {
     m_failed = true;
-    m_deviceLost |= result == VK_ERROR_DEVICE_LOST;
+    if (result == VK_ERROR_DEVICE_LOST)
+      m_deviceLost = true;
     SDL_Log("Remix Vulkan failure: %d", static_cast<int>(result));
     return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
   }

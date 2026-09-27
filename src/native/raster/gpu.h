@@ -148,10 +148,29 @@ namespace remix {
     std::unique_ptr<Buffer> allocateBuffer(size_t size, VkBufferUsageFlags usage,
                                            VkMemoryPropertyFlags flags);
     std::unique_ptr<Buffer> buffer(const void *data, size_t size, VkBufferUsageFlags usage);
+    // Host-visible buffer filled in place by write(mapped), avoiding an intermediate copy.
+    template <class Write>
+    std::unique_ptr<Buffer> buffer(size_t size, VkBufferUsageFlags usage, Write &&write) {
+      auto out = allocateBuffer(size, usage, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+      void *mapped;
+      raster::detail::check(vkMapMemory(device, out->memory, 0, VK_WHOLE_SIZE, 0, &mapped));
+      write(static_cast<uint8_t *>(mapped));
+      const VkMappedMemoryRange flush = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
+                                         .memory = out->memory,
+                                         .size = VK_WHOLE_SIZE};
+      const auto result = vkFlushMappedMemoryRanges(device, 1, &flush);
+      vkUnmapMemory(device, out->memory);
+      raster::detail::check(result);
+      return out;
+    }
+    // Native BC format for deferred blocks, or VK_FORMAT_UNDEFINED to upload decoded RGBA8.
+    bool blockCompression = false;
+    std::unordered_map<VkFormat, bool> blockFormats;
+    VkFormat blockFormat(const scene::Pixels &pixels);
     std::unique_ptr<Buffer> geometryBuffer(const void *data, size_t size, VkBufferUsageFlags usage,
                                            VkCommandBuffer command);
     std::unique_ptr<Image> image(uint32_t width, uint32_t height, uint32_t levels, VkFormat format,
-                                 bool isDepth);
+                                 bool isDepth, VkComponentMapping swizzle = {});
     MeshGpu &mesh(const std::shared_ptr<scene::Surface> &source, VkCommandBuffer command);
     TextureGpu &texture(const std::shared_ptr<scene::Texture> &source, VkCommandBuffer command);
     VkDescriptorSet material(const std::shared_ptr<scene::Material> &source, VkCommandBuffer command);

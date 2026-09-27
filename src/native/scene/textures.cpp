@@ -15,20 +15,27 @@ namespace remix {
 
   namespace scene {
     uint64_t Texture::fingerprint() const {
-      if (!contentHash) {
+      if (!contentHash.value.load(std::memory_order_relaxed)) {
         uint64_t hash = 1469598103934665603ull;
         auto append = [&](const void *data, size_t size) { hash = hashBytes(data, size, hash); };
         append(&pixels.width, 4);
         append(&pixels.height, 4);
         append(&pixels.srgb, sizeof(bool));
         append(&pixels.twoChannel, sizeof(bool));
+        // Encoded blocks identify content without decoding them.
+        if (const auto &blocks = pixels.blocks) {
+          const uint32_t format[] = {blocks->block, blocks->opaqueAlpha};
+          append(format, sizeof(format));
+          append(blocks->offsets.data(), blocks->offsets.size() * sizeof(size_t));
+          append(blocks->data.data(), blocks->data.size());
+        }
         for (const auto &mip : pixels.mips)
           append(mip.data(), mip.size());
         for (const auto &mip : pixels.hdrMips)
           append(mip.data(), mip.size() * sizeof(float));
-        contentHash = hash ? hash : 1;
+        contentHash.value.store(hash ? hash : 1, std::memory_order_relaxed);
       }
-      return contentHash;
+      return contentHash.value.load(std::memory_order_relaxed);
     }
   } // namespace scene
 
@@ -100,12 +107,7 @@ namespace remix {
     auto texture = std::make_shared<Texture>();
     texture->pixels = decodeTexture(info);
     auto previous = m_textures.find(info.hash);
-    if (previous == m_textures.end() || previous->second->pixels.width != texture->pixels.width ||
-        previous->second->pixels.height != texture->pixels.height ||
-        previous->second->pixels.srgb != texture->pixels.srgb ||
-        previous->second->pixels.twoChannel != texture->pixels.twoChannel ||
-        previous->second->pixels.mips != texture->pixels.mips ||
-        previous->second->pixels.hdrMips != texture->pixels.hdrMips)
+    if (previous == m_textures.end() || !previous->second->pixels.sameContent(texture->pixels))
       m_textures[info.hash] = std::move(texture);
     handle = reinterpret_cast<remixapi_TextureHandle>(uintptr_t(info.hash));
   }

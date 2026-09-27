@@ -85,6 +85,7 @@ namespace remix {
 
   bool RemixNativeRuntime::processEvent(const SDL_Event *event, void *userData) {
     auto &runtime = *static_cast<RemixNativeRuntime *>(userData);
+    std::lock_guard lock(runtime.m_uiMutex);
     UiScope scope(runtime.m_gui);
     return ImGui_ImplSDL3_ProcessEvent(event);
   }

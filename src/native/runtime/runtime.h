@@ -32,6 +32,11 @@
 #include "ui/profiles.h"
 #include <remix/remix_c.h>
 #include <remix/remix_editor_ext.h>
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
+#include <optional>
+#include <thread>
 #include <vector>
 #include <vulkan/vulkan.h>
 
@@ -50,18 +55,30 @@ public:
   remixapi_ErrorCode shutdown();
   upscale::Statistics reconstructionStatistics() const;
   postfx::Statistics postProcessingStatistics() const {
+    waitRenderIdle();
     return m_postProcessing ? m_postProcessing->statistics() : postfx::Statistics{};
   }
   const std::string &postProcessingFailure() const { return m_postFailure; }
   remixapi_ErrorCode present(const remixapi_PresentInfo *info);
+  // Opt-in (REMIX_ASYNC_PRESENT=1): Present prepares the frame on the caller's
+  // thread, then a render thread waits for the GPU slot, records, submits and
+  // presents while the caller builds the next frame. Errors surface on the
+  // next call. Callers that touch renderer state wait for it first.
+  bool asyncPresent() const { return m_asyncPresent; }
+  // Also called by every renderer statistic below; a no-op on the render thread.
+  void waitRenderIdle() const;
   remixapi_ErrorCode requestScreenshot(const char *path);
   void completeScreenshot();
   int configureSharedFrame(remixapi_EditorSharedFrame &frame);
   bool modsDisabled() const { return m_disableMods; }
   bool isHeadless() const { return m_headless; }
   bool isInitialized() const { return m_initialized; }
-  uint64_t presentationCount() const { return m_presentationCount; }
+  uint64_t presentationCount() const {
+    waitRenderIdle();
+    return m_presentationCount;
+  }
   remixapi_FramePerformanceEXT framePerformance() const {
+    waitRenderIdle();
     return m_framePerformance;
   }
   struct PreparationStatus {
@@ -70,11 +87,15 @@ public:
     std::string failure;
   };
   PreparationStatus preparationStatus() const {
+    waitRenderIdle();
     return {preparationPending(), m_loading,
             m_pipelines ? m_pipelines->statistics() : pipeline::Statistics{},
             m_preparationFailure};
   }
-  bool hasStartedFrame() const { return m_frameStarted; }
+  bool hasStartedFrame() const {
+    waitRenderIdle();
+    return m_frameStarted;
+  }
   bool hasFailed() const { return m_failed; }
   RasterRenderer &raster() { return m_raster; }
   RemixSdlWindow &window() { return m_window; }
@@ -114,6 +135,10 @@ private:
   remixapi_ErrorCode createAttachments();
   remixapi_ErrorCode recordFrame(uint32_t imageIndex,
                                  scene::TraceFrame *traceScene);
+  remixapi_ErrorCode presentFrame(std::optional<scene::TraceFrame> traceScene);
+  void startRenderThread();
+  void stopRenderThread();
+  void renderLoop();
   remixapi_ErrorCode fail(VkResult result = VK_ERROR_UNKNOWN);
   void destroySharedFrame();
   void sharedBarrier(VkCommandBuffer command, bool acquire);
@@ -205,9 +230,20 @@ private:
   double m_longestPresentationGap = 0;
   remixapi_FramePerformanceEXT m_framePerformance{
       .structSize = sizeof(remixapi_FramePerformanceEXT)};
-  bool m_frameStarted = false;
-  bool m_failed = false;
-  bool m_deviceLost = false;
+  std::atomic<bool> m_frameStarted = false;
+  std::atomic<bool> m_failed = false;
+  std::atomic<bool> m_deviceLost = false;
+  bool m_asyncPresent = false, m_uiPrepared = false;
+  std::thread m_renderThread;
+  mutable std::mutex m_renderMutex;
+  std::mutex m_screenshotMutex;
+  // ImGui's current context is process-global: the render thread's draw-data
+  // replay and PumpEvents' input forwarding must not interleave their scopes.
+  std::mutex m_uiMutex;
+  mutable std::condition_variable m_renderCondition;
+  std::optional<scene::TraceFrame> m_renderJob;
+  bool m_renderPending = false, m_renderStop = false;
+  remixapi_ErrorCode m_renderStatus = REMIXAPI_ERROR_CODE_SUCCESS;
   bool m_rebuild = false;
   bool m_recreateSurface = false;
   bool m_vsync = false;

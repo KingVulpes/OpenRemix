@@ -16,8 +16,27 @@
 namespace remix {
 
   // CPU state is serialized by the API mutex. Only the startup thread touches GPU state.
+  // API calls build m_frame; finishFrame() publishes it as m_submitted, which is
+  // all that rendering reads, so the next frame can be built while one renders.
   class NativeResources {
   public:
+    struct FrameState {
+      std::vector<scene::Draw> draws, uiDraws, overlay;
+      std::unordered_set<uint64_t> ids, lights;
+      std::array<scene::Matrix, 3> cameras = identities(), views = identities(), projections = identities();
+      std::array<std::array<float, 4>, 3> reverseDepth{{{0, 0, -1, 1}, {0, 0, -1, 1}, {0, 0, -1, 1}}};
+      std::array<bool, 3> cameraValid = {};
+      scene::TemporalEpoch temporalEpoch;
+      std::array<float, 3> skyRadiance = {};
+      scene::DistantLight light;
+      scene::DomeLight dome;
+      float tint[4] = {};
+
+    private:
+      static std::array<scene::Matrix, 3> identities() {
+        return {scene::identity(), scene::identity(), scene::identity()};
+      }
+    };
     NativeResources();
     ~NativeResources() = default;
     NativeResources(const NativeResources &) = delete;
@@ -32,6 +51,10 @@ namespace remix {
       m_modMaterials = std::move(next);
     }
     void invalidateTexturePaths() { m_paths.clear(); }
+    // Drops expired path-cache entries; runs before a frame is handed to rendering.
+    void prunePaths() {
+      std::erase_if(m_paths, [](const auto &entry) { return entry.second.expired(); });
+    }
     void cacheTexturePath(const std::string &path, const std::shared_ptr<scene::Texture> &texture) {
       m_paths[std::filesystem::absolute(std::filesystem::u8path(path)).lexically_normal()] = texture;
     }
@@ -52,17 +75,20 @@ namespace remix {
     void submitUi(const remixapi_UIDrawList *info);
     void overlay(const void *pixels, uint32_t width, uint32_t height, remixapi_Format format, float opacity);
     void setTint(float r, float g, float b, float a);
+    // Publishes this frame's submissions for rendering and starts the next one.
     void finishFrame();
-    size_t pendingDrawCount() const { return m_draws.size(); }
-
-    const std::vector<scene::Draw> &draws() const { return m_draws; }
-    const scene::Matrix &camera(uint32_t type = 0) const { return m_cameras[type]; }
-    const scene::Matrix &view(uint32_t type = 0) const { return m_views[type]; }
-    const scene::Matrix &projection(uint32_t type = 0) const { return m_projections[type]; }
-    const std::array<float, 4> &reverseDepth(uint32_t type = 0) const { return m_reverseDepth[type]; }
-    bool cameraValid() const { return m_cameraValid[0]; }
-    scene::TemporalEpoch temporalEpoch() const { return m_temporalEpoch; }
-    const std::array<float, 3> &skyRadiance() const { return m_skyRadiance; }
+    size_t pendingDrawCount() const { return m_frame.draws.size(); }
+    // The frame being built by API calls.
+    const std::vector<scene::Draw> &draws() const { return m_frame.draws; }
+    const scene::Matrix &camera(uint32_t type = 0) const { return m_frame.cameras[type]; }
+    const scene::Matrix &view(uint32_t type = 0) const { return m_frame.views[type]; }
+    const scene::Matrix &projection(uint32_t type = 0) const { return m_frame.projections[type]; }
+    const std::array<float, 4> &reverseDepth(uint32_t type = 0) const { return m_frame.reverseDepth[type]; }
+    bool cameraValid() const { return m_frame.cameraValid[0]; }
+    scene::TemporalEpoch temporalEpoch() const { return m_frame.temporalEpoch; }
+    const std::array<float, 3> &skyRadiance() const { return m_frame.skyRadiance; }
+    // The last published frame: the only frame state rendering may read.
+    const FrameState &submitted() const { return m_submitted; }
     void createLight(const remixapi_LightInfo &info, remixapi_LightHandle &handle);
     void updateLight(remixapi_LightHandle handle, const remixapi_LightInfo &info);
     void destroyLight(remixapi_LightHandle handle);
@@ -77,12 +103,15 @@ namespace remix {
       }
       return m_default;
     }
-    const scene::DomeLight &dome() const { return m_dome; }
-    const scene::DistantLight &light() const { return m_light; }
-    std::vector<scene::SphereLight> sphereLights() const;
-    bool hasSphereLights() const { return !m_frameLights.empty(); }
+    const scene::DomeLight &dome() const { return m_frame.dome; }
+    const scene::DistantLight &light() const { return m_frame.light; }
+    // Light emitters drawn in the frame being built, or in the submitted frame.
+    std::vector<scene::SphereLight> sphereLights() const { return sphereLights(m_frame); }
+    std::vector<scene::SphereLight> submittedSphereLights() const { return sphereLights(m_submitted); }
+    bool hasSphereLights() const { return !m_submitted.lights.empty(); }
 
   protected:
+    std::vector<scene::SphereLight> sphereLights(const FrameState &frame) const;
     std::shared_ptr<scene::Texture> texturePath(remixapi_Path path);
     std::shared_ptr<scene::Texture> dataTexturePath(remixapi_Path path);
     std::shared_ptr<scene::Texture> m_white;
@@ -91,8 +120,6 @@ namespace remix {
     std::unordered_map<uint64_t, std::shared_ptr<scene::Mesh>> m_meshes;
     std::unordered_map<uint64_t, std::shared_ptr<scene::Texture>> m_textures, m_uiTextures;
     std::unordered_map<std::filesystem::path, std::weak_ptr<scene::Texture>> m_paths;
-    std::array<scene::Matrix, 3> m_cameras, m_views, m_projections;
-    std::array<std::array<float, 4>, 3> m_reverseDepth;
     struct LightSource {
       remixapi_StructType type{};
       remixapi_Transform transform{};
@@ -110,14 +137,6 @@ namespace remix {
       scene::DomeLight dome;
     };
     std::unordered_map<uint64_t, LightDefinition> m_lights;
-    std::unordered_set<uint64_t> m_frameLights;
-    scene::DistantLight m_light;
-    scene::DomeLight m_dome;
-    std::array<bool, 3> m_cameraValid = {};
-    scene::TemporalEpoch m_temporalEpoch;
-    std::array<float, 3> m_skyRadiance = {};
-    std::vector<scene::Draw> m_draws, m_uiDraws, m_overlay;
-    std::unordered_set<uint64_t> m_frameIds;
-    float m_tint[4] = {};
+    FrameState m_frame, m_submitted;
   };
 } // namespace remix

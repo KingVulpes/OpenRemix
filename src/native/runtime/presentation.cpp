@@ -31,6 +31,7 @@
 #include <cstring>
 #include <limits>
 #include <optional>
+#include <utility>
 
 namespace remix {
 void RemixNativeRuntime::presented() {
@@ -44,11 +45,16 @@ void RemixNativeRuntime::presented() {
   ++m_presentationCount;
 }
   namespace {
+    // Fills tracer counters once the presentation attempt ends, on whichever
+    // thread ran its GPU half.
     struct CompletePerformance {
       remixapi_FramePerformanceEXT &out;
       const std::unique_ptr<PathTracer> &tracer;
       const uint64_t &presentations;
+      bool active = true;
       ~CompletePerformance() {
+        if (!active)
+          return;
         out.presented = presentations != out.presentations;
         out.presentations = presentations;
         if (!tracer)
@@ -76,12 +82,17 @@ void RemixNativeRuntime::presented() {
     if (!isInitialized()) {
       return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
     }
+    if (m_asyncPresent) {
+      waitRenderIdle();
+      if (m_renderStatus != REMIXAPI_ERROR_CODE_SUCCESS)
+        return std::exchange(m_renderStatus, REMIXAPI_ERROR_CODE_SUCCESS);
+    }
     auto &p = m_framePerformance;
     p = {.structSize = sizeof(p), .attempts = p.attempts + 1, .presentations = m_presentationCount};
     ScopedMilliseconds presentTime{p.presentMilliseconds};
     if (m_pathTracer)
       m_pathTracer->resetPerformance();
-    CompletePerformance completePerformance{p, m_pathTracer, m_presentationCount};
+    CompletePerformance completePerformance{p, m_pathTracer, m_presentationCount, !m_asyncPresent};
     remixapi_WindowState state = {};
     auto status = m_headless ? REMIXAPI_ERROR_CODE_SUCCESS : m_window.getWindowState(state);
     if (m_headless) {
@@ -101,10 +112,10 @@ void RemixNativeRuntime::presented() {
     if (m_failed) {
       return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
     }
-    struct EndFrame {
-      RasterRenderer &raster;
-      ~EndFrame() { raster.finishFrame(); }
-    } endFrame{m_raster};
+    // Publish this frame's submissions; everything below reads only them, and
+    // API calls may build the next frame while it renders asynchronously.
+    m_raster.finishFrame();
+    m_raster.prunePaths();
     if (!m_headless && !m_window.isVulkanSurfaceCurrent()) {
       m_recreateSurface = true;
     }
@@ -133,10 +144,36 @@ void RemixNativeRuntime::presented() {
       // Scene snapshots, emission reduction and staged light hierarchies use
       // no GPU resources. Prepare while submitted frames run; commit lighting,
       // upload and retire resources only after the reused slot's fence.
+      // A tracer without a target backend still records (see recordFrame).
       std::optional<scene::TraceFrame> traceScene;
-      if (m_pathTracer && m_targetBackend && !m_loading)
+      if (m_pathTracer && !m_loading)
         traceScene = measured(p.sceneMilliseconds,
                               [&] { return m_pathTracer->prepareScene(m_raster, m_traceOptions); });
+      if (!m_asyncPresent)
+        return presentFrame(std::move(traceScene));
+      // Build the debug UI here: it uses SDL, settings and the queue (texture
+      // uploads), which stay on the caller's thread. Rendering replays its draw data.
+      if (!m_headless)
+        drawUi(VK_NULL_HANDLE);
+      {
+        std::lock_guard lock(m_renderMutex);
+        m_renderJob = std::move(traceScene);
+        m_renderPending = true;
+      }
+      m_renderCondition.notify_all();
+      return REMIXAPI_ERROR_CODE_SUCCESS;
+    } catch (VkResult result) {
+      return fail(result);
+    } catch (...) {
+      return fail();
+    }
+  }
+
+  remixapi_ErrorCode RemixNativeRuntime::presentFrame(std::optional<scene::TraceFrame> traceScene) {
+    auto &p = m_framePerformance;
+    CompletePerformance completePerformance{p, m_pathTracer, m_presentationCount, m_asyncPresent};
+    remixapi_ErrorCode status = REMIXAPI_ERROR_CODE_SUCCESS;
+    try {
       // Bounded waits keep unavailable surfaces and a stalled GPU from blocking the caller indefinitely.
       VkResult result = measured(p.fenceMilliseconds, [&] {
         return vkWaitForFences(m_device, 1, &m_frames[m_frameIndex].fence, VK_TRUE, 1000000000);
@@ -155,7 +192,10 @@ void RemixNativeRuntime::presented() {
       uint32_t imageIndex = 0;
       // Preserve next-presentation capture completion. Event polling stays
       // nonblocking; only a pending screenshot needs the preceding frame.
-      m_screenshot.complete(m_device, true);
+      {
+        std::lock_guard lock(m_screenshotMutex);
+        m_screenshot.complete(m_device, true);
+      }
       result = measured(p.acquireMilliseconds, [&] {
         if (m_headless)
           return VK_SUCCESS;
@@ -203,7 +243,10 @@ void RemixNativeRuntime::presented() {
       if (result != VK_SUCCESS) {
         return fail(result);
       }
-      m_screenshot.submitted(m_frames[m_frameIndex].fence);
+      {
+        std::lock_guard lock(m_screenshotMutex);
+        m_screenshot.submitted(m_frames[m_frameIndex].fence);
+      }
       if (m_pathTracer && !m_loading)
         m_pathTracer->submitted();
       if (m_headless) {
@@ -346,7 +389,9 @@ void RemixNativeRuntime::presented() {
         .pClearValues = clear,
     };
     // Font uploads are recorded by the backend before the render pass.
-    drawUi(VK_NULL_HANDLE);
+    // Asynchronous presentation built the UI on the caller's thread.
+    if (!m_asyncPresent)
+      drawUi(VK_NULL_HANDLE);
     vkCmdBeginRenderPass(buffer, &pass, VK_SUBPASS_CONTENTS_INLINE);
     if (!m_loading && m_pathTracer) {
       m_pathTracer->record(buffer);
@@ -362,6 +407,7 @@ void RemixNativeRuntime::presented() {
     drawUi(buffer);
     vkCmdEndRenderPass(buffer);
     if (m_screenshotSupported) {
+      std::lock_guard lock(m_screenshotMutex);
       m_screenshot.record(m_physicalDevice, m_device, buffer, m_swapchainImages[imageIndex],
                           m_swapchainExtent, m_swapchainFormat);
     }
@@ -376,11 +422,58 @@ void RemixNativeRuntime::presented() {
       return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
     if (m_failed)
       return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+    std::lock_guard lock(m_screenshotMutex);
     return m_screenshot.request(path, m_screenshotSupported);
   }
 
   void RemixNativeRuntime::completeScreenshot() {
-    if (m_initialized && !m_failed)
+    if (m_initialized && !m_failed) {
+      std::lock_guard lock(m_screenshotMutex);
       m_screenshot.complete(m_device);
+    }
+  }
+
+  void RemixNativeRuntime::startRenderThread() {
+    m_renderStop = m_renderPending = false;
+    m_renderStatus = REMIXAPI_ERROR_CODE_SUCCESS;
+    m_renderThread = std::thread([this] { renderLoop(); });
+  }
+
+  void RemixNativeRuntime::stopRenderThread() {
+    if (!m_renderThread.joinable())
+      return;
+    {
+      std::lock_guard lock(m_renderMutex);
+      m_renderStop = true;
+    }
+    m_renderCondition.notify_all();
+    m_renderThread.join();
+  }
+
+  void RemixNativeRuntime::waitRenderIdle() const {
+    if (!m_asyncPresent || std::this_thread::get_id() == m_renderThread.get_id())
+      return;
+    std::unique_lock lock(m_renderMutex);
+    m_renderCondition.wait(lock, [&] { return !m_renderPending; });
+  }
+
+  void RemixNativeRuntime::renderLoop() {
+    std::unique_lock lock(m_renderMutex);
+    for (;;) {
+      // A pending frame completes before stopping; the mutex orders its state
+      // with the caller's next frame.
+      m_renderCondition.wait(lock, [&] { return m_renderPending || m_renderStop; });
+      if (!m_renderPending)
+        return;
+      auto job = std::move(m_renderJob);
+      m_renderJob.reset();
+      lock.unlock();
+      const auto status = presentFrame(std::move(job));
+      lock.lock();
+      if (m_renderStatus == REMIXAPI_ERROR_CODE_SUCCESS)
+        m_renderStatus = status;
+      m_renderPending = false;
+      m_renderCondition.notify_all();
+    }
   }
 } // namespace remix

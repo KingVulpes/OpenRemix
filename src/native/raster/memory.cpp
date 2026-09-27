@@ -107,7 +107,7 @@ namespace remix {
   }
 
   std::unique_ptr<Image> RasterRenderer::Gpu::image(uint32_t width, uint32_t height, uint32_t levels,
-                                                    VkFormat format, bool isDepth) {
+                                                    VkFormat format, bool isDepth, VkComponentMapping swizzle) {
     if (width > properties.limits.maxImageDimension2D || height > properties.limits.maxImageDimension2D) {
       throw VK_ERROR_FORMAT_NOT_SUPPORTED;
     }
@@ -140,6 +140,7 @@ namespace remix {
         .image = out->image,
         .viewType = VK_IMAGE_VIEW_TYPE_2D,
         .format = format,
+        .components = swizzle,
         .subresourceRange = {VkImageAspectFlags(isDepth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT), 0, levels, 0,
                              1}};
     check(vkCreateImageView(device, &view, nullptr, &out->view));

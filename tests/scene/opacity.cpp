@@ -166,6 +166,11 @@ int main() {
   draw.doubleSided = false;
   require(cache.partition(draw, uv)->reasons[OpacityPartition::OneSided] == 2,
           "Facing eligibility reused a double-sided partition");
+  const auto culled = cache.partition(draw, uv, true);
+  require(culled->key == partition->key && !culled->reasons[OpacityPartition::OneSided],
+          "Hardware facing culling did not preserve one-sided coverage");
+  require(cache.partition(draw, uv)->reasons[OpacityPartition::OneSided] == 2,
+          "Hardware-culled coverage leaked into an unculled instance");
   draw.doubleSided = true;
   draw.surface = std::make_shared<Surface>(*draw.surface);
   draw.surface->vertices[0].color[3] = 0;

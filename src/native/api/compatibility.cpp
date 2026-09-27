@@ -25,7 +25,7 @@
 
 namespace remix::api {
   remixapi_ErrorCode REMIXAPI_CALL requireRenderer() {
-    std::lock_guard lock(g_apiMutex);
+    auto lock = lockApi();
     return g_runtime.isInitialized() ? REMIXAPI_ERROR_CODE_FEATURE_UNAVAILABLE
                                      : REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
   }

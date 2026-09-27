@@ -10,6 +10,7 @@ namespace remix {
   void RemixNativeRuntime::drawUi(VkCommandBuffer commandBuffer) {
     if (!m_gui)
       return;
+    std::lock_guard lock(m_uiMutex);
     ui::UiScope scope(m_gui);
     // The bootstrap UI pipeline is prepared by the same worker. Surface
     // presentation and SDL input remain available while its first job runs.

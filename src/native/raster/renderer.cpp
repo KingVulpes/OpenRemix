@@ -71,6 +71,9 @@ namespace remix {
     g.physical = physical;
     vkGetPhysicalDeviceMemoryProperties(physical, &g.memory);
     vkGetPhysicalDeviceProperties(physical, &g.properties);
+    VkPhysicalDeviceFeatures features{};
+    vkGetPhysicalDeviceFeatures(physical, &features);
+    g.blockCompression = features.textureCompressionBC; // Enabled whenever available; see device.cpp.
     for (auto format : {VK_FORMAT_D32_SFLOAT, VK_FORMAT_D16_UNORM}) {
       VkFormatProperties p;
       vkGetPhysicalDeviceFormatProperties(physical, format, &p);

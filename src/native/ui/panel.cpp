@@ -1,4 +1,5 @@
 #include "ui/profiles.h"
+#include "api/imgui_compat.h"
 #include <algorithm>
 #include <imgui.h>
 
@@ -33,9 +34,13 @@ namespace remix::ui {
       if (compact && ImGui::IsItemHovered())
         ImGui::SetTooltip("Close developer panel (F12)");
     }
-    static const char *tabs[] = {"Rendering", "Lighting", "Post-processing", "Diagnostics", "Profiles"};
+    const bool hasPlugin = remixapi_imgui_HasDrawCallback() != 0;
+    const int tabCount = hasPlugin ? 6 : 5;
+    static const char *tabs[] = {"Rendering", "Lighting", "Post-processing", "Diagnostics", "Profiles", "Plugin"};
     const float footerHeight = ImGui::GetFrameHeightWithSpacing() * 2 + ImGui::GetStyle().ItemSpacing.y * 2;
     auto draft = profiles.current();
+    if (panel.tab >= tabCount)
+      panel.tab = 0;
     const int restoreTab = panel.tab;
     if (ImGui::BeginTabBar("Settings tabs", ImGuiTabBarFlags_FittingPolicyScroll)) {
       if (minimal) {
@@ -48,7 +53,7 @@ namespace remix::ui {
         if (ImGui::IsItemHovered())
           ImGui::SetTooltip("Close developer panel (F12)");
       }
-      for (int i = 0; i < 5; ++i) {
+      for (int i = 0; i < tabCount; ++i) {
         const auto flags =
             profileUi.restoreTab && i == restoreTab ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
         if (ImGui::BeginTabItem(tabs[i], nullptr, flags)) {
@@ -59,6 +64,8 @@ namespace remix::ui {
           ImGui::PushItemWidth(std::max(80.f * scale, ImGui::GetContentRegionAvail().x * .46f));
           if (i == 4)
             drawProfiles(profiles, profileUi);
+          else if (i == 5)
+            remixapi_imgui_InvokeDrawCallback();
           else
             drawTab(user, i, draft);
           ImGui::PopItemWidth();
@@ -69,7 +76,7 @@ namespace remix::ui {
       ImGui::EndTabBar();
       profileUi.restoreTab = false;
     }
-    if (panel.tab != 4 && draft != profiles.current())
+    if (panel.tab != 4 && panel.tab != 5 && draft != profiles.current())
       profiles.edit(draft);
     ImGui::BeginChild("Profile footer", ImVec2(0, std::max(1.f, ImGui::GetContentRegionAvail().y)),
                       ImGuiChildFlags_None,

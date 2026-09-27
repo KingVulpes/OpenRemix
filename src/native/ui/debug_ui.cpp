@@ -1,5 +1,6 @@
 #include "runtime/runtime.h"
 #include "ui/context.h"
+#include "api/imgui_compat.h"
 #include <algorithm>
 #include <cmath>
 #include <imgui.h>
@@ -73,19 +74,7 @@ namespace remix {
       if (!open)
         setUiState(REMIXAPI_UI_STATE_NONE);
     }
-    if (m_freeCamera.enabled) {
-      const auto &io = ImGui::GetIO();
-      ImGui::SetNextWindowPos(ImVec2(16, io.DisplaySize.y - 36), ImGuiCond_Always);
-      ImGui::SetNextWindowBgAlpha(0.80f);
-      ImGui::Begin("FreeCameraHUD", nullptr,
-                   ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoDecoration |
-                   ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings |
-                   ImGuiWindowFlags_NoFocusOnAppearing);
-      ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "[Free Camera Active]");
-      ImGui::SameLine();
-      ImGui::TextUnformatted("W/A/S/D: Move | Q/E: Down/Up | Shift: Fast | Left-Drag: Look | Right-Click: Reset");
-      ImGui::End();
-    }
+    remixapi_imgui_InvokeOverlayCallback();
     ImGui::Render();
     const auto &io = ImGui::GetIO();
     m_window.setGuiCapture(m_uiState != REMIXAPI_UI_STATE_NONE && io.WantCaptureKeyboard,

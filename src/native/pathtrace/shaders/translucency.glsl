@@ -6,7 +6,7 @@ void frontGuides(Hit hit,ivec2 pixel) {
   bool valid=hit.t<1e30&&hit.blended;
   float z=valid?abs((temporal.view*vec4(hit.p,1)).z):1e10;
   vec4 motion=vec4(0);
-  if(valid&&hit.historyValid&&temporal.flags.x==0) {
+  if(valid&&temporal.flags.x==0) {
     vec4 clip=frame.camera*vec4(hit.p,1),previous=temporal.previousCamera*vec4(hit.previousPosition,1);
     if(clip.w>0&&previous.w>0)
       motion=vec4((previous.xy/previous.w-clip.xy/clip.w)*.5*vec2(frame.target.xy),

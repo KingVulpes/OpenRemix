@@ -87,8 +87,9 @@ namespace remix::trace::detail {
     float emission[4] = {};
     float pbr[4] = {};            // perceptual roughness, metalness, enabled, reserved
     uint32_t pbrTextures[4] = {}; // roughness, metalness, normal; index + 1
+    uint32_t material[4] = {};    // scene::MaterialDecode: flags, specular metal, tint halves r|g, b
   };
-  static_assert(sizeof(TraceSurface) == 240 && sizeof(TraceVertex) == 48);
+  static_assert(sizeof(TraceSurface) == 256 && sizeof(TraceVertex) == 48);
   struct Frame {
     Matrix inverseCamera, camera;
     float eye[4] = {}, direction[4] = {}, radiance[4] = {};

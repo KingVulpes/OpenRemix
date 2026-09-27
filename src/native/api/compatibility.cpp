@@ -202,4 +202,12 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetMemoryPressure(remixapi_Me
   out_info->bytesToRelease = sample.bytesToRelease;
   return REMIXAPI_ERROR_CODE_SUCCESS;
 }
+
+// remix_fo4_ext.h revisions, as the dxvk-remix fork reports them. The structs
+// are always honoured: materials decode spec/gloss maps and the albedo tint in
+// both backends, and DrawInstance / retained instances apply the material
+// override. Hosts gate their CPU fallbacks on these (probed before Startup).
+REMIXAPI uint32_t REMIXAPI_CALL remixapi_GetSpecGlossMaterialVersion(void) { return 1; }
+REMIXAPI uint32_t REMIXAPI_CALL remixapi_GetMaterialAlbedoTintVersion(void) { return 1; }
+REMIXAPI uint32_t REMIXAPI_CALL remixapi_GetInstanceMaterialOverrideVersion(void) { return 1; }
 }

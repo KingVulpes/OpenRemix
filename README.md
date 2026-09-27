@@ -34,6 +34,10 @@ driver budget. Both are also in the ImGui Rendering tab under Memory.
 Also off by default: `rtx.native.memoryPressure = 1` answers `remixapi_GetMemoryPressure`
 (Memory), and `rtx.native.meshes.refreshInPlace = 1` honours
 `remixapi_MeshInfoRefreshGeometryEXT`, refitting a refreshed mesh's BLAS (Geometry).
+The `remix_fo4_ext.h` material structs (spec/gloss roughness maps, albedo tint and the
+per-instance material override) follow the dxvk-remix fork and are always honoured;
+`remixapi_GetSpecGlossMaterialVersion`, `GetMaterialAlbedoTintVersion` and
+`GetInstanceMaterialOverrideVersion` return 1 so hosts can drop their CPU fallbacks.
 See the [native sample](samples/remix-native).
 
 ## Building

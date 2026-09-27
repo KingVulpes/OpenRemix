@@ -60,4 +60,8 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_DestroyRetainedInstances(cons
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_DrawRetainedInstances(const float *sceneOrigin);
 // Device-local memory pressure (remix_fo4_ext.h); named export only.
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetMemoryPressure(remixapi_MemoryPressureInfo *out_info);
+// Material extension revisions (remix_fo4_ext.h); named exports only.
+REMIXAPI uint32_t REMIXAPI_CALL remixapi_GetSpecGlossMaterialVersion(void);
+REMIXAPI uint32_t REMIXAPI_CALL remixapi_GetMaterialAlbedoTintVersion(void);
+REMIXAPI uint32_t REMIXAPI_CALL remixapi_GetInstanceMaterialOverrideVersion(void);
 }

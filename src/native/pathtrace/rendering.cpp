@@ -146,6 +146,11 @@ namespace remix {
         value.pbr[0] = material.roughness;
         value.pbr[1] = material.metallic;
         value.pbr[2] = material.pbr ? 1.f : 0.f;
+        const auto decode = scene::materialDecode(material);
+        value.material[0] = decode.flags;
+        value.material[1] = decode.specularMetal;
+        value.material[2] = uint32_t(decode.tint[0]) | uint32_t(decode.tint[1]) << 16;
+        value.material[3] = decode.tint[2];
         value.pbrTextures[3] =
             material.normalEncoding == 1
                 ? 2
@@ -232,6 +237,7 @@ namespace remix {
           appendStatic(value.tint, sizeof(value.tint));
           appendStatic(value.factor, sizeof(value.factor));
           appendStatic(value.state, sizeof(value.state));
+          appendStatic(value.material, sizeof(value.material));
         }
         value.textureState[0] = entry->second;
         primaryDraws.push_back(

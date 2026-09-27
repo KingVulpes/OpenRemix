@@ -38,14 +38,11 @@ namespace remix {
       return std::all_of(m.begin(), m.end(), [](float v) { return std::isfinite(v); });
     }
 
-    // DrawInstance validation plus the material override; copies the borrowed
+    // DrawInstance validation (material override included); copies the borrowed
     // GPU instancing transforms so nothing refers to caller memory.
     void describeRetained(const remixapi_InstanceInfo &info, InstanceDescription &d, std::vector<Matrix> &locals) {
       describeInstance(info, d);
       if (!d.hidden) {
-        if (const auto *override = static_cast<const remixapi_InstanceInfoMaterialOverrideEXT *>(
-                extension(info.pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_MATERIAL_OVERRIDE_EXT)))
-          d.materialOverride = key(override->material);
         if (d.instanced) {
           locals.resize(d.instanceCount);
           for (uint32_t i = 0; i < d.instanceCount; ++i)
@@ -85,13 +82,9 @@ namespace remix {
       return;
     }
     bool complete = true;
-    std::shared_ptr<Material> override;
-    if (d.materialOverride) {
-      if (auto material = m_materials.find(d.materialOverride); material != m_materials.end())
-        override = material->second;
-      else
-        complete = false;
-    }
+    auto override = overrideMaterial(d);
+    if (d.materialOverride && !override)
+      complete = false;
     const uint32_t count = e.instanceCount();
     const size_t surfaces = mesh->second->surfaces.size();
     if (uint64_t(count) * surfaces > 65536)

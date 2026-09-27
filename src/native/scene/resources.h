@@ -159,6 +159,9 @@ namespace remix {
                     const scene::Matrix *models, uint32_t count,
                     const std::shared_ptr<scene::Material> &materialOverride, bool strict,
                     std::vector<scene::Draw> &out, std::vector<std::shared_ptr<scene::Material>> *resolved);
+    // The live material an InstanceInfoMaterialOverrideEXT names; null keeps
+    // the mesh's own materials (no override, or a dead handle).
+    std::shared_ptr<scene::Material> overrideMaterial(const scene::InstanceDescription &description) const;
     void resolveRetained(scene::RetainedInstance &entry, bool strict);
     bool retainedStale(const scene::RetainedInstance &entry) const;
     void setRetainedWatch(scene::RetainedInstance &entry, bool watch);

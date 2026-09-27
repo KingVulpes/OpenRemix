@@ -56,7 +56,7 @@ void main() {
   vec3 b=cross(smoothNormal,t);
   if(dot(b,bitangent)<0)b=-b;
   outNormal=vec4(materialNormal(s,uv,mat3(t,b,smoothNormal),normalize(-direction)),decalSurface(s)?4:blendedAtAlpha(s,albedo.a)?((s.state.w&32)!=0?3:2):1);
-  vec2 rm=materialParameters(s,uv);
+  vec2 rm=materialParameters(s,uv,albedo.rgb);
   outPbr=vec4(s.pbr.z!=0?rm.x:-1,rm.y,encodeGeometricNormal(n));
   outAlbedo=albedo;
   outPrevious=vec4(previousPosition,s.previousVertices!=0?1:0);

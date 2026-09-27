@@ -138,9 +138,8 @@ namespace remix {
     if (uint64_t(count) * mesh->second->surfaces.size() + m_draws.size() > 65536) {
       throw invalid;
     }
-    std::shared_ptr<Material> override;
-    if (materialOverride)
-      override = m_materials.at(key(materialOverride));
+    // A USD mod's material wins over remixapi_InstanceInfoMaterialOverrideEXT.
+    const auto override = materialOverride ? m_materials.at(key(materialOverride)) : overrideMaterial(description);
     m_modelScratch.resize(count);
     for (uint32_t i = 0; i < count; ++i) {
       m_modelScratch[i] = description.instanced
@@ -156,6 +155,17 @@ namespace remix {
       m_frameIds.insert(description.instanceId);
     m_draws.insert(m_draws.end(), std::make_move_iterator(pending.begin()),
                    std::make_move_iterator(pending.end()));
+  }
+
+  // remixapi_InstanceInfoMaterialOverrideEXT, shared by DrawInstance and
+  // retained instances (fork semantics): every surface is shaded with the
+  // override; a null handle, or one that is not a live material, leaves the
+  // mesh's own materials.
+  std::shared_ptr<Material> NativeResources::overrideMaterial(const InstanceDescription &description) const {
+    if (!description.materialOverride)
+      return {};
+    const auto it = m_materials.find(description.materialOverride);
+    return it == m_materials.end() ? nullptr : it->second;
   }
 
   bool NativeResources::buildDraws(const InstanceDescription &description, const std::shared_ptr<Mesh> &mesh,
@@ -263,7 +273,10 @@ namespace remix::scene {
       d.hidden = true;
       return;
     }
-    const auto *alpha = static_cast<const remixapi_InstanceInfoBlendEXT *>(
+    if (const auto *override = static_cast<const remixapi_InstanceInfoMaterialOverrideEXT *>(
+            extension(info.pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_MATERIAL_OVERRIDE_EXT)))
+      d.materialOverride = key(override->material);
+    const auto *alpha =static_cast<const remixapi_InstanceInfoBlendEXT *>(
         extension(info.pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_BLEND_EXT));
     d.blend = blend(alpha);
     const auto *identity = static_cast<const remixapi_InstanceIdentityEXT *>(

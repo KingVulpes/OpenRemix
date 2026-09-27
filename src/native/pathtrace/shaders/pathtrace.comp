@@ -112,7 +112,7 @@ void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, ino
     vec3 w=vec3(1-bary.x-bary.y,bary);
     vec2 uv=s.vertices.v[s.indices.i[tri]].uv.xy*w.x+s.vertices.v[s.indices.i[tri+1]].uv.xy*w.y+s.vertices.v[s.indices.i[tri+2]].uv.xy*w.z;
     if(motion)hit.emission=materialEmission(s,uv);
-    hit.ng=hit.n;hit.wo=-direction;hit.rm=materialParameters(s,uv);hit.pbr=s.pbr.z!=0;
+    hit.ng=hit.n;hit.wo=-direction;hit.rm=materialParameters(s,uv,hit.color.rgb);hit.pbr=s.pbr.z!=0;
     vec2 ua=s.vertices.v[s.indices.i[tri]].uv.xy;
     vec2 ub=s.vertices.v[s.indices.i[tri+1]].uv.xy;
     vec2 uc=s.vertices.v[s.indices.i[tri+2]].uv.xy;

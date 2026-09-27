@@ -9,8 +9,9 @@ namespace remix {
     uint64_t bufferFingerprint(const void *data, size_t size, uint64_t seed = 1469598103934665603ull) {
       // These fingerprints only invalidate history inside this renderer run.
       // Bulk hashing avoids a serial byte-at-a-time multiply over every changed
-      // vertex. Geometry cache reuse still compares the complete content string.
-      const uint64_t digest = std::hash<std::string_view>{}({static_cast<const char *>(data), size});
+      // vertex (std::hash<string_view> is byte-wise FNV-1a in MSVC's library).
+      // Geometry cache reuse still compares the complete content string.
+      const uint64_t digest = scene::fastHash(data, size);
       return scene::hashBytes(&digest, sizeof(digest), seed);
     }
   } // namespace

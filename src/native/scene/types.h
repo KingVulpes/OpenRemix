@@ -12,6 +12,8 @@ namespace remix {
     Matrix identity();
     Matrix inverse(const Matrix &matrix);
     uint64_t hashBytes(const void *bytes, size_t size, uint64_t seed = 1469598103934665603ull);
+    // Bulk content hash (8 bytes per step) for change detection within a run.
+    uint64_t fastHash(const void *bytes, size_t size, uint64_t seed = 0);
     Matrix multiply(const Matrix &a, const Matrix &b);
     Matrix transform(const remixapi_Transform &value);
     const void *extension(const void *next, remixapi_StructType type);

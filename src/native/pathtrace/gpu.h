@@ -417,7 +417,12 @@ namespace remix {
       std::unique_ptr<Buffer> instances;
       trace::TlasPolicy policy;
     } tlas[2];
-    std::unordered_map<std::string, std::weak_ptr<Geometry>> geometryCache;
+    struct ContentHash {
+      size_t operator()(const std::string &content) const {
+        return size_t(scene::fastHash(content.data(), content.size()));
+      }
+    };
+    std::unordered_map<std::string, std::weak_ptr<Geometry>, ContentHash> geometryCache;
     scene::OpacityCache opacityCache;
     scene::SurfaceEmissionCache surfaceEmissionCache;
     using MeshViewKey = std::tuple<const scene::Mesh *, uint64_t, uint32_t, std::string>;

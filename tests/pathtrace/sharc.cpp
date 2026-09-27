@@ -1,4 +1,4 @@
-#include <remix/remix_native_ext.h>
+#include "runtime/prepared.h"
 #include <SDL3/SDL.h>
 #include <algorithm>
 #include <array>
@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <remix/remix_native_ext.h>
 #include <vector>
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_PNG
@@ -33,6 +34,9 @@ int main(int argc, char **argv) {
   startup.windowWidth = startup.windowHeight = 64;
 #endif
   ok(api.Startup(&startup));
+  // These fixtures measure the unexposed lighting/display contract.
+  ok(api.SetConfigVariable("rtx.native.pathtrace.autoExposure", "0"));
+  ok(api.SetConfigVariable("rtx.native.pathtrace.bloom", "0"));
   ok(api.SetConfigVariable("rtx.native.pathtrace.upscaler", "off"));
   remixapi_BackendCapabilitiesEXT caps{};
   caps.structSize = sizeof(caps);
@@ -166,13 +170,16 @@ int main(int argc, char **argv) {
     instance.transform.matrix[0][3] = translation + (mesh == mover ? moverOffset : 0);
     ok(api.DrawInstance(&instance));
   };
-  auto frame = [&] {
+  auto frame = remix::test::preparedFrame([&] {
     camera.view[3][0] = -translation;
-    ok(api.PumpEvents()); ok(api.SetupCamera(&camera)); ok(api.DrawLightInstance(sun));
+    ok(api.PumpEvents());
+    ok(api.SetupCamera(&camera));
+    ok(api.DrawLightInstance(sun));
     draw(receiverOverride ? receiverOverride : sharpOnly ? sharpReceiver : receiver);
-    for (auto mesh : enclosure) draw(mesh);
+    for (auto mesh : enclosure)
+      draw(mesh);
     ok(api.Present(nullptr));
-  };
+  });
   auto temporal = [&] {
     remixapi_DenoisingStatisticsEXT stats{}; stats.structSize = sizeof(stats);
     ok(remixapi_GetDenoisingStatisticsEXT(&stats)); return stats;
@@ -185,7 +192,8 @@ int main(int argc, char **argv) {
     const auto file = (directory / (name + ".png")).string();
     const auto raw = (directory / (name + ".pfm")).string();
     if (pbrScene) SDL_setenv_unsafe("REMIX_PATH_LINEAR_CAPTURE", raw.c_str(), 1);
-    ok(api.RequestPresentedScreenshot(file.c_str())); frame();
+    ok(remix::test::requestScreenshot(api, file.c_str(), frame));
+    frame();
     if (pbrScene) SDL_unsetenv_unsafe("REMIX_PATH_LINEAR_CAPTURE");
     frame();
     int width, height, channels;

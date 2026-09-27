@@ -70,6 +70,8 @@ namespace remix {
     m_failed = false;
     m_deviceLost = false;
     m_presentationCount = 0;
+    m_lastPresentation = {};
+    m_longestPresentationGap = 0;
     m_framePerformance = {.structSize = sizeof(remixapi_FramePerformanceEXT)};
     m_frameIndex = 0;
     const char *frames = std::getenv("REMIX_FRAMES_IN_FLIGHT");
@@ -178,13 +180,47 @@ namespace remix {
   }
 
   void RemixNativeRuntime::destroyVulkan() {
+    if (m_pipelines)
+      m_pipelines->stop();
+    if (m_pipelines) {
+      const auto s = m_pipelines->statistics();
+      SDL_Log(
+          "OpenRemix pipelines: created=%llu reused=%llu failed=%llu "
+          "compile_ms=%.3f cache_hits=%llu "
+          "driver_ns=%llu presentations=%llu longest_presentation_gap_ms=%.3f",
+          (unsigned long long)s.created, (unsigned long long)s.reused,
+          (unsigned long long)s.failed, s.milliseconds,
+          (unsigned long long)s.cacheHits,
+          (unsigned long long)s.driverNanoseconds,
+          (unsigned long long)m_presentationCount, m_longestPresentationGap);
+    }
+    // Join before releasing staging objects, immutable layouts or the device.
+    m_preparation.reset();
+    m_obsoletePreparations.clear();
+    m_postPreparation.reset();
+    m_obsoletePost.clear();
     destroySwapchain();
     destroySharedFrame();
+    m_lastFrame.reset();
+    m_snapshotSupported = m_snapshotAllocationFailed = false;
     m_screenshot.reset(m_device);
     shutdownUi();
     m_pathTracer.reset();
+    m_postProcessing.reset();
+    m_exposureState.reset();
+    m_postFailure.clear();
+    m_failedPostKey.clear();
     m_ngx.reset();
     m_raster.shutdownGpu();
+    m_pipelines.reset();
+    m_activePreparationKey.clear();
+    m_failedPreparationKey.clear();
+    m_preparationFailure.clear();
+    m_loading = m_rasterPreparing = false;
+    m_localSourcesSeen = false;
+    m_reconstructionFailureMask = 0;
+    m_reconstructionFailureKey.clear();
+    m_reconstructionFailure.clear();
     if (m_device) {
       for (auto &frame : m_frames) {
         if (frame.fence)

@@ -8,6 +8,11 @@ subdir('runtime')
 subdir('ui')
 # GCC 8's standard library ships filesystem in a separate static archive.
 filesystem_dep = cpp.find_library('stdc++fs', required : false)
+pipeline_library = static_library('remix_pipelines',
+  'runtime/preparation.cpp', 'runtime/pipeline_cache.cpp', 'runtime/pipelines.cpp',
+  dependencies : [vulkan_dep, threads_dep, filesystem_dep], include_directories : native_include,
+  cpp_args : cpp.get_supported_arguments('-Wno-missing-field-initializers'),
+  gnu_symbol_visibility : 'hidden', pic : true)
 subdir('scene')
 usd_libraries = []
 if get_option('usd')
@@ -15,8 +20,14 @@ if get_option('usd')
 endif
 subdir('raster')
 subdir('denoise')
+subdir('postfx')
 subdir('upscale')
 subdir('pathtrace')
+imgui_vulkan = static_library('remix_imgui_vulkan', 'ui/vulkan_backend.cpp',
+  include_directories : [native_include, imgui_include],
+  dependencies : vulkan_dep, link_with : pipeline_library,
+  gnu_symbol_visibility : 'hidden', pic : true,
+  override_options : ['warning_level=0', 'werror=false'])
 shell_link_args = []
 if system in ['linux', 'android']
   shell_link_args += ['-Wl,--version-script=' + meson.current_source_dir() / 'api/remix.map']

@@ -1,5 +1,6 @@
 #pragma once
 #include "raster/renderer.h"
+#include "runtime/pipelines.h"
 
 #include <algorithm>
 #include <chrono>
@@ -87,7 +88,7 @@ namespace remix {
     VkDescriptorPool pool = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
     VkShaderModule vertex = VK_NULL_HANDLE, fragment = VK_NULL_HANDLE;
-    std::unique_ptr<Image> depth;
+    std::shared_ptr<Image> depth;
     struct MeshGpu {
       std::weak_ptr<scene::Surface> owner;
       std::unique_ptr<Buffer> data;
@@ -108,7 +109,7 @@ namespace remix {
           vkFreeDescriptorSets(device, pool, 1, &set);
         }
         if (sampler) {
-          vkDestroySampler(device, sampler, nullptr);
+          pipeline::destroySampler(device, sampler, nullptr);
         }
       }
     };

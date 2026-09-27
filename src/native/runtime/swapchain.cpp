@@ -1,3 +1,4 @@
+#include "runtime/pipelines.h"
 /*
  * Copyright (c) 2026, NVIDIA CORPORATION. All rights reserved.
  *
@@ -98,6 +99,15 @@ namespace remix {
         (capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) &&
         (format.format == VK_FORMAT_B8G8R8A8_SRGB || format.format == VK_FORMAT_B8G8R8A8_UNORM ||
          format.format == VK_FORMAT_R8G8B8A8_SRGB || format.format == VK_FORMAT_R8G8B8A8_UNORM);
+    VkFormatProperties formatProperties{};
+    vkGetPhysicalDeviceFormatProperties(m_physicalDevice, format.format,
+                                        &formatProperties);
+    const auto blit =
+        VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT;
+    m_snapshotSupported =
+        m_screenshotSupported &&
+        (capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT) &&
+        (formatProperties.optimalTilingFeatures & blit) == blit;
     VkCompositeAlphaFlagBitsKHR compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     if ((capabilities.supportedCompositeAlpha & compositeAlpha) == 0) {
       constexpr std::array<VkCompositeAlphaFlagBitsKHR, 3> kFallbackAlphaModes = {
@@ -121,8 +131,10 @@ namespace remix {
         .imageColorSpace = format.colorSpace,
         .imageExtent = extent,
         .imageArrayLayers = 1,
-        .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                      (m_screenshotSupported ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0u),
+        .imageUsage =
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+            (m_screenshotSupported ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0u) |
+            (m_snapshotSupported ? VK_IMAGE_USAGE_TRANSFER_DST_BIT : 0u),
         .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .preTransform = capabilities.currentTransform,
         .compositeAlpha = compositeAlpha,
@@ -183,7 +195,8 @@ namespace remix {
   }
 
   remixapi_ErrorCode RemixNativeRuntime::createAttachments() {
-    const VkAttachmentDescription attachments[] = {
+    m_snapshotAllocationFailed = false;
+    VkAttachmentDescription attachments[] = {
         {
             .format = m_swapchainFormat,
             .samples = VK_SAMPLE_COUNT_1_BIT,
@@ -191,8 +204,10 @@ namespace remix {
             .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
             .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
             .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-            .initialLayout = m_headless ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED,
-            .finalLayout = m_headless ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            .initialLayout = m_headless ? VK_IMAGE_LAYOUT_GENERAL
+                                        : VK_IMAGE_LAYOUT_UNDEFINED,
+            .finalLayout = m_headless ? VK_IMAGE_LAYOUT_GENERAL
+                                      : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
         },
         {
             .format = m_raster.depthFormat(),
@@ -217,11 +232,18 @@ namespace remix {
         .dstSubpass = 0,
         .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
                         VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
-                        VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                        VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT |
+                        VK_PIPELINE_STAGE_TRANSFER_BIT,
         .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
                         VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
                         VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+        .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                         VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+                         VK_ACCESS_TRANSFER_READ_BIT |
+                         VK_ACCESS_TRANSFER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                         VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                         VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
                          VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
     };
     const VkRenderPassCreateInfo pass = {
@@ -233,19 +255,20 @@ namespace remix {
         .dependencyCount = 1,
         .pDependencies = &dependency,
     };
-    if (vkCreateRenderPass(m_device, &pass, nullptr, &m_renderPass) != VK_SUCCESS) {
+    if (pipeline::createRenderPass(m_device, &pass, nullptr, &m_renderPass) !=
+        VK_SUCCESS) {
       return fail();
     }
+    // Compatible with the scene pass: preserve its color while drawing fresh
+    // controls after capture, or over the retained image during preparation.
+    attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    attachments[0].initialLayout = attachments[0].finalLayout;
+    if (pipeline::createRenderPass(m_device, &pass, nullptr, &m_overlayPass) !=
+        VK_SUCCESS)
+      return fail();
     m_raster.configureTarget(m_renderPass, m_swapchainExtent,
                              m_srgb && m_swapchainFormat != VK_FORMAT_R8G8B8A8_SRGB &&
                                  m_swapchainFormat != VK_FORMAT_B8G8R8A8_SRGB);
-    if (m_pathTracer)
-      m_pathTracer->configureTarget(m_renderPass, m_swapchainExtent,
-                                    m_srgb && m_swapchainFormat != VK_FORMAT_R8G8B8A8_SRGB &&
-                                        m_swapchainFormat != VK_FORMAT_B8G8R8A8_SRGB,
-                                    m_raster.depthFormat(), m_raster.depthView(),
-                                    m_swapchainFormat == VK_FORMAT_R8G8B8A8_SRGB ||
-                                        m_swapchainFormat == VK_FORMAT_B8G8R8A8_SRGB);
     const uint32_t count = static_cast<uint32_t>(m_swapchainImages.size());
     m_imageViews.resize(count);
     m_framebuffers.resize(count);
@@ -323,12 +346,21 @@ namespace remix {
     m_imageViews.clear();
     m_renderFinished.clear();
     if (m_pathTracer)
-      m_pathTracer->destroyTarget();
+      retireTracer(std::move(m_pathTracer), m_raster.depthLifetime());
+    m_activePreparationKey.clear();
+    m_backend = m_targetBackend = 0;
+    if (m_preparation && m_pipelines) {
+      m_pipelines->cancel(m_preparation->job);
+      m_obsoletePreparations.push_back(std::move(m_preparation));
+    }
     m_raster.destroyTarget();
     if (m_renderPass) {
-      vkDestroyRenderPass(m_device, m_renderPass, nullptr);
+      pipeline::destroyRenderPass(m_device, m_renderPass, nullptr);
     }
     m_renderPass = VK_NULL_HANDLE;
+    if (m_overlayPass)
+      pipeline::destroyRenderPass(m_device, m_overlayPass, nullptr);
+    m_overlayPass = VK_NULL_HANDLE;
     if (m_swapchain) {
       vkDestroySwapchainKHR(m_device, m_swapchain, nullptr);
     }

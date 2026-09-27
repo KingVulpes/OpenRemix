@@ -79,6 +79,13 @@ namespace remix {
       m_swapchainImages = {m_sharedImage};
       m_swapchainFormat = VK_FORMAT_R8G8B8A8_UNORM;
       m_swapchainExtent = {frame.width, frame.height};
+      VkFormatProperties imageProperties{};
+      vkGetPhysicalDeviceFormatProperties(m_physicalDevice, m_swapchainFormat,
+                                          &imageProperties);
+      const auto blit =
+          VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT;
+      m_snapshotSupported =
+          (imageProperties.optimalTilingFeatures & blit) == blit;
       if (createAttachments() != REMIXAPI_ERROR_CODE_SUCCESS)
         throw VK_ERROR_INITIALIZATION_FAILED;
       auto memoryFd =
@@ -129,12 +136,16 @@ namespace remix {
     barrier.dstQueueFamilyIndex = acquire ? m_queueFamily : VK_QUEUE_FAMILY_EXTERNAL;
     if (acquire && !m_sharedPresented)
       barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.srcAccessMask = acquire ? 0 : VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    barrier.dstAccessMask = acquire ? VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT : 0;
-    vkCmdPipelineBarrier(
-        command, acquire ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-        acquire ? VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT : VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0,
-        nullptr, 0, nullptr, 1, &barrier);
+    barrier.srcAccessMask =
+        acquire ? 0 : VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+    barrier.dstAccessMask =
+        acquire ? VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT : 0;
+    vkCmdPipelineBarrier(command,
+                         acquire ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+                                 : VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                         acquire ? VK_PIPELINE_STAGE_ALL_COMMANDS_BIT
+                                 : VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                         0, 0, nullptr, 0, nullptr, 1, &barrier);
   }
 
   void RemixNativeRuntime::destroySharedFrame() {

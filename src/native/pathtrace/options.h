@@ -13,6 +13,10 @@ namespace remix {
     bool dlssRayReconstruction = true;
     uint32_t dlssQuality = 1;
     bool prism = true, gamma22 = true;
+    bool autoExposure = true, bloom = true;
+    float exposure = 1, autoExposureTarget = .2f, autoExposureSpeed = 2;
+    float autoExposureCentre = .75f, autoExposureMinEv = -16, autoExposureMaxEv = 2;
+    float bloomIntensity = .1f, bloomRadius = .85f;
     uint32_t fsrQuality = 1;
     float fsrSharpness = 0.f;
     bool sigma = true;

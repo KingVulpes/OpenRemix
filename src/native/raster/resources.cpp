@@ -1,4 +1,5 @@
 #include "raster/gpu.h"
+#include "runtime/pipelines.h"
 
 namespace remix {
   using namespace scene;
@@ -105,7 +106,7 @@ namespace remix {
                                          .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
                                          .maxLod = float(source->texture->pixels.mips.size() - 1),
                                          .borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK};
-    check(vkCreateSampler(device, &sampler, nullptr, &value->sampler));
+    check(pipeline::createSampler(device, &sampler, nullptr, &value->sampler));
     const VkDescriptorSetAllocateInfo allocation = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
                                                     .descriptorPool = pool,
                                                     .descriptorSetCount = 1,

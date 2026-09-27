@@ -1,4 +1,5 @@
 upscale_library = static_library('remix_upscale', 'renderer.cpp', 'sdk_backend.cpp', 'ngx.cpp',
+  link_with : [pipeline_library, postfx_library],
   dependencies : [vulkan_dep, fsr31_dep, dlss_dep, sdl3_dep, filesystem_dep], include_directories : [native_include, remix_public_include],
   cpp_args : cpp.get_supported_arguments('-Wno-missing-field-initializers'),
   gnu_symbol_visibility : 'hidden', pic : true)

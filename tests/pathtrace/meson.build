@@ -4,8 +4,9 @@ test('Tracing scene and TLAS policy', policy_test)
 upscale_depth_test = executable('remix-upscale-depth-test', 'upscale_depth.cpp', include_directories : test_includes)
 test('FSR wide-frustum depth precision', upscale_depth_test)
 if get_option('gpu_tests')
+  subdir('upscale')
   alpha_coverage_test = executable('remix-alpha-coverage-test', 'alpha_coverage.cpp',
-    include_directories : test_includes, dependencies : [filesystem_dep], link_with : remix)
+    include_directories : test_includes, dependencies : [filesystem_dep] + [runtime_test_dep])
   foreach reconstruction : ['off', 'fsr31', 'dlss']
     test('Decal alpha coverage and shadows ' + reconstruction, alpha_coverage_test,
       args : [meson.current_build_dir() / ('alpha-coverage-' + reconstruction)],
@@ -20,35 +21,35 @@ if get_option('gpu_tests')
   endforeach
   if get_option('nrd')
     nrd_motion_test = executable('remix-nrd-motion-test', 'nrd_motion.cpp',
-      include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
+      include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep] + [runtime_test_dep])
     test('NRD moving camera guide agreement', nrd_motion_test,
       args : [meson.current_build_dir() / 'nrd-motion'], timeout : 300, is_parallel : false)
   endif
   layered_depth_test = executable('remix-layered-depth-test', 'layered_depth.cpp',
-    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
+    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep] + [runtime_test_dep])
   test('Raster primary close cutout depth ordering', layered_depth_test,
     args : [meson.current_build_dir() / 'layered-depth'], timeout : 180, is_parallel : false)
   guide_cells_test = executable('remix-guide-cells-test', 'guide_cells.cpp',
-    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
+    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep] + [runtime_test_dep])
   test('Colored guide cells and linear lighting energy', guide_cells_test,
     args : [meson.current_build_dir() / 'guide-cell-scenes'], timeout : 300)
   debug_views_test = executable('remix-debug-views-test', 'debug_views.cpp',
-    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
+    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep] + [runtime_test_dep])
   test('Live diagnostics preserve lighting histories', debug_views_test,
     args : [meson.current_build_dir() / 'debug-view-scenes'], timeout : 300)
   test('PBR local diagnostics preserve zero-bounce lighting', debug_views_test,
     args : [meson.current_build_dir() / 'debug-view-pbr-scenes', 'pbr'], timeout : 300)
   adaptive_sampling_test = executable('remix-adaptive-sampling-test', 'adaptive_sampling.cpp',
-    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
+    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep] + [runtime_test_dep])
   test('Adaptive light budget continuity and configured floors', adaptive_sampling_test,
     args : [meson.current_build_dir() / 'adaptive-sampling-scenes'],
     env : ['REMIX_EMISSIVE_HIT_DISTANCE=budget'], timeout : 180)
   texture_history_test = executable('remix-texture-history-test', 'texture_history.cpp',
-    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
+    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep] + [runtime_test_dep])
   test('FSR texture history at translated world coordinates', texture_history_test,
     args : [meson.current_build_dir() / 'texture-history-scenes'], timeout : 240)
   upscale_test = executable('remix-upscale-test', 'upscale.cpp',
-    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
+    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep] + [runtime_test_dep])
   test('FSR 3.1 presets and temporal composition', upscale_test,
     args : [meson.current_build_dir() / 'fsr-scenes'], timeout : 300)
   test('PBR denoising with FSR presets motion and resizing', upscale_test,
@@ -67,11 +68,11 @@ if get_option('gpu_tests')
     endforeach
   endif
   guide_boundary_test = executable('remix-guide-boundary-test', 'guide_boundary.cpp',
-    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
+    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep] + [runtime_test_dep])
   test('Torch guide translation and sparse stationary feedback', guide_boundary_test,
     args : [meson.current_build_dir() / 'guide-boundary-scenes'], timeout : 180)
   torch_stability_test = executable('remix-torch-stability-test', 'torch_stability.cpp',
-    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
+    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep] + [runtime_test_dep])
   test('Four torches and motion stability', torch_stability_test,
     args : [meson.current_build_dir() / 'torch-stability-scenes'], timeout : 300)
   test('Mixed emissive and torch sampling stability', torch_stability_test,
@@ -148,15 +149,15 @@ if get_option('gpu_tests')
       env : ['REMIX_TEST_MIXED_LIGHTS=1', 'REMIX_TEST_ADAPTIVE_LOCAL=1', 'REMIX_TEST_SPLIT_LOCAL=' + mode], timeout : 360)
   endforeach
   water_indirect_test = executable('remix-water-indirect-test', 'water_indirect.cpp',
-    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
+    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep] + [runtime_test_dep])
   test('Water indirect reuse and reference energy', water_indirect_test,
     args : [meson.current_build_dir() / 'water-indirect-scenes'], timeout : 240)
   local_light_test = executable('remix-local-light-test', 'local_lights.cpp',
-    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
+    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep] + [runtime_test_dep])
   test('Local sphere lights and many-light hierarchy', local_light_test,
     args : [meson.current_build_dir() / 'local-light-scenes'], timeout : 300)
   shadow_test = executable('remix-shadow-test', 'shadows.cpp',
-    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
+    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep] + [runtime_test_dep])
   test('SIGMA sun penumbra and temporal separation', shadow_test,
     args : [meson.current_build_dir() / 'shadow-scenes'], timeout : 240)
   test('SIGMA hashed shadow comparison', shadow_test,
@@ -182,7 +183,7 @@ if get_option('gpu_tests')
     endforeach
   endif
   sharc_test = executable('remix-sharc-test', 'sharc.cpp',
-    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
+    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep] + [runtime_test_dep])
   test('SHARC diffuse cache and temporal changes', sharc_test,
     args : [meson.current_build_dir() / 'sharc-scenes'], timeout : 240)
   test('SHARC PBR cache materials and temporal changes', sharc_test,
@@ -196,7 +197,7 @@ if get_option('gpu_tests')
     endforeach
   endif
   environment_test = executable('remix-environment-test', 'environment.cpp',
-    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
+    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep] + [runtime_test_dep])
   test('Sky illumination and temporal changes', environment_test,
     args : [meson.current_build_dir() / 'sky-scenes'], timeout : 240)
   test('Emissive maps and sampled area lights', environment_test,
@@ -212,7 +213,7 @@ if get_option('gpu_tests')
       env : ['REMIX_TEST_DISPLAY=1', 'LD_PRELOAD=' + faults.full_path(), 'REMIX_TEST_FAULT=unorm-swapchain'], timeout : 240)
   endif
   pathtrace_test = executable('remix-pathtrace-test', 'rendering.cpp',
-    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
+    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep] + [runtime_test_dep])
   test('Opaque traversal shared mesh and alpha replacement', pathtrace_test,
     args : [meson.current_build_dir() / 'opacity-scenes', 'opaque-variants'], timeout : 180)
   test('Compatible mesh updates and queued version isolation', pathtrace_test,
@@ -268,11 +269,11 @@ eon_test = executable('remix-eon-test', 'eon.cpp', include_directories : native_
 test('EON furnace reciprocity and sampling PDFs', eon_test)
 if get_option('gpu_tests')
   pbr_render_test = executable('remix-pbr-render-test', 'pbr.cpp',
-    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
+    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep] + [runtime_test_dep])
   test('EON PBR maps and primary visibility agreement', pbr_render_test,
     args : [meson.current_build_dir() / 'pbr-scenes'], timeout : 300)
   pbr_denoise_test = executable('remix-pbr-denoise-test', 'pbr_denoise.cpp',
-    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
+    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep] + [runtime_test_dep])
   test('PBR denoising noise energy and camera cuts', pbr_denoise_test,
     args : [meson.current_build_dir() / 'pbr-denoise-scenes'], timeout : 300)
   foreach primary : ['raster', 'ray']
@@ -332,7 +333,7 @@ endif
 
 if get_option('gpu_tests')
   fireflies_test = executable('remix-fireflies-test', 'fireflies.cpp',
-    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
+    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep] + [runtime_test_dep])
   test('Local firefly controls HDR and history resets', fireflies_test,
     args : [meson.current_build_dir() / 'firefly-scenes'],
     env : ['REMIX_TEST_FIREFLY_RESETS=1'], timeout : 300)
@@ -353,7 +354,7 @@ endif
 
 if get_option('gpu_tests')
   usd_lights_gpu = executable('remix-usd-lights-gpu-test', 'usd_lights.cpp',
-    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep], link_with : remix)
+    include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep] + [runtime_test_dep])
   test('Authored USD light GPU fixtures', usd_lights_gpu,
     args : [meson.current_build_dir() / 'usd-lights'], timeout : 300, is_parallel : false)
 endif

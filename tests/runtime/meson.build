@@ -40,3 +40,19 @@ if get_option('gpu_tests')
       env : ['LD_PRELOAD=' + faults.full_path(), 'REMIX_TEST_FAULT=ui-high-dpi', 'REMIX_TEST_PROFILE_UI_ONLY=1'], timeout : 60, depends : faults, is_parallel : false)
   endif
 endif
+
+pipeline_test = executable('remix-pipeline-test', 'pipelines.cpp',
+  include_directories : native_include, link_with : pipeline_library,
+  dependencies : [vulkan_dep, threads_dep, filesystem_dep])
+test('Pipeline preparation, persistence and shutdown', pipeline_test, args : ['@CONFIG_DIR@'], timeout : 30)
+
+if get_option('gpu_tests') and system == 'linux'
+  preparation_gpu_test = executable('remix-preparation-gpu-test', 'preparation_gpu.cpp',
+    include_directories : [test_includes, include_directories('../../samples')],
+    dependencies : [runtime_test_dep, dl_dep])
+  test('Background preparation presentation input and activation', preparation_gpu_test,
+    args : [meson.current_build_dir() / 'preparation-images'], timeout : 180, is_parallel : false)
+  test('Preparation retains last game frame through resize and VSync', preparation_gpu_test,
+    args : [meson.current_build_dir() / 'retained-frame-images'],
+    env : ['REMIX_TEST_LAST_FRAME=1'], timeout : 180, is_parallel : false)
+endif

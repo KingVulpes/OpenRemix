@@ -39,11 +39,13 @@ public:
                   uint32_t quality = 1);
   void configureComposite(VkRenderPass pass, VkImageView stableDepth);
   void selectFrame(uint32_t slot);
-  void composite(VkCommandBuffer command, bool encodeOutput, bool prism, bool gamma22, bool hardwareSrgb);
+  void composite(VkCommandBuffer command, bool encodeOutput, bool prism, bool gamma22, bool hardwareSrgb, VkDescriptorSet post);
+  Input output() const;
   void record(VkCommandBuffer command, Input color, Input depth, Input motion, Input transmission,
               const scene::Matrix &projection, const float *jitter, float milliseconds, float sharpness,
               bool reset, const ReconstructionGuides &guides = {}, const scene::Matrix &view = {});
   Statistics statistics() const;
+  bool finishInitialization(VkQueue queue);
 
 private:
   struct Gpu;

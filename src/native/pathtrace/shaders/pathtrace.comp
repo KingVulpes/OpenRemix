@@ -38,6 +38,7 @@ layout(set=0,binding=11,rgba32f) uniform image2D primaryPrevious;
 layout(set=0,binding=12,r32f) readonly uniform image2D primaryDepth;
 layout(set=0,binding=13,rgba16f) readonly uniform image2D primaryEmission;
 layout(set=0,binding=14,rgba16f) readonly uniform image2D primaryPbr;
+layout(set=0,binding=15,rgba16f) uniform image2D meterMaterial;
 
 layout(constant_id=11) const bool enableDecals=true;
 layout(constant_id=0) const bool enableLocalLights=true;
@@ -665,6 +666,7 @@ void main() {
   while(sheetCount<32&&primary.blended) {
     ++sheetCount;origin=offsetRay(primary.p,-primary.ng);primary=closest(origin,direction);
   }
+  if(frame.firefly.z!=0)imageStore(meterMaterial,pixel,vec4(primary.t<1e30?primary.color.rgb:vec3(1),1));
   vec3 local=vec3(0),localSpecular=vec3(0);float localDistance=0;
   vec3 emissive=vec3(0),emissiveSpecular=vec3(0);float emissiveDistance=0;
   vec3 indirect=vec3(0),primaryDirect=vec3(0);vec4 packed0=vec4(0),packed1=vec4(0);
@@ -815,7 +817,7 @@ void main() {
 #else
   uvec4 background=imageLoad(backgroundTransmission,pixel);
   rng=background.a;
-  vec3 tint=vec3(1),transparent=vec3(0);float opacityProduct=1;
+  vec3 tint=vec3(1),transparent=vec3(0),transparentMaterial=vec3(0);float opacityProduct=1;
 #ifdef TEMPORAL
   vec3 transparentDiffuse=vec3(0),transparentSpecular=vec3(0);
 #endif
@@ -854,10 +856,12 @@ void main() {
         if(hit.pbr)transparentSpecular+=tint*hit.color.a*rrSpecularAlbedo(mix(vec3(.04),hit.color.rgb,hit.rm.y),hit.rm.x,dot(hit.n,hit.wo));
       }
 #endif
+      if(frame.firefly.z!=0)transparentMaterial+=tint*hit.color.a*hit.color.rgb;
       transparent+=tint*hit.color.a*surfaceLight;
       tint*=transmissionColor(hit.color.rgb,sheets[layer].tinted)*(1-hit.color.a);opacityProduct*=1-hit.color.a;
     }
   }
+  if(frame.firefly.z!=0)imageStore(meterMaterial,pixel,vec4(transparentMaterial+tint*imageLoad(meterMaterial,pixel).rgb,1));
   vec3 color=transparent+tint*uintBitsToFloat(background.rgb);
 #ifdef TEMPORAL
   if(temporal.hitDistance.w!=0) {

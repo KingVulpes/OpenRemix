@@ -1,3 +1,4 @@
+#include "runtime/prepared.h"
 #include <SDL3/SDL.h>
 #include <algorithm>
 #include <array>
@@ -6,8 +7,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <sstream>
 #include <remix/remix_native_ext.h>
+#include <sstream>
 #include <string>
 #include <vector>
 #define STB_IMAGE_IMPLEMENTATION
@@ -42,6 +43,9 @@ int main(int argc, char **argv) {
   startup.windowHeight = std::getenv("REMIX_TEST_MIXED_PERF") ? 1080 : 128;
 #endif
   ok(api.Startup(&startup));
+  // These fixtures measure the unexposed lighting/display contract.
+  ok(api.SetConfigVariable("rtx.native.pathtrace.autoExposure", "0"));
+  ok(api.SetConfigVariable("rtx.native.pathtrace.bloom", "0"));
   ok(api.SetConfigVariable("rtx.native.pathtrace.upscaler", "off"));
   if (std::getenv("REMIX_TEST_MIXED_PERF")) {
     remixapi_WindowMetrics metrics{};
@@ -184,12 +188,13 @@ int main(int argc, char **argv) {
   }
   bool continuous = false;
   unsigned refresh = 0;
-  auto frame = [&] {
+  auto frame = remix::test::preparedFrame([&] {
     ok(api.PumpEvents());
     // Subpixel motion prevents static-output reuse during sampler comparisons.
     // Accumulated references keep their exact camera and accumulation history.
     const float position = camera.view[3][0];
-    if (continuous) camera.view[3][0] += (++refresh & 1) ? .000001f : -.000001f;
+    if (continuous)
+      camera.view[3][0] += (++refresh & 1) ? .000001f : -.000001f;
     ok(api.SetupCamera(&camera));
     camera.view[3][0] = position;
     for (auto handle : lights)
@@ -222,12 +227,12 @@ int main(int argc, char **argv) {
       ok(api.DrawInstance(&instance));
     }
     ok(api.Present(nullptr));
-  };
+  });
   auto capture = [&](const std::string &name) {
     // Three fresh frames per capture visit all phases of the 32-frame sequence.
     if (continuous) frame();
     auto file = (directory / (name + ".png")).string();
-    ok(api.RequestPresentedScreenshot(file.c_str()));
+    ok(remix::test::requestScreenshot(api, file.c_str(), frame));
     frame();
     frame();
     int w, h, n;

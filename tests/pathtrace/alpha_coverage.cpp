@@ -1,3 +1,4 @@
+#include "runtime/prepared.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -40,6 +41,9 @@ int main(int argc, char **argv) {
   startup.windowHeight = benchmark ? 540 : 128;
 #endif
   ok(api.Startup(&startup));
+  // These fixtures measure the unexposed lighting/display contract.
+  ok(api.SetConfigVariable("rtx.native.pathtrace.autoExposure", "0"));
+  ok(api.SetConfigVariable("rtx.native.pathtrace.bloom", "0"));
   remixapi_BackendCapabilitiesEXT caps{};
   caps.structSize = sizeof(caps);
   ok(remixapi_GetBackendCapabilitiesEXT(&caps));
@@ -162,27 +166,32 @@ int main(int argc, char **argv) {
   unsigned layers = 1;
   bool feedback = false;
   float worldOffset = 0, foregroundOffset = 0;
-  auto frame = [&] {
+  auto frame = remix::test::preparedFrame([&] {
     ok(api.PumpEvents());
     ok(api.SetupCamera(&camera));
     ok(api.DrawLightInstance(sunlight));
-    for (auto mesh : {background, foreground}) for (unsigned layer = 0; layer < (mesh == background ? 1u : layers); ++layer) {
-      remixapi_InstanceIdentityEXT identity{};
-      identity.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_IDENTITY_EXT;
-      identity.instanceId = mesh == background ? 1 : 2 + layer;
-      identity.rasterVisible = 1;
-      identity.pNext = mesh == foreground ? &blend : nullptr;
-      remixapi_InstanceInfo instance{};
-      instance.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO;
-      instance.pNext = &identity;
-      instance.mesh = mesh;
-      if (paint && mesh == foreground) instance.categoryFlags = REMIXAPI_INSTANCE_CATEGORY_BIT_DECAL_STATIC;
-      instance.doubleSided = 1;
-      for (int i = 0; i < 3; ++i)
-        instance.transform.matrix[i][i] = 1;
-      instance.transform.matrix[2][3] = worldOffset + (mesh == foreground ? foregroundOffset - .02f * layer : 0);
-      ok(api.DrawInstance(&instance));
-    }
+    for (auto mesh : {background, foreground})
+      for (unsigned layer = 0; layer < (mesh == background ? 1u : layers);
+           ++layer) {
+        remixapi_InstanceIdentityEXT identity{};
+        identity.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_IDENTITY_EXT;
+        identity.instanceId = mesh == background ? 1 : 2 + layer;
+        identity.rasterVisible = 1;
+        identity.pNext = mesh == foreground ? &blend : nullptr;
+        remixapi_InstanceInfo instance{};
+        instance.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO;
+        instance.pNext = &identity;
+        instance.mesh = mesh;
+        if (paint && mesh == foreground)
+          instance.categoryFlags = REMIXAPI_INSTANCE_CATEGORY_BIT_DECAL_STATIC;
+        instance.doubleSided = 1;
+        for (int i = 0; i < 3; ++i)
+          instance.transform.matrix[i][i] = 1;
+        instance.transform.matrix[2][3] =
+            worldOffset +
+            (mesh == foreground ? foregroundOffset - .02f * layer : 0);
+        ok(api.DrawInstance(&instance));
+      }
     if (feedback) {
       remixapi_InstanceIdentityEXT identity{};
       identity.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_IDENTITY_EXT;
@@ -194,12 +203,13 @@ int main(int argc, char **argv) {
       instance.pNext = &identity;
       instance.mesh = background;
       instance.doubleSided = 1;
-      for (int i = 0; i < 3; ++i) instance.transform.matrix[i][i] = 1;
+      for (int i = 0; i < 3; ++i)
+        instance.transform.matrix[i][i] = 1;
       instance.transform.matrix[2][3] = -.5f;
       ok(api.DrawInstance(&instance));
     }
     ok(api.Present(nullptr));
-  };
+  });
   if (benchmark) {
     config("bounces", "2");
     config("localRange", "0");
@@ -241,7 +251,7 @@ int main(int argc, char **argv) {
     for (unsigned i = 0; i < (mode ? (paint ? 96u : 32u) : 3u); ++i)
       frame();
     const auto file = (directory / (label + ".png")).string();
-    ok(api.RequestPresentedScreenshot(file.c_str()));
+    ok(remix::test::requestScreenshot(api, file.c_str(), frame));
     frame();
     frame();
     int w, h, channels;

@@ -51,7 +51,7 @@ namespace remix::config {
                 if (!readNumber(text, value) || !std::isfinite(double(value)) ||
                     (sentinel && double(value) == -1
                          ? false
-                         : value < low || value > high || (value > 0 && value < Parsed(gap))))
+                         : value < Parsed(low) || value > Parsed(high) || (value > 0 && value < Parsed(gap))))
                   return false;
                 access(s) = T(value);
                 return true;
@@ -110,6 +110,16 @@ namespace remix::config {
         TRACE(sigma, 0, 1);
         TRACE(blueNoiseShadows, 0, 1);
         TRACE(blueNoiseLocalLights, 0, 1);
+        TRACE(autoExposure, 0, 1);
+        TRACE(exposure, .05, 8);
+        TRACE(autoExposureTarget, .02, .6);
+        TRACE(autoExposureSpeed, .1, 16);
+        TRACE(autoExposureCentre, 0, 1);
+        TRACE(autoExposureMinEv, -24, 0);
+        TRACE(autoExposureMaxEv, 0, 24);
+        TRACE(bloom, 0, 1);
+        TRACE(bloomIntensity, 0, 1);
+        TRACE(bloomRadius, 0, 1);
         TRACE(prism, 0, 1);
         TRACE(gamma22, 0, 1);
         TRACE(localLights, 0, 1);

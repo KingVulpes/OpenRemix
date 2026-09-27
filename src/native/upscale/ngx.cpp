@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <filesystem>
+#include <mutex>
 #include <stdexcept>
 #if REMIX_HAS_DLSS
 #include <nvsdk_ngx_helpers_vk.h>
@@ -17,6 +18,10 @@
 #endif
 
 namespace remix::upscale {
+namespace {
+std::recursive_mutex ngxMutex;
+}
+
 namespace {
 [[maybe_unused]] void unavailable() { throw std::runtime_error("DLSS SDK unavailable in this build"); }
 #if REMIX_HAS_DLSS
@@ -112,6 +117,7 @@ struct Ngx::Impl {
     return result;
   }
   ~Impl() {
+    std::lock_guard lock(ngxMutex);
     if (parameters)
       NVSDK_NGX_VULKAN_DestroyParameters(parameters);
     if (initialized)
@@ -125,7 +131,21 @@ Ngx::Ngx() : m(std::make_unique<Impl>()) {
 #endif
 }
 Ngx::~Ngx() = default;
-NgxCapabilities Ngx::capabilities() const { return m->caps; }
+NgxCapabilities Ngx::capabilities() const {
+  std::lock_guard lock(capabilitiesMutex);
+  return deviceAssigned ? publishedCapabilities : m->caps;
+}
+void Ngx::setDevice(VkInstance value, VkPhysicalDevice gpu, VkDevice logical) {
+  instance = value;
+  physical = gpu;
+  device = logical;
+  std::lock_guard lock(capabilitiesMutex);
+  publishedCapabilities = m->caps;
+  if (publishedCapabilities.reason.empty())
+    publishedCapabilities.reason = "DLSS will initialize when requested";
+  deviceAssigned = true;
+}
+void Ngx::initializeDevice() { initialize(instance, physical, device); }
 std::vector<std::string> Ngx::instanceExtensions() {
   std::vector<std::string> result;
 #if REMIX_HAS_DLSS
@@ -190,6 +210,7 @@ std::vector<std::string> Ngx::deviceExtensions([[maybe_unused]] VkInstance insta
 }
 void Ngx::initialize([[maybe_unused]] VkInstance instance, [[maybe_unused]] VkPhysicalDevice physical,
                      [[maybe_unused]] VkDevice device) {
+  std::lock_guard lock(ngxMutex);
 #if REMIX_HAS_DLSS
   if (m->attempted)
     return;
@@ -222,9 +243,13 @@ void Ngx::initialize([[maybe_unused]] VkInstance instance, [[maybe_unused]] VkPh
     m->caps.reason = e.what();
   }
 #endif
+  std::lock_guard publish(capabilitiesMutex);
+  m->caps.initializationComplete = true;
+  publishedCapabilities = m->caps;
 }
 VkExtent2D Ngx::renderSize([[maybe_unused]] VkExtent2D display, [[maybe_unused]] uint32_t quality,
                            [[maybe_unused]] bool rr) {
+  std::lock_guard lock(ngxMutex);
 #if REMIX_HAS_DLSS
   if (!(rr ? m->caps.rr : m->caps.sr))
     throw std::runtime_error(m->caps.reason);
@@ -260,7 +285,19 @@ struct NgxFeature::Impl {
   NVSDK_NGX_Handle *feature{};
   VkExtent2D render{}, display{};
   bool rr{};
+  VkCommandPool initializationPool{};
+  VkCommandBuffer initializationCommand{};
+  VkFence initializationFence{};
+  bool initializationSubmitted = false;
   ~Impl() {
+    std::lock_guard lock(ngxMutex);
+    if (context) {
+      const auto device = context->m->device;
+      if (initializationFence)
+        vkDestroyFence(device, initializationFence, nullptr);
+      if (initializationPool)
+        vkDestroyCommandPool(device, initializationPool, nullptr);
+    }
     if (feature)
       NVSDK_NGX_VULKAN_ReleaseFeature(feature);
     if (parameters)
@@ -273,6 +310,7 @@ NgxFeature::~NgxFeature() = default;
 void NgxFeature::initialize([[maybe_unused]] std::shared_ptr<Ngx> context, [[maybe_unused]] uint32_t family,
                             [[maybe_unused]] VkExtent2D render, [[maybe_unused]] VkExtent2D display,
                             [[maybe_unused]] uint32_t quality, [[maybe_unused]] bool rr) {
+  std::lock_guard lock(ngxMutex);
 #if REMIX_HAS_DLSS
   m->context = std::move(context);
   m->render = render;
@@ -285,7 +323,6 @@ void NgxFeature::initialize([[maybe_unused]] std::shared_ptr<Ngx> context, [[may
   VkCommandPool pool{};
   VkCommandBuffer command{};
   VkFence fence{};
-  bool submitted = false;
   try {
     VkCommandPoolCreateInfo pi{.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
                                .queueFamilyIndex = family};
@@ -339,29 +376,49 @@ void NgxFeature::initialize([[maybe_unused]] std::shared_ptr<Ngx> context, [[may
     vkCheck(vkEndCommandBuffer(command));
     VkFenceCreateInfo fi{.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
     vkCheck(vkCreateFence(device, &fi, nullptr, &fence));
-    VkQueue queue{};
-    vkGetDeviceQueue(device, family, 0, &queue);
-    VkSubmitInfo submit{
-        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &command};
-    vkCheck(vkQueueSubmit(queue, 1, &submit, fence));
-    submitted = true;
-    vkCheck(vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX));
+    m->initializationPool = pool;
+    m->initializationCommand = command;
+    m->initializationFence = fence;
+
   } catch (...) {
-    if (submitted)
-      vkDeviceWaitIdle(device);
     if (fence)
       vkDestroyFence(device, fence, nullptr);
     if (pool)
       vkDestroyCommandPool(device, pool, nullptr);
     throw;
   }
-  vkDestroyFence(device, fence, nullptr);
-  vkDestroyCommandPool(device, pool, nullptr);
+
 #else
   unavailable();
 #endif
 }
+bool NgxFeature::finishInitialization(VkQueue queue) {
+#if REMIX_HAS_DLSS
+  if (!m->initializationPool)
+    return true;
+  const auto device = m->context->m->device;
+  if (!m->initializationSubmitted) {
+    VkSubmitInfo submit{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                        .commandBufferCount = 1,
+                        .pCommandBuffers = &m->initializationCommand};
+    vkCheck(vkQueueSubmit(queue, 1, &submit, m->initializationFence));
+    m->initializationSubmitted = true;
+  }
+  const auto status = vkGetFenceStatus(device, m->initializationFence);
+  if (status == VK_NOT_READY)
+    return false;
+  vkCheck(status);
+  vkDestroyFence(device, m->initializationFence, nullptr);
+  vkDestroyCommandPool(device, m->initializationPool, nullptr);
+  m->initializationFence = VK_NULL_HANDLE;
+  m->initializationPool = VK_NULL_HANDLE;
+#else
+  (void)queue;
+#endif
+  return true;
+}
 uint64_t NgxFeature::memoryBytes() const {
+  std::lock_guard lock(ngxMutex);
 #if REMIX_HAS_DLSS
   if (!m->context)
     return 0;
@@ -385,6 +442,7 @@ void NgxFeature::record([[maybe_unused]] VkCommandBuffer command, [[maybe_unused
                         [[maybe_unused]] const scene::Matrix &projection,
                         [[maybe_unused]] const float *jitter, [[maybe_unused]] float milliseconds,
                         [[maybe_unused]] bool reset) {
+  std::lock_guard lock(ngxMutex);
 #if REMIX_HAS_DLSS
   if (fault(m->rr ? "rr-evaluate" : "sr-evaluate"))
     throw std::runtime_error("Injected NGX evaluation failure");

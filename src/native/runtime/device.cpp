@@ -292,6 +292,11 @@ namespace remix {
     for (const auto &extension : ngxExtensions)
       if (std::none_of(extensions.begin(), extensions.end(), [&](auto p) { return extension == p; }))
         extensions.push_back(extension.c_str());
+    const bool pipelineFeedback = supportsDeviceExtension(
+        selection.physicalDevice,
+        VK_EXT_PIPELINE_CREATION_FEEDBACK_EXTENSION_NAME);
+    if (pipelineFeedback)
+      extensions.push_back(VK_EXT_PIPELINE_CREATION_FEEDBACK_EXTENSION_NAME);
     const VkDeviceCreateInfo createInfo = {
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
         .pNext = &features,
@@ -304,11 +309,13 @@ namespace remix {
       return REMIXAPI_ERROR_CODE_HRESULT_VK_CREATE_DEVICE_FAIL;
     }
 
-    m_ngx->initialize(m_instance, selection.physicalDevice, m_device);
+    m_ngx->setDevice(m_instance, selection.physicalDevice, m_device);
     m_physicalDevice = selection.physicalDevice;
     vkGetPhysicalDeviceProperties(m_physicalDevice, &m_properties);
     m_queueFamily = selection.family;
     vkGetDeviceQueue(m_device, m_queueFamily, 0, &m_queue);
+    m_pipelines = std::make_unique<pipeline::Service>(m_device, m_properties,
+                                                      pipelineFeedback);
     return REMIXAPI_ERROR_CODE_SUCCESS;
   }
 

@@ -142,7 +142,8 @@ extern "C" VKAPI_ATTR VkResult VKAPI_CALL vkCreateImage(VkDevice device, const V
     *output = VK_NULL_HANDLE;
     return VK_ERROR_OUT_OF_DEVICE_MEMORY;
   }
-  if (computeCreated && fault("denoise-allocation") && info->format == VK_FORMAT_R16G16B16A16_SFLOAT &&
+  if (computeCreated && fault("denoise-allocation") && info->extent.width > 1 &&
+      info->format == VK_FORMAT_R16G16B16A16_SFLOAT &&
       !(info->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)) {
     *output = VK_NULL_HANDLE;
     return VK_ERROR_OUT_OF_DEVICE_MEMORY;

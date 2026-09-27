@@ -21,6 +21,7 @@
  */
 
 #include "platform/timing.h"
+#include "runtime/frame_snapshot.h"
 #include "runtime/runtime.h"
 
 #include <algorithm>
@@ -32,6 +33,16 @@
 #include <optional>
 
 namespace remix {
+void RemixNativeRuntime::presented() {
+  const auto now = std::chrono::steady_clock::now();
+  if (m_lastPresentation != std::chrono::steady_clock::time_point{})
+    m_longestPresentationGap = std::max(
+        m_longestPresentationGap,
+        std::chrono::duration<double, std::milli>(now - m_lastPresentation)
+            .count());
+  m_lastPresentation = now;
+  ++m_presentationCount;
+}
   namespace {
     struct CompletePerformance {
       remixapi_FramePerformanceEXT &out;
@@ -113,11 +124,17 @@ namespace remix {
       if (!m_swapchain && !m_sharedImage) {
         return REMIXAPI_ERROR_CODE_SUCCESS;
       }
+      prepareSettings();
+      m_raster.setSkyTarget(m_pathTracer ? m_pathTracer->skyPass()
+                                         : VK_NULL_HANDLE);
+      m_rasterPreparing = !m_raster.preparePipelines(m_backend != 0);
+      m_loading |= m_rasterPreparing;
+      if (m_loading && m_postProcessing) m_postProcessing->freeze();
       // Scene snapshots, emission reduction and staged light hierarchies use
       // no GPU resources. Prepare while submitted frames run; commit lighting,
       // upload and retire resources only after the reused slot's fence.
       std::optional<scene::TraceFrame> traceScene;
-      if (m_pathTracer && m_targetBackend)
+      if (m_pathTracer && m_targetBackend && !m_loading)
         traceScene = measured(p.sceneMilliseconds,
                               [&] { return m_pathTracer->prepareScene(m_raster, m_traceOptions); });
       // Bounded waits keep unavailable surfaces and a stalled GPU from blocking the caller indefinitely.
@@ -130,43 +147,9 @@ namespace remix {
       if (result != VK_SUCCESS) {
         return fail(result);
       }
-      if (m_backend != m_targetBackend) {
-        result = vkDeviceWaitIdle(m_device);
-        if (result != VK_SUCCESS)
-          return fail(result);
-        if (m_targetBackend) {
-          try {
-            auto tracer = std::make_unique<PathTracer>();
-            tracer->initialize(m_physicalDevice, m_device, m_queueFamily);
-            tracer->setNgx(m_ngx);
-            tracer->configureTarget(m_renderPass, m_swapchainExtent,
-                                    m_srgb && m_swapchainFormat != VK_FORMAT_R8G8B8A8_SRGB &&
-                                        m_swapchainFormat != VK_FORMAT_B8G8R8A8_SRGB,
-                                    m_raster.depthFormat(), m_raster.depthView(),
-                                    m_swapchainFormat == VK_FORMAT_R8G8B8A8_SRGB ||
-                                        m_swapchainFormat == VK_FORMAT_B8G8R8A8_SRGB);
-            m_pathTracer = std::move(tracer);
-            m_backend = 1;
-            m_traceUnavailable.clear();
-          } catch (VkResult failure) {
-            if (failure == VK_ERROR_DEVICE_LOST)
-              throw;
-            m_traceUnavailable = "Path tracing resource initialization failed; raster remains active";
-            SDL_Log("%s", m_traceUnavailable.c_str());
-            m_targetBackend = 0;
-            m_backendFailed = true;
-          } catch (...) {
-            m_traceUnavailable = "Path tracing resource initialization failed; raster remains active";
-            SDL_Log("%s", m_traceUnavailable.c_str());
-            m_targetBackend = 0;
-            m_backendFailed = true;
-          }
-        } else {
-          m_pathTracer.reset();
-          m_backend = 0;
-        }
-      }
+      m_frames[m_frameIndex].snapshot.reset();
       m_raster.selectFrame(m_frameIndex);
+      if (m_postProcessing) m_postProcessing->selectFrame(m_frameIndex);
       if (m_pathTracer)
         m_pathTracer->selectFrame(m_frameIndex);
       uint32_t imageIndex = 0;
@@ -202,7 +185,9 @@ namespace remix {
         return fail(result);
       }
       const VkPipelineStageFlags waitStage =
-          m_headless ? VK_PIPELINE_STAGE_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+          m_headless ? VK_PIPELINE_STAGE_ALL_COMMANDS_BIT
+                     : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                           VK_PIPELINE_STAGE_TRANSFER_BIT;
       const VkSubmitInfo submit = {
           .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
           .waitSemaphoreCount = m_headless ? uint32_t(m_sharedPresented) : 1u,
@@ -219,7 +204,7 @@ namespace remix {
         return fail(result);
       }
       m_screenshot.submitted(m_frames[m_frameIndex].fence);
-      if (m_pathTracer)
+      if (m_pathTracer && !m_loading)
         m_pathTracer->submitted();
       if (m_headless) {
         // Do not acknowledge until ready is actually signaled. A worker crash
@@ -228,7 +213,7 @@ namespace remix {
         if (result != VK_SUCCESS)
           return fail(result);
         m_sharedPresented = true;
-        ++m_presentationCount;
+        presented();
         m_frameIndex = (m_frameIndex + 1) % m_frameCount;
         return REMIXAPI_ERROR_CODE_SUCCESS;
       }
@@ -243,7 +228,7 @@ namespace remix {
       result = measured(p.queuePresentMilliseconds, [&] { return vkQueuePresentKHR(m_queue, &present); });
       m_frameIndex = (m_frameIndex + 1) % m_frameCount;
       if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR)
-        ++m_presentationCount;
+        presented();
       if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
           result == VK_ERROR_SURFACE_LOST_KHR) {
         m_rebuild = true;
@@ -307,11 +292,12 @@ namespace remix {
         .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT};
     vkCmdPipelineBarrier(buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1,
                          &previousFrame, 0, nullptr, 0, nullptr);
-    if (m_pathTracer)
+    if (m_pathTracer && !m_loading)
       m_pathTracer->beginFrame(m_traceOptions, m_raster);
     m_raster.setSkyTarget(m_pathTracer ? m_pathTracer->skyPass() : VK_NULL_HANDLE);
-    m_raster.prepare(buffer, m_backend != 0);
-    if (m_pathTracer) {
+    if (!m_loading)
+      m_raster.prepare(buffer, m_backend != 0);
+    if (m_pathTracer && !m_loading) {
       // A newly enabled tracer did not exist during CPU preparation.
       std::optional<scene::TraceFrame> prepared;
       if (!traceScene) {
@@ -324,9 +310,36 @@ namespace remix {
     VkClearValue clear[2] = {};
     std::copy(std::begin(m_clearColor), std::end(m_clearColor), clear[0].color.float32);
     clear[1].depthStencil.depth = 1;
-    const VkRenderPassBeginInfo pass = {
+    const auto image = m_swapchainImages[imageIndex];
+    const auto layout =
+        m_headless ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    bool capture =
+        !m_loading && m_snapshotSupported && !m_snapshotAllocationFailed;
+    if (capture && (!m_lastFrame || !m_lastFrame->matches(m_swapchainFormat,
+                                                          m_swapchainExtent))) {
+      try {
+        m_lastFrame = FrameSnapshot::create(
+            m_physicalDevice, m_device, m_swapchainFormat, m_swapchainExtent);
+      } catch (VkResult error) {
+        if (error == VK_ERROR_DEVICE_LOST)
+          throw;
+        m_snapshotAllocationFailed = true;
+        capture = false;
+        SDL_Log("Last-frame capture unavailable (Vulkan %d)", int(error));
+      } catch (const std::bad_alloc &) {
+        m_snapshotAllocationFailed = true;
+        capture = false;
+        SDL_Log("Last-frame capture allocation failed");
+      }
+    }
+    const bool restore = m_loading && m_snapshotSupported && bool(m_lastFrame);
+    if (capture || restore)
+      m_frames[m_frameIndex].snapshot = m_lastFrame;
+    if (restore)
+      m_lastFrame->restore(buffer, image, m_swapchainExtent, layout);
+    VkRenderPassBeginInfo pass = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-        .renderPass = m_renderPass,
+        .renderPass = restore ? m_overlayPass : m_renderPass,
         .framebuffer = m_framebuffers[imageIndex],
         .renderArea = {{0, 0}, m_swapchainExtent},
         .clearValueCount = 2,
@@ -335,11 +348,17 @@ namespace remix {
     // Font uploads are recorded by the backend before the render pass.
     drawUi(VK_NULL_HANDLE);
     vkCmdBeginRenderPass(buffer, &pass, VK_SUBPASS_CONTENTS_INLINE);
-    if (m_pathTracer) {
+    if (!m_loading && m_pathTracer) {
       m_pathTracer->record(buffer);
       m_raster.record(buffer, false, true);
-    } else
+    } else if (!m_loading)
       m_raster.record(buffer);
+    if (capture) {
+      vkCmdEndRenderPass(buffer);
+      m_lastFrame->capture(buffer, image, layout);
+      pass.renderPass = m_overlayPass;
+      vkCmdBeginRenderPass(buffer, &pass, VK_SUBPASS_CONTENTS_INLINE);
+    }
     drawUi(buffer);
     vkCmdEndRenderPass(buffer);
     if (m_screenshotSupported) {

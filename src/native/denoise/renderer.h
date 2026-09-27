@@ -71,8 +71,12 @@ namespace remix::denoise {
   public:
     Renderer();
     ~Renderer();
-    void initialize(VkPhysicalDevice physical, VkDevice device, VkExtent2D extent, bool reblur,
-                    uint32_t queueFamily, bool sigma = false, bool local = false, bool localDenoise = false, bool split = false, bool rayReconstruction = false);
+    void initialize(VkPhysicalDevice physical, VkDevice device,
+                    VkExtent2D extent, bool reblur, uint32_t queueFamily,
+                    bool sigma = false, bool local = false,
+                    bool localDenoise = false, bool split = false,
+                    bool rayReconstruction = false, bool validation = false,
+                    bool localReconstruction = false);
     VkDescriptorSetLayout inputLayout() const;
     VkDescriptorSet inputs() const;
     void selectFrame(uint32_t slot);

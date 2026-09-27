@@ -1,4 +1,5 @@
 #include "upscale/sdk_backend.h"
+#include "runtime/pipelines.h"
 #include <string_view>
 namespace remix::upscale {
 namespace {
@@ -34,15 +35,15 @@ VKAPI_ATTR VkResult VKAPI_CALL
 createPipelines(VkDevice device, VkPipelineCache cache, uint32_t count,
                 const VkComputePipelineCreateInfo *infos,
                 const VkAllocationCallbacks *allocator, VkPipeline *pipelines) {
-  auto result = vkCreateComputePipelines(device, cache, count, infos, allocator,
-                                         pipelines);
+  auto result = pipeline::createComputePipelines(device, cache, count, infos,
+                                                 allocator, pipelines);
   if (allocations)
     for (uint32_t i = 0; i < count; ++i)
       if (pipelines[i]) {
         const auto pipeline = pipelines[i];
         allocations->add(
             {uint64_t(pipeline), uintptr_t(vkDestroyPipeline)},
-            [=] { vkDestroyPipeline(device, pipeline, allocator); });
+            [=] { pipeline::destroyPipeline(device, pipeline, allocator); });
       }
   if (result != VK_SUCCESS)
     throw result;
@@ -53,7 +54,7 @@ destroyPipeline(VkDevice device, VkPipeline pipeline,
                 const VkAllocationCallbacks *allocator) {
   if (allocations)
     allocations->remove({uint64_t(pipeline), uintptr_t(vkDestroyPipeline)});
-  vkDestroyPipeline(device, pipeline, allocator);
+  pipeline::destroyPipeline(device, pipeline, allocator);
 }
 } // namespace
 ContextAllocations::ContextAllocations() { allocations = this; }
@@ -92,11 +93,37 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL sdkDeviceProc(VkDevice device,
   OBJECT(vkCreateBufferView, vkDestroyBufferView)
   OBJECT(vkCreateImage, vkDestroyImage)
   OBJECT(vkCreateImageView, vkDestroyImageView)
-  OBJECT(vkCreateShaderModule, vkDestroyShaderModule)
-  OBJECT(vkCreatePipelineLayout, vkDestroyPipelineLayout)
+  if (symbol == "vkCreateShaderModule")
+    return reinterpret_cast<PFN_vkVoidFunction>(
+        &Object<pipeline::createShaderModule,
+                pipeline::destroyShaderModule>::create);
+  if (symbol == "vkDestroyShaderModule")
+    return reinterpret_cast<PFN_vkVoidFunction>(
+        &Object<pipeline::createShaderModule,
+                pipeline::destroyShaderModule>::destroy);
+  if (symbol == "vkCreatePipelineLayout")
+    return reinterpret_cast<PFN_vkVoidFunction>(
+        &Object<pipeline::createPipelineLayout,
+                pipeline::destroyPipelineLayout>::create);
+  if (symbol == "vkDestroyPipelineLayout")
+    return reinterpret_cast<PFN_vkVoidFunction>(
+        &Object<pipeline::createPipelineLayout,
+                pipeline::destroyPipelineLayout>::destroy);
   OBJECT(vkCreateDescriptorPool, vkDestroyDescriptorPool)
-  OBJECT(vkCreateDescriptorSetLayout, vkDestroyDescriptorSetLayout)
-  OBJECT(vkCreateSampler, vkDestroySampler)
+  if (symbol == "vkCreateDescriptorSetLayout")
+    return reinterpret_cast<PFN_vkVoidFunction>(
+        &Object<pipeline::createDescriptorSetLayout,
+                pipeline::destroyDescriptorSetLayout>::create);
+  if (symbol == "vkDestroyDescriptorSetLayout")
+    return reinterpret_cast<PFN_vkVoidFunction>(
+        &Object<pipeline::createDescriptorSetLayout,
+                pipeline::destroyDescriptorSetLayout>::destroy);
+  if (symbol == "vkCreateSampler")
+    return reinterpret_cast<PFN_vkVoidFunction>(
+        &Object<pipeline::createSampler, pipeline::destroySampler>::create);
+  if (symbol == "vkDestroySampler")
+    return reinterpret_cast<PFN_vkVoidFunction>(
+        &Object<pipeline::createSampler, pipeline::destroySampler>::destroy);
 #undef OBJECT
   if (symbol == "vkCreateComputePipelines")
     return reinterpret_cast<PFN_vkVoidFunction>(createPipelines);

@@ -11,6 +11,7 @@ import fsr31
 
 ROOT = Path(__file__).resolve().parents[2]
 BACKENDS = {
+    'postfx': ('postfx', 'vulkan1.2', ('meter', 'resolve', 'down', 'up')),
     'upscale': ('upscale', 'vulkan1.2', ('comp', 'vert', 'frag')),
     'raster': ('raster', 'vulkan1.1', ('vert', 'frag')),
     'pathtrace': ('trace', 'vulkan1.2', ('vert', 'frag', 'comp', 'temporal', 'transparency', 'temporalTransparency', 'confidence', 'gbufferVert', 'gbufferFrag', 'depthFrag', 'sharcUpdate', 'sharcResolve', 'sharcQuery', 'sharcTransparency', 'sharcTemporal', 'sharcTemporalTransparency', 'sharcConfidence', 'sigmaTemporal', 'sharcSigmaTemporal', 'localTemporal', 'localSigmaTemporal', 'sharcLocalTemporal', 'sharcLocalSigmaTemporal', 'splitLocalTemporal', 'splitLocalSigmaTemporal', 'sharcSplitLocalTemporal', 'sharcSplitLocalSigmaTemporal', 'splitLocalDirect', 'indirectTemporal', 'sharcIndirectTemporal')),
@@ -55,6 +56,9 @@ def process(backend, check, validate):
                 if stage == 'sharcUpdate': defines += ['-DSHARC_UPDATE_PASS=1']
                 source_stage = 'comp' if defines else stage
                 source = directory / (backend + '.' + source_stage)
+                if backend == 'postfx':
+                    source = directory / 'postfx.comp'
+                    defines += ['-DPOST_PASS=' + str(stages.index(stage))]
                 if stage in ('gbufferVert', 'gbufferFrag', 'depthFrag'):
                     source = directory / ('gbuffer.vert' if stage == 'gbufferVert' else 'gbuffer.frag')
                     if stage == 'depthFrag': defines += ['-DSTABLE_DEPTH=1']
@@ -81,7 +85,7 @@ def process(backend, check, validate):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('backend', choices=['upscale', 'raster', 'pathtrace', 'denoise', 'nrd', 'fsr31', 'all'])
+    parser.add_argument('backend', choices=['postfx', 'upscale', 'raster', 'pathtrace', 'denoise', 'nrd', 'fsr31', 'all'])
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--check', action='store_true', help='Compare generated output without modifying files')
     mode.add_argument('--validate', action='store_true', help='Validate checked-in SPIR-V using only spirv-val')

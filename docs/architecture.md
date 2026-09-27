@@ -51,10 +51,43 @@ renderer and an optional tracer. A backend's private `gpu.h` declares its state;
 method definitions live in focused implementation files.
 
 API process state has exactly one definition in `api/state.cpp`. The API mutex
-serializes CPU submissions. Only the startup thread touches GPU state. Callback
+serializes CPU submissions. The startup thread owns active GPU state and all queue
+submissions. One device-owned preparation worker compiles pipelines and builds
+independent replacement resources without taking the API mutex. Callback
 invocation stays outside the API lock where the existing re-entry contract requires
 it. Device loss, process-exit cleanup, and resource teardown order remain centralized
 in the runtime lifecycle.
+
+`runtime/pipelines` owns compiled compute/graphics pipelines and immutable shader,
+layout, sampler and render-pass definitions until device shutdown. Keys contain
+shader contents, specialization values and compatible graphics/layout definitions;
+descriptor pools, images and histories remain renderer-owned. NRD's torch and
+emissive instances share compatible pipelines while retaining separate histories.
+The service serializes access to its Vulkan driver cache and persists an integrity-
+checked, device/driver/UUID-specific envelope in `<REMIX_CONFIG_DIR>/cache/vulkan/`
+(default `./openremix/cache/vulkan/`). Cache read and write failures are nonfatal.
+
+Resource-changing requests construct a replacement tracer on the compiler worker.
+The current configuration keeps rendering until preflight and replacement allocation
+complete. Revision checks reject superseded requests; queued work is cancelled and
+executing preparations stop between driver calls. Activation drains submitted GPU
+work at a frame boundary. Resize keeps depth-view ownership alive for outstanding
+preparations and discards obsolete targets; compiled pipelines remain reusable.
+Optional scene specializations poll the same service and use their equivalent
+compiled tracing path while pending. Split indirect dispatches run only once both
+producer and consumer are ready.
+
+Cold tracing startup and DLSS initialization present a loading panel with live F12
+controls. After a game frame has rendered, a GPU-only snapshot of its color (before
+OpenRemix overlays) stays behind the live controls during preparation. It survives
+swapchain recreation and scales to a resized window. Submission slots retain old
+snapshot allocations until their fences complete; ordinary frames refresh the
+snapshot without CPU readback or additional shaders. A surface without transfer/blit
+support, or a failed snapshot allocation, keeps the clear-background fallback.
+NGX calls are serialized; the worker records feature initialization and
+the presentation thread submits it and polls its fence before activation. Discarded
+SDK features are released on the worker. Shutdown cancels queued work and joins the
+executing driver call before destroying its dependencies or device.
 
 Presentation uses two submission slots, each with its own fence, acquire semaphore
 and command buffer. CPU-written buffers, mutable descriptor sets, query pools,
@@ -188,3 +221,9 @@ the request. Existing backend and temporal-history synchronization remains in th
 presentation and feature paths. Profile startup restoration precedes subsequent API
 overrides. See [configuration profiles](features/configuration-profiles.md) for the
 file format and user workflow.
+
+`postfx/` owns GPU lighting metering, exposure adaptation and bloom. Its resolution targets
+prepare independently of `pathtrace/`; a shared exposure state survives tracer and target
+replacement. Both compositors consume its descriptor bindings before their display transform.
+The dedicated material guide is produced by existing path-tracing shading, independently
+of denoiser guides. `runtime/post_processing.cpp` owns preparation and activation.

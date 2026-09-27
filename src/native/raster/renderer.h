@@ -16,6 +16,8 @@ namespace remix {
     void selectFrame(uint32_t slot); // Caller has completed this slot's submission.
     VkFormat depthFormat() const;
     VkImageView depthView() const;
+    std::shared_ptr<void> depthLifetime() const;
+    bool preparePipelines(bool tracing);
     void prepare(VkCommandBuffer command,
                  bool tracing = false); // After prior frame fence, outside render pass.
     void record(VkCommandBuffer command, bool skyOnly = false, bool skipSky = false,

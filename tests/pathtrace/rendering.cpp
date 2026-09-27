@@ -1,12 +1,13 @@
 #include "pathtrace/tlas_policy.h"
-#include <remix/remix_native_ext.h>
+#include "runtime/prepared.h"
 #include <SDL3/SDL.h>
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
-#include <cmath>
-#include <algorithm>
 #include <functional>
+#include <remix/remix_native_ext.h>
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_PNG
 #include <image/stb_image.h>
@@ -40,7 +41,17 @@ int main(int argc, char **argv) {
   startup.windowHeight = 96;
 #endif
   ok(api.Startup(&startup));
+  // These fixtures measure the unexposed lighting/display contract.
+  ok(api.SetConfigVariable("rtx.native.pathtrace.autoExposure", "0"));
+  ok(api.SetConfigVariable("rtx.native.pathtrace.bloom", "0"));
   ok(api.SetConfigVariable("rtx.native.pathtrace.upscaler", "off"));
+  const bool denoiseFailure = argc > 2 && std::string(argv[2]) == "denoise-failure";
+  if (denoiseFailure) {
+    // Establish a working raw renderer before staging the failing replacement.
+    ok(api.SetConfigVariable("rtx.native.pathtrace.denoiser", "off"));
+    ok(api.SetConfigVariable("rtx.native.pathtrace.taa", "0"));
+    ok(api.SetConfigVariable("rtx.native.pathtrace.sigma", "0"));
+  }
   remixapi_BackendCapabilitiesEXT caps = {};
   caps.structSize = sizeof(caps);
   ok(remixapi_GetBackendCapabilitiesEXT(&caps));
@@ -135,7 +146,7 @@ int main(int argc, char **argv) {
     camera.view[i][i] = camera.projection[i][i] = 1;
   std::function<void()> extra = [] {};
   unsigned debugFrame = 0;
-  auto frame = [&] {
+  auto submit = [&] {
     if (std::getenv("REMIX_TEST_FRAME_LOG"))
       std::fprintf(stderr, "GPU frame %u\n", ++debugFrame);
     ok(api.PumpEvents());
@@ -145,6 +156,7 @@ int main(int argc, char **argv) {
     extra();
     ok(api.Present(nullptr));
   };
+  auto frame = remix::test::preparedFrame(submit);
   auto statistics = [&] {
     remixapi_TracingStatisticsEXT s = {};
     s.structSize = sizeof(s);
@@ -183,7 +195,9 @@ int main(int argc, char **argv) {
       const auto directory = std::filesystem::absolute(argv[1]);
       std::filesystem::create_directories(directory);
       const auto file = (directory / name).string();
-      ok(api.RequestPresentedScreenshot(file.c_str())); frame(); frame();
+      ok(remix::test::requestScreenshot(api, file.c_str(), frame));
+      frame();
+      frame();
       int w, h, n;
       auto bytes = stbi_load(file.c_str(), &w, &h, &n, 4);
       require(bytes != nullptr, "Missing opacity variant screenshot");
@@ -300,7 +314,9 @@ int main(int argc, char **argv) {
     std::filesystem::create_directories(directory);
     auto pixels = [&](const char *name) {
       const auto file = (directory/name).string();
-      ok(api.RequestPresentedScreenshot(file.c_str())); frame(); frame();
+      ok(remix::test::requestScreenshot(api, file.c_str(), frame));
+      frame();
+      frame();
       int w, h, n; auto *data = stbi_load(file.c_str(), &w, &h, &n, 4);
       require(data, "Mesh-update screenshot unavailable");
       std::vector<unsigned char> result(data, data+w*h*4); stbi_image_free(data);
@@ -341,13 +357,23 @@ int main(int argc, char **argv) {
     return s;
   };
   auto initialDenoising = denoiseStats();
-  if (argc > 2 && std::string(argv[2]) == "denoise-failure" && denoiseCaps.taaSupported) {
-    require(!initialDenoising.activeDenoiser && !initialDenoising.activeTaa &&
-                initialDenoising.unavailableReason[0],
-            "Temporal allocation failure did not retain raw tracing");
-    frame();
-    frame();
-    require(statistics().sampleSequence >= 6, "Raw tracing stopped after temporal failure");
+  if (denoiseFailure && denoiseCaps.taaSupported) {
+    const auto before = statistics();
+    ok(api.SetConfigVariable("rtx.native.pathtrace.denoiser", "reblur-sh"));
+    ok(api.SetConfigVariable("rtx.native.pathtrace.taa", "1"));
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+    do {
+      submit();
+      require(std::chrono::steady_clock::now() < deadline, "Temporal failure did not finish preparing");
+    } while (remix::api::g_runtime.preparationStatus().pending);
+    const auto failed = denoiseStats();
+    require(!remix::api::g_runtime.preparationStatus().failure.empty() &&
+                !failed.activeDenoiser && !failed.activeTaa,
+            "Temporal allocation failure did not retain the active raw renderer");
+    submit();
+    submit();
+    require(statistics().sampleSequence > before.sampleSequence,
+            "Raw tracing stopped after temporal preparation failure");
     ok(api.Shutdown());
     return 0;
   }
@@ -400,7 +426,7 @@ int main(int argc, char **argv) {
   const auto path = std::filesystem::absolute(std::filesystem::path(argv[1]));
   std::filesystem::create_directories(path);
   const auto red = (path / "diffuse-red.png").string();
-  ok(api.RequestPresentedScreenshot(red.c_str()));
+  ok(remix::test::requestScreenshot(api, red.c_str(), frame));
   frame();
   frame();
   int width, height, channels;
@@ -439,7 +465,7 @@ int main(int argc, char **argv) {
   ok(api.CreateMaterial(&material, &mat));
   auto capture = [&](const char *name) {
     auto file = (path / name).string();
-    ok(api.RequestPresentedScreenshot(file.c_str()));
+    ok(remix::test::requestScreenshot(api, file.c_str(), frame));
     frame();
     frame();
     int w, h, n;

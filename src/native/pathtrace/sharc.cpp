@@ -1,6 +1,7 @@
 #include "pathtrace/gpu.h"
-#include "pathtrace/sharc_policy.h"
 #include "pathtrace/shaders/embedded.h"
+#include "pathtrace/sharc_policy.h"
+#include "runtime/pipelines.h"
 
 namespace remix {
   using namespace trace::detail;
@@ -12,7 +13,7 @@ namespace remix {
     VkShaderModuleCreateInfo ci{
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = size, .pCode = code};
     VkShaderModule shader{};
-    check(vkCreateShaderModule(device, &ci, nullptr, &shader));
+    check(pipeline::createShaderModule(device, &ci, nullptr, &shader));
     // Compile ordinary local lighting first; guidance is a lazy variant.
     const VkBool32 guidance = VK_FALSE;
     const VkSpecializationMapEntry guideEntry{1, 0, sizeof(guidance)};
@@ -22,8 +23,9 @@ namespace remix {
         .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                   .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = shader, .pName = "main", .pSpecializationInfo = &noGuiding},
         .layout = pipelineLayout};
-    const auto result = vkCreateComputePipelines(device, pipelineCache, 1, &pi, nullptr, &out);
-    vkDestroyShaderModule(device, shader, nullptr);
+    const auto result = pipeline::createComputePipelines(device, VK_NULL_HANDLE,
+                                                         1, &pi, nullptr, &out);
+    pipeline::destroyShaderModule(device, shader, nullptr);
     check(result);
     lightingPipelines[out] = {code, size, pipelineLayout};
     lightingPipelines[out].supportsGuiding = &out == &sharc.query || &out == &sharc.temporal;
@@ -34,7 +36,7 @@ namespace remix {
     for (auto *pipeline : {&sharc.temporal, &sharc.temporalTransparency, &sharc.confidence}) {
       forgetLightingPipeline(*pipeline);
       if (*pipeline)
-        vkDestroyPipeline(device, *pipeline, nullptr);
+        pipeline::destroyPipeline(device, *pipeline, nullptr);
       *pipeline = VK_NULL_HANDLE;
     }
     if (temporalOnly)
@@ -49,7 +51,7 @@ namespace remix {
     for (auto *pipeline : {&sharc.update, &sharc.resolve, &sharc.query, &sharc.transparency}) {
       forgetLightingPipeline(*pipeline);
       if (*pipeline)
-        vkDestroyPipeline(device, *pipeline, nullptr);
+        pipeline::destroyPipeline(device, *pipeline, nullptr);
       *pipeline = VK_NULL_HANDLE;
     }
     if (sharc.timestamps)
@@ -131,7 +133,8 @@ namespace remix {
     try {
       const uint32_t capacity = 1u << options.sharcCapacityLog2;
       if (s.capacity != capacity) {
-        check(vkDeviceWaitIdle(device));
+        if (!preparing)
+          check(vkDeviceWaitIdle(device));
         destroySharc();
         constexpr auto usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
         sharc.hash = buffer(uint64_t(capacity) * 8, usage);
@@ -145,8 +148,13 @@ namespace remix {
       }
       sharcPipeline(trace::sharcUpdateShader, sizeof(trace::sharcUpdateShader), layout, sharc.update);
       sharcPipeline(trace::sharcResolveShader, sizeof(trace::sharcResolveShader), layout, sharc.resolve);
-      sharcPipeline(trace::sharcQueryShader, sizeof(trace::sharcQueryShader), layout, sharc.query);
-      sharcPipeline(trace::sharcTransparencyShader, sizeof(trace::sharcTransparencyShader), layout, sharc.transparency);
+      if (!denoiser)
+        sharcPipeline(trace::sharcQueryShader, sizeof(trace::sharcQueryShader),
+                      layout, sharc.query);
+      if (!denoiser)
+        sharcPipeline(trace::sharcTransparencyShader,
+                      sizeof(trace::sharcTransparencyShader), layout,
+                      sharc.transparency);
       if (denoiser) {
         if (postSplit && postSigma)
           sharcPipeline(trace::sharcSplitLocalSigmaTemporalShader, sizeof(trace::sharcSplitLocalSigmaTemporalShader), temporalLayout, sharc.temporal);
@@ -172,14 +180,20 @@ namespace remix {
       }
       s.active = 1;
     } catch (VkResult r) {
+      if (preparing)
+        throw;
       if (r == VK_ERROR_DEVICE_LOST)
         throw;
-      check(vkDeviceWaitIdle(device));
+      if (!preparing)
+        check(vkDeviceWaitIdle(device));
       destroySharc();
       const auto reason = "SHARC initialization failed (Vulkan " + std::to_string(r) + "); uncached tracing is active";
       std::strncpy(s.unavailableReason, reason.c_str(), sizeof(s.unavailableReason) - 1);
     } catch (const std::exception &e) {
-      check(vkDeviceWaitIdle(device));
+      if (preparing)
+        throw;
+      if (!preparing)
+        check(vkDeviceWaitIdle(device));
       destroySharc();
       const auto reason = std::string("SHARC initialization failed: ") + e.what();
       std::strncpy(s.unavailableReason, reason.c_str(), sizeof(s.unavailableReason) - 1);

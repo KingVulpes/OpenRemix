@@ -1,5 +1,6 @@
 #include "raster/gpu.h"
 #include "raster/shaders/embedded.h"
+#include "runtime/pipelines.h"
 
 namespace remix {
   using namespace scene;
@@ -17,25 +18,25 @@ namespace remix {
     uploads.clear();
     skin.reset();
     if (vertex) {
-      vkDestroyShaderModule(device, vertex, nullptr);
+      pipeline::destroyShaderModule(device, vertex, nullptr);
     }
     if (fragment) {
-      vkDestroyShaderModule(device, fragment, nullptr);
+      pipeline::destroyShaderModule(device, fragment, nullptr);
     }
     if (layout) {
-      vkDestroyPipelineLayout(device, layout, nullptr);
+      pipeline::destroyPipelineLayout(device, layout, nullptr);
     }
     if (pool) {
       vkDestroyDescriptorPool(device, pool, nullptr);
     }
     if (setLayout) {
-      vkDestroyDescriptorSetLayout(device, setLayout, nullptr);
+      pipeline::destroyDescriptorSetLayout(device, setLayout, nullptr);
     }
   }
 
   void RasterRenderer::Gpu::destroyTarget() {
     for (auto [key, pipeline] : pipelines) {
-      vkDestroyPipeline(device, pipeline, nullptr);
+      pipeline::destroyPipeline(device, pipeline, nullptr);
     }
     pipelines.clear();
     depth.reset();
@@ -86,7 +87,8 @@ namespace remix {
     const VkDescriptorSetLayoutCreateInfo set = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
                                                  .bindingCount = 1,
                                                  .pBindings = &binding};
-    check(vkCreateDescriptorSetLayout(device, &set, nullptr, &g.setLayout));
+    check(pipeline::createDescriptorSetLayout(device, &set, nullptr,
+                                              &g.setLayout));
     const VkDescriptorPoolSize size = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 16384};
     const VkDescriptorPoolCreateInfo pool = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
                                              .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
@@ -101,14 +103,14 @@ namespace remix {
                                                .pSetLayouts = &g.setLayout,
                                                .pushConstantRangeCount = 1,
                                                .pPushConstantRanges = &push};
-    check(vkCreatePipelineLayout(device, &layout, nullptr, &g.layout));
+    check(pipeline::createPipelineLayout(device, &layout, nullptr, &g.layout));
     VkShaderModuleCreateInfo shader = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
                                        .codeSize = sizeof(vertShader),
                                        .pCode = vertShader};
-    check(vkCreateShaderModule(device, &shader, nullptr, &g.vertex));
+    check(pipeline::createShaderModule(device, &shader, nullptr, &g.vertex));
     shader.codeSize = sizeof(fragShader);
     shader.pCode = fragShader;
-    check(vkCreateShaderModule(device, &shader, nullptr, &g.fragment));
+    check(pipeline::createShaderModule(device, &shader, nullptr, &g.fragment));
   }
 
   void RasterRenderer::configureTarget(VkRenderPass pass, VkExtent2D extent, bool encodeOutput) {
@@ -126,7 +128,7 @@ namespace remix {
     if (g.skyPass == pass)
       return;
     for (auto [key, pipeline] : g.pipelines)
-      vkDestroyPipeline(g.device, pipeline, nullptr);
+      pipeline::destroyPipeline(g.device, pipeline, nullptr);
     g.pipelines.clear();
     g.skyPass = pass;
   }
@@ -142,6 +144,10 @@ namespace remix {
   }
 
   VkFormat RasterRenderer::depthFormat() const { return m_gpu->depthFormat; }
+
+  std::shared_ptr<void> RasterRenderer::depthLifetime() const {
+    return m_gpu->depth;
+  }
 
   VkImageView RasterRenderer::depthView() const { return m_gpu->depth->view; }
 

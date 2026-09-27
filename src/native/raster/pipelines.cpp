@@ -1,3 +1,4 @@
+#include "runtime/pipelines.h"
 #include "raster/gpu.h"
 
 namespace remix {
@@ -14,6 +15,49 @@ namespace remix {
              uint64_t(draw.depthCompare) << 30 | uint64_t(draw.depthBias) << 33;
     }
   } // namespace
+
+  bool RasterRenderer::preparePipelines(bool tracing) {
+    bool ready = true;
+    auto request = [&](scene::Draw draw) {
+      if (tracing && draw.depthCompare == 2) {
+        draw.depthCompare = 3;
+        draw.depthBias = true;
+      }
+      try {
+        m_gpu->pipeline(draw);
+      } catch (VkResult result) {
+        if (result != VK_NOT_READY)
+          throw;
+        ready = false;
+      }
+    };
+    for (const auto &draw : m_draws)
+      if (draw.rasterVisible && (!tracing || !draw.traced()))
+        request(draw);
+    // These draws are appended after the depth adjustment in prepare().
+    const auto overlays = [&](const auto &draws) {
+      for (const auto &draw : draws) {
+        try {
+          m_gpu->pipeline(draw);
+        } catch (VkResult result) {
+          if (result != VK_NOT_READY)
+            throw;
+          ready = false;
+        }
+      }
+    };
+    overlays(m_overlay);
+    overlays(m_uiDraws);
+    if (m_tint[3] > 0) {
+      scene::Draw tint;
+      tint.ui = true;
+      tint.depth = false;
+      tint.doubleSided = true;
+      tint.blend.enabled = true;
+      request(tint);
+    }
+    return ready;
+  }
 
   VkPipeline RasterRenderer::Gpu::pipeline(const Draw &draw) {
     const bool sky = skyPass && draw.camera == REMIXAPI_CAMERA_TYPE_SKY;
@@ -102,17 +146,18 @@ namespace remix {
                                                .layout = layout,
                                                .renderPass = sky ? skyPass : pass};
     VkPipeline result = VK_NULL_HANDLE;
-    const auto status = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, &result);
+    const auto status = pipeline::createGraphicsPipelines(
+        device, VK_NULL_HANDLE, 1, &info, nullptr, &result);
     if (status != VK_SUCCESS) {
       if (result) {
-        vkDestroyPipeline(device, result, nullptr);
+        pipeline::destroyPipeline(device, result, nullptr);
       }
       check(status);
     }
     try {
       pipelines.emplace(key, result);
     } catch (...) {
-      vkDestroyPipeline(device, result, nullptr);
+      pipeline::destroyPipeline(device, result, nullptr);
       throw;
     }
     return result;

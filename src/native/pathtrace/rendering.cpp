@@ -440,7 +440,7 @@ namespace remix {
       reconstructionWarmFrames = 0;
     // An unchanged world can reuse its cached output once both histories are warm.
     if (scene == lastScene && !profileEveryFrame && !std::getenv("REMIX_PATH_LINEAR_CAPTURE") &&
-        !options.accumulate && !debugView && denoiser && !denoiser->statistics().redrawRequested &&
+        !options.accumulate && !debugView && !postProcessing->needsGuide() && denoiser && !denoiser->statistics().redrawRequested &&
         !history.reset() && !(upscaler && reconstructionWarmFrames < 128) &&
         !(sharc.stats.active && sharc.hasReceivers && sharc.warmFrames < 2 * options.sharcAccumulationFrames))
       return;
@@ -596,6 +596,7 @@ namespace remix {
     if (const auto *seed = std::getenv("REMIX_PATH_SAMPLE_SEED"))
       frame.config[2] += uint32_t(std::strtoul(seed, nullptr, 10));
     frame.config[3] = uint32_t(stats.accumulationCount);
+    frame.firefly[2] = postProcessing->materialGuide() ? 1.f : 0.f;
     hostBuffer(uniform, &frame, sizeof(frame), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
     stats.samplesPerPixel = options.samples;
     stats.indirectBounces = options.bounces;
@@ -619,10 +620,11 @@ namespace remix {
                                       {VK_NULL_HANDLE, primary[3]->view, VK_IMAGE_LAYOUT_GENERAL},
                                       {VK_NULL_HANDLE, primary[4]->view, VK_IMAGE_LAYOUT_GENERAL},
                                       {VK_NULL_HANDLE, primary[5]->view, VK_IMAGE_LAYOUT_GENERAL},
-                                      {VK_NULL_HANDLE, primary[6]->view, VK_IMAGE_LAYOUT_GENERAL}};
+                                      {VK_NULL_HANDLE, primary[6]->view, VK_IMAGE_LAYOUT_GENERAL},
+                                      {VK_NULL_HANDLE, postProcessing->materialGuide() ? postProcessing->materialGuide() : primary[6]->view, VK_IMAGE_LAYOUT_GENERAL}};
     VkWriteDescriptorSetAccelerationStructureKHR structures[2] = {};
-    VkWriteDescriptorSet writes[15] = {};
-    for (unsigned i = 0; i < 15; ++i) {
+    VkWriteDescriptorSet writes[16] = {};
+    for (unsigned i = 0; i < 16; ++i) {
       writes[i] = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                    .dstSet = set,
                    .dstBinding = i,
@@ -645,7 +647,7 @@ namespace remix {
           writes[i].descriptorCount = PathTracer::textureLimit;
       }
     }
-    vkUpdateDescriptorSets(device, 15, writes, 0, nullptr);
+    vkUpdateDescriptorSets(device, 16, writes, 0, nullptr);
     if (!imagesInitialized) {
       VkImageMemoryBarrier barriers[2] = {};
       for (unsigned i = 0; i < 2; ++i)
@@ -704,7 +706,7 @@ namespace remix {
       opaquePipeline = selectLightingPipeline(opaqueSource, false, true);
       if (!opaquePipeline) {
         indirectPass.active = false;
-        indirectPass.failed = true;
+        // Retry the optional consumer on later frames while it compiles.
         if (indirectPass.results)
           retiredBuffers.push_back(std::move(indirectPass.results));
         std::fprintf(stderr, "Separate indirect consumer unavailable; using inline tracing\n");
@@ -926,13 +928,18 @@ namespace remix {
 
   void PathTracer::prepare(VkCommandBuffer command, RasterRenderer &resources, const TraceOptions &options,
                            scene::TraceFrame &scene) {
-    m_gpu->prepare(command, resources, options, scene);
+    auto &g = *m_gpu;
+    g.postProcessing->begin(command);
+    g.prepare(command, resources, options, scene);
+    const auto hdr = g.upscaler && !g.debugView ? g.upscaler->output() : upscale::Input{g.world->handle, g.world->view};
+    g.postProcessing->record(command, hdr, options, resources.temporalEpoch(), g.rendered,
+      (g.postProcessing == g.postFallback.get() && !g.retainPostExposure) || options.debugView || options.shadowDebug || options.sharcDebug || options.validation, -1, g.stats.sceneGeneration);
   }
 
   void PathTracer::record(VkCommandBuffer command) {
     auto &g = *m_gpu;
     if (g.upscaler && !g.debugView) {
-      g.upscaler->composite(command, g.encodeOutput, g.prism, g.gamma22, g.hardwareSrgb);
+      g.upscaler->composite(command, g.encodeOutput, g.prism, g.gamma22, g.hardwareSrgb, g.postProcessing->bindings());
       return;
     }
     VkViewport viewport = {0, 0, float(g.displayExtent.width), float(g.displayExtent.height), 0, 1};
@@ -940,6 +947,8 @@ namespace remix {
     vkCmdSetViewport(command, 0, 1, &viewport);
     vkCmdSetScissor(command, 0, 1, &scissor);
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, g.layout, 0, 1, &g.set, 0, nullptr);
+    const auto postSet = g.postProcessing->bindings();
+    vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, g.layout, 1, 1, &postSet, 0, nullptr);
     for (uint32_t i = 0; i < 2; ++i) {
       const uint32_t push[] = {i,
                                uint32_t(g.encodeOutput),

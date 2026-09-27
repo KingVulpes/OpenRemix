@@ -1,6 +1,7 @@
 #pragma once
 #include "denoise/renderer.h"
 #include "pathtrace/options.h"
+#include "postfx/renderer.h"
 #include "raster/renderer.h"
 #include "scene/trace_frame.h"
 #include <remix/remix_native_ext.h>
@@ -12,12 +13,21 @@ namespace remix {
     static constexpr uint32_t textureLimit = 4096;
     PathTracer();
     ~PathTracer();
-    void initialize(VkPhysicalDevice physical, VkDevice device, uint32_t queueFamily);
+    void initialize(VkPhysicalDevice physical, VkDevice device,
+                    uint32_t queueFamily, bool preparing = false,
+                    bool rasterPrimary = true, std::shared_ptr<postfx::State> exposureState = {});
+    std::shared_ptr<postfx::State> exposureState() const;
+    VkExtent2D renderExtent() const;
+    void setPostProcessing(postfx::Renderer *renderer, bool retainExposure = false);
     void configureTarget(VkRenderPass pass, VkExtent2D extent, bool encodeOutput, VkFormat depthFormat,
                          VkImageView depthView, bool hardwareSrgb = false);
     VkRenderPass skyPass() const;
     upscale::Statistics upscalingStatistics() const;
     void setNgx(std::shared_ptr<upscale::Ngx> ngx);
+    void prepareConfiguration(const TraceOptions &options, bool perspective,
+                              bool local, uint32_t failedBackends = 0,
+                              const std::string &failure = {});
+    bool finishPreparation(VkQueue queue);
     void beginFrame(const TraceOptions &options, const RasterRenderer &resources);
     void selectFrame(uint32_t slot);
     void submitted();

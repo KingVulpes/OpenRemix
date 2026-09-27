@@ -31,6 +31,22 @@ namespace remix {
       ImGui::EndDisabled();
     }
     if (ImGui::CollapsingHeader("Tonemapping and brightness", ImGuiTreeNodeFlags_DefaultOpen)) {
+      ui::Checkbox("Automatic exposure", &options.autoExposure);
+      ui::SliderFloat("Manual exposure", &options.exposure, .05f, 8.f, "%.2f", ImGuiSliderFlags_Logarithmic);
+      ui::SliderFloat("Meter target", &options.autoExposureTarget, .02f, .6f, "%.3f");
+      ui::SliderFloat("Adaptation rate (1/s)", &options.autoExposureSpeed, .1f, 16.f, "%.2f");
+      ui::SliderFloat("Centre weight", &options.autoExposureCentre, 0, 1, "%.2f");
+      ui::SliderFloat("Minimum exposure EV", &options.autoExposureMinEv, -24, 0, "%.1f");
+      ui::SliderFloat("Maximum exposure EV", &options.autoExposureMaxEv, 0, 24, "%.1f");
+      ui::Checkbox("Bloom", &options.bloom);
+      ui::SliderFloat("Bloom blend", &options.bloomIntensity, 0, 1, "%.2f");
+      ui::SliderFloat("Bloom spread", &options.bloomRadius, 0, 1, "%.2f");
+      const auto post = postProcessingStatistics();
+      ImGui::TextWrapped("Automatic %.4g | target %.4g | %s", post.exposure, post.target,
+        post.limit < 0 ? "minimum EV limit" : post.limit > 0 ? "maximum EV limit" : "within limits");
+      ImGui::TextWrapped("Active exposure %.4g", m_postOptions.exposure * (m_postOptions.autoExposure ? post.exposure : 1.f));
+      ImGui::TextWrapped("Exposure/bloom %.3f ms | %.1f MiB", post.milliseconds, double(post.memoryBytes) / (1024 * 1024));
+      if (!m_postFailure.empty()) ImGui::TextWrapped("%s", m_postFailure.c_str());
       ui::Checkbox("Prism tonemapping", &options.prism);
       ui::Checkbox("Gamma 2.2 output", &options.gamma22);
       for (auto [label, threshold] : {std::pair{"Local direct clamp", &options.localDirectClamp},

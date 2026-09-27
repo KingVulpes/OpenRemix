@@ -1,4 +1,6 @@
 #include "denoise/gpu.h"
+#include "denoise/pipeline_selection.h"
+#include "runtime/pipelines.h"
 #ifdef REMIX_HAS_NRD
 #include "denoise/shaders/nrd_embedded.h"
 #include <algorithm>
@@ -63,7 +65,7 @@ namespace remix::denoise {
                              .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
                              .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
                              .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE};
-      check(vkCreateSampler(device, &ci, nullptr, &pass.samplers[i]));
+      check(pipeline::createSampler(device, &ci, nullptr, &pass.samplers[i]));
     }
     std::vector<VkDescriptorSetLayoutBinding> bindings;
     for (uint32_t i = 0; i < desc.samplersNum; ++i)
@@ -74,14 +76,14 @@ namespace remix::denoise {
     VkDescriptorSetLayoutCreateInfo ci{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
                                        .bindingCount = uint32_t(bindings.size()),
                                        .pBindings = bindings.data()};
-    check(vkCreateDescriptorSetLayout(device, &ci, nullptr, &pass.commonLayout));
+    check(pipeline::createDescriptorSetLayout(device, &ci, nullptr,
+                                              &pass.commonLayout));
     pass.pipelines.resize(desc.pipelinesNum);
     for (uint32_t i = 0; i < desc.pipelinesNum; ++i) {
       const auto &source = desc.pipelines[i];
       auto &p = pass.pipelines[i];
-      // Split-family samples and PBR lobes can leave invalid hit distances.
-      // Other signals do not request distance reconstruction.
-      if (std::strstr(source.shaderIdentifier, "HitDistReconstruction") && !(local && split) && !pbr)
+      if (!pipelineRequired(source.shaderIdentifier, sigma, local, pbr,
+                            validation, localReconstruction))
         continue;
       const Shader *shader = nullptr;
       for (const auto &s : shaders)
@@ -103,12 +105,13 @@ namespace remix::denoise {
       }
       ci.bindingCount = uint32_t(bindings.size());
       ci.pBindings = bindings.data();
-      check(vkCreateDescriptorSetLayout(device, &ci, nullptr, &p.resources));
+      check(pipeline::createDescriptorSetLayout(device, &ci, nullptr,
+                                                &p.resources));
       VkDescriptorSetLayout layouts[] = {p.resources, pass.commonLayout};
       VkPipelineLayoutCreateInfo li{.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                     .setLayoutCount = 2,
                                     .pSetLayouts = layouts};
-      check(vkCreatePipelineLayout(device, &li, nullptr, &p.layout));
+      check(pipeline::createPipelineLayout(device, &li, nullptr, &p.layout));
       p.pipeline = pipeline(p.layout, shader->code, shader->size);
     }
     const auto &pd = desc.descriptorPoolDesc;

@@ -1,4 +1,5 @@
 #include "pathtrace/gpu.h"
+#include "runtime/pipelines.h"
 
 namespace remix {
 using namespace trace::detail;
@@ -39,7 +40,7 @@ VkPipeline PathTracer::Gpu::selectLightingPipeline(VkPipeline pipeline, bool com
                                 .codeSize = source.bytes,
                                 .pCode = source.code};
     VkShaderModule module{};
-    auto result = vkCreateShaderModule(device, &ci, nullptr, &module);
+    auto result = pipeline::createShaderModule(device, &ci, nullptr, &module);
     if (result == VK_SUCCESS) {
       const VkBool32 enabled[] = {VkBool32(localIlluminationActive), VkBool32(guided), VkBool32(smallSet), VkBool32(resampling), VkBool32(split), VkBool32(angular), VkBool32(reuse), VkBool32(rayProfile.path != nullptr), VkBool32(firstHit), VkBool32(separateIndirect), VkBool32(roulette), VkBool32(decalMaterialsActive)};
       const VkSpecializationMapEntry entries[] = {{0, 0, sizeof(VkBool32)}, {1, sizeof(VkBool32), sizeof(VkBool32)},
@@ -63,9 +64,15 @@ VkPipeline PathTracer::Gpu::selectLightingPipeline(VkPipeline pipeline, bool com
                     .pName = "main",
                     .pSpecializationInfo = &specialization},
           .layout = source.layout};
-      result = vkCreateComputePipelines(device, pipelineCache, 1, &create,
-                                        nullptr, &variant);
-      vkDestroyShaderModule(device, module, nullptr);
+      result = pipeline::createComputePipelines(device, VK_NULL_HANDLE, 1,
+                                                &create, nullptr, &variant);
+      pipeline::destroyShaderModule(device, module, nullptr);
+    }
+    if (result == VK_NOT_READY) {
+      attempted = false;
+      if (reuse)
+        pbrReuse.valid = pbrReuse.active = false;
+      return separateIndirect ? VK_NULL_HANDLE : pipeline;
     }
     // This specialization only improves performance. The ordinary pipeline
     // retains ordinary LightBVH sampling if guidance cannot be allocated,
@@ -99,18 +106,18 @@ void PathTracer::Gpu::forgetLightingPipeline(VkPipeline pipeline) {
   if (found == lightingPipelines.end())
     return;
   if (found->second.withoutLocal)
-    vkDestroyPipeline(device, found->second.withoutLocal, nullptr);
+    pipeline::destroyPipeline(device, found->second.withoutLocal, nullptr);
   if (found->second.withGuiding)
-    vkDestroyPipeline(device, found->second.withGuiding, nullptr);
+    pipeline::destroyPipeline(device, found->second.withGuiding, nullptr);
   for (auto variant : found->second.withResampling)
     if (variant)
-      vkDestroyPipeline(device, variant, nullptr);
+      pipeline::destroyPipeline(device, variant, nullptr);
   for (const auto &[key, variant] : found->second.specialized)
     if (variant.first)
-      vkDestroyPipeline(device, variant.first, nullptr);
+      pipeline::destroyPipeline(device, variant.first, nullptr);
   for (auto variant : found->second.smallSet)
     if (variant)
-      vkDestroyPipeline(device, variant, nullptr);
+      pipeline::destroyPipeline(device, variant, nullptr);
   lightingPipelines.erase(found);
 }
 } // namespace remix

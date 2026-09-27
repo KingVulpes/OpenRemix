@@ -1,3 +1,4 @@
+#include "runtime/prepared.h"
 #include <SDL3/SDL.h>
 #include <algorithm>
 #include <array>
@@ -38,6 +39,9 @@ int main(int argc, char **argv) {
   startup.windowHeight = std::getenv("REMIX_TEST_LOCAL_PERF") ? 720 : 128;
 #endif
   ok(api.Startup(&startup));
+  // These fixtures measure the unexposed lighting/display contract.
+  ok(api.SetConfigVariable("rtx.native.pathtrace.autoExposure", "0"));
+  ok(api.SetConfigVariable("rtx.native.pathtrace.bloom", "0"));
   ok(api.SetConfigVariable("rtx.native.pathtrace.upscaler", "off"));
   remixapi_BackendCapabilitiesEXT caps{};
   caps.structSize = sizeof(caps);
@@ -159,7 +163,7 @@ int main(int argc, char **argv) {
   };
   bool varyCamera = false;
   unsigned cameraSequence = 0;
-  auto frame = [&] {
+  auto frame = remix::test::preparedFrame([&] {
     if (varyCamera)
       camera.view[0][3] = ++cameraSequence % 2 ? .00001f : 0;
     ok(api.PumpEvents());
@@ -170,7 +174,7 @@ int main(int argc, char **argv) {
     for (auto mesh : occluders)
       draw(mesh);
     ok(api.Present(nullptr));
-  };
+  });
   auto temporal = [&] {
     remixapi_DenoisingStatisticsEXT stats{};
     stats.structSize = sizeof(stats);
@@ -198,7 +202,7 @@ int main(int argc, char **argv) {
   double redError = 0;
   auto readback = [&](const std::string &name) {
     const auto file = (directory / (name + ".png")).string();
-    ok(api.RequestPresentedScreenshot(file.c_str()));
+    ok(remix::test::requestScreenshot(api, file.c_str(), frame));
     frame();
     frame();
     int width, height, channels;

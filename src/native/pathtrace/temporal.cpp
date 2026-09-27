@@ -1,13 +1,15 @@
 #include "pathtrace/gpu.h"
-#include "upscale/ngx.h"
 #include "pathtrace/shaders/embedded.h"
+#include "runtime/pipelines.h"
+#include "upscale/ngx.h"
 
 namespace remix {
   using namespace trace::detail;
   void PathTracer::Gpu::destroyIndirect() {
     for (auto &pipeline : indirectPass.pipeline) {
       forgetLightingPipeline(pipeline);
-      if (pipeline) vkDestroyPipeline(device, pipeline, nullptr);
+      if (pipeline)
+        pipeline::destroyPipeline(device, pipeline, nullptr);
       pipeline = VK_NULL_HANDLE;
     }
     indirectPass.results.reset();
@@ -46,7 +48,7 @@ namespace remix {
         VkShaderModuleCreateInfo info{.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
                                        .codeSize = bytes, .pCode = code};
         VkShaderModule module{};
-        check(vkCreateShaderModule(device, &info, nullptr, &module));
+        check(pipeline::createShaderModule(device, &info, nullptr, &module));
         const VkBool32 guidance = VK_FALSE;
         const VkSpecializationMapEntry entry{1, 0, sizeof(guidance)};
         const VkSpecializationInfo specialization{1, &entry, sizeof(guidance), &guidance};
@@ -55,8 +57,11 @@ namespace remix {
                                                       .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = module,
                                                       .pName = "main", .pSpecializationInfo = &specialization},
                                             .layout = temporalLayout};
-        const auto result = vkCreateComputePipelines(device, pipelineCache, 1, &create, nullptr, &pipeline);
-        vkDestroyShaderModule(device, module, nullptr);
+        const auto result = pipeline::createComputePipelines(
+            device, VK_NULL_HANDLE, 1, &create, nullptr, &pipeline);
+        pipeline::destroyShaderModule(device, module, nullptr);
+        if (result == VK_NOT_READY)
+          return;
         check(result);
         lightingPipelines[pipeline] = {code, bytes, temporalLayout};
         // On the measured Turing driver, first-hit termination raises the
@@ -96,17 +101,17 @@ namespace remix {
     forgetLightingPipeline(confidenceCompute);
     forgetLightingPipeline(splitDirectCompute);
     if (splitDirectCompute)
-      vkDestroyPipeline(device, splitDirectCompute, nullptr);
+      pipeline::destroyPipeline(device, splitDirectCompute, nullptr);
     splitDirectCompute = VK_NULL_HANDLE;
     if (temporalTransparencyCompute)
-      vkDestroyPipeline(device, temporalTransparencyCompute, nullptr);
+      pipeline::destroyPipeline(device, temporalTransparencyCompute, nullptr);
     temporalTransparencyCompute = VK_NULL_HANDLE;
     if (temporalCompute)
-      vkDestroyPipeline(device, temporalCompute, nullptr);
+      pipeline::destroyPipeline(device, temporalCompute, nullptr);
     if (confidenceCompute)
-      vkDestroyPipeline(device, confidenceCompute, nullptr);
+      pipeline::destroyPipeline(device, confidenceCompute, nullptr);
     if (temporalLayout)
-      vkDestroyPipelineLayout(device, temporalLayout, nullptr);
+      pipeline::destroyPipelineLayout(device, temporalLayout, nullptr);
     temporalCompute = confidenceCompute = VK_NULL_HANDLE;
     temporalLayout = VK_NULL_HANDLE;
     denoiser.reset();
@@ -133,7 +138,8 @@ namespace remix {
     if (reblur != postReblur || taa != postTaa || sigma != postSigmaRequested ||
         local != postLocalRequested || localDenoise != postLocalDenoiseRequested || split != postSplitRequested ||
         combinedDirect != postCombinedDirect) {
-      check(vkDeviceWaitIdle(device));
+      if (!preparing)
+        check(vkDeviceWaitIdle(device));
       destroyPost();
       postReblur = reblur;
       postTaa = taa;
@@ -166,17 +172,21 @@ namespace remix {
       std::string failure;
       try {
         auto next = std::make_unique<denoise::Renderer>();
-        next->initialize(physical, device, extent, reblur, queueFamily, postSigma, postLocal, postLocalDenoise, postSplit, rrActive());
+        next->initialize(physical, device, extent, reblur, queueFamily,
+                         postSigma, postLocal, postLocalDenoise, postSplit,
+                         rrActive(), options.validation,
+                         options.separateLocalLighting == 1);
         VkDescriptorSetLayout layouts[] = {setLayout, next->inputLayout()};
         VkPipelineLayoutCreateInfo li{.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                       .setLayoutCount = 2,
                                       .pSetLayouts = layouts};
-        check(vkCreatePipelineLayout(device, &li, nullptr, &temporalLayout));
+        check(pipeline::createPipelineLayout(device, &li, nullptr,
+                                             &temporalLayout));
         auto make = [&](const uint32_t *code, size_t size, VkPipeline &out) {
           VkShaderModuleCreateInfo ci{
               .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = size, .pCode = code};
           VkShaderModule shader{};
-          check(vkCreateShaderModule(device, &ci, nullptr, &shader));
+          check(pipeline::createShaderModule(device, &ci, nullptr, &shader));
           // Compile ordinary local lighting first; guidance is a lazy variant.
           const VkBool32 guidance = VK_FALSE;
           const VkSpecializationMapEntry guideEntry{1, 0, sizeof(guidance)};
@@ -187,8 +197,9 @@ namespace remix {
                                                    .module = shader,
                                                    .pName = "main", .pSpecializationInfo = &noGuiding},
                                          .layout = temporalLayout};
-          auto result = vkCreateComputePipelines(device, pipelineCache, 1, &pi, nullptr, &out);
-          vkDestroyShaderModule(device, shader, nullptr);
+          auto result = pipeline::createComputePipelines(device, VK_NULL_HANDLE,
+                                                         1, &pi, nullptr, &out);
+          pipeline::destroyShaderModule(device, shader, nullptr);
           check(result);
           lightingPipelines[out] = {code, size, temporalLayout};
           lightingPipelines[out].supportsGuiding = &out == &temporalCompute || &out == &splitDirectCompute;
@@ -214,10 +225,14 @@ namespace remix {
         denoiser = std::move(next);
         return;
       } catch (VkResult r) {
+        if (preparing)
+          throw;
         if (r == VK_ERROR_DEVICE_LOST)
           throw;
         failure = "Temporal resource initialization failed (Vulkan " + std::to_string(r) + ")";
       } catch (const std::exception &e) {
+        if (preparing)
+          throw;
         failure = std::string("Temporal initialization failed: ") + e.what();
       }
       const bool retry = postSplit || postLocalDenoise || postLocal || postSigma;
@@ -264,24 +279,48 @@ namespace remix {
     }
     return options;
   }
-  void PathTracer::beginFrame(const TraceOptions &options, const RasterRenderer& resources) {
-    auto& g = *m_gpu;
-    const bool perspective = resources.cameraValid() && upscale::supportsCamera(resources.projection());
+  void PathTracer::prepareConfiguration(const TraceOptions &options,
+                                        bool perspective, bool local,
+                                        uint32_t failedBackends,
+                                        const std::string &failure) {
+    auto &g = *m_gpu;
+    g.preparedPerspective = perspective;
+    g.preparedLocal = local;
+    g.requestedUpscaler = options.upscaler;
+    g.fsrQuality = options.upscaler == upscale::Mode::Fsr31
+                       ? options.fsrQuality
+                       : options.dlssQuality;
+    g.rrRequested = options.dlssRayReconstruction;
+    g.failedBackends = failedBackends;
+    g.fsrFailure = failure;
+    g.configureFrame(options, perspective, local);
+  }
+  bool PathTracer::finishPreparation(VkQueue queue) {
+    auto &g = *m_gpu;
+    if (g.upscaler && !g.upscaler->finishInitialization(queue))
+      return false;
+    g.preparing = false;
+    return true;
+  }
+  void PathTracer::beginFrame(const TraceOptions &options,
+                              const RasterRenderer &) {
+    auto &g = *m_gpu;
+    g.configureFrame(options, g.preparedPerspective, g.preparedLocal);
+  }
+  void PathTracer::Gpu::configureFrame(const TraceOptions &options,
+                                       bool perspective, bool local) {
+    auto &g = *this;
     const bool eligible = !options.accumulate && !options.sharcDebug && g.postCapabilities.taaSupported && perspective;
     const auto backend = !eligible || options.upscaler == upscale::Mode::Off ? upscale::Backend::Native :
         options.upscaler == upscale::Mode::Fsr31 ? upscale::Backend::Fsr31 : upscale::Backend::DlssSr;
     const auto quality = options.upscaler == upscale::Mode::Fsr31 ? options.fsrQuality : options.dlssQuality;
     bool changed = options.upscaler != g.requestedUpscaler || quality != g.fsrQuality || options.dlssRayReconstruction != g.rrRequested;
     if (changed) { g.failedBackends = 0; g.fsrFailure.clear(); }
-    if (g.upscaler && g.upscaler->statistics().failed) {
-      const auto stats = g.upscaler->statistics();
-      g.failedBackends |= 1u << uint32_t(stats.backend);
-      g.fsrFailure = stats.failure; ++g.reconstructionFailures; changed = true;
-    }
     changed |= backend != g.requestedBackend;
     g.requestedUpscaler = options.upscaler; g.requestedBackend = backend;
     g.fsrQuality = quality; g.rrRequested = options.dlssRayReconstruction;
-    if (changed) g.createTarget();
+    if (changed || !g.extent.width)
+      g.createTarget();
     if (options.upscaler != upscale::Mode::Off && !options.accumulate && !options.sharcDebug) {
       if (!g.postCapabilities.taaSupported) g.fsrFailure = g.postCapabilities.unavailableReason;
       else if (!perspective) g.fsrFailure = "Reconstruction requires a finite perspective world camera";
@@ -289,11 +328,7 @@ namespace remix {
       else if (g.upscaler && options.dlssRayReconstruction && g.upscaler->statistics().backend == upscale::Backend::DlssSr && g.fsrFailure.empty())
         g.fsrFailure = g.ngx->capabilities().reason;
     }
-    g.localSeen |= resources.hasSphereLights();
-    g.localSeen |= std::any_of(resources.draws().begin(), resources.draws().end(), [](const auto &draw) {
-      const auto &e = draw.material->emission;
-      return draw.traced() && (e[0] > 0 || e[1] > 0 || e[2] > 0);
-    });
+    g.localSeen |= local;
     g.beginFrame(g.effectiveOptions(options));
     if (g.upscaler && !g.denoiser) {
       const auto failure = g.postFailure;
@@ -302,6 +337,8 @@ namespace remix {
       g.fsrFailure = failure + "; reconstruction guide resources unavailable";
       g.beginFrame(options);
     }
+    if (!g.denoiser)
+      g.createRawPipelines();
     g.beginSharc(g.effectiveOptions(options));
     if (g.denoiser) g.denoiser->selectFrame(g.frameIndex);
     if (g.upscaler) g.upscaler->selectFrame(g.frameIndex);

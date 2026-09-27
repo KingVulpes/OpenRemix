@@ -1,6 +1,7 @@
 #include "pathtrace/gpu.h"
-#include "upscale/ngx.h"
 #include "pathtrace/shaders/embedded.h"
+#include "runtime/pipelines.h"
+#include "upscale/ngx.h"
 
 namespace remix {
   using namespace scene;
@@ -79,7 +80,16 @@ namespace remix {
       lightGuiding.readback = buffer(16, VK_BUFFER_USAGE_TRANSFER_DST_BIT, true);
   }
 
-  void PathTracer::selectFrame(uint32_t slot) { m_gpu->selectFrame(slot); }
+  void PathTracer::selectFrame(uint32_t slot) {
+    m_gpu->selectFrame(slot);
+    m_gpu->postFallback->selectFrame(slot);
+  }
+  std::shared_ptr<postfx::State> PathTracer::exposureState() const { return m_gpu->postFallback->state(); }
+  VkExtent2D PathTracer::renderExtent() const { return m_gpu->extent; }
+  void PathTracer::setPostProcessing(postfx::Renderer *renderer, bool retainExposure) {
+    m_gpu->postProcessing = renderer ? renderer : m_gpu->postFallback.get();
+    m_gpu->retainPostExposure = retainExposure;
+  }
   bool PathTracer::adaptiveTerminationAvailable() const { return !m_gpu->rouletteFailed; }
   void PathTracer::resetPerformance() {
     m_gpu->performance = {.structSize = sizeof(remixapi_FramePerformanceEXT)};
@@ -115,20 +125,20 @@ namespace remix {
     forgetLightingPipeline(transparencyCompute);
     forgetLightingPipeline(compute);
     if (transparencyCompute)
-      vkDestroyPipeline(device, transparencyCompute, nullptr);
+      pipeline::destroyPipeline(device, transparencyCompute, nullptr);
     if (compute)
-      vkDestroyPipeline(device, compute, nullptr);
-    if (pipelineCache)
-      vkDestroyPipelineCache(device, pipelineCache, nullptr);
+      pipeline::destroyPipeline(device, compute, nullptr);
     for (auto shader : shaders)
       if (shader)
-        vkDestroyShaderModule(device, shader, nullptr);
+        pipeline::destroyShaderModule(device, shader, nullptr);
     if (layout)
-      vkDestroyPipelineLayout(device, layout, nullptr);
+      pipeline::destroyPipelineLayout(device, layout, nullptr);
     if (pool)
       vkDestroyDescriptorPool(device, pool, nullptr);
+    if (postSetLayout)
+      pipeline::destroyDescriptorSetLayout(device, postSetLayout, nullptr);
     if (setLayout)
-      vkDestroyDescriptorSetLayout(device, setLayout, nullptr);
+      pipeline::destroyDescriptorSetLayout(device, setLayout, nullptr);
   }
 
   std::unique_ptr<Image> PathTracer::Gpu::image(bool colorAttachment, VkFormat format, VkExtent2D size) {
@@ -143,7 +153,7 @@ namespace remix {
                               .arrayLayers = 1,
                               .samples = VK_SAMPLE_COUNT_1_BIT,
                               .tiling = VK_IMAGE_TILING_OPTIMAL,
-                              .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                              .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                                        (colorAttachment ? VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT : 0u),
                               .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     check(vkCreateImage(device, &info, nullptr, &out->handle));
@@ -184,13 +194,13 @@ namespace remix {
     if (skyFramebuffer)
       vkDestroyFramebuffer(device, skyFramebuffer, nullptr);
     if (skyPass)
-      vkDestroyRenderPass(device, skyPass, nullptr);
+      pipeline::destroyRenderPass(device, skyPass, nullptr);
     skyFramebuffer = VK_NULL_HANDLE;
     skyPass = VK_NULL_HANDLE;
     sky.reset();
     for (auto &pipeline : composite) {
       if (pipeline)
-        vkDestroyPipeline(device, pipeline, nullptr);
+        pipeline::destroyPipeline(device, pipeline, nullptr);
       pipeline = VK_NULL_HANDLE;
     }
     world.reset();
@@ -205,21 +215,20 @@ namespace remix {
 
   PathTracer::~PathTracer() = default;
 
-  void PathTracer::initialize(VkPhysicalDevice physical, VkDevice device, uint32_t queueFamily) {
+  void PathTracer::initialize(VkPhysicalDevice physical, VkDevice device,
+                              uint32_t queueFamily, bool preparing,
+                              bool rasterPrimary, std::shared_ptr<postfx::State> exposureState) {
     m_gpu = std::make_unique<Gpu>();
     auto &g = *m_gpu;
     g.physical = physical;
     g.device = device;
     g.queueFamily = queueFamily;
-    // Keep compiled shader data across target/filter recreation. Cache creation
-    // is optional; a null cache retains ordinary pipeline creation on failure.
-    const VkPipelineCacheCreateInfo cacheInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
-    const auto cacheResult = vkCreatePipelineCache(device, &cacheInfo, nullptr, &g.pipelineCache);
-    if (cacheResult != VK_SUCCESS) {
-      g.pipelineCache = VK_NULL_HANDLE;
-      if (cacheResult == VK_ERROR_DEVICE_LOST)
-        throw cacheResult;
-    }
+    g.postFallback = std::make_unique<postfx::Renderer>();
+    g.postFallback->initialize(physical, device, queueFamily, {1, 1}, {1, 1}, false, false, exposureState);
+    g.postProcessing = g.postFallback.get();
+    g.postSetLayout = postfx::compositeLayout(device);
+    g.preparing = preparing;
+    g.preparedRasterPrimary = rasterPrimary;
     g.postCapabilities = denoise::capabilities(physical);
     g.sigmaCapable = denoise::sigmaSupported(physical);
     g.localCapable[0] = denoise::localSupported(physical, false);
@@ -245,8 +254,8 @@ namespace remix {
     LOAD(copyAs, vkCmdCopyAccelerationStructureKHR);
     LOAD(writeAsProperties, vkCmdWriteAccelerationStructuresPropertiesKHR);
 #undef LOAD
-    VkDescriptorSetLayoutBinding bindings[15] = {};
-    for (unsigned i = 0; i < 15; ++i) {
+    VkDescriptorSetLayoutBinding bindings[16] = {};
+    for (unsigned i = 0; i < 16; ++i) {
       bindings[i] = {.binding = i,
                      .descriptorCount = i == 6 ? textureLimit : 1u,
                      .stageFlags =
@@ -261,13 +270,14 @@ namespace remix {
                                             : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     }
     VkDescriptorSetLayoutCreateInfo setLayout = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-                                                 .bindingCount = 15,
+                                                 .bindingCount = 16,
                                                  .pBindings = bindings};
-    check(vkCreateDescriptorSetLayout(device, &setLayout, nullptr, &g.setLayout));
+    check(pipeline::createDescriptorSetLayout(device, &setLayout, nullptr,
+                                              &g.setLayout));
     VkDescriptorPoolSize poolSizes[] = {{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 2},
                                         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
                                         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
-                                        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 10},
+                                        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 11},
                                         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, textureLimit}};
     for (auto &size : poolSizes)
       size.descriptorCount *= gpuFrameCount;
@@ -281,20 +291,40 @@ namespace remix {
                                             .descriptorSetCount = 1,
                                             .pSetLayouts = &g.setLayout};
     check(vkAllocateDescriptorSets(device, &allocate, &g.set));
+    const VkDescriptorSetLayout compositeSets[] = {g.setLayout, g.postSetLayout};
     VkPushConstantRange push = {VK_SHADER_STAGE_FRAGMENT_BIT, 0, 28};
     VkPipelineLayoutCreateInfo layout = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-                                         .setLayoutCount = 1,
-                                         .pSetLayouts = &g.setLayout,
+                                         .setLayoutCount = 2,
+                                         .pSetLayouts = compositeSets,
                                          .pushConstantRangeCount = 1,
                                          .pPushConstantRanges = &push};
-    check(vkCreatePipelineLayout(device, &layout, nullptr, &g.layout));
+    check(pipeline::createPipelineLayout(device, &layout, nullptr, &g.layout));
     const uint32_t *codes[] = {trace::compShader, trace::vertShader, trace::fragShader};
     size_t sizes[] = {sizeof(trace::compShader), sizeof(trace::vertShader), sizeof(trace::fragShader)};
     for (unsigned i = 0; i < 3; ++i) {
       VkShaderModuleCreateInfo info = {
           .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = sizes[i], .pCode = codes[i]};
-      check(vkCreateShaderModule(device, &info, nullptr, &g.shaders[i]));
+      check(
+          pipeline::createShaderModule(device, &info, nullptr, &g.shaders[i]));
     }
+    uint32_t count = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(physical, &count, nullptr);
+    std::vector<VkQueueFamilyProperties> families(count);
+    vkGetPhysicalDeviceQueueFamilyProperties(physical, &count, families.data());
+    g.timestampBits = families.at(queueFamily).timestampValidBits;
+    if (g.timestampBits && g.properties.limits.timestampComputeAndGraphics) {
+      VkQueryPoolCreateInfo query = {
+          .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+          .queryType = VK_QUERY_TYPE_TIMESTAMP,
+          .queryCount = 10};
+      check(vkCreateQueryPool(device, &query, nullptr, &g.timestamps));
+    }
+  }
+
+  void PathTracer::Gpu::createRawPipelines() {
+    if (compute && transparencyCompute)
+      return;
+    auto &g = *this;
     // Compile ordinary local lighting first; guidance is a lazy variant.
     const VkBool32 guidance = VK_FALSE;
     const VkSpecializationMapEntry guideEntry{1, 0, sizeof(guidance)};
@@ -306,32 +336,23 @@ namespace remix {
                   .module = g.shaders[0],
                   .pName = "main", .pSpecializationInfo = &noGuiding},
         .layout = g.layout};
-    check(vkCreateComputePipelines(device, g.pipelineCache, 1, &pipeline, nullptr, &g.compute));
+    check(pipeline::createComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline,
+                                           nullptr, &g.compute));
     g.lightingPipelines[g.compute] = {trace::compShader, sizeof(trace::compShader), g.layout};
     VkShaderModuleCreateInfo transparencyInfo{
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
         .codeSize = sizeof(trace::transparencyShader),
         .pCode = trace::transparencyShader};
     VkShaderModule transparencyShader{};
-    check(vkCreateShaderModule(device, &transparencyInfo, nullptr, &transparencyShader));
+    check(pipeline::createShaderModule(device, &transparencyInfo, nullptr,
+                                       &transparencyShader));
     pipeline.stage.module = transparencyShader;
-    auto transparencyResult =
-        vkCreateComputePipelines(device, g.pipelineCache, 1, &pipeline, nullptr, &g.transparencyCompute);
-    vkDestroyShaderModule(device, transparencyShader, nullptr);
+    auto transparencyResult = pipeline::createComputePipelines(
+        device, VK_NULL_HANDLE, 1, &pipeline, nullptr, &g.transparencyCompute);
+    pipeline::destroyShaderModule(device, transparencyShader, nullptr);
     check(transparencyResult);
     g.lightingPipelines[g.transparencyCompute] = {trace::transparencyShader, sizeof(trace::transparencyShader), g.layout};
     g.lightingPipelines[g.transparencyCompute].supportsGuiding = false;
-    uint32_t count = 0;
-    vkGetPhysicalDeviceQueueFamilyProperties(physical, &count, nullptr);
-    std::vector<VkQueueFamilyProperties> families(count);
-    vkGetPhysicalDeviceQueueFamilyProperties(physical, &count, families.data());
-    g.timestampBits = families.at(queueFamily).timestampValidBits;
-    if (g.timestampBits && g.properties.limits.timestampComputeAndGraphics) {
-      VkQueryPoolCreateInfo query = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
-                                     .queryType = VK_QUERY_TYPE_TIMESTAMP,
-                                     .queryCount = 10};
-      check(vkCreateQueryPool(device, &query, nullptr, &g.timestamps));
-    }
   }
 
   void PathTracer::configureTarget(VkRenderPass pass, VkExtent2D extent, bool encodeOutput,
@@ -343,10 +364,12 @@ namespace remix {
     g.displayDepth = depthView;
     g.encodeOutput = encodeOutput;
     g.hardwareSrgb = hardwareSrgb;
-    g.createTarget();
+    if (!g.preparing)
+      g.createTarget();
   }
   void PathTracer::Gpu::createTarget() {
-    check(vkDeviceWaitIdle(device));
+    if (!preparing)
+      check(vkDeviceWaitIdle(device));
     destroyTarget();
     extent = displayExtent;
     for (auto backend = selectBackend(); backend != upscale::Backend::Native; backend = selectBackend()) {
@@ -359,9 +382,13 @@ namespace remix {
         upscaler = std::move(next);
         break;
       } catch (VkResult result) {
+        if (preparing)
+          throw;
         if (result == VK_ERROR_DEVICE_LOST) throw;
         fsrFailure = std::string(upscale::name(backend)) + " initialization failed (Vulkan " + std::to_string(result) + ")";
       } catch (const std::exception& e) {
+        if (preparing)
+          throw;
         fsrFailure = e.what();
       }
       failedBackends |= 1u << uint32_t(backend);
@@ -380,6 +407,8 @@ namespace remix {
       std::string failure;
       try { g.upscaler->configureComposite(pass, g.primary[4]->view); }
       catch (VkResult result) {
+        if (preparing)
+          throw;
         if (result == VK_ERROR_DEVICE_LOST) throw;
         failure = "Reconstruction compositor initialization failed (Vulkan " + std::to_string(result) + ")";
       }
@@ -437,7 +466,7 @@ namespace remix {
                               .pSubpasses = &subpass,
                               .dependencyCount = 2,
                               .pDependencies = dependencies};
-    check(vkCreateRenderPass(g.device, &rp, nullptr, &g.skyPass));
+    check(pipeline::createRenderPass(g.device, &rp, nullptr, &g.skyPass));
     VkImageView views[] = {g.sky->view, depthView};
     VkFramebufferCreateInfo fb{.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
                                .renderPass = g.skyPass,
@@ -514,7 +543,8 @@ namespace remix {
                                                .pDynamicState = &dynamic,
                                                .layout = g.layout,
                                                .renderPass = pass};
-      check(vkCreateGraphicsPipelines(g.device, VK_NULL_HANDLE, 1, &pipeline, nullptr, &g.composite[i]));
+      check(pipeline::createGraphicsPipelines(
+          g.device, VK_NULL_HANDLE, 1, &pipeline, nullptr, &g.composite[i]));
     }
   }
 

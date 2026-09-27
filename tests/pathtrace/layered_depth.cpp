@@ -1,3 +1,4 @@
+#include "runtime/prepared.h"
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -36,6 +37,9 @@ int main(int argc, char **argv) {
   startup.windowWidth = startup.windowHeight = 128;
 #endif
   ok(api.Startup(&startup));
+  // These fixtures measure the unexposed lighting/display contract.
+  ok(api.SetConfigVariable("rtx.native.pathtrace.autoExposure", "0"));
+  ok(api.SetConfigVariable("rtx.native.pathtrace.bloom", "0"));
   remixapi_BackendCapabilitiesEXT caps{};
   caps.structSize = sizeof(caps);
   ok(remixapi_GetBackendCapabilitiesEXT(&caps));
@@ -129,7 +133,7 @@ int main(int argc, char **argv) {
     camera.view[2][0] = -s;
     camera.view[2][2] = c;
     camera.view[3][2] = float(pose) * .013f;
-    auto frame = [&] {
+    auto frame = remix::test::preparedFrame([&] {
       ok(api.PumpEvents());
       ok(api.SetupCamera(&camera));
       for (unsigned order = 0; order < 2; ++order) {
@@ -150,13 +154,13 @@ int main(int argc, char **argv) {
         ok(api.DrawInstance(&instance));
       }
       ok(api.Present(nullptr));
-    };
+    });
     frame();
     const std::string label =
         std::string(primary) + "-" + std::to_string(int(distance)) + "-" +
         std::to_string(pose) + (reverseOrder ? "-base-last" : "-overlay-last");
     const auto path = (directory / (label + ".png")).string();
-    ok(api.RequestPresentedScreenshot(path.c_str()));
+    ok(remix::test::requestScreenshot(api, path.c_str(), frame));
     frame();
     frame();
     int width, height, channels;

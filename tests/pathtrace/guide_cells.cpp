@@ -1,3 +1,4 @@
+#include "runtime/prepared.h"
 #include <SDL3/SDL.h>
 #include <algorithm>
 #include <array>
@@ -40,6 +41,9 @@ int main(int argc, char **argv) {
   startup.windowHeight = 512;
 #endif
   ok(api.Startup(&startup));
+  // These fixtures measure the unexposed lighting/display contract.
+  ok(api.SetConfigVariable("rtx.native.pathtrace.autoExposure", "0"));
+  ok(api.SetConfigVariable("rtx.native.pathtrace.bloom", "0"));
   ok(api.SetConfigVariable("rtx.native.pathtrace.upscaler", "off"));
   remixapi_BackendCapabilitiesEXT caps{};
   caps.structSize = sizeof(caps);
@@ -124,7 +128,7 @@ int main(int argc, char **argv) {
     light.hash = next++;
     ok(api.CreateLight(&light, &handle));
   }
-  auto frame = [&] {
+  auto frame = remix::test::preparedFrame([&] {
     ok(api.PumpEvents());
     ok(api.SetupCamera(&camera));
     for (auto handle : lights)
@@ -149,12 +153,12 @@ int main(int argc, char **argv) {
       ok(api.DrawInstance(&instance));
     }
     ok(api.Present(nullptr));
-  };
+  });
 
   int width = 0, height = 0;
   auto capture = [&](const std::string &name) {
     auto file = (directory / (name + ".png")).string();
-    ok(api.RequestPresentedScreenshot(file.c_str()));
+    ok(remix::test::requestScreenshot(api, file.c_str(), frame));
     frame();
     frame();
     int channels;

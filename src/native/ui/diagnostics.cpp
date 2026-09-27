@@ -7,6 +7,43 @@
 
 namespace remix {
   void RemixNativeRuntime::drawDiagnosticsTab(config::Settings &settings) {
+    if (m_pipelines) {
+      const auto s = m_pipelines->statistics();
+      ImGui::Text("Pipeline preparation: %llu / %llu completed",
+                  (unsigned long long)s.completed,
+                  (unsigned long long)s.requested);
+      ImGui::Text("Created %llu, reused %llu, failed %llu; %.1f ms compiling",
+                  (unsigned long long)s.created, (unsigned long long)s.reused,
+                  (unsigned long long)s.failed, s.milliseconds);
+      ImGui::Text("Pending requests deduplicated: %llu",
+                  (unsigned long long)s.deduplicated);
+      ImGui::Text("Driver cache: %s; feedback: %s; hits: %llu",
+                  s.cacheLoaded ? "loaded" : "cold",
+                  s.feedback ? "supported" : "unavailable",
+                  (unsigned long long)s.cacheHits);
+      if (s.feedback)
+        ImGui::Text("Driver creation time: %.1f ms",
+                    double(s.driverNanoseconds) / 1e6);
+      if (s.cacheWriteFailed)
+        ImGui::TextUnformatted(
+            "Pipeline cache could not be saved; rendering remains available.");
+      if (m_preparation) {
+        ImGui::Text("Pending configuration #%llu (profile %s)",
+                    (unsigned long long)m_preparation->generation,
+                    m_profiles.active().c_str());
+        ImGui::Text(
+            "Elapsed %.1f s; totals include jobs discovered during preparation",
+            std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                          m_preparation->started)
+                .count());
+      }
+      if (!m_preparationFailure.empty())
+        ImGui::TextWrapped("%s", m_preparationFailure.c_str());
+      ImGui::Separator();
+      ImGui::Text(
+          "Longest presentation gap: %.1f ms (includes application idle time)",
+          m_longestPresentationGap);
+    }
     auto &options = settings.trace;
     const bool rrActive =
         m_pathTracer && m_pathTracer->upscalingStatistics().backend == upscale::Backend::DlssRr;

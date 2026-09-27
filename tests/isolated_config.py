@@ -10,6 +10,13 @@ import tempfile
 root = Path(__file__).resolve().parents[1] / "_work/build/profile-test-runs"
 root.mkdir(parents=True, exist_ok=True)
 with tempfile.TemporaryDirectory(prefix="config-", dir=root) as directory:
+    # Optional suite cache: profiles stay isolated while GPU regression runs
+    # reuse the same device/driver cache, as successive application launches do.
+    shared_cache = os.environ.get("REMIX_TEST_SHARED_PIPELINE_CACHE")
+    if shared_cache:
+        cache = Path(shared_cache).resolve()
+        cache.mkdir(parents=True, exist_ok=True)
+        (Path(directory) / "cache").symlink_to(cache, target_is_directory=True)
     env = dict(os.environ, REMIX_CONFIG_DIR=directory)
     command = [directory if arg == "@CONFIG_DIR@" else arg for arg in sys.argv[1:]]
     process = subprocess.Popen(command, env=env)

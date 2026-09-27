@@ -1,8 +1,9 @@
+#include "runtime/prepared.h"
 #include <SDL3/SDL.h>
 #include <algorithm>
 #include <array>
-#include <cmath>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -43,6 +44,9 @@ int main(int argc, char **argv) {
   startup.windowHeight = std::getenv("REMIX_TEST_BENCHMARK") ? 1080 : 512;
 #endif
   ok(api.Startup(&startup));
+  // These fixtures measure the unexposed lighting/display contract.
+  ok(api.SetConfigVariable("rtx.native.pathtrace.autoExposure", "0"));
+  ok(api.SetConfigVariable("rtx.native.pathtrace.bloom", "0"));
   ok(api.SetConfigVariable("rtx.native.pathtrace.upscaler", "off"));
   remixapi_BackendCapabilitiesEXT caps{};
   caps.structSize = sizeof(caps);
@@ -153,7 +157,7 @@ int main(int argc, char **argv) {
   remixapi_LightHandle sun{};
   ok(api.CreateLight(&zeroSun, &sun));
   unsigned renderSequence = 0;
-  auto frame = [&] {
+  auto frame = remix::test::preparedFrame([&] {
     // Force fresh frames with an unlit sun; the camera and torch scene stay
     // fixed.
     distant.direction.x = (++renderSequence & 1) ? .001f : 0;
@@ -183,10 +187,10 @@ int main(int argc, char **argv) {
       ok(api.DrawInstance(&instance));
     }
     ok(api.Present(nullptr));
-  };
+  });
   auto capture = [&](const std::string &name, int radius = 12) {
     auto file = (directory / (name + ".png")).string();
-    ok(api.RequestPresentedScreenshot(file.c_str()));
+    ok(remix::test::requestScreenshot(api, file.c_str(), frame));
     frame();
     frame();
     int w, h, n;
@@ -262,6 +266,11 @@ int main(int argc, char **argv) {
       sum += .2126 * pixel[0] + .7152 * pixel[1] + .0722 * pixel[2];
     return sum / image.size();
   };
+  if (ngxMode) {
+    // Device/SDK feature discovery now runs with the requested configuration.
+    config("upscaler", "dlss");
+    frame();
+  }
   const auto ngxCaps = diagnostics().capabilities;
   const bool injected = std::getenv("REMIX_NGX_FAULT") != nullptr;
   const bool fallback = std::getenv("REMIX_TEST_FAULT") != nullptr || (ngxMode && !(ngxCaps & (rr ? 4 : 2))) || injected;

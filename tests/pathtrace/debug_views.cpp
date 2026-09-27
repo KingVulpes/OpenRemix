@@ -1,10 +1,11 @@
-#include <remix/remix_native_ext.h>
+#include "runtime/prepared.h"
 #include <SDL3/SDL.h>
 #include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <remix/remix_native_ext.h>
 #include <string>
 #include <vector>
 #define STB_IMAGE_IMPLEMENTATION
@@ -38,6 +39,9 @@ int main(int argc, char **argv) {
   startup.windowWidth = startup.windowHeight = 96;
 #endif
   ok(api.Startup(&startup));
+  // These fixtures measure the unexposed lighting/display contract.
+  ok(api.SetConfigVariable("rtx.native.pathtrace.autoExposure", "0"));
+  ok(api.SetConfigVariable("rtx.native.pathtrace.bloom", "0"));
   ok(api.SetConfigVariable("rtx.native.pathtrace.upscaler", "off"));
   remixapi_BackendCapabilitiesEXT caps{};
   caps.structSize = sizeof(caps);
@@ -121,15 +125,19 @@ int main(int argc, char **argv) {
     for (int i = 0; i < 3; ++i) instance.transform.matrix[i][i] = 1;
     ok(api.DrawInstance(&instance));
   };
-  auto frame = [&] {
-    ok(api.PumpEvents()); ok(api.SetupCamera(&camera));
+  auto frame = remix::test::preparedFrame([&] {
+    ok(api.PumpEvents());
+    ok(api.SetupCamera(&camera));
     ok(api.DrawLightInstance(sun));
-    if (showTorch) ok(api.DrawLightInstance(torch));
+    if (showTorch)
+      ok(api.DrawLightInstance(torch));
     draw(receiver);
-    if (showGlass) draw(glass);
-    if (showEmitter) draw(emitter);
+    if (showGlass)
+      draw(glass);
+    if (showEmitter)
+      draw(emitter);
     ok(api.Present(nullptr));
-  };
+  });
   auto stats = [&] {
     remixapi_DenoisingStatisticsEXT s{}; s.structSize = sizeof(s);
     ok(remixapi_GetDenoisingStatisticsEXT(&s)); return s;
@@ -138,7 +146,9 @@ int main(int argc, char **argv) {
   auto capture = [&](const std::string &name, unsigned view) {
     config("debugView", std::to_string(view).c_str());
     const auto file = (directory / (name + ".png")).string();
-    ok(api.RequestPresentedScreenshot(file.c_str())); frame(); frame();
+    ok(remix::test::requestScreenshot(api, file.c_str(), frame));
+    frame();
+    frame();
     int channels;
     auto *data = stbi_load(file.c_str(), &width, &height, &channels, 4);
     require(data, "Missing debug capture");

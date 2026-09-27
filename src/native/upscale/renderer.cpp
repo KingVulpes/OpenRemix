@@ -1,19 +1,22 @@
 #include "upscale/renderer.h"
+#include "runtime/pipelines.h"
+#include "postfx/renderer.h"
 #include "upscale/camera.h"
-#include "upscale/sdk_backend.h"
 #include "upscale/ngx.h"
+#include "upscale/sdk_backend.h"
 #include "upscale/shaders/embedded.h"
-#include <bit>
 #include <FidelityFX/host/backends/vk/ffx_vk.h>
 #include <FidelityFX/host/ffx_fsr3upscaler.h>
 #include <algorithm>
+#include <atomic>
+#include <bit>
 #include <cmath>
 #include <stdexcept>
 #include <vector>
 
 namespace remix::upscale {
 namespace {
-FfxGetDeviceCapabilitiesFunc sdkCapabilities{};
+std::atomic<FfxGetDeviceCapabilitiesFunc> sdkCapabilities{};
 void check(VkResult r) {
   if (r != VK_SUCCESS)
     throw r;
@@ -74,6 +77,7 @@ struct Renderer::Gpu {
   };
   std::vector<ScratchBlock> scratch;
   FfxFsr3UpscalerContext context{};
+  VkDeviceContext fsrDevice{};
   std::unique_ptr<NgxFeature> ngx;
   std::unique_ptr<Image> motion, exposure;
   bool created{}, initialized{};
@@ -84,7 +88,7 @@ struct Renderer::Gpu {
   VkDescriptorSet set{}, sets[gpuFrameCount]{};
   VkPipelineLayout layout{};
   VkPipeline prepare{};
-  VkDescriptorSetLayout compositeSetLayout{};
+  VkDescriptorSetLayout compositeSetLayout{}, postSetLayout{};
   VkDescriptorPool compositePool{};
   VkDescriptorSet compositeSet{};
   VkPipelineLayout compositeLayout{};
@@ -100,21 +104,22 @@ struct Renderer::Gpu {
     if (created)
       ffxFsr3UpscalerContextDestroy(&context);
     if (compositePipeline)
-      vkDestroyPipeline(device, compositePipeline, nullptr);
+      pipeline::destroyPipeline(device, compositePipeline, nullptr);
     if (compositeLayout)
-      vkDestroyPipelineLayout(device, compositeLayout, nullptr);
+      pipeline::destroyPipelineLayout(device, compositeLayout, nullptr);
     if (compositePool)
       vkDestroyDescriptorPool(device, compositePool, nullptr);
+    if (postSetLayout) pipeline::destroyDescriptorSetLayout(device, postSetLayout, nullptr);
     if (compositeSetLayout)
-      vkDestroyDescriptorSetLayout(device, compositeSetLayout, nullptr);
+      pipeline::destroyDescriptorSetLayout(device, compositeSetLayout, nullptr);
     if (prepare)
-      vkDestroyPipeline(device, prepare, nullptr);
+      pipeline::destroyPipeline(device, prepare, nullptr);
     if (layout)
-      vkDestroyPipelineLayout(device, layout, nullptr);
+      pipeline::destroyPipelineLayout(device, layout, nullptr);
     if (pool)
       vkDestroyDescriptorPool(device, pool, nullptr);
     if (setLayout)
-      vkDestroyDescriptorSetLayout(device, setLayout, nullptr);
+      pipeline::destroyDescriptorSetLayout(device, setLayout, nullptr);
     for (auto query : frameTimestamps)
       if (query)
         vkDestroyQueryPool(device, query, nullptr);
@@ -228,29 +233,34 @@ void Renderer::initialize(VkPhysicalDevice physical, VkDevice device,
       throw std::runtime_error("FSR sampled/storage image formats unavailable");
   }
   if (backend == Backend::Fsr31) {
-  VkDeviceContext vkContext{device, physical, sdkDeviceProc};
-  FfxFsr3UpscalerContextDescription desc{};
-  desc.flags = FFX_FSR3UPSCALER_ENABLE_HIGH_DYNAMIC_RANGE | FFX_FSR3UPSCALER_ENABLE_DEPTH_INVERTED;
-  desc.maxRenderSize = {render.width, render.height};
-  desc.maxUpscaleSize = {display.width, display.height};
-  g.scratch.resize((ffxGetScratchMemorySizeVK(physical, 1) + 31) / 32);
-  checkFfx(ffxGetInterfaceVK(&desc.backendInterface, ffxGetDeviceVK(&vkContext),
-                             g.scratch.data(), g.scratch.size() * 32, 1));
-  // The SDK queries physical FP16 support, but it may not be enabled on our
-  // logical device. Select the portable full-precision shader contract
-  // explicitly.
-  sdkCapabilities = desc.backendInterface.fpGetDeviceCapabilities;
-  desc.backendInterface.fpGetDeviceCapabilities =
-      [](FfxInterface *backend, FfxDeviceCapabilities *caps) {
-        auto result = sdkCapabilities(backend, caps);
-        caps->waveLaneCountMax = caps->waveLaneCountMin;
-        caps->fp16Supported = false;
-        return result;
-      };
-  ContextAllocations allocations;
-  checkFfx(ffxFsr3UpscalerContextCreate(&g.context, &desc));
-  g.created = true;
-  allocations.commit();
+    // The pinned SDK's ffxGetDeviceVK returns a process-global mutable context.
+    // Own the same adapter representation per renderer while the active context
+    // evaluates and its replacement initializes on the compiler worker.
+    g.fsrDevice = {device, physical, sdkDeviceProc};
+    FfxFsr3UpscalerContextDescription desc{};
+    desc.flags = FFX_FSR3UPSCALER_ENABLE_HIGH_DYNAMIC_RANGE |
+                 FFX_FSR3UPSCALER_ENABLE_DEPTH_INVERTED;
+    desc.maxRenderSize = {render.width, render.height};
+    desc.maxUpscaleSize = {display.width, display.height};
+    g.scratch.resize((ffxGetScratchMemorySizeVK(physical, 1) + 31) / 32);
+    checkFfx(ffxGetInterfaceVK(&desc.backendInterface,
+                               reinterpret_cast<FfxDevice>(&g.fsrDevice),
+                               g.scratch.data(), g.scratch.size() * 32, 1));
+    // The SDK queries physical FP16 support, but it may not be enabled on our
+    // logical device. Select the portable full-precision shader contract
+    // explicitly.
+    sdkCapabilities = desc.backendInterface.fpGetDeviceCapabilities;
+    desc.backendInterface.fpGetDeviceCapabilities =
+        [](FfxInterface *backend, FfxDeviceCapabilities *caps) {
+          auto result = sdkCapabilities.load()(backend, caps);
+          caps->waveLaneCountMax = caps->waveLaneCountMin;
+          caps->fp16Supported = false;
+          return result;
+        };
+    ContextAllocations allocations;
+    checkFfx(ffxFsr3UpscalerContextCreate(&g.context, &desc));
+    g.created = true;
+    allocations.commit();
   } else {
     g.ngx = std::make_unique<NgxFeature>();
     g.ngx->initialize(std::move(ngx), queueFamily, render, display, quality, backend == Backend::DlssRr);
@@ -275,7 +285,8 @@ void Renderer::initialize(VkPhysicalDevice physical, VkDevice device,
       .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
       .bindingCount = 9,
       .pBindings = bindings};
-  check(vkCreateDescriptorSetLayout(device, &si, nullptr, &g.setLayout));
+  check(
+      pipeline::createDescriptorSetLayout(device, &si, nullptr, &g.setLayout));
   VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 9 * gpuFrameCount};
   VkDescriptorPoolCreateInfo pi{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
                                 .maxSets = gpuFrameCount,
@@ -298,13 +309,13 @@ void Renderer::initialize(VkPhysicalDevice physical, VkDevice device,
       .pSetLayouts = &g.setLayout,
       .pushConstantRangeCount = 1,
       .pPushConstantRanges = &push};
-  check(vkCreatePipelineLayout(device, &li, nullptr, &g.layout));
+  check(pipeline::createPipelineLayout(device, &li, nullptr, &g.layout));
   VkShaderModuleCreateInfo mi{.sType =
                                   VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
                               .codeSize = sizeof(compShader),
                               .pCode = compShader};
   VkShaderModule module{};
-  check(vkCreateShaderModule(device, &mi, nullptr, &module));
+  check(pipeline::createShaderModule(device, &mi, nullptr, &module));
   VkComputePipelineCreateInfo ci{
       .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
       .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -312,9 +323,9 @@ void Renderer::initialize(VkPhysicalDevice physical, VkDevice device,
                 .module = module,
                 .pName = "main"},
       .layout = g.layout};
-  auto result = vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &ci,
-                                         nullptr, &g.prepare);
-  vkDestroyShaderModule(device, module, nullptr);
+  auto result = pipeline::createComputePipelines(device, VK_NULL_HANDLE, 1, &ci,
+                                                 nullptr, &g.prepare);
+  pipeline::destroyShaderModule(device, module, nullptr);
   check(result);
   uint32_t count = 0;
   vkGetPhysicalDeviceQueueFamilyProperties(physical, &count, nullptr);
@@ -347,6 +358,9 @@ void Renderer::selectFrame(uint32_t slot) {
   m_gpu->frameIndex = slot;
   m_gpu->set = m_gpu->sets[slot];
   m_gpu->timestamps = m_gpu->frameTimestamps[slot];
+}
+bool Renderer::finishInitialization(VkQueue queue) {
+  return !m_gpu->ngx || m_gpu->ngx->finishInitialization(queue);
 }
 Statistics Renderer::statistics() const { return m_gpu->stats; }
 void Renderer::record(VkCommandBuffer command, Input color, Input depth,
@@ -424,67 +438,94 @@ void Renderer::record(VkCommandBuffer command, Input color, Input depth,
   barrier(command);
   const bool resetHistory = reset || !g.initialized;
   try {
-  if (g.ngx) {
-    // NGX samples read-only inputs in SHADER_READ_ONLY_OPTIMAL, and leaves
-    // output in GENERAL. Restore our shared inputs before any later work.
-    std::vector<Input> inputs = {color, {g.depth->image, g.depth->view}, {g.motion->image, g.motion->view}, {g.exposure->image, g.exposure->view}};
-    if (g.stats.backend == Backend::DlssRr)
-      inputs.insert(inputs.end(), {guides.diffuse, guides.specular, guides.normalRoughness, guides.hitDistance});
-    auto transition = [&](bool begin) {
-      for (auto input : inputs) {
-        VkImageMemoryBarrier b{.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-          .srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
-          .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
-          .oldLayout = begin ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-          .newLayout = begin ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_GENERAL,
-          .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-          .image = input.image, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
-        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-          0, 0, nullptr, 0, nullptr, 1, &b);
+    // A failed context uses the already compiled spatial resolve until the
+    // runtime activates a prepared replacement. Never retry SDK evaluation.
+    if (g.stats.failed)
+      throw std::runtime_error(g.stats.failure);
+    if (g.ngx) {
+      // NGX samples read-only inputs in SHADER_READ_ONLY_OPTIMAL, and leaves
+      // output in GENERAL. Restore our shared inputs before any later work.
+      std::vector<Input> inputs = {color,
+                                   {g.depth->image, g.depth->view},
+                                   {g.motion->image, g.motion->view},
+                                   {g.exposure->image, g.exposure->view}};
+      if (g.stats.backend == Backend::DlssRr)
+        inputs.insert(inputs.end(),
+                      {guides.diffuse, guides.specular, guides.normalRoughness,
+                       guides.hitDistance});
+      auto transition = [&](bool begin) {
+        for (auto input : inputs) {
+          VkImageMemoryBarrier b{
+              .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+              .srcAccessMask =
+                  VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+              .dstAccessMask =
+                  VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+              .oldLayout = begin ? VK_IMAGE_LAYOUT_GENERAL
+                                 : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+              .newLayout = begin ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                                 : VK_IMAGE_LAYOUT_GENERAL,
+              .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+              .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+              .image = input.image,
+              .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+          vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                               VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0,
+                               nullptr, 0, nullptr, 1, &b);
+        }
+      };
+      transition(true);
+      try {
+        g.ngx->record(command, color, {g.depth->image, g.depth->view},
+                      {g.motion->image, g.motion->view},
+                      {g.output->image, g.output->view},
+                      {g.exposure->image, g.exposure->view}, guides, view,
+                      projection, jitter, milliseconds, resetHistory);
+      } catch (...) {
+        transition(false);
+        throw;
       }
-    };
-    transition(true);
-    try {
-      g.ngx->record(command, color, {g.depth->image, g.depth->view}, {g.motion->image, g.motion->view},
-          {g.output->image, g.output->view}, {g.exposure->image, g.exposure->view}, guides, view, projection, jitter, milliseconds, resetHistory);
-    } catch (...) { transition(false); throw; }
-    transition(false);
-  } else {
-  FfxFsr3UpscalerDispatchDescription desc{};
-  desc.commandList = ffxGetCommandListVK(command);
-  desc.color = resource(color.image, VK_FORMAT_R16G16B16A16_SFLOAT, g.render,
-                        L"Denoised HDR");
-  desc.depth = resource(*g.depth, L"Device depth");
-  desc.motionVectors = resource(motion.image, VK_FORMAT_R32G32B32A32_SFLOAT,
-                                g.render, L"Unjittered pixel motion");
-  desc.reactive = resource(*g.reactive, L"Reactive");
-  desc.transparencyAndComposition = resource(*g.composition, L"Composition");
-  desc.dilatedDepth = resource(*g.dilatedDepth, L"Dilated depth");
-  desc.dilatedMotionVectors = resource(*g.dilatedMotion, L"Dilated motion");
-  desc.reconstructedPrevNearestDepth =
-      resource(*g.previousDepth, L"Previous depth");
-  desc.output = resource(*g.output, L"Upscaled HDR");
-  // Rays sample pixel + jitter; FSR subtracts its projected-geometry jitter
-  // when locating that sample in the unjittered image.
-  desc.jitterOffset = {-jitter[0], -jitter[1]};
-  desc.motionVectorScale = {1, 1};
-  desc.renderSize = {g.render.width, g.render.height};
-  desc.upscaleSize = {g.display.width, g.display.height};
-  desc.enableSharpening = sharpness > 0;
-  desc.sharpness = sharpness;
-  desc.frameTimeDelta = milliseconds;
-  desc.preExposure = 1;
-  desc.reset = reset || !g.initialized;
-  const auto range = depthRange(projection);
-  // FSR names these endpoints after depth 0/1; inverted depth swaps them.
-  desc.cameraNear = range.farPlane;
-  desc.cameraFar = range.nearPlane;
-  desc.cameraFovAngleVertical = 2 * std::atan(1 / std::abs(projection[5]));
-  desc.viewSpaceToMetersFactor = 1;
-  checkFfx(ffxFsr3UpscalerContextDispatch(&g.context, &desc));
-  }
+      transition(false);
+    } else {
+      FfxFsr3UpscalerDispatchDescription desc{};
+      desc.commandList = ffxGetCommandListVK(command);
+      desc.color = resource(color.image, VK_FORMAT_R16G16B16A16_SFLOAT,
+                            g.render, L"Denoised HDR");
+      desc.depth = resource(*g.depth, L"Device depth");
+      desc.motionVectors = resource(motion.image, VK_FORMAT_R32G32B32A32_SFLOAT,
+                                    g.render, L"Unjittered pixel motion");
+      desc.reactive = resource(*g.reactive, L"Reactive");
+      desc.transparencyAndComposition =
+          resource(*g.composition, L"Composition");
+      desc.dilatedDepth = resource(*g.dilatedDepth, L"Dilated depth");
+      desc.dilatedMotionVectors = resource(*g.dilatedMotion, L"Dilated motion");
+      desc.reconstructedPrevNearestDepth =
+          resource(*g.previousDepth, L"Previous depth");
+      desc.output = resource(*g.output, L"Upscaled HDR");
+      // Rays sample pixel + jitter; FSR subtracts its projected-geometry jitter
+      // when locating that sample in the unjittered image.
+      desc.jitterOffset = {-jitter[0], -jitter[1]};
+      desc.motionVectorScale = {1, 1};
+      desc.renderSize = {g.render.width, g.render.height};
+      desc.upscaleSize = {g.display.width, g.display.height};
+      desc.enableSharpening = sharpness > 0;
+      desc.sharpness = sharpness;
+      desc.frameTimeDelta = milliseconds;
+      desc.preExposure = 1;
+      desc.reset = reset || !g.initialized;
+      const auto range = depthRange(projection);
+      // FSR names these endpoints after depth 0/1; inverted depth swaps them.
+      desc.cameraNear = range.farPlane;
+      desc.cameraFar = range.nearPlane;
+      desc.cameraFovAngleVertical = 2 * std::atan(1 / std::abs(projection[5]));
+      desc.viewSpaceToMetersFactor = 1;
+      checkFfx(ffxFsr3UpscalerContextDispatch(&g.context, &desc));
+    }
   } catch (const std::exception &e) {
-    g.stats.failed = true; ++g.stats.failures; g.stats.failure = e.what();
+    if (!g.stats.failed)
+      ++g.stats.failures;
+    g.stats.failed = true;
+    g.stats.failure = e.what();
     barrier(command);
     // Present this frame with a bilinear spatial resolve. Context replacement
     // happens at the next idle frame boundary, never during command recording.
@@ -516,8 +557,8 @@ void Renderer::configureComposite(VkRenderPass pass, VkImageView stableDepth) {
       .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
       .bindingCount = 2,
       .pBindings = bindings};
-  check(vkCreateDescriptorSetLayout(g.device, &si, nullptr,
-                                    &g.compositeSetLayout));
+  check(pipeline::createDescriptorSetLayout(g.device, &si, nullptr,
+                                            &g.compositeSetLayout));
   VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2};
   VkDescriptorPoolCreateInfo pool{
       .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
@@ -543,14 +584,17 @@ void Renderer::configureComposite(VkRenderPass pass, VkImageView stableDepth) {
                  .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                  .pImageInfo = &images[i]};
   vkUpdateDescriptorSets(g.device, 2, writes, 0, nullptr);
+  g.postSetLayout = postfx::compositeLayout(g.device);
+  const VkDescriptorSetLayout sets[] = {g.compositeSetLayout, g.postSetLayout};
   VkPushConstantRange push{VK_SHADER_STAGE_FRAGMENT_BIT, 0, 16};
   VkPipelineLayoutCreateInfo li{
       .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-      .setLayoutCount = 1,
-      .pSetLayouts = &g.compositeSetLayout,
+      .setLayoutCount = 2,
+      .pSetLayouts = sets,
       .pushConstantRangeCount = 1,
       .pPushConstantRanges = &push};
-  check(vkCreatePipelineLayout(g.device, &li, nullptr, &g.compositeLayout));
+  check(pipeline::createPipelineLayout(g.device, &li, nullptr,
+                                       &g.compositeLayout));
   VkShaderModule modules[2]{};
   try {
     const uint32_t *codes[] = {vertShader, fragShader};
@@ -561,7 +605,7 @@ void Renderer::configureComposite(VkRenderPass pass, VkImageView stableDepth) {
           .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
           .codeSize = sizes[i],
           .pCode = codes[i]};
-      check(vkCreateShaderModule(g.device, &mi, nullptr, &modules[i]));
+      check(pipeline::createShaderModule(g.device, &mi, nullptr, &modules[i]));
       stages[i] = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                    .stage = i ? VK_SHADER_STAGE_FRAGMENT_BIT
                               : VK_SHADER_STAGE_VERTEX_BIT,
@@ -616,18 +660,18 @@ void Renderer::configureComposite(VkRenderPass pass, VkImageView stableDepth) {
         .pDynamicState = &dynamic,
         .layout = g.compositeLayout,
         .renderPass = pass};
-    check(vkCreateGraphicsPipelines(g.device, VK_NULL_HANDLE, 1, &ci, nullptr,
-                                    &g.compositePipeline));
+    check(pipeline::createGraphicsPipelines(g.device, VK_NULL_HANDLE, 1, &ci,
+                                            nullptr, &g.compositePipeline));
   } catch (...) {
     for (auto module : modules)
       if (module)
-        vkDestroyShaderModule(g.device, module, nullptr);
+        pipeline::destroyShaderModule(g.device, module, nullptr);
     throw;
   }
   for (auto module : modules)
-    vkDestroyShaderModule(g.device, module, nullptr);
+    pipeline::destroyShaderModule(g.device, module, nullptr);
 }
-void Renderer::composite(VkCommandBuffer command, bool encodeOutput, bool prism, bool gamma22, bool hardwareSrgb) {
+void Renderer::composite(VkCommandBuffer command, bool encodeOutput, bool prism, bool gamma22, bool hardwareSrgb, VkDescriptorSet post) {
   const auto &g = *m_gpu;
   VkViewport viewport{0, 0, float(g.display.width), float(g.display.height),
                       0, 1};
@@ -638,10 +682,12 @@ void Renderer::composite(VkCommandBuffer command, bool encodeOutput, bool prism,
                     g.compositePipeline);
   vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS,
                           g.compositeLayout, 0, 1, &g.compositeSet, 0, nullptr);
+  vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, g.compositeLayout, 1, 1, &post, 0, nullptr);
   const uint32_t settings[] = {uint32_t(encodeOutput), uint32_t(prism), uint32_t(gamma22), uint32_t(hardwareSrgb)};
   vkCmdPushConstants(command, g.compositeLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
                      0, sizeof(settings), settings);
   vkCmdDraw(command, 3, 1, 0, 0);
 }
 
+Input Renderer::output() const { return {m_gpu->output->image, m_gpu->output->view}; }
 } // namespace remix::upscale

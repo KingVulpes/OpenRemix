@@ -1,3 +1,4 @@
+#include "runtime/prepared.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -43,6 +44,9 @@ int main(int argc, char **argv) {
   startup.windowWidth = startup.windowHeight = rrTest ? 256 : 96;
 #endif
   ok(api.Startup(&startup));
+  // These fixtures measure the unexposed lighting/display contract.
+  ok(api.SetConfigVariable("rtx.native.pathtrace.autoExposure", "0"));
+  ok(api.SetConfigVariable("rtx.native.pathtrace.bloom", "0"));
   ok(api.SetConfigVariable("rtx.native.pathtrace.upscaler", "off"));
   remixapi_BackendCapabilitiesEXT caps{};
   caps.structSize = sizeof(caps);
@@ -59,9 +63,6 @@ int main(int argc, char **argv) {
   for (const auto *key : {"taa", "sigma", "sharc", "prism", "gamma22", "adaptiveLocalSampling"})
     config(key, "0");
   if (rrTest) {
-    remixapi_ReconstructionDiagnosticsEXT d{}; d.structSize = sizeof(d);
-    ok(remixapi_GetReconstructionDiagnosticsEXT(&d));
-    if (!(d.capabilities & 4)) { ok(api.Shutdown()); return 77; }
     config("dlssQuality", "native-aa");
     config("primaryVisibility", std::getenv("REMIX_TEST_RAY_PRIMARY") ? "ray" : "raster");
   }
@@ -178,7 +179,7 @@ int main(int argc, char **argv) {
   unsigned renderSequence = 0;
   bool lit = true;
   bool forceFresh = false;
-  auto frame = [&] {
+  auto frame = remix::test::preparedFrame([&] {
     // Keep the measured lighting fixed while preventing stationary-frame reuse.
     if (forceFresh) {
       distant.direction.x = (++renderSequence & 1) ? .001f : 0;
@@ -188,16 +189,26 @@ int main(int argc, char **argv) {
     ok(api.PumpEvents());
     ok(api.SetupCamera(&camera));
     ok(api.DrawInstance(&instance));
-    if (materialDecal) ok(api.DrawInstance(&decalInstance));
+    if (materialDecal)
+      ok(api.DrawInstance(&decalInstance));
     if (lit)
       for (auto handle : lights)
         ok(api.DrawLightInstance(handle));
     ok(api.Present(nullptr));
-  };
+  });
+  if (rrTest) {
+    // SDK discovery is deferred until reconstruction is requested.
+    config("upscaler", "dlss");
+    frame();
+    remixapi_ReconstructionDiagnosticsEXT d{}; d.structSize = sizeof(d);
+    ok(remixapi_GetReconstructionDiagnosticsEXT(&d));
+    if (!(d.capabilities & 4)) { ok(api.Shutdown()); return 77; }
+    config("upscaler", "off");
+  }
   int width = 0, height = 0;
   auto capture = [&](const std::string &name) {
     const auto path = (directory / (name + ".png")).string();
-    ok(api.RequestPresentedScreenshot(path.c_str()));
+    ok(remix::test::requestScreenshot(api, path.c_str(), frame));
     frame();
     frame();
     int channels;

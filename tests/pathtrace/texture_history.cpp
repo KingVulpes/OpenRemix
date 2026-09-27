@@ -1,3 +1,4 @@
+#include "runtime/prepared.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -35,6 +36,9 @@ int main(int argc, char **argv) {
   startup.windowWidth = startup.windowHeight = 512;
 #endif
   ok(api.Startup(&startup));
+  // These fixtures measure the unexposed lighting/display contract.
+  ok(api.SetConfigVariable("rtx.native.pathtrace.autoExposure", "0"));
+  ok(api.SetConfigVariable("rtx.native.pathtrace.bloom", "0"));
   ok(api.SetConfigVariable("rtx.native.pathtrace.upscaler", "off"));
   remixapi_BackendCapabilitiesEXT capabilities{};
   capabilities.structSize = sizeof(capabilities);
@@ -160,7 +164,7 @@ int main(int argc, char **argv) {
   remixapi_LightHandle sun{};
   ok(api.CreateLight(&light, &sun));
   unsigned sequence = 0;
-  auto frame = [&] {
+  auto frame = remix::test::preparedFrame([&] {
     // Keep rendering past convergence caching, with negligible lighting change.
     distant.direction.x = rotation[2][0] + ((++sequence & 1) ? .0001f : 0);
     ok(api.UpdateLightDefinition(sun, &light));
@@ -169,11 +173,11 @@ int main(int argc, char **argv) {
     ok(api.DrawLightInstance(sun));
     ok(api.DrawInstance(&instance));
     ok(api.Present(nullptr));
-  };
+  });
   double lastMean = 0;
   auto capture = [&](const std::string &name) {
     auto path = (directory / (name + ".png")).string();
-    ok(api.RequestPresentedScreenshot(path.c_str()));
+    ok(remix::test::requestScreenshot(api, path.c_str(), frame));
     frame();
     frame();
     int w, h, n;

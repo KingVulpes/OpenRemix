@@ -1,13 +1,14 @@
-#include <remix/remix_native_ext.h>
-#include <remix/remix_reconstruction_ext.h>
-#include <chrono>
+#include "runtime/prepared.h"
 #include <SDL3/SDL.h>
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <remix/remix_native_ext.h>
+#include <remix/remix_reconstruction_ext.h>
 #include <vector>
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_PNG
@@ -35,6 +36,9 @@ int main(int argc, char **argv) {
   startup.windowHeight = std::getenv("REMIX_TEST_RR_REUSE") ? 256 : 67; // Partial compute workgroups.
 #endif
   ok(api.Startup(&startup));
+  // These fixtures measure the unexposed lighting/display contract.
+  ok(api.SetConfigVariable("rtx.native.pathtrace.autoExposure", "0"));
+  ok(api.SetConfigVariable("rtx.native.pathtrace.bloom", "0"));
   ok(api.SetConfigVariable("rtx.native.pathtrace.upscaler", "off"));
   remixapi_BackendCapabilitiesEXT caps{};
   caps.structSize = sizeof(caps);
@@ -136,13 +140,17 @@ int main(int argc, char **argv) {
   };
   bool reverse = false, forceFresh = true;
   unsigned tick = 0;
-  auto frame = [&] {
+  auto frame = remix::test::preparedFrame([&] {
     camera.view[3][0] = forceFresh && (++tick & 1) ? .000001f : 0;
-    ok(api.PumpEvents()); ok(api.SetupCamera(&camera)); ok(api.DrawLightInstance(sun));
-    if (!reverse) draw(receiver);
-    for (auto mesh : enclosure) draw(mesh);
+    ok(api.PumpEvents());
+    ok(api.SetupCamera(&camera));
+    ok(api.DrawLightInstance(sun));
+    if (!reverse)
+      draw(receiver);
+    for (auto mesh : enclosure)
+      draw(mesh);
     ok(api.Present(nullptr));
-  };
+  });
   auto temporal = [&] {
     remixapi_DenoisingStatisticsEXT stats{}; stats.structSize = sizeof(stats);
     ok(remixapi_GetDenoisingStatisticsEXT(&stats)); return stats;
@@ -150,7 +158,9 @@ int main(int argc, char **argv) {
   std::vector<std::array<float, 3>> region;
   auto readback = [&](const std::string &name) {
     const auto file = (directory / (name + ".png")).string();
-    ok(api.RequestPresentedScreenshot(file.c_str())); frame(); frame();
+    ok(remix::test::requestScreenshot(api, file.c_str(), frame));
+    frame();
+    frame();
     int width, height, channels;
     auto pixels = stbi_load(file.c_str(), &width, &height, &channels, 4);
     require(pixels, "Missing water screenshot");

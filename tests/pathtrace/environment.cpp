@@ -1,4 +1,4 @@
-#include <remix/remix_native_ext.h>
+#include "runtime/prepared.h"
 #include <SDL3/SDL.h>
 #include <algorithm>
 #include <array>
@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <remix/remix_native_ext.h>
 #include <vector>
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_PNG
@@ -32,6 +33,9 @@ int main(int argc, char **argv) {
   startup.windowWidth = startup.windowHeight = 64;
 #endif
   ok(api.Startup(&startup));
+  // These fixtures measure the unexposed lighting/display contract.
+  ok(api.SetConfigVariable("rtx.native.pathtrace.autoExposure", "0"));
+  ok(api.SetConfigVariable("rtx.native.pathtrace.bloom", "0"));
   ok(api.SetConfigVariable("rtx.native.pathtrace.upscaler", "off"));
   remixapi_BackendCapabilitiesEXT caps{};
   caps.structSize = sizeof(caps);
@@ -134,12 +138,15 @@ int main(int argc, char **argv) {
     for (int i = 0; i < 3; ++i) instance.transform.matrix[i][i] = 1;
     ok(api.DrawInstance(&instance));
   };
-  auto frame = [&] {
-    ok(api.PumpEvents()); ok(api.SetupCamera(&camera)); ok(api.DrawLightInstance(sun));
+  auto frame = remix::test::preparedFrame([&] {
+    ok(api.PumpEvents());
+    ok(api.SetupCamera(&camera));
+    ok(api.DrawLightInstance(sun));
     draw(receiver);
-    for (auto mesh : enclosure) draw(mesh);
+    for (auto mesh : enclosure)
+      draw(mesh);
     ok(api.Present(nullptr));
-  };
+  });
   auto temporal = [&] {
     remixapi_DenoisingStatisticsEXT stats{}; stats.structSize = sizeof(stats);
     ok(remixapi_GetDenoisingStatisticsEXT(&stats)); return stats;
@@ -150,7 +157,9 @@ int main(int argc, char **argv) {
   };
   auto readback = [&](const std::string &name) {
     const auto file = (directory / (name + ".png")).string();
-    ok(api.RequestPresentedScreenshot(file.c_str())); frame(); frame();
+    ok(remix::test::requestScreenshot(api, file.c_str(), frame));
+    frame();
+    frame();
     int width, height, channels;
     auto pixels = stbi_load(file.c_str(), &width, &height, &channels, 4);
     require(pixels, "Missing sky screenshot");

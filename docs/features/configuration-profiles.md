@@ -85,3 +85,22 @@ Editable diagnostics are included. Cache-reset actions, runtime counters, the
 text-input demonstration field, and panel layout are excluded. A file containing
 `rtx.native.pathtrace.sharcReset` emits a warning and never replays or saves that
 action. Editing a file on disk does not change a running session until it is loaded.
+
+Resource-changing edits are requested immediately and activate after background
+pipeline preparation succeeds. Saving always saves requested values. Further edits
+supersede pending requests; a failed replacement leaves the active configuration
+working and shows its failure in F12 Diagnostics. Ordinary lighting/display values
+that do not change resource contracts retain the current renderer.
+
+The preparation panel reports completed pipeline jobs and jobs discovered so far,
+without estimating time remaining. Diagnostics includes device-wide compilation
+counts/timing, in-memory reuse, optional driver cache feedback and cache-write
+failures. Loading and DLSS preparation keep presentation, input and F12 responsive.
+Preparation reuses the last rendered game image behind live controls, including
+across resize and VSync changes. Before the first game frame exists, the loading
+panel uses the normal background.
+Previously unseen raster fixed-function states also prepare before drawing a frame,
+so a frame never omits geometry to work around an unavailable pipeline.
+
+Path-traced automatic exposure and bloom now default on when a profile omits their keys.
+See [exposure and bloom](exposure-and-bloom.md) for defaults, ranges and preparation behavior.

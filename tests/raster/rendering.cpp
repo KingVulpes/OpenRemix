@@ -1,6 +1,6 @@
 #include "raster/renderer.h"
+#include "runtime/pipelines.h"
 #include "scene/fixtures.h"
-#include <remix/remix_native_ext.h>
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -9,6 +9,8 @@
 #include <cstring>
 #include <fstream>
 #include <limits>
+#include <remix/remix_native_ext.h>
+#include <thread>
 
 using namespace remix::test;
 namespace {
@@ -28,6 +30,7 @@ namespace {
 
   struct Target {
     RasterRenderer raster;
+    std::unique_ptr<remix::pipeline::Service> pipelines;
     VkInstance instanceHandle = VK_NULL_HANDLE;
     VkDebugUtilsMessengerEXT messenger = VK_NULL_HANDLE;
     VkPhysicalDevice physical;
@@ -116,6 +119,10 @@ namespace {
       };
       vk(vkCreateDevice(physical, &d, nullptr, &device));
       vkGetDeviceQueue(device, family, 0, &queue);
+      VkPhysicalDeviceProperties properties{};
+      vkGetPhysicalDeviceProperties(physical, &properties);
+      pipelines =
+          std::make_unique<remix::pipeline::Service>(device, properties, false);
       raster.initializeGpu(physical, device);
       const VkImageCreateInfo image = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                                        .imageType = VK_IMAGE_TYPE_2D,
@@ -183,7 +190,7 @@ namespace {
                                          .pSubpasses = &subpass,
                                          .dependencyCount = 2,
                                          .pDependencies = deps};
-      vk(vkCreateRenderPass(device, &rp, nullptr, &pass));
+      vk(remix::pipeline::createRenderPass(device, &rp, nullptr, &pass));
       raster.configureTarget(pass, {64, 64});
       const VkImageView views[] = {view, raster.depthView()};
       const VkFramebufferCreateInfo fb = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
@@ -219,7 +226,7 @@ namespace {
       vkDeviceWaitIdle(device);
       vkDestroyFramebuffer(device, framebuffer, nullptr);
       raster.shutdownGpu();
-      vkDestroyRenderPass(device, pass, nullptr);
+      remix::pipeline::destroyRenderPass(device, pass, nullptr);
       vkDestroyImageView(device, view, nullptr);
       vkDestroyImage(device, color, nullptr);
       vkFreeMemory(device, imageMemory, nullptr);
@@ -227,6 +234,7 @@ namespace {
       vkFreeMemory(device, readMemory, nullptr);
       vkDestroyFence(device, fence, nullptr);
       vkDestroyCommandPool(device, pool, nullptr);
+      pipelines.reset();
       vkDestroyDevice(device, nullptr);
       reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(vkGetInstanceProcAddr(
           instanceHandle, "vkDestroyDebugUtilsMessengerEXT"))(instanceHandle, messenger, nullptr);
@@ -250,6 +258,8 @@ namespace {
       vk(vkResetCommandBuffer(command, 0));
       const VkCommandBufferBeginInfo begin = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
       vk(vkBeginCommandBuffer(command, &begin));
+      while (!raster.preparePipelines(false))
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
       raster.prepare(command);
       VkClearValue clear[2] = {};
       clear[1].depthStencil.depth = 1;

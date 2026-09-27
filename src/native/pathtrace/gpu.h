@@ -179,7 +179,6 @@ namespace remix {
     VkDescriptorPool pool = VK_NULL_HANDLE;
     VkDescriptorSet set = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
-    VkPipelineCache pipelineCache = VK_NULL_HANDLE;
     VkPipeline transparencyCompute{}, temporalTransparencyCompute{};
     VkPipeline compute = VK_NULL_HANDLE, composite[2] = {};
     VkPipeline splitDirectCompute = VK_NULL_HANDLE;
@@ -287,6 +286,10 @@ namespace remix {
     std::string fsrFailure;
     void createTarget();
     std::unique_ptr<Image> world, transmission, sky;
+    std::unique_ptr<postfx::Renderer> postFallback;
+    postfx::Renderer *postProcessing = nullptr;
+    bool retainPostExposure = false;
+    VkDescriptorSetLayout postSetLayout{};
     struct PrimaryDraw {
       scene::Matrix model;
       uint32_t surfaceIndex = 0, count = 0;
@@ -475,6 +478,11 @@ namespace remix {
     bool previousFireflyFilter = false;
     std::chrono::steady_clock::time_point epoch = std::chrono::steady_clock::now();
 
+    bool preparing = false, preparedRasterPrimary = true;
+    bool preparedPerspective = false, preparedLocal = false;
+    void createRawPipelines();
+    void configureFrame(const TraceOptions &options, bool perspective,
+                        bool local);
     ~Gpu();
     std::shared_ptr<trace::detail::BufferCache> bufferCache = std::make_shared<trace::detail::BufferCache>();
     uint32_t memoryType(uint32_t bits, VkMemoryPropertyFlags flags);

@@ -1,3 +1,4 @@
+#include "runtime/prepared.h"
 #include <SDL3/SDL.h>
 #include <algorithm>
 #include <array>
@@ -65,6 +66,9 @@ int main(int argc, char **argv) {
   startup.windowHeight = benchmark ? 1080 : 80;
 #endif
   ok(api.Startup(&startup));
+  // These fixtures measure the unexposed lighting/display contract.
+  ok(api.SetConfigVariable("rtx.native.pathtrace.autoExposure", "0"));
+  ok(api.SetConfigVariable("rtx.native.pathtrace.bloom", "0"));
   if (benchmark) {
     remixapi_WindowMetrics metrics{};
     ok(remixapi_GetWindowMetrics(&metrics));
@@ -268,7 +272,7 @@ int main(int argc, char **argv) {
   const std::string motion = option("REMIX_TEST_FIREFLY_MOTION", "off");
   unsigned serial = 0;
   float blockerOffset = 0;
-  auto frame = [&] {
+  auto submit = [&] {
     ok(api.PumpEvents());
     if (!progressive)
       sunInfo.direction.x = (++serial & 1) ? .001f : 0;
@@ -315,6 +319,7 @@ int main(int argc, char **argv) {
     }
     ok(api.Present(nullptr));
   };
+  auto frame = remix::test::preparedFrame(submit);
   auto capture = [&](const std::string &name) {
     auto path = directory / (name + ".pfm");
     SDL_setenv_unsafe("REMIX_PATH_LINEAR_CAPTURE", path.string().c_str(), 1);
@@ -464,7 +469,9 @@ int main(int argc, char **argv) {
           ok(remixapi_GetDenoisingStatisticsEXT(&d));
           const auto resets = d.historyResets;
           config(key, value);
-          frame();
+          // Observe the reset immediately; optional pipeline preparation can
+          // present many subsequent progressive samples while frame() waits.
+          submit();
           ok(remixapi_GetTracingStatisticsEXT(&t));
           if (*accumulate == '1')
             require(t.accumulationCount <= 2, "Adaptive control did not reset accumulation");

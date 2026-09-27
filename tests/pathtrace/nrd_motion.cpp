@@ -1,9 +1,10 @@
-#include <remix/remix_native_ext.h>
+#include "runtime/prepared.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <remix/remix_native_ext.h>
 #include <string>
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_PNG
@@ -31,6 +32,9 @@ int main(int argc, char **argv) {
   startup.windowWidth = startup.windowHeight = 256;
 #endif
   ok(api.Startup(&startup));
+  // These fixtures measure the unexposed lighting/display contract.
+  ok(api.SetConfigVariable("rtx.native.pathtrace.autoExposure", "0"));
+  ok(api.SetConfigVariable("rtx.native.pathtrace.bloom", "0"));
   remixapi_DenoisingCapabilitiesEXT caps{};
   caps.structSize = sizeof(caps);
   ok(remixapi_GetDenoisingCapabilitiesEXT(&caps));
@@ -96,16 +100,20 @@ int main(int argc, char **argv) {
   camera.projection[2][3] = 1;
   camera.projection[3][2] = -.05f * camera.projection[2][2];
   float handedness = 1;
-  auto frame = [&](float position, float pitch) {
+  auto frame = remix::test::preparedFrame([&](float position, float pitch) {
     const float c = std::cos(pitch), s = std::sin(pitch);
     camera.view[0][0] = camera.view[3][3] = 1;
-    camera.view[1][1] = c; camera.view[2][2] = c * handedness;
-    camera.view[1][2] = -s * handedness; camera.view[2][1] = s;
+    camera.view[1][1] = c;
+    camera.view[2][2] = c * handedness;
+    camera.view[1][2] = -s * handedness;
+    camera.view[2][1] = s;
     camera.view[3][1] = -position * s;
     camera.view[3][2] = -position * c * handedness;
-    ok(api.PumpEvents()); ok(api.SetupCamera(&camera));
-    ok(api.DrawInstance(&instance)); ok(api.Present(nullptr));
-  };
+    ok(api.PumpEvents());
+    ok(api.SetupCamera(&camera));
+    ok(api.DrawInstance(&instance));
+    ok(api.Present(nullptr));
+  });
   unsigned failures = 0;
   for (bool rightHanded : {false, true}) for (const auto *primary : {"raster", "ray"}) {
     handedness = rightHanded ? -1.f : 1.f;

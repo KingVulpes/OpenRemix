@@ -1,5 +1,6 @@
 #include "pathtrace/gpu.h"
 #include "pathtrace/shaders/embedded.h"
+#include "runtime/pipelines.h"
 
 namespace remix {
   using namespace trace::detail;
@@ -7,17 +8,17 @@ namespace remix {
   void PathTracer::Gpu::destroyPrimary() {
     for (unsigned i = 0; i < 2; ++i) {
       if (primaryPipeline[i])
-        vkDestroyPipeline(device, primaryPipeline[i], nullptr);
+        pipeline::destroyPipeline(device, primaryPipeline[i], nullptr);
       if (primaryFramebuffer[i])
         vkDestroyFramebuffer(device, primaryFramebuffer[i], nullptr);
       if (primaryPass[i])
-        vkDestroyRenderPass(device, primaryPass[i], nullptr);
+        pipeline::destroyRenderPass(device, primaryPass[i], nullptr);
       primaryPipeline[i] = VK_NULL_HANDLE;
       primaryFramebuffer[i] = VK_NULL_HANDLE;
       primaryPass[i] = VK_NULL_HANDLE;
     }
     if (primaryLayout)
-      vkDestroyPipelineLayout(device, primaryLayout, nullptr);
+      pipeline::destroyPipelineLayout(device, primaryLayout, nullptr);
     primaryLayout = VK_NULL_HANDLE;
     for (auto &target : primary)
       target.reset();
@@ -40,9 +41,11 @@ namespace remix {
                                   .pSetLayouts = &setLayout,
                                   .pushConstantRangeCount = 1,
                                   .pPushConstantRanges = &push};
-    check(vkCreatePipelineLayout(device, &li, nullptr, &primaryLayout));
+    check(pipeline::createPipelineLayout(device, &li, nullptr, &primaryLayout));
 
     for (unsigned pass = 0; pass < 2; ++pass) {
+      if (!preparedRasterPrimary && (!pass || !upscaler))
+        continue;
       const VkExtent2D size = pass ? displayExtent : extent;
       const unsigned colors = pass ? 1 : 6;
       VkAttachmentDescription attachments[7] = {};
@@ -102,7 +105,8 @@ namespace remix {
                                 .pSubpasses = &subpass,
                                 .dependencyCount = 2,
                                 .pDependencies = dependencies};
-      check(vkCreateRenderPass(device, &rp, nullptr, &primaryPass[pass]));
+      check(
+          pipeline::createRenderPass(device, &rp, nullptr, &primaryPass[pass]));
       VkFramebufferCreateInfo fb{.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
                                  .renderPass = primaryPass[pass],
                                  .attachmentCount = colors + 1,
@@ -122,7 +126,8 @@ namespace remix {
         for (unsigned i = 0; i < 2; ++i) {
           VkShaderModuleCreateInfo info{
               .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = sizes[i], .pCode = code[i]};
-          check(vkCreateShaderModule(device, &info, nullptr, &modules[i]));
+          check(pipeline::createShaderModule(device, &info, nullptr,
+                                             &modules[i]));
           stages[i] = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                        .stage = i ? VK_SHADER_STAGE_FRAGMENT_BIT : VK_SHADER_STAGE_VERTEX_BIT,
                        .module = modules[i],
@@ -178,16 +183,17 @@ namespace remix {
                                               .pDynamicState = &dynamic,
                                               .layout = primaryLayout,
                                               .renderPass = primaryPass[pass]};
-        check(
-            vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipeline, nullptr, &primaryPipeline[pass]));
+        check(pipeline::createGraphicsPipelines(device, VK_NULL_HANDLE, 1,
+                                                &pipeline, nullptr,
+                                                &primaryPipeline[pass]));
       } catch (...) {
         for (auto module : modules)
           if (module)
-            vkDestroyShaderModule(device, module, nullptr);
+            pipeline::destroyShaderModule(device, module, nullptr);
         throw;
       }
       for (auto module : modules)
-        vkDestroyShaderModule(device, module, nullptr);
+        pipeline::destroyShaderModule(device, module, nullptr);
     }
   }
 

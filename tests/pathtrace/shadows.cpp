@@ -1,13 +1,14 @@
-#include <remix/remix_native_ext.h>
+#include "runtime/prepared.h"
 #include <SDL3/SDL.h>
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
-#include <cstring>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
+#include <remix/remix_native_ext.h>
 #include <vector>
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_PNG
@@ -37,6 +38,9 @@ int main(int argc, char **argv) {
   }
 #endif
   ok(api.Startup(&startup));
+  // These fixtures measure the unexposed lighting/display contract.
+  ok(api.SetConfigVariable("rtx.native.pathtrace.autoExposure", "0"));
+  ok(api.SetConfigVariable("rtx.native.pathtrace.bloom", "0"));
   ok(api.SetConfigVariable("rtx.native.pathtrace.upscaler", "off"));
   remixapi_BackendCapabilitiesEXT caps{};
   caps.structSize = sizeof(caps);
@@ -143,15 +147,20 @@ int main(int argc, char **argv) {
   };
   bool continuous = false;
   unsigned refresh = 0;
-  auto frame = [&] {
+  auto frame = remix::test::preparedFrame([&] {
     // This scene has no local emitters. Toggling their unused proposal setting
     // keeps scene submissions fresh without changing sun samples or history.
     // Otherwise the renderer legitimately reuses its converged static image.
-    if (continuous) configure("emissiveSolidAngleSampling", (++refresh & 1) ? "1" : "0");
-    ok(api.PumpEvents()); ok(api.SetupCamera(&camera)); ok(api.DrawLightInstance(sun));
-    draw(receiver); if (occluder) draw(occluder);
+    if (continuous)
+      configure("emissiveSolidAngleSampling", (++refresh & 1) ? "1" : "0");
+    ok(api.PumpEvents());
+    ok(api.SetupCamera(&camera));
+    ok(api.DrawLightInstance(sun));
+    draw(receiver);
+    if (occluder)
+      draw(occluder);
     ok(api.Present(nullptr));
-  };
+  });
   auto shadows = [&] {
     remixapi_ShadowStatisticsEXT stats{}; stats.structSize = sizeof(stats);
     ok(remixapi_GetShadowStatisticsEXT(&stats)); return stats;
@@ -163,7 +172,9 @@ int main(int argc, char **argv) {
   auto capture = [&](const std::string &name, unsigned count = 40) {
     for (unsigned i = 0; i < count; ++i) frame();
     const auto file = (directory / (name + ".png")).string();
-    ok(api.RequestPresentedScreenshot(file.c_str())); frame(); frame();
+    ok(remix::test::requestScreenshot(api, file.c_str(), frame));
+    frame();
+    frame();
     int width, height, channels;
     auto pixels = stbi_load(file.c_str(), &width, &height, &channels, 4);
     require(pixels && width == 256 && height == 128, "Missing shadow screenshot");

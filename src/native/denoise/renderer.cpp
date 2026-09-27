@@ -1,5 +1,6 @@
 #include "denoise/gpu.h"
 #include "denoise/shaders/embedded.h"
+#include "runtime/pipelines.h"
 #include <algorithm>
 #include <cstring>
 
@@ -154,7 +155,7 @@ namespace remix::denoise {
     VkShaderModuleCreateInfo ci{
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = bytes, .pCode = code};
     VkShaderModule module{};
-    check(vkCreateShaderModule(device, &ci, nullptr, &module));
+    check(pipeline::createShaderModule(device, &ci, nullptr, &module));
     VkComputePipelineCreateInfo pi{.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
                                    .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                                              .stage = VK_SHADER_STAGE_COMPUTE_BIT,
@@ -162,8 +163,9 @@ namespace remix::denoise {
                                              .pName = "main"},
                                    .layout = pl};
     VkPipeline result{};
-    auto status = vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pi, nullptr, &result);
-    vkDestroyShaderModule(device, module, nullptr);
+    auto status = pipeline::createComputePipelines(device, VK_NULL_HANDLE, 1,
+                                                   &pi, nullptr, &result);
+    pipeline::destroyShaderModule(device, module, nullptr);
     check(status);
     return result;
   }
@@ -171,11 +173,11 @@ namespace remix::denoise {
   NrdPass::~NrdPass() {
     for (auto &p : pipelines) {
       if (p.pipeline)
-        vkDestroyPipeline(device, p.pipeline, nullptr);
+        pipeline::destroyPipeline(device, p.pipeline, nullptr);
       if (p.layout)
-        vkDestroyPipelineLayout(device, p.layout, nullptr);
+        pipeline::destroyPipelineLayout(device, p.layout, nullptr);
       if (p.resources)
-        vkDestroyDescriptorSetLayout(device, p.resources, nullptr);
+        pipeline::destroyDescriptorSetLayout(device, p.resources, nullptr);
     }
     for (auto &frame : frames)
       if (frame.pool)
@@ -183,10 +185,10 @@ namespace remix::denoise {
     if (nrdPool)
       vkDestroyDescriptorPool(device, nrdPool, nullptr);
     if (commonLayout)
-      vkDestroyDescriptorSetLayout(device, commonLayout, nullptr);
+      pipeline::destroyDescriptorSetLayout(device, commonLayout, nullptr);
     for (auto sampler : samplers)
       if (sampler)
-        vkDestroySampler(device, sampler, nullptr);
+        pipeline::destroySampler(device, sampler, nullptr);
     if (instance)
       nrd::DestroyInstance(*instance);
   }
@@ -198,21 +200,24 @@ namespace remix::denoise {
     if (timestamps)
       vkDestroyQueryPool(device, timestamps, nullptr);
     if (post)
-      vkDestroyPipeline(device, post, nullptr);
+      pipeline::destroyPipeline(device, post, nullptr);
     if (layout)
-      vkDestroyPipelineLayout(device, layout, nullptr);
+      pipeline::destroyPipelineLayout(device, layout, nullptr);
     if (pool)
       vkDestroyDescriptorPool(device, pool, nullptr);
     if (inputLayout)
-      vkDestroyDescriptorSetLayout(device, inputLayout, nullptr);
+      pipeline::destroyDescriptorSetLayout(device, inputLayout, nullptr);
     if (emptyLayout)
-      vkDestroyDescriptorSetLayout(device, emptyLayout, nullptr);
+      pipeline::destroyDescriptorSetLayout(device, emptyLayout, nullptr);
   }
   Renderer::Renderer() = default;
   Renderer::~Renderer() = default;
-  void Renderer::initialize(VkPhysicalDevice physical, VkDevice device, VkExtent2D extent, bool reblur,
-                            uint32_t queueFamily, bool sigma, bool local, bool localDenoise, bool split,
-                            bool rayReconstruction) {
+  void Renderer::initialize(VkPhysicalDevice physical, VkDevice device,
+                            VkExtent2D extent, bool reblur,
+                            uint32_t queueFamily, bool sigma, bool local,
+                            bool localDenoise, bool split,
+                            bool rayReconstruction, bool validation,
+                            bool localReconstruction) {
     m_gpu = std::make_unique<Gpu>();
     auto &g = *m_gpu;
     g.physical = physical;
@@ -221,6 +226,8 @@ namespace remix::denoise {
     g.sigma = sigma;
     g.local = local;
     g.split = split && local;
+    g.validation = validation;
+    g.localReconstruction = localReconstruction;
     vkGetPhysicalDeviceMemoryProperties(physical, &g.memory);
     vkGetPhysicalDeviceProperties(physical, &g.properties);
     if (extent.width > 65535 || extent.height > 65535)
@@ -266,10 +273,12 @@ namespace remix::denoise {
     for (uint32_t i = 33; i < 41; ++i)
       bindings.push_back({i, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr});
     VkDescriptorSetLayoutCreateInfo ci{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    check(vkCreateDescriptorSetLayout(device, &ci, nullptr, &g.emptyLayout));
+    check(pipeline::createDescriptorSetLayout(device, &ci, nullptr,
+                                              &g.emptyLayout));
     ci.bindingCount = uint32_t(bindings.size());
     ci.pBindings = bindings.data();
-    check(vkCreateDescriptorSetLayout(device, &ci, nullptr, &g.inputLayout));
+    check(pipeline::createDescriptorSetLayout(device, &ci, nullptr,
+                                              &g.inputLayout));
     VkDescriptorPoolSize sizes[] = {
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
          BaseImageCount + 11 + (sigma ? 3u : 0u) + (local ? 2u : 0u) + (g.split ? 2u : 0u)},
@@ -295,7 +304,7 @@ namespace remix::denoise {
                                   .pSetLayouts = layouts,
                                   .pushConstantRangeCount = 1,
                                   .pPushConstantRanges = &push};
-    check(vkCreatePipelineLayout(device, &li, nullptr, &g.layout));
+    check(pipeline::createPipelineLayout(device, &li, nullptr, &g.layout));
     g.post = g.split ? (sigma ? g.pipeline(g.layout, splitLocalSigmaShader, sizeof(splitLocalSigmaShader))
                               : g.pipeline(g.layout, splitLocalShader, sizeof(splitLocalShader)))
              : local ? (sigma ? g.pipeline(g.layout, localSigmaShader, sizeof(localSigmaShader))

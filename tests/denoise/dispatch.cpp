@@ -1,5 +1,6 @@
-#include <NRD.h>
+#include "denoise/pipeline_selection.h"
 #include "denoise/shaders/nrd_embedded.h"
+#include <NRD.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -92,6 +93,74 @@ int main() {
       }
     }
     nrd::DestroyInstance(*instance);
+  }
+  for (bool localReconstruction : {false, true}) {
+    for (bool validation : {false, true}) {
+      for (auto kind : {nrd::Denoiser::REBLUR_DIFFUSE_SH,
+                        nrd::Denoiser::SIGMA_SHADOW_TRANSLUCENCY,
+                        nrd::Denoiser::REBLUR_DIFFUSE,
+                        nrd::Denoiser::REBLUR_DIFFUSE_SPECULAR}) {
+        const bool local = kind == nrd::Denoiser::REBLUR_DIFFUSE;
+        const bool pbr = kind == nrd::Denoiser::REBLUR_DIFFUSE_SPECULAR;
+        const bool sigma = kind == nrd::Denoiser::SIGMA_SHADOW_TRANSLUCENCY;
+        nrd::DenoiserDesc denoiser{0, kind};
+        nrd::InstanceCreationDesc create{};
+        create.denoisers = &denoiser;
+        create.denoisersNum = 1;
+        nrd::Instance *instance{};
+        ok(nrd::CreateInstance(create, instance));
+        const auto &desc = *nrd::GetInstanceDesc(*instance);
+        for (unsigned frame = 0; frame < 8; ++frame) {
+          nrd::CommonSettings common{};
+          for (unsigned i = 0; i < 16; i += 5) {
+            common.viewToClipMatrix[i] = common.viewToClipMatrixPrev[i] = 1;
+            common.worldToViewMatrix[i] = common.worldToViewMatrixPrev[i] = 1;
+          }
+          for (unsigned i = 0; i < 2; ++i)
+            common.resourceSize[i] = common.resourceSizePrev[i] =
+                common.rectSize[i] = common.rectSizePrev[i] = 128;
+          common.frameIndex = frame;
+          common.accumulationMode =
+              frame ? nrd::AccumulationMode::CONTINUE
+                    : nrd::AccumulationMode::CLEAR_AND_RESTART;
+          common.enableValidation = validation && !sigma && !local;
+          common.isHistoryConfidenceAvailable = !sigma && !local;
+          ok(nrd::SetCommonSettings(*instance, common));
+          if (sigma) {
+            nrd::SigmaSettings settings{};
+            settings.lightDirection[1] = 1;
+            settings.maxStabilizedFrameNum =
+                frame % 2 ? 1 : nrd::SIGMA_MAX_HISTORY_FRAME_NUM;
+            ok(nrd::SetDenoiserSettings(*instance, 0, &settings));
+          } else {
+            nrd::ReblurSettings settings{};
+            settings.maxStabilizedFrameNum =
+                frame % 2 ? 1 : nrd::REBLUR_MAX_HISTORY_FRAME_NUM;
+            settings.diffusePrepassBlurRadius =
+                local ? (localReconstruction ? 4.f : 0.f)
+                      : (frame % 2 ? 0.f : 4.f);
+            settings.hitDistanceReconstructionMode =
+                pbr || (local && localReconstruction)
+                    ? nrd::HitDistanceReconstructionMode::AREA_3X3
+                    : nrd::HitDistanceReconstructionMode::OFF;
+            ok(nrd::SetDenoiserSettings(*instance, 0, &settings));
+          }
+          const nrd::Identifier id = 0;
+          const nrd::DispatchDesc *dispatches{};
+          uint32_t count{};
+          ok(nrd::GetComputeDispatches(*instance, &id, 1, dispatches, count));
+          for (uint32_t i = 0; i < count; ++i) {
+            const auto *shader =
+                desc.pipelines[dispatches[i].pipelineIndex].shaderIdentifier;
+            require(remix::denoise::pipelineRequired(shader, sigma, local, pbr,
+                                                     validation,
+                                                     localReconstruction),
+                    shader);
+          }
+        }
+        nrd::DestroyInstance(*instance);
+      }
+    }
   }
   require(reached.size() == sizeof(remix::denoise::shaders) / sizeof(remix::denoise::shaders[0]),
           "A compiled permutation was not exercised");

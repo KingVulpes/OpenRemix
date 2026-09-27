@@ -24,6 +24,7 @@
 
 #include "pathtrace/renderer.h"
 #include "platform/gpu_frames.h"
+#include "platform/gpu_timers.h"
 #include "platform/render_thread.h"
 #include "platform/window.h"
 #include "raster/renderer.h"
@@ -82,6 +83,12 @@ public:
     if (const auto *busy = busyState())
       return busy->breakdown;
     return m_frameBreakdown;
+  }
+  // GPU pass timers ("rtx.native.gpuPassTimers"): the newest completed frame.
+  const gpu::FrameTimings &gpuPassTimings() const {
+    if (const auto *busy = busyState())
+      return busy->gpuTimings;
+    return m_gpuTimers.latest();
   }
   // Diagnostic digest of the last traced frame's GPU inputs (REMIX_FRAME_DIGEST).
   uint64_t frameDigest() const {
@@ -196,6 +203,7 @@ private:
     remixapi_LocalLightGuidingStatisticsEXT guiding{};
     remixapi_DenoisingStatisticsEXT denoising{};
     RasterRenderer::MemoryStatistics memory;
+    gpu::FrameTimings gpuTimings;
   };
   void publishState();
   // Non-null while the render thread works on a frame. Only Present hands a
@@ -227,6 +235,7 @@ private:
   void drawLightingTab(config::Settings &settings);
   void drawPostProcessingTab(config::Settings &settings);
   void drawDiagnosticsTab(config::Settings &settings);
+  void drawGpuPassTimings(bool enabled);
   void applySettings();
   void updateMemoryPressure();
   void prepareSettings();
@@ -380,6 +389,11 @@ private:
     std::shared_ptr<FrameSnapshot> snapshot;
   } m_frames[gpuFrameCount];
   uint32_t m_frameIndex = 0, m_frameCount = gpuFrameCount;
+  // GPU pass timers: render-owned recorder; the setting is copied at Present
+  // setup (applySettings) for the render thread.
+  gpu::GpuTimers m_gpuTimers;
+  bool m_gpuTimersEnabled = false;
+  uint64_t m_recordedFrames = 0;
   // Presentation may still consume a semaphore after the submission fence
   // signals.
   std::vector<VkSemaphore> m_renderFinished;

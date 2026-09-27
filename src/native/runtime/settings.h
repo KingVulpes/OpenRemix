@@ -36,6 +36,10 @@ namespace remix::config {
     // default; toggling drains the render thread and applies at the next
     // Present.
     bool asyncPresent = false;
+    // Diagnostic: timestamp every GPU pass of a frame and show the costs in
+    // Diagnostics (and GetGpuPassTimingsEXT). Off by default; off records no
+    // additional queries.
+    bool gpuPassTimers = false;
     bool operator==(const Settings &) const = default;
   };
   using UnknownSettings = std::map<std::string, std::string>;

@@ -1,5 +1,6 @@
 #pragma once
 #include "denoise/renderer.h"
+#include "platform/gpu_timers.h"
 #include <array>
 #include <string>
 #include <vector>

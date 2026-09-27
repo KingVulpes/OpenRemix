@@ -316,7 +316,12 @@ namespace remix {
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &set, 0, nullptr);
     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, selectLightingPipeline(sharc.update));
     const uint32_t tile = options.sharcDownscale * 8;
-    vkCmdDispatch(command, (extent.width + tile - 1) / tile, (extent.height + tile - 1) / tile, 1);
+    {
+      const uint32_t scale = std::max(options.sharcDownscale, 1u);
+      gpu::GpuScope scope(command, "SHARC update (trace)", (extent.width + scale - 1) / scale,
+                          (extent.height + scale - 1) / scale);
+      vkCmdDispatch(command, (extent.width + tile - 1) / tile, (extent.height + tile - 1) / tile, 1);
+    }
     if (sharc.timestamps)
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, sharc.timestamps, 1);
     barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
@@ -324,7 +329,10 @@ namespace remix {
     if (sharc.timestamps)
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, sharc.timestamps, 2);
     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, sharc.resolve);
-    vkCmdDispatch(command, (sharc.stats.capacity + 127) / 128, 1, 1);
+    {
+      gpu::GpuScope scope(command, "SHARC resolve (entries)", uint32_t(sharc.stats.capacity), 1);
+      vkCmdDispatch(command, (sharc.stats.capacity + 127) / 128, 1, 1);
+    }
     if (sharc.timestamps)
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, sharc.timestamps, 3);
     barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,

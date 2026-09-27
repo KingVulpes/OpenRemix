@@ -118,6 +118,48 @@ remixapi_GetFrameBreakdownEXT(remixapi_FrameBreakdownEXT *out) {
   return REMIXAPI_ERROR_CODE_SUCCESS;
 }
 
+static_assert(sizeof(remixapi_GpuPassTimingEXT) == 88 && sizeof(remixapi_GpuPassTimingsEXT) == 80 + 88 * 128);
+static_assert(REMIXAPI_GPU_PASS_TIMING_CAPACITY_EXT >= remix::gpu::GpuTimers::maxPasses);
+
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL
+remixapi_GetGpuPassTimingsEXT(remixapi_GpuPassTimingsEXT *out) {
+  if (!out || out->structSize != sizeof(*out))
+    return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+  std::lock_guard lock(g_apiMutex);
+  if (!g_runtime.isInitialized())
+    return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+  const auto &t = g_runtime.gpuPassTimings();
+  *out = {.structSize = sizeof(*out)};
+  out->available = t.available;
+  out->truncated = t.truncated;
+  out->queueFamily = t.queueFamily;
+  out->timestampValidBits = t.timestampValidBits;
+  out->frame = t.frame;
+  out->frameMilliseconds = t.frameMilliseconds;
+  out->passMilliseconds = t.passMilliseconds;
+  out->untimedMilliseconds = t.untimedMilliseconds;
+  out->timestampPeriod = t.timestampPeriod;
+  out->renderWidth = t.renderWidth;
+  out->renderHeight = t.renderHeight;
+  out->outputWidth = t.outputWidth;
+  out->outputHeight = t.outputHeight;
+  const size_t count = std::min<size_t>(t.passes.size(), REMIXAPI_GPU_PASS_TIMING_CAPACITY_EXT);
+  out->passCount = uint32_t(count);
+  out->truncated += uint32_t(t.passes.size() - count);
+  for (size_t i = 0; i < count; ++i) {
+    const auto &in = t.passes[i];
+    auto &pass = out->passes[i];
+    std::memcpy(pass.name, in.name, sizeof(pass.name));
+    pass.width = in.width;
+    pass.height = in.height;
+    pass.depth = in.depth;
+    pass.parent = in.parent;
+    pass.milliseconds = in.milliseconds;
+    pass.selfMilliseconds = in.selfMilliseconds;
+  }
+  return REMIXAPI_ERROR_CODE_SUCCESS;
+}
+
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL
 remixapi_GetTracingStatisticsEXT(remixapi_TracingStatisticsEXT *out) {
   if (!out || out->structSize != sizeof(*out))

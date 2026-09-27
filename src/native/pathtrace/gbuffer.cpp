@@ -226,6 +226,9 @@ namespace remix {
     for (unsigned pass = rasterPrimary ? 0 : 1; pass < 2; ++pass) {
       const VkExtent2D size = pass ? displayExtent : extent;
       const unsigned colors = pass ? 1 : 6;
+      // Pass 1 rasterizes the opaque draws again at output resolution for the
+      // compositor's stable depth.
+      gpu::GpuScope scope(command, pass ? "Stable depth (raster, output res)" : "Primary G-buffer (raster)", size);
       VkClearValue clear[7] = {};
       if (pass)
         clear[0].color.float32[0] = 1;

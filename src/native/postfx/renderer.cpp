@@ -1,6 +1,7 @@
 #include "postfx/renderer.h"
 #include "postfx/meter.h"
 #include "postfx/shaders/embedded.h"
+#include "platform/gpu_timers.h"
 #include "runtime/pipelines.h"
 #include <array>
 #include <chrono>
@@ -564,8 +565,14 @@ void Renderer::record(VkCommandBuffer command, upscale::Input hdr,
            options.autoExposureMaxEv,
            0,
            uint32_t(reset)};
-    g.dispatch(command, 0, f.meter, p);
-    g.dispatch(command, 1, f.meter, p);
+    {
+      gpu::GpuScope scope(command, "Auto exposure meter", g.display);
+      g.dispatch(command, 0, f.meter, p);
+    }
+    {
+      gpu::GpuScope scope(command, "Auto exposure resolve", 1, 1);
+      g.dispatch(command, 1, f.meter, p);
+    }
     ++g.stats.meterFrames;
     if (g.settlingFrames) {
       --g.settlingFrames;
@@ -573,12 +580,16 @@ void Renderer::record(VkCommandBuffer command, upscale::Input hdr,
     }
   }
   if (bloom && (!g.bloomValid || g.previousRadius != options.bloomRadius)) {
+    // Sizes: the largest level of each chain.
+    gpu::GpuScope downTime(command, "Bloom downsample chain", g.down[0]->size);
     for (size_t i = 0; i < g.down.size(); ++i) {
       auto &im = *g.down[i];
       g.descriptors(f.down[i], i ? g.down[i - 1]->view : hdr.view,
                     g.dummy->view, im.view, g.border);
       g.dispatch(command, 2, f.down[i], {im.size.width, im.size.height});
     }
+    downTime.close();
+    gpu::GpuScope upTime(command, "Bloom upsample chain", g.up.empty() ? VkExtent2D{} : g.up[0]->size);
     for (int i = int(g.up.size()) - 1; i >= 0; --i) {
       auto &im = *g.up[i];
       g.descriptors(f.up[i],

@@ -133,6 +133,8 @@ namespace remix {
     m_requestedBackend = settings.backend;
     m_raster.setKeepCompressedTextures(settings.compressedTextures);
     m_raster.setRefreshGeometry(settings.refreshGeometry);
+    // Read by the frame's recording (the render thread with asynchronous presentation).
+    m_gpuTimersEnabled = settings.gpuPassTimers;
     // Startup needs the requested presenter settings before there is a target.
     // Tracing settings activate in prepareSettings only after preflight
     // succeeds.
@@ -501,6 +503,7 @@ namespace remix {
     // Taken by the render thread after its frame (a walk of every cached
     // texture and mesh), while GetVramStats answers.
     s.memory = m_profiles.current().vramStatistics ? m_renderedMemory : RasterRenderer::MemoryStatistics{};
+    s.gpuTimings = m_gpuTimers.latest();
   }
 
   void RemixNativeRuntime::updateMemoryPressure() {

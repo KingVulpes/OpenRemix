@@ -17,7 +17,7 @@ for manifest, base in [(root / 'tests/abi/headers.sha256', root),
         checksum, filename = line.split('  ', 1)
         assert hashlib.sha256((base / filename).read_bytes()).hexdigest() == checksum, filename
 required_exports = (root / 'tests/abi/exports.txt').read_text().splitlines()
-required_exports += ['remixapi_GetReconstructionDiagnosticsEXT', 'remixapi_GetBackendCapabilitiesEXT', 'remixapi_GetTracingStatisticsEXT', 'remixapi_GetFramePerformanceEXT', 'remixapi_GetFrameBreakdownEXT',
+required_exports += ['remixapi_GetReconstructionDiagnosticsEXT', 'remixapi_GetBackendCapabilitiesEXT', 'remixapi_GetTracingStatisticsEXT', 'remixapi_GetFramePerformanceEXT', 'remixapi_GetFrameBreakdownEXT', 'remixapi_GetGpuPassTimingsEXT',
              'remixapi_GetLocalLightGuidingStatisticsEXT', 'remixapi_GetLocalLightStatisticsEXT',
              'remixapi_GetShadowStatisticsEXT', 'remixapi_GetSharcStatisticsEXT',
              'remixapi_GetDenoisingCapabilitiesEXT', 'remixapi_GetDenoisingStatisticsEXT']

@@ -326,6 +326,7 @@ namespace remix {
     vkGetPhysicalDeviceProperties(m_physicalDevice, &m_properties);
     m_queueFamily = selection.family;
     vkGetDeviceQueue(m_device, m_queueFamily, 0, &m_queue);
+    m_gpuTimers.initialize(m_physicalDevice, m_device, m_queueFamily);
     m_pipelines = std::make_unique<pipeline::Service>(m_device, m_properties,
                                                       pipelineFeedback);
     return REMIXAPI_ERROR_CODE_SUCCESS;

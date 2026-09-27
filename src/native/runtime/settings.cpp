@@ -181,6 +181,7 @@ namespace remix::config {
         result.push_back(
             scalar("rtx.native.scene.persistentStaticValidation", FIELD(persistentStaticValidation), 0, 1));
         result.push_back(scalar("rtx.native.asyncPresent", FIELD(asyncPresent), 0, 1));
+        result.push_back(scalar("rtx.native.gpuPassTimers", FIELD(gpuPassTimers), 0, 1));
 #undef TRACE
 #undef FIELD
         return result;

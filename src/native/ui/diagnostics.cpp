@@ -2,10 +2,122 @@
 #include "ui/widgets.h"
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <imgui.h>
+#include <string>
 #include <utility>
+#include <vector>
 
 namespace remix {
+  void RemixNativeRuntime::drawGpuPassTimings(bool enabled) {
+    if (!enabled)
+      return;
+    if (!m_gpuTimers.supported()) {
+      ImGui::TextWrapped("Unavailable: the queue family has no timestamp support.");
+      return;
+    }
+    const auto &t = gpuPassTimings();
+    if (!t.available) {
+      ImGui::TextWrapped("Waiting for a completed frame.");
+      return;
+    }
+    ImGui::TextWrapped("GPU frame %.3f ms = passes %.3f + between passes %.3f (frame %llu, queue family %u)",
+                       t.frameMilliseconds, t.passMilliseconds, t.untimedMilliseconds, (unsigned long long)t.frame,
+                       t.queueFamily);
+    ImGui::TextWrapped("Render %ux%u, output %ux%u", t.renderWidth, t.renderHeight, t.outputWidth, t.outputHeight);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Each pass is timed from the end of the work before it to its own end (bottom of\n"
+                        "the pipe), so passes do not overlap and their own times add up to the frame.\n"
+                        "Own time excludes nested passes. Passes that wait for the swapchain image or\n"
+                        "for presentation include that wait.");
+    if (t.truncated)
+      ImGui::TextWrapped("%u passes not timed (query limit)", t.truncated);
+    // Sorted by own time; the time between passes is a row of its own, so the
+    // column adds up to the frame.
+    const auto order = gpu::byCost(t);
+    const uint32_t untimedRow = uint32_t(t.passes.size());
+    std::vector<uint32_t> rows;
+    rows.reserve(order.size() + 1);
+    bool untimedPlaced = false;
+    for (const auto index : order) {
+      if (!untimedPlaced && t.untimedMilliseconds >= t.passes[index].selfMilliseconds) {
+        rows.push_back(untimedRow);
+        untimedPlaced = true;
+      }
+      rows.push_back(index);
+    }
+    if (!untimedPlaced)
+      rows.push_back(untimedRow);
+    const double frame = std::max(t.frameMilliseconds, 1e-9);
+    auto size = [](const gpu::PassTiming &pass, char *out, size_t bytes) {
+      if (pass.width && pass.height)
+        std::snprintf(out, bytes, "%ux%u", pass.width, pass.height);
+      else
+        std::snprintf(out, bytes, "-");
+    };
+    if (ImGui::SmallButton("Copy as text")) {
+      std::string text;
+      char line[160], dims[32];
+      std::snprintf(line, sizeof(line),
+                    "GPU frame %.3f ms (passes %.3f, between passes %.3f); render %ux%u, output %ux%u\n",
+                    t.frameMilliseconds, t.passMilliseconds, t.untimedMilliseconds, t.renderWidth, t.renderHeight,
+                    t.outputWidth, t.outputHeight);
+      text += line;
+      for (const auto row : rows) {
+        if (row == untimedRow) {
+          std::snprintf(line, sizeof(line), "%-56s %11s %8.3f %8.3f %5.1f%%\n", "Between passes (untimed)", "-",
+                        t.untimedMilliseconds, t.untimedMilliseconds, 100 * t.untimedMilliseconds / frame);
+        } else {
+          const auto &pass = t.passes[row];
+          size(pass, dims, sizeof(dims));
+          std::snprintf(line, sizeof(line), "%-56s %11s %8.3f %8.3f %5.1f%%\n", pass.name, dims,
+                        pass.selfMilliseconds, pass.milliseconds, 100 * pass.selfMilliseconds / frame);
+        }
+        text += line;
+      }
+      ImGui::SetClipboardText(text.c_str());
+    }
+    if (!ImGui::BeginTable("gpuPasses", 5,
+                           ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingFixedFit))
+      return;
+    ImGui::TableSetupColumn("Pass", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupColumn("Size");
+    ImGui::TableSetupColumn("Own ms");
+    ImGui::TableSetupColumn("Incl. ms");
+    ImGui::TableSetupColumn("%");
+    ImGui::TableHeadersRow();
+    auto cells = [&](const char *name, const char *dims, double self, double inclusive, bool nested) {
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      if (nested)
+        ImGui::TextDisabled("%s", name);
+      else
+        ImGui::TextUnformatted(name);
+      ImGui::TableNextColumn();
+      ImGui::TextUnformatted(dims);
+      ImGui::TableNextColumn();
+      ImGui::Text("%7.3f", self);
+      ImGui::TableNextColumn();
+      ImGui::Text("%7.3f", inclusive);
+      ImGui::TableNextColumn();
+      ImGui::Text("%5.1f", 100 * self / frame);
+    };
+    char dims[32];
+    for (const auto row : rows) {
+      if (row == untimedRow) {
+        cells("Between passes (untimed)", "-", t.untimedMilliseconds, t.untimedMilliseconds, false);
+        continue;
+      }
+      const auto &pass = t.passes[row];
+      size(pass, dims, sizeof(dims));
+      // Containers (own time is what their nested passes leave out) are dimmed.
+      cells(pass.name, dims, pass.selfMilliseconds, pass.milliseconds,
+            pass.selfMilliseconds + 1e-9 < pass.milliseconds);
+    }
+    cells("Total", "-", t.frameMilliseconds, t.frameMilliseconds, false);
+    ImGui::EndTable();
+  }
+
   void RemixNativeRuntime::drawDiagnosticsTab(config::Settings &settings) {
     if (m_pipelines) {
       const auto s = m_pipelines->statistics();
@@ -127,6 +239,14 @@ namespace remix {
           ImGui::SetTooltip("Tracing includes sun and local shadows, indirect rays, and transparent "
                             "sheets.\nDenoiser timings are reported separately.");
       }
+    }
+    if (ImGui::CollapsingHeader("GPU pass timings", ImGuiTreeNodeFlags_DefaultOpen)) {
+      ui::Checkbox("GPU pass timers", &settings.gpuPassTimers);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Timestamps around every GPU pass of the frame (rtx.native.gpuPassTimers).\n"
+                          "Off records no extra queries. Results are read after the frame's fence,\n"
+                          "without waiting, so they describe the frame completed two frames ago.");
+      drawGpuPassTimings(settings.gpuPassTimers);
     }
     if (ImGui::CollapsingHeader("Present CPU breakdown")) {
       // Previous Present; this panel is drawn while the current one records.

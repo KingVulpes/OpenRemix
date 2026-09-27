@@ -534,6 +534,7 @@ namespace remix::denoise {
   void Renderer::recordOpaque(VkCommandBuffer command) {
     auto &g = *m_gpu;
     if (g.frame.flags[1]) {
+      gpu::GpuScope scope(command, "Indirect confidence filter", g.extent);
       for (uint32_t i = 1; i <= 5; ++i)
         g.pass(command, 0, i);
       g.pass(command, 1);
@@ -541,18 +542,24 @@ namespace remix::denoise {
     if (g.timestamps)
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g.timestamps, 1);
 #ifdef REMIX_HAS_NRD
-    if (g.frame.flags[1] && g.frame.shadow[3])
+    if (g.frame.flags[1] && g.frame.shadow[3]) {
+      gpu::GpuScope scope(command, "NRD REBLUR_DIFFUSE_SH (indirect)", g.extent);
       g.recordNrd(*g.indirect, command);
-    if (g.frame.flags[1] && g.frame.shadow[2])
+    }
+    if (g.frame.flags[1] && g.frame.shadow[2]) {
+      gpu::GpuScope scope(command, "NRD REBLUR_DIFFUSE_SPECULAR (PBR)", g.extent);
       g.recordNrd(*g.pbr, command);
+    }
 #endif
     if (g.timestamps)
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g.timestamps, 2);
     if (g.timestamps)
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g.timestamps, 5);
 #ifdef REMIX_HAS_NRD
-    if (g.sigma)
+    if (g.sigma) {
+      gpu::GpuScope scope(command, "NRD SIGMA (sun shadow)", g.extent);
       g.recordNrd(*g.shadow, command);
+    }
 #endif
     if (g.timestamps)
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g.timestamps, 6);
@@ -560,17 +567,24 @@ namespace remix::denoise {
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g.timestamps, 7);
 #ifdef REMIX_HAS_NRD
     if (g.localDirect && g.frame.shadow[3] && g.frame.local[0] &&
-        (g.split ? g.frame.families[0] : g.frame.local[1]))
+        (g.split ? g.frame.families[0] : g.frame.local[1])) {
+      gpu::GpuScope scope(command, g.split ? "NRD REBLUR_DIFFUSE (torch lights)" : "NRD REBLUR_DIFFUSE (local lights)",
+                          g.extent);
       g.recordNrd(*g.localDirect, command);
-    if (g.emissiveDirect && g.frame.shadow[3] && g.frame.local[0] && g.frame.families[1])
+    }
+    if (g.emissiveDirect && g.frame.shadow[3] && g.frame.local[0] && g.frame.families[1]) {
+      gpu::GpuScope scope(command, "NRD REBLUR_DIFFUSE (emissive lights)", g.extent);
       g.recordNrd(*g.emissiveDirect, command);
+    }
 #endif
     if (g.timestamps)
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g.timestamps, 8);
     // The transparency tracer can reuse this frame's already filtered opaque
     // radiance. Foreground composition happens only after its own tracing/NRD.
-    if (g.frame.translucency[1])
+    if (g.frame.translucency[1]) {
+      gpu::GpuScope scope(command, "Translucency reuse compose", g.extent);
       g.pass(command, 2, 0);
+    }
     synchronize(command);
   }
   void Renderer::record(VkCommandBuffer command) {
@@ -578,20 +592,30 @@ namespace remix::denoise {
     if (g.timestamps)
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g.timestamps, 9);
 #ifdef REMIX_HAS_NRD
-    if (g.foreground && g.frame.translucency[0])
+    if (g.foreground && g.frame.translucency[0]) {
+      gpu::GpuScope scope(command, "NRD REBLUR_DIFFUSE_SPECULAR (translucent front)", g.extent);
       g.recordNrd(*g.foreground, command);
+    }
 #endif
     if (g.timestamps)
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g.timestamps, 10);
-    if (g.frame.hitDistance[3] == 0)
+    if (g.frame.hitDistance[3] == 0) {
+      gpu::GpuScope scope(command, "Denoised lighting compose", g.extent);
       g.pass(command, 2, 1);
-    else if (g.frame.translucency[0])
+    } else if (g.frame.translucency[0]) {
+      gpu::GpuScope scope(command, "DLSS-RR foreground compose", g.extent);
       g.pass(command, 5);
+    }
     if (g.timestamps)
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g.timestamps, 3);
-    if (g.frame.hitDistance[3] == 0)
+    if (g.frame.hitDistance[3] == 0) {
+      gpu::GpuScope scope(command, g.frame.flags[2] ? "TAA" : "TAA pass (history only, TAA off)", g.extent);
       g.pass(command, 3);
-    g.pass(command, 4);
+    }
+    {
+      gpu::GpuScope scope(command, "Denoiser history copy", g.extent);
+      g.pass(command, 4);
+    }
     if (g.timestamps) {
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g.timestamps, 4);
       g.timingPending = true;

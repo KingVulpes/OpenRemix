@@ -247,6 +247,7 @@ namespace remix {
       if (m_commandPool) {
         vkDestroyCommandPool(m_device, m_commandPool, nullptr);
       }
+      m_gpuTimers.shutdown();
       vkDestroyDevice(m_device, nullptr);
     }
     if (m_surface) {

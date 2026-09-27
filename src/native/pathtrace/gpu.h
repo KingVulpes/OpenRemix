@@ -3,6 +3,7 @@
 #include "pathtrace/frame_tables.h"
 #include "pathtrace/renderer.h"
 #include "pathtrace/tlas_policy.h"
+#include "platform/gpu_timers.h"
 #include "platform/timing.h"
 #include "platform/workers.h"
 #include "scene/emission.h"

@@ -677,6 +677,15 @@ void RemixNativeRuntime::presented() {
     if (result != VK_SUCCESS) {
       return fail(result);
     }
+    // GPU pass timers: this slot's previous frame has completed (its fence);
+    // its timestamps are read without waiting before the slot is reused.
+    m_gpuTimers.beginFrame(buffer, m_frameIndex, m_gpuTimersEnabled, ++m_recordedFrames,
+                           m_pathTracer && !m_loading ? m_pathTracer->renderExtent() : m_swapchainExtent,
+                           m_swapchainExtent);
+    struct AbandonTimers {
+      gpu::GpuTimers &timers;
+      ~AbandonTimers() { timers.abandon(); } // no-op after endFrame
+    } abandonTimers{m_gpuTimers};
     if (m_headless)
       sharedBarrier(buffer, true);
     // GPU-only targets, histories and acceleration structures stay ordered on
@@ -694,6 +703,7 @@ void RemixNativeRuntime::presented() {
       measured(breakdown.traceBeginMilliseconds, [&] { m_pathTracer->beginFrame(m_traceOptions, raster); });
     raster.setSkyTarget(m_pathTracer ? m_pathTracer->skyPass() : VK_NULL_HANDLE);
     if (!m_loading) {
+      gpu::GpuScope scope(buffer, "Raster uploads and skinning");
       raster.prepare(buffer, m_backend != 0);
       breakdown.rasterPrepareMilliseconds = 1; // Replaced by the raster profile.
     }
@@ -705,6 +715,9 @@ void RemixNativeRuntime::presented() {
                             [&] { return m_pathTracer->prepareScene(raster, m_traceOptions); });
         traceScene = &*prepared;
       }
+      // The tracer's passes nest in this range; its own time is what they
+      // leave out (barriers, small uploads and readbacks between passes).
+      gpu::GpuScope scope(buffer, "Path tracer: barriers, copies, other");
       m_pathTracer->prepare(buffer, raster, m_traceOptions, *traceScene);
     }
     VkClearValue clear[2] = {};
@@ -741,8 +754,10 @@ void RemixNativeRuntime::presented() {
     const bool restore = m_loading && m_snapshotSupported && bool(m_lastFrame);
     if (capture || restore)
       m_frames[m_frameIndex].snapshot = m_lastFrame;
-    if (restore)
+    if (restore) {
+      gpu::GpuScope scope(buffer, "Last-frame snapshot restore", m_swapchainExtent);
       m_lastFrame->restore(buffer, image, m_swapchainExtent, layout);
+    }
     lap(breakdown.snapshotMilliseconds);
     VkRenderPassBeginInfo pass = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
@@ -757,29 +772,43 @@ void RemixNativeRuntime::presented() {
     if (!m_asyncActive)
       drawUi(VK_NULL_HANDLE);
     lap(breakdown.uiMilliseconds);
-    vkCmdBeginRenderPass(buffer, &pass, VK_SUBPASS_CONTENTS_INLINE);
-    if (!m_loading && m_pathTracer) {
-      m_pathTracer->record(buffer);
-      raster.record(buffer, false, true);
-    } else if (!m_loading)
-      raster.record(buffer);
+    {
+      // Includes the swapchain pass's clear and, when the GPU runs ahead of
+      // presentation, its wait for the acquired image.
+      gpu::GpuScope scope(buffer, m_pathTracer && !m_loading ? "Composite, tonemap and prism" : "Raster scene",
+                          m_swapchainExtent);
+      vkCmdBeginRenderPass(buffer, &pass, VK_SUBPASS_CONTENTS_INLINE);
+      if (!m_loading && m_pathTracer) {
+        m_pathTracer->record(buffer);
+        scope.close();
+        gpu::GpuScope overlay(buffer, "Raster overlay (HUD, effects)", m_swapchainExtent);
+        raster.record(buffer, false, true);
+      } else if (!m_loading)
+        raster.record(buffer);
+    }
     lap(breakdown.compositeMilliseconds);
     if (capture) {
+      gpu::GpuScope scope(buffer, "Last-frame snapshot capture", m_swapchainExtent);
       vkCmdEndRenderPass(buffer);
       m_lastFrame->capture(buffer, image, layout);
       pass.renderPass = m_overlayPass;
       vkCmdBeginRenderPass(buffer, &pass, VK_SUBPASS_CONTENTS_INLINE);
     }
     lap(breakdown.snapshotMilliseconds);
-    drawUi(buffer);
-    vkCmdEndRenderPass(buffer);
+    {
+      gpu::GpuScope scope(buffer, "Developer UI", m_swapchainExtent);
+      drawUi(buffer);
+      vkCmdEndRenderPass(buffer);
+    }
     lap(breakdown.uiMilliseconds);
     if (m_screenshotSupported) {
+      gpu::GpuScope scope(buffer, "Screenshot readback", m_swapchainExtent);
       m_screenshot.record(m_physicalDevice, m_device, buffer, m_swapchainImages[imageIndex],
                           m_swapchainExtent, m_swapchainFormat);
     }
     if (m_headless)
       sharedBarrier(buffer, false);
+    m_gpuTimers.endFrame(buffer);
     result = vkEndCommandBuffer(buffer);
     return result == VK_SUCCESS ? REMIXAPI_ERROR_CODE_SUCCESS : fail(result);
   }

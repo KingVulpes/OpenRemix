@@ -69,6 +69,8 @@ namespace remix {
     void requestClose() { m_closeRequested = true; }
 
     SDL_Window *handle() const { return m_window; }
+    // True when Startup wrapped a host-owned window (StartupInfo::hwnd).
+    bool embedded() const { return m_embedded; }
 
     bool isSurfaceAvailable() const;
     bool isVulkanSurfaceCurrent() const;
@@ -86,6 +88,7 @@ namespace remix {
     SDL_Window *m_window = nullptr;
     std::thread::id m_ownerThread;
     bool m_ownsVideoSubsystem = false;
+    bool m_embedded = false;
     bool m_appInBackground = false;
     mutable void *m_surfaceWindow = nullptr;
     bool m_closeRequested = false;

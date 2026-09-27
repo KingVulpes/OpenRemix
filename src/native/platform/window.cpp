@@ -43,6 +43,16 @@ namespace remix {
     }
 
     m_ownerThread = std::this_thread::get_id();
+#if defined(_WIN32)
+    // A host-owned window lives on the host's message thread. SDL's pump would
+    // otherwise PeekMessage(NULL, PM_REMOVE) every message of that thread,
+    // taking them from the host's own loop. Without its loop, SDL only drains
+    // the events its window procedure already queued.
+    if (info.hwnd) {
+      SDL_SetHint(SDL_HINT_WINDOWS_ENABLE_MESSAGELOOP, "0");
+      m_embedded = true;
+    }
+#endif
     if ((SDL_WasInit(SDL_INIT_VIDEO) & SDL_INIT_VIDEO) == 0) {
       if (!SDL_InitSubSystem(SDL_INIT_VIDEO)) {
         setSdlError("SDL_InitSubSystem");
@@ -104,6 +114,7 @@ namespace remix {
     }
 
     m_ownerThread = std::thread::id{};
+    m_embedded = false;
     m_eventHandler = nullptr;
     m_eventUserData = nullptr;
     m_surfaceWindow = nullptr;

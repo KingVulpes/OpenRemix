@@ -139,25 +139,25 @@ void SDL_SYS_SetupThread(const char *name)
                 pSetThreadDescription(GetCurrentThread(), strw);
                 SDL_free(strw);
             }
-        }
+        } else {
+            /* Presumably some version of Visual Studio will understand SetThreadDescription(),
+               but we still need to deal with older OSes and debuggers. Set it with the arcane
+               exception magic, too. */
 
-        /* Presumably some version of Visual Studio will understand SetThreadDescription(),
-           but we still need to deal with older OSes and debuggers. Set it with the arcane
-           exception magic, too. */
+            exceptionHandlerHandle = AddVectoredExceptionHandler(1, EmptyVectoredExceptionHandler);
+            if (exceptionHandlerHandle) {
+                THREADNAME_INFO inf;
+                // This magic tells the debugger to name a thread if it's listening.
+                SDL_zero(inf);
+                inf.dwType = 0x1000;
+                inf.szName = name;
+                inf.dwThreadID = (DWORD)-1;
+                inf.dwFlags = 0;
 
-        exceptionHandlerHandle = AddVectoredExceptionHandler(1, EmptyVectoredExceptionHandler);
-        if (exceptionHandlerHandle) {
-            THREADNAME_INFO inf;
-            // This magic tells the debugger to name a thread if it's listening.
-            SDL_zero(inf);
-            inf.dwType = 0x1000;
-            inf.szName = name;
-            inf.dwThreadID = (DWORD)-1;
-            inf.dwFlags = 0;
-
-            // The debugger catches this, renames the thread, continues on.
-            RaiseException(SDL_DEBUGGER_NAME_EXCEPTION_CODE, 0, sizeof(inf) / sizeof(ULONG_PTR), (const ULONG_PTR *)&inf);
-            RemoveVectoredExceptionHandler(exceptionHandlerHandle);
+                // The debugger catches this, renames the thread, continues on.
+                RaiseException(SDL_DEBUGGER_NAME_EXCEPTION_CODE, 0, sizeof(inf) / sizeof(ULONG_PTR), (const ULONG_PTR *)&inf);
+                RemoveVectoredExceptionHandler(exceptionHandlerHandle);
+            }
         }
     }
 }

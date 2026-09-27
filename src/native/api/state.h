@@ -31,7 +31,7 @@ namespace remix::api {
   void releaseUsdSubmissions();
   void publishUsdReloads();
   extern remix::RemixNativeRuntime g_runtime;
-  extern std::mutex g_apiMutex;
+  extern std::recursive_mutex g_apiMutex;
   extern uint32_t g_frameExitStages;
   extern PFN_remixapi_BridgeCallback g_beginSceneCallback;
   extern PFN_remixapi_BridgeCallback g_endSceneCallback;
@@ -39,14 +39,14 @@ namespace remix::api {
   extern std::unordered_map<std::string, std::string> g_gameValues;
 
   template <typename F> remixapi_ErrorCode resourceCall(F &&call) {
-    std::lock_guard lock(g_apiMutex);
-    if (!g_runtime.isInitialized()) {
-      return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
-    }
-    if (g_runtime.hasFailed()) {
-      return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
-    }
     try {
+      std::lock_guard lock(g_apiMutex);
+      if (!g_runtime.isInitialized()) {
+        return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+      }
+      if (g_runtime.hasFailed()) {
+        return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+      }
       call(g_runtime.raster());
       return REMIXAPI_ERROR_CODE_SUCCESS;
     } catch (remixapi_ErrorCode code) {

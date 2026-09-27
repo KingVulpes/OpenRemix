@@ -80,6 +80,9 @@ private:
   std::unordered_map<const Surface *, SurfaceEntries> surfaces;
   std::unordered_map<const Texture *, TextureEntries> textures;
   TextureEntries &coverage(const std::shared_ptr<Texture> &texture);
+  // The cache key of a draw; false for non-finite inputs (never cached).
+  bool key(const Draw &draw, const std::array<float, 4> &uv, Key &out,
+           std::array<uint32_t, 2> &dimensions) const;
   OpacityPartition::Reason opaqueTexels(const Draw &draw,
                                         const std::array<float, 4> &uv,
                                         uint32_t triangle,
@@ -91,6 +94,10 @@ public:
                         bool profile = false);
   std::shared_ptr<const OpacityPartition>
   partition(const Draw &draw, const std::array<float, 4> &uv);
+  // Read-only: the partition partition() would return without changing the
+  // cache (an owned entry validated by the same texture), otherwise null.
+  // Concurrent find() calls are safe while partition() and prune() are not running.
+  std::shared_ptr<const OpacityPartition> find(const Draw &draw, const std::array<float, 4> &uv) const;
   bool opaque(const Draw &draw, const std::array<float, 4> &uv) {
     auto result = partition(draw, uv);
     return result->reasons[OpacityPartition::Solid] == result->triangles;

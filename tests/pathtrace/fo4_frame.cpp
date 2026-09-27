@@ -14,6 +14,7 @@
 //   REMIX_BENCH_WIDTH/HEIGHT [1920x1080] window size
 //   REMIX_BENCH_STATIC [12000] retained instances, REMIX_BENCH_MESHES [4000]
 //   REMIX_BENCH_MATERIALS [1500], REMIX_BENCH_ACTORS [40], REMIX_BENCH_LIGHTS [64]
+//   REMIX_BENCH_EMISSIVE [300] retained emissive fixtures (18 triangles each)
 //   REMIX_BENCH_OVERLAY [1] full-screen DrawScreenOverlay every frame; 2 also
 //     redraws a compass strip each frame (a changing HUD), 0 none
 //   REMIX_BENCH_STABLE_IDS [1] InstanceIdentityEXT on per-frame draws
@@ -185,6 +186,7 @@ int main() {
   const uint32_t staticCount = env("REMIX_BENCH_STATIC", 12000), meshCount = env("REMIX_BENCH_MESHES", 4000);
   const uint32_t materialCount = env("REMIX_BENCH_MATERIALS", 1500), actorCount = env("REMIX_BENCH_ACTORS", 40);
   const uint32_t lightCount = env("REMIX_BENCH_LIGHTS", 64);
+  const uint32_t emissiveCount = env("REMIX_BENCH_EMISSIVE", 300);
   const uint32_t overlayMode = env("REMIX_BENCH_OVERLAY", 1);
   const bool overlay = overlayMode != 0, stableIds = env("REMIX_BENCH_STABLE_IDS", 1) != 0;
   const char *digestPath = std::getenv("REMIX_BENCH_DIGEST");
@@ -345,6 +347,72 @@ int main() {
     ok(remixapi_CreateRetainedInstance(&instance, &handle), "CreateRetainedInstance");
   }
 
+  // Emissive fixtures (lamps, signs, screens): 10 emissive materials, half
+  // with an emission texture, on 20 small retained meshes.
+  if (emissiveCount) {
+    std::vector<remixapi_MaterialHandle> glowing(10);
+    std::vector<std::filesystem::path> glowPaths(5);
+    for (uint32_t i = 0; i < 5; ++i) {
+      for (size_t p = 0; p < rgba.size(); p += 4) {
+        rgba[p] = uint8_t(128 + random.next() % 128);
+        rgba[p + 1] = uint8_t(96 + random.next() % 128);
+        rgba[p + 2] = uint8_t(64 + random.next() % 64);
+        rgba[p + 3] = 255;
+      }
+      texture(0x800000 + i, REMIXAPI_FORMAT_R8G8B8A8_SRGB, 32, rgba.data(), rgba.size());
+      glowPaths[i] = path(0x800000 + i);
+    }
+    for (uint32_t i = 0; i < glowing.size(); ++i) {
+      remixapi_MaterialInfoOpaqueEXT opaque{};
+      opaque.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_EXT;
+      opaque.albedoConstant = {1, 1, 1};
+      opaque.opacityConstant = 1;
+      opaque.roughnessConstant = .5f;
+      opaque.alphaTestType = 7;
+      remixapi_MaterialInfo info{};
+      info.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO;
+      info.pNext = &opaque;
+      info.hash = 0x810000 + i;
+      info.albedoTexture = paths[i % albedoCount].c_str();
+      if (i < 5)
+        info.emissiveTexture = glowPaths[i].c_str();
+      info.emissiveIntensity = 4;
+      info.emissiveColorConstant = {1, .8f, .6f};
+      ok(api.CreateMaterial(&info, &glowing[i]), "CreateMaterial (emissive)");
+    }
+    std::vector<remixapi_MeshHandle> lamps(20);
+    for (uint32_t i = 0; i < lamps.size(); ++i) {
+      patch(random, 4, 4, .5f, vertices[0], indices[0]);
+      remixapi_MeshInfoSurfaceTriangles info{};
+      info.vertices_values = vertices[0].data();
+      info.vertices_count = vertices[0].size();
+      info.indices_values = indices[0].data();
+      info.indices_count = indices[0].size();
+      info.material = glowing[i % glowing.size()];
+      remixapi_MeshInfo mesh{};
+      mesh.sType = REMIXAPI_STRUCT_TYPE_MESH_INFO;
+      mesh.hash = 0x820000 + i;
+      mesh.surfaces_values = &info;
+      mesh.surfaces_count = 1;
+      ok(api.CreateMesh(&mesh, &lamps[i]), "CreateMesh (lamp)");
+    }
+    for (uint32_t i = 0; i < emissiveCount; ++i) {
+      remixapi_InstanceIdentityEXT identity{};
+      identity.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_IDENTITY_EXT;
+      identity.instanceId = 100000 + i;
+      identity.classification = REMIXAPI_INSTANCE_STATIC_EXT;
+      identity.rasterVisible = 1;
+      remixapi_InstanceInfo instance{};
+      instance.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO;
+      instance.pNext = &identity;
+      instance.mesh = lamps[i % lamps.size()];
+      instance.transform = translation(200 * random.unit() - 100, 200 * random.unit() - 100, 2 + 3 * random.unit(),
+                                       6.28f * random.unit());
+      uint64_t handle = 0;
+      ok(remixapi_CreateRetainedInstance(&instance, &handle), "CreateRetainedInstance (lamp)");
+    }
+  }
+
   // Skinned actors (8 shared bodies, one skin per actor) and first-person meshes.
   constexpr uint32_t boneCount = 60;
   std::vector<Skin> bodies;
@@ -478,9 +546,9 @@ int main() {
   };
 
   std::printf("scene: %u retained over %u meshes (%llu vertices), %u materials, %u actors (%llu skinned "
-              "vertices), %u lights, overlay %s, stable ids %s, %ux%u\n",
+              "vertices), %u lights, %u emissive fixtures, overlay %s, stable ids %s, %ux%u\n",
               staticCount, meshCount, (unsigned long long)staticVertices, materialCount, actorCount,
-              (unsigned long long)actorVertices, lightCount,
+              (unsigned long long)actorVertices, lightCount, emissiveCount,
               overlayMode == 2 ? "changing" : overlay ? "static" : "off", stableIds ? "on" : "off",
               width, height);
   std::fflush(stdout);

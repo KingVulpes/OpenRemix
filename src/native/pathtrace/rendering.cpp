@@ -1096,9 +1096,24 @@ namespace remix {
     const auto prepared = profile ? Clock::now() : Clock::time_point{};
     // Coverage proof is CPU-only and can overlap the previous GPU submission.
     // Keep the result on this immutable frame, alongside its animated UVs.
+    // Cached partitions are found on workers; the rest (new, revalidated or
+    // replaced entries) go through partition() in draw order, as before. The
+    // profile's lookup and hit counters need every lookup in partition().
+    if (!profile) {
+      if (!m_gpu->workers)
+        m_gpu->workers = std::make_unique<WorkerPool>();
+      constexpr size_t instancesPerTask = 512;
+      const size_t count = frame.instances.size();
+      m_gpu->workers->run((count + instancesPerTask - 1) / instancesPerTask, [&](size_t task) {
+        for (size_t i = task * instancesPerTask; i < std::min(count, (task + 1) * instancesPerTask); ++i)
+          for (auto &surface : frame.instances[i])
+            surface.opacity = m_gpu->opacityCache.find(surface.draw, surface.uv);
+      });
+    }
     for (auto &instance : frame.instances)
       for (auto &surface : instance)
-        surface.opacity = m_gpu->opacityCache.partition(surface.draw, surface.uv);
+        if (!surface.opacity)
+          surface.opacity = m_gpu->opacityCache.partition(surface.draw, surface.uv);
     const auto classified = profile ? Clock::now() : Clock::time_point{};
     m_gpu->opacityCache.prune();
     const auto pruned = profile ? Clock::now() : Clock::time_point{};

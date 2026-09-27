@@ -120,11 +120,8 @@ namespace remix::scene {
     return P::Solid;
   }
 
-  std::shared_ptr<const OpacityPartition> OpacityCache::partition(const Draw &draw,
-                                                                  const std::array<float, 4> &uv) {
-    using P = OpacityPartition;
-    if (profile)
-      ++statistics.lookups;
+  bool OpacityCache::key(const Draw &draw, const std::array<float, 4> &uv, Key &out,
+                         std::array<uint32_t, 2> &dimensions) const {
     const auto &m = *draw.material;
     const auto &b = draw.blend;
     const auto compare = draw.ignoreAlpha ? 7 : draw.alphaOverride ? draw.compare : m.compare;
@@ -133,17 +130,12 @@ namespace remix::scene {
     for (float value : uv)
       finite &= std::isfinite(value);
     // NaNs cannot be keys in an ordered map.
-    if (!finite) {
-      auto result = std::make_shared<P>();
-      result->triangles = uint32_t(draw.surface->indices.size() / 3);
-      result->key.assign(1, 0);
-      result->reasons[P::Invalid] = result->triangles;
-      return result;
-    }
+    if (!finite)
+      return false;
     const uint32_t flags =
         uint32_t(draw.doubleSided) | uint32_t(b.enabled) << 1 | uint32_t(m.transmission) << 2;
     const auto &texture = m.texture;
-    std::array<uint32_t, 2> dimensions{};
+    dimensions = {};
     if (texture) {
       const auto &p = texture->pixels;
       // Resource decoding bounds dimensions to 16384; reject malformed CPU
@@ -154,17 +146,54 @@ namespace remix::scene {
                         : !p.mips.empty() && p.mips[0].size() == size_t(p.width) * p.height * 4))
         dimensions = {p.width, p.height};
     }
-    const Key key{dimensions,
-                  uv,
-                  compare,
-                  reference,
-                  m.tint[3],
-                  b.alphaOpTexture,
-                  b.alpha1,
-                  b.alpha2,
-                  b.factor >> 24,
-                  flags,
-                  uint32_t(m.filter) | uint32_t(m.wrapU) << 8 | uint32_t(m.wrapV) << 16};
+    out = Key{dimensions,
+              uv,
+              uint32_t(compare),
+              reference,
+              m.tint[3],
+              b.alphaOpTexture,
+              b.alpha1,
+              b.alpha2,
+              b.factor >> 24,
+              flags,
+              uint32_t(m.filter) | uint32_t(m.wrapU) << 8 | uint32_t(m.wrapV) << 16};
+    return true;
+  }
+
+  std::shared_ptr<const OpacityPartition> OpacityCache::find(const Draw &draw,
+                                                             const std::array<float, 4> &uv) const {
+    Key key;
+    std::array<uint32_t, 2> dimensions;
+    if (!this->key(draw, uv, key, dimensions))
+      return nullptr;
+    const auto cache = surfaces.find(draw.surface.get());
+    if (cache == surfaces.end() || !sameOwner(cache->second.owner, draw.surface))
+      return nullptr;
+    const auto found = cache->second.entries.find(key);
+    if (found == cache->second.entries.end() || !sameOwner(found->second.texture, draw.material->texture))
+      return nullptr;
+    return found->second.partition;
+  }
+
+  std::shared_ptr<const OpacityPartition> OpacityCache::partition(const Draw &draw,
+                                                                  const std::array<float, 4> &uv) {
+    using P = OpacityPartition;
+    if (profile)
+      ++statistics.lookups;
+    const auto &m = *draw.material;
+    const auto &b = draw.blend;
+    const auto compare = draw.ignoreAlpha ? 7 : draw.alphaOverride ? draw.compare : m.compare;
+    const float reference = draw.alphaOverride ? draw.reference : m.reference;
+    const auto &texture = m.texture;
+    Key key;
+    std::array<uint32_t, 2> dimensions;
+    if (!this->key(draw, uv, key, dimensions)) {
+      auto result = std::make_shared<P>();
+      result->triangles = uint32_t(draw.surface->indices.size() / 3);
+      result->key.assign(1, 0);
+      result->reasons[P::Invalid] = result->triangles;
+      return result;
+    }
     TextureEntries *pixels = nullptr;
     auto getPixels = [&]() -> TextureEntries * {
       if (!pixels && dimensions[0])

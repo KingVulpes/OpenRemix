@@ -18,7 +18,9 @@
 
 namespace remix {
 
-  // CPU state is serialized by the API mutex. Only the startup thread touches GPU state.
+  // CPU state is serialized by the API mutex. Only the presenting thread (the
+  // startup thread, or OpenRemix's render thread with asynchronous
+  // presentation, which reads only a published frame) touches GPU state.
   class NativeResources {
   public:
     NativeResources();
@@ -108,6 +110,32 @@ namespace remix {
     // without the set would have put it, for consumers other than the tracer
     // (raster rendering), and clears staticDrawn.
     void expandStatic();
+    // Asynchronous presentation ("rtx.native.asyncPresent"). publishFrame
+    // hands this frame to `frame`, a second NativeResources that a render
+    // thread reads while API calls keep changing this one, and ends the frame
+    // here (finishFrame). Draw lists move; cameras, lights, the overlay and
+    // the frame's sphere lights are copied. Meshes, materials and textures are
+    // shared, never copied: the published draws keep them alive, so creating
+    // or destroying resources here never reaches the render thread.
+    //
+    // `frame` keeps a replica of the persistent static set: the members, as
+    // this table has them, updated from the handles whose membership or
+    // records changed (takeStaticChanges here), with those handles in its own
+    // change list. Its staticDrawn, staticEpoch, takeStaticChanges,
+    // forEachStatic, retained and expandStatic answer exactly as this table's
+    // would have at publication, so the tracer's copy (StaticScene) syncs from
+    // it unchanged. Only `frame`'s owner may read `frame` afterwards; nothing
+    // here keeps a reference to it.
+    void publishFrame(NativeResources &frame);
+    // The persistent static setting as set after publication (persistentStatic
+    // of the published frame), as the frame's consumers read it.
+    void publishStaticSetting(NativeResources &frame) const { frame.m_staticEnabled = m_staticEnabled; }
+    // A consumer switches between this table and a published replica: the
+    // static set starts a new epoch, so its copy is rebuilt from the members.
+    void restartStatic();
+    // Set while frames are rendered on another thread: shared resource state
+    // that rendering writes (Material::emissionCache) is not read from here.
+    void setConcurrentConsumer(bool value) { m_concurrentConsumer = value; }
     void registerUiTexture(uint64_t id, uint32_t width, uint32_t height, remixapi_Format format,
                            const void *pixels, uint64_t size);
     void freeUiTexture(uint64_t id);
@@ -177,6 +205,10 @@ namespace remix {
     };
     std::unordered_map<uint64_t, LightDefinition> m_lights;
     std::unordered_set<uint64_t> m_frameLights;
+    // A published frame's sphere lights, as sphereLights() returned them at
+    // publication (m_frameLights then only tells whether there are any).
+    std::vector<scene::SphereLight> m_publishedLights;
+    bool m_lightsPublished = false;
     scene::DistantLight m_light;
     scene::DomeLight m_dome;
     std::array<bool, 3> m_cameraValid = {};
@@ -233,5 +265,13 @@ namespace remix {
     size_t m_staticDraws = 0, m_staticEmissive = 0;
     std::vector<std::pair<size_t, uint32_t>> m_staticPlacement;
     std::vector<uint64_t> m_staticChanges;
+    // A published frame's replica of the static set (publishFrame): whether it
+    // holds the members of m_staticEpoch, and the handles in m_staticChanges.
+    void replicate(const scene::RetainedInstance &entry);
+    void unreplicate(uint64_t handle);
+    void logReplica(uint64_t handle);
+    bool m_replica = false;
+    std::unordered_set<uint64_t> m_replicaChanges;
+    bool m_concurrentConsumer = false;
   };
 } // namespace remix

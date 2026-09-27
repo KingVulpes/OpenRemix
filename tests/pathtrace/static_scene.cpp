@@ -7,8 +7,10 @@
 // transitions, history resets and uncommitted frames. CPU only: the mesh
 // views are stand-ins with addresses derived from their content.
 #include "pathtrace/frame_tables.h"
+#include "platform/render_thread.h"
 #include "scene/fixtures.h"
 #include "scene/static_scene.h"
+#include <atomic>
 #include <cstring>
 #include <filesystem>
 #include <map>
@@ -617,6 +619,87 @@ namespace {
     require(settled.member && !settled.moving, "A settled instance did not return to the static set");
   }
 
+  // Asynchronous presentation: the same scene, each frame published
+  // (publishFrame) into a second NativeResources that a render thread traces
+  // while the next frame's API calls run. The tracer's copy syncs from the
+  // replica: it must trace exactly what the rebuild path traces from the
+  // published draw list, and the replica's expanded draw list must be the
+  // replay without the set.
+  void published() {
+    NativeResources resources, legacy, frame;
+    Scene scene, legacyScene;
+    camera(resources);
+    camera(legacy);
+    scene.create(resources);
+    legacyScene.create(legacy);
+    resources.setConcurrentConsumer(true);
+    resources.setPersistentStatic(true);
+    Pipeline kept, rebuilt;
+    kept.persistent = true;
+    RenderThread render;
+    std::atomic<uint64_t> unitFrames{0};
+    for (int f = 0; f < 270; ++f) {
+      if (f == 17 || f == 18)
+        resources.setPersistentStatic(f == 18);
+      if (f == 60)
+        resources.restartStatic(); // A presentation-mode switch.
+      const bool replay = scene.before(resources, f);
+      legacyScene.before(legacy, f);
+      if (replay) {
+        resources.drawRetained(nullptr);
+        legacy.drawRetained(nullptr);
+      }
+      scene.local(resources, f, f == 12);
+      legacyScene.local(legacy, f, f == 12);
+      scene.after(resources, f);
+      legacyScene.after(legacy, f);
+      // The replay without the set, by value (legacy's next frame runs
+      // concurrently with this one's render).
+      std::vector<scene::Draw> replayed = legacy.draws();
+      legacy.finishFrame();
+      // A BLAS compaction of this mesh before the frame is traced.
+      std::shared_ptr<scene::Mesh> compacted;
+      if (f == 13 || f == 27)
+        compacted = resources.retained(scene.handles[8])->mesh;
+      render.wait(); // Present: the previous frame is complete.
+      resources.publishFrame(frame);
+      render.submit([&, f, compacted, replayed = std::move(replayed)] {
+        if (f == 10)
+          kept.epoch.reset = rebuilt.epoch.reset = 1;
+        kept.filterEmission = rebuilt.filterEmission = f >= 30;
+        if (compacted) {
+          kept.compact(compacted.get());
+          rebuilt.compact(compacted.get());
+        }
+        kept.prepare(frame);
+        frame.expandStatic();
+        const auto &x = frame.draws();
+        bool same = x.size() == replayed.size();
+        for (size_t i = 0; same && i < x.size(); ++i)
+          same = x[i].instanceId == replayed[i].instanceId && x[i].instanceIndex == replayed[i].instanceIndex &&
+                 x[i].surfaceIndex == replayed[i].surfaceIndex &&
+                 x[i].classification == replayed[i].classification && x[i].model == replayed[i].model &&
+                 x[i].doubleSided == replayed[i].doubleSided;
+        if (!same) {
+          std::fprintf(stderr, "Static scene test failed at published frame %d: replica draw list differs\n", f);
+          std::exit(1);
+        }
+        rebuilt.prepare(frame);
+        compare(kept, rebuilt, f);
+        unitFrames += kept.frame.staticUnits;
+        require(f != 3 || kept.frame.staticUnits, "Replica unused on a quiet frame");
+        require(f != 12 || !kept.frame.staticUnits, "A frame-local static instance was not traced from draws");
+        if (f != 9) {
+          kept.commit();
+          rebuilt.commit();
+        }
+        frame.finishFrame();
+      });
+    }
+    render.wait();
+    require(unitFrames >= 260, "The replica was not traced from its units");
+  }
+
   // Retained table: membership, change lists, and draws kept out of the list.
   void membership() {
     NativeResources r;
@@ -703,5 +786,6 @@ int main() {
   signatures();
   membership();
   sequence();
+  published();
   std::puts("persistent static set matches the rebuild path");
 }

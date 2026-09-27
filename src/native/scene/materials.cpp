@@ -205,7 +205,11 @@ namespace remix {
     if (info.emissiveTexture && *info.emissiveTexture)
       material->emissionTexture = texturePath(info.emissiveTexture);
     auto previous = m_materials.find(info.hash);
-    if (previous != m_materials.end() && previous->second->emissionTexture == material->emissionTexture &&
+    // A render thread may be filling the previous material's cache: it is
+    // only carried over while frames render here (a CPU cache; the replacement
+    // computes the same values on demand).
+    if (!m_concurrentConsumer && previous != m_materials.end() &&
+        previous->second->emissionTexture == material->emissionTexture &&
         std::equal(material->emission, material->emission + 3, previous->second->emission) &&
         material->wrapU == previous->second->wrapU && material->wrapV == previous->second->wrapV)
       material->emissionCache = previous->second->emissionCache;

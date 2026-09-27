@@ -344,6 +344,8 @@ namespace remix {
       m_frameLights.insert(key(handle));
   }
   std::vector<SphereLight> NativeResources::sphereLights() const {
+    if (m_lightsPublished)
+      return m_publishedLights;
     std::vector<SphereLight> result;
     for (auto id : m_frameLights)
       if (auto it = m_lights.find(id); it != m_lights.end())

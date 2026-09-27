@@ -2,7 +2,7 @@ policy_test = executable('remix-tlas-policy-test', 'tlas_policy.cpp',
   include_directories : test_includes, link_with : pathtrace_library)
 test('Tracing scene and TLAS policy', policy_test)
 static_scene_test = executable('remix-static-scene-test', 'static_scene.cpp',
-  include_directories : test_includes, link_with : scene_library)
+  include_directories : test_includes, link_with : scene_library, dependencies : threads_dep)
 test('Persistent static set matches the rebuild path', static_scene_test)
 upscale_depth_test = executable('remix-upscale-depth-test', 'upscale_depth.cpp', include_directories : test_includes)
 test('FSR wide-frustum depth precision', upscale_depth_test)

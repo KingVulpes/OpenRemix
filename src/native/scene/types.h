@@ -136,7 +136,8 @@ namespace remix {
       std::vector<std::shared_ptr<Surface>> surfaces;
       bool retired = false; // See Material::retired.
       struct Release {
-        ~Release() { meshReleases.fetch_add(1, std::memory_order_relaxed); }
+        // Release: the mesh expired first, for a reader on another thread.
+        ~Release() { meshReleases.fetch_add(1, std::memory_order_release); }
       } release;
     };
     struct Blend {

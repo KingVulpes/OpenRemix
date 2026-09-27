@@ -45,6 +45,10 @@ namespace remix {
     m_light = {};
     m_dome = {};
     m_frameLights.clear();
+    m_publishedLights.clear();
+    m_lightsPublished = false;
+    m_replica = false;
+    m_replicaChanges.clear();
     for (auto &view : m_views)
       view = identity();
     for (auto &projection : m_projections)
@@ -67,5 +71,7 @@ namespace remix {
     m_light = {};
     m_dome = {};
     m_frameLights.clear();
+    m_publishedLights.clear();
+    m_lightsPublished = false;
   }
 } // namespace remix

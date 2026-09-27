@@ -5,6 +5,9 @@ test('Scene resources and image decoding', scene_test, args : [meson.current_bui
 retained_test = executable('remix-retained-test', 'retained.cpp',
   include_directories : test_includes, link_with : scene_library)
 test('Retained instance registration, replay and lifetimes', retained_test)
+publish_test = executable('remix-publish-test', 'publish.cpp',
+  include_directories : test_includes, link_with : scene_library, dependencies : threads_dep)
+test('Published frames and resource lifetime', publish_test, timeout : 60)
 refresh_test = executable('remix-mesh-refresh-test', 'refresh.cpp',
   include_directories : test_includes, link_with : scene_library)
 test('Mesh refresh lineage, retained replay and correspondence', refresh_test)

@@ -186,7 +186,7 @@ namespace remix {
       deformViews.erase(&it->first);
       return meshes.erase(it);
     };
-    const uint64_t releases = scene::meshReleases.load(std::memory_order_relaxed);
+    const uint64_t releases = scene::meshReleases.load(std::memory_order_acquire);
     if (releases != meshReleasesSeen) {
       meshReleasesSeen = releases;
       for (auto it = meshes.begin(); it != meshes.end();) {

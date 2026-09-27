@@ -441,6 +441,8 @@ namespace remix {
     for (const uint64_t handle : out)
       if (const auto found = m_retainedIndex.find(handle); found != m_retainedIndex.end())
         m_retained[found->second].logged = false;
+    if (!m_replicaChanges.empty())
+      m_replicaChanges.clear();
   }
 
   void NativeResources::expandStatic() {

@@ -57,29 +57,17 @@ namespace remix {
     history.begin(resources.temporalEpoch(), integrator, extent.width, extent.height);
     pendingVertices.clear();
     pendingVertices.reserve(previousVertices.size());
-    std::vector<trace::InstanceInput> inputs[2];
-    std::vector<TraceSurface> surfaces;
     const auto emissionMode = options.freezeEmissiveRadiance      ? 2u
                               : options.stabilizeEmissiveLighting ? 1u
                                                                   : 0u;
-    primaryDraws.clear();
     std::vector<VkDescriptorImageInfo> textures;
-    const size_t materialCount = materialSlots.size();
-    materialSlots.clear();
-    materialSlots.reserve(materialCount);
-    std::map<std::tuple<const scene::Texture *, uint8_t, uint8_t, uint8_t>, uint32_t> pbrTextures;
-    std::vector<uint8_t> scene, staticGeometry, dynamicGeometry;
-    surfaces.reserve(reserveSurfaces);
-    primaryDraws.reserve(reserveSurfaces);
-    scene.reserve(reserveScene);
-    staticGeometry.reserve(reserveStatic);
-    dynamicGeometry.reserve(reserveDynamic);
-    inputs[0].reserve(reserveInputs[0]);
-    inputs[1].reserve(reserveInputs[1]);
-
-    auto append =[&](const void *data, size_t size) {
+    // The scene signature: sky draws first, the tables' segments, then the
+    // frame's lighting and settings (append writes to the current segment).
+    trace::SceneSignature signature;
+    std::vector<uint8_t> *sceneBytes = &signature.head;
+    auto append = [&](const void *data, size_t size) {
       const auto *bytes = static_cast<const uint8_t *>(data);
-      scene.insert(scene.end(), bytes, bytes + size);
+      sceneBytes->insert(sceneBytes->end(), bytes, bytes + size);
     };
     for (const auto &draw : resources.draws())
       if (draw.camera == REMIXAPI_CAMERA_TYPE_SKY) {
@@ -95,343 +83,98 @@ namespace remix {
           append(&animationFrame, sizeof(animationFrame));
         }
       }
-    uint64_t reuseSignature = 1469598103934665603ull;
-    bool hasCacheReceivers = false, hasBlendedGeometry = false;
-    decalMaterialsActive = false;
-    uint64_t geometryDigest = 1469598103934665603ull;
-    lap(breakdown.traceSetupMilliseconds);
-    breakdown.traceInstances += prepared.instances.size();
-    // Pass 1, serial in draw order: opacity partitions, mesh views and material
-    // slots. Descriptor slots are numbered by first use, so they stay in draw
-    // order; their fingerprints form the material part of the scene signature.
-    size_t partitionTotal = 0, preparedSurfaces = 0;
-    partitionOffsets.resize(prepared.instances.size());
-    for (size_t index = 0; index < prepared.instances.size(); ++index) {
-      const auto &instance = prepared.instances[index];
-      partitionOffsets[index] = partitionTotal;
-      partitionTotal += instance[0].draw.mesh->surfaces.size();
-      preparedSurfaces += instance.size();
+    sceneBytes = &signature.frame;
+    // Units of a static set that is not traced any more: once no committed
+    // frame needs their history, let them go.
+    if (!prepared.staticUnits && !resources.persistentStatic() && !statics.units().empty() &&
+        statics.committedAbsent()) {
+      tables.reset();
+      statics.clear();
     }
-    partitionStorage.assign(partitionTotal, nullptr); // Stable: conversions keep pointers.
-    instanceViews.resize(prepared.instances.size());
-    surfaceSlots.resize(preparedSurfaces);
+    lap(breakdown.traceSetupMilliseconds);
     if (!workers)
       workers = std::make_unique<WorkerPool>();
-    // Pass 0, parallel: partitions, and the views of instances whose lookup
-    // changes nothing (unstreamed and up to date); the rest look up in pass 1.
+    // The frame's tables: surface table, primary draws, TLAS inputs, SHARC
+    // and signature bytes, texture descriptors and temporal staging. With
+    // the persistent static set, its units' parts are kept across frames and
+    // only changed units are built again (frame_tables.h).
+    history.setFallback(&statics);
+    TableViews views{this, command};
+    const trace::FrameTables<TableViews>::Inputs tableInputs{prepared,
+                                                             &statics,
+                                                             history,
+                                                             previousVertices,
+                                                             pendingVertices,
+                                                             *workers,
+                                                             ++prepareSerial,
+                                                             options.pbrLocalReuse,
+                                                             digestEnabled,
+                                                             PathTracer::textureLimit,
+                                                             &materialTicks,
+                                                             &temporalTicks};
+    tables.build(views, tableInputs);
     {
-      ScopedTicks time{geometryTicks};
-      constexpr size_t instancesPerTask = 512;
-      const size_t count = prepared.instances.size();
-      workers->run((count + instancesPerTask - 1) / instancesPerTask, [&](size_t task) {
-        for (size_t index = task * instancesPerTask; index < std::min(count, (task + 1) * instancesPerTask); ++index) {
-          const auto &instance = prepared.instances[index];
-          auto *partitions = partitionStorage.data() + partitionOffsets[index];
-          for (const auto &preparedSurface : instance)
-            partitions[preparedSurface.draw.surfaceIndex] = preparedSurface.opacity.get();
-          const auto &draw = instance[0].draw;
-          instanceViews[index] = {findView(draw, partitions, draw.mesh->surfaces.size()), -1};
-        }
-      });
-    }
-    std::vector<uint8_t> materialScene;
-    auto appendMaterial = [&](const void *data, size_t size) {
-      const auto *bytes = static_cast<const uint8_t *>(data);
-      materialScene.insert(materialScene.end(), bytes, bytes + size);
-    };
-    size_t pendingConversions = 0;
-    for (size_t index = 0, slot = 0; index < prepared.instances.size(); ++index) {
-      const auto &instance = prepared.instances[index];
-      const auto &draw = instance[0].draw;
-      for (const auto &preparedSurface : instance) {
-        const auto &surface = preparedSurface.draw;
-        hasBlendedGeometry |= surface.blend.enabled;
-        decalMaterialsActive |= surface.decal;
-        const auto &material = *surface.material;
-        hasCacheReceivers |= surface.classification == 0 && !surface.blend.enabled &&
-                             (!material.pbr || material.roughnessTexture ||
-                              material.roughness >= REMIX_SHARC_PBR_MIN_ROUGHNESS);
-        const uint64_t materialStart = ticks();
-        // Every per-material field and descriptor slot is fixed by the first
-        // surface using the material this frame; later surfaces copy them.
-        auto [slots, firstUse] = materialSlots.try_emplace(surface.material.get());
-        if (firstUse) {
-          TraceSurface value;
-          if (textures.size() >= PathTracer::textureLimit)
-            throw VK_ERROR_TOO_MANY_OBJECTS;
-          value.textureState[0] = uint32_t(textures.size());
-          textures.push_back(resources.sampledMaterial(surface.material, command));
-          const auto fingerprint = material.texture->fingerprint();
-          appendMaterial(&fingerprint, sizeof(fingerprint));
-          const uint8_t sampler[] = {material.filter, material.wrapU, material.wrapV};
-          appendMaterial(sampler, sizeof(sampler));
-          value.pbr[0] = material.roughness;
-          value.pbr[1] = material.metallic;
-          value.pbr[2] = material.pbr ? 1.f : 0.f;
-          const auto decode = scene::materialDecode(material);
-          value.material[0] = decode.flags;
-          value.material[1] = decode.specularMetal;
-          value.material[2] = uint32_t(decode.tint[0]) | uint32_t(decode.tint[1]) << 16;
-          value.material[3] = decode.tint[2];
-          value.pbrTextures[3] =
-              material.normalEncoding == 1
-                  ? 2
-                  : (material.normalEncoding == 3 ? 4 : 0) |
-                        uint32_t(material.normalTexture && material.normalTexture->pixels.twoChannel);
-          const std::shared_ptr<scene::Texture> *maps[] = {&material.roughnessTexture, &material.metallicTexture,
-                                                           &material.normalTexture};
-          for (unsigned i = 0; i < 3; ++i) {
-            const auto &map = *maps[i];
-            if (!map)
-              continue;
-            auto [mapIndex, added] = pbrTextures.emplace(
-                std::make_tuple(map.get(), material.filter, material.wrapU, material.wrapV),
-                uint32_t(textures.size()));
-            if (added) {
-              if (textures.size() >= PathTracer::textureLimit)
-                throw VK_ERROR_TOO_MANY_OBJECTS;
-              textures.push_back(resources.sampledTexture(surface.material, map, command));
-              const auto fingerprint = map->fingerprint();
-              appendMaterial(&fingerprint, sizeof(fingerprint));
-            }
-            value.pbrTextures[i] = mapIndex->second + 1;
+      const auto &s = tables.statistics();
+      auto &out = staticStatistics;
+      out.active = prepared.staticUnits;
+      out.units = s.staticUnits;
+      out.surfaces = tables.prefixSurfaces();
+      out.reusedSurfaces = s.staticReused;
+      out.rebuiltSurfaces = s.staticRebuilt;
+      out.dynamicSurfaces = s.dynamicSurfaces;
+      out.rebuiltUnits = s.rebuiltUnits;
+      out.temporalSurfaces = s.temporalSurfaces;
+      out.relayouts = s.relayouts;
+      out.tableMilliseconds = s.staticMilliseconds;
+      if (staticValidation && prepared.staticUnits) {
+        ++out.validations;
+        const auto mismatch = tables.validate(views, tableInputs);
+        if (!mismatch.empty()) {
+          ++out.mismatches;
+          std::snprintf(out.mismatch, sizeof(out.mismatch), "%s", mismatch.c_str());
+          if (!staticMismatchLogged) {
+            staticMismatchLogged = true;
+            std::fprintf(stderr, "Persistent static set: kept tables differ from a rebuild: %s\n",
+                         mismatch.c_str());
           }
-          std::copy_n(material.emission, 3, value.emission);
-          if (material.emissionTexture &&
-              (material.emission[0] > 0 || material.emission[1] > 0 || material.emission[2] > 0)) {
-            if (textures.size() >= PathTracer::textureLimit)
-              throw VK_ERROR_TOO_MANY_OBJECTS;
-            value.textureState[2] = uint32_t(textures.size()) + 1;
-            textures.push_back(resources.sampledEmission(surface.material, command));
-            auto fingerprint = material.emissionTexture->fingerprint();
-            appendMaterial(&fingerprint, sizeof(fingerprint));
-          }
-          auto &entry = slots->second;
-          entry.albedo = value.textureState[0];
-          entry.emissive = value.textureState[2];
-          std::copy_n(value.pbr, 4, entry.pbr);
-          std::copy_n(value.material, 4, entry.decode);
-          std::copy_n(value.pbrTextures, 4, entry.maps);
-          std::copy_n(value.emission, 4, entry.emission);
-        }
-        surfaceSlots[slot++] = &slots->second;
-        materialTicks += ticks() - materialStart;
-      }
-      if (instanceViews[index].view)
-        continue;
-      if (pendingConversions == conversions.size())
-        conversions.emplace_back();
-      bool convert = false;
-      auto &view = meshView(draw, partitionStorage.data() + partitionOffsets[index], draw.mesh->surfaces.size(),
-                            conversions[pendingConversions], convert);
-      instanceViews[index] = {&view, convert ? int32_t(pendingConversions++) : -1};
-    }
-    // The CPU halves of this frame's conversions (skinning, BLAS input
-    // assembly and hashing) run on workers.
-    if (pendingConversions) {
-      ScopedTicks time{geometryTicks};
-      workers->run(pendingConversions, [&](size_t i) { convertMesh(conversions[i]); });
-    }
-    // Pass 2, serial in draw order: uploads, then every instance's ranges in
-    // the surface table and signature tables, exactly as appending would.
-    constexpr size_t staticInstanceBytes = 8 + 4 + sizeof(Matrix) + sizeof(uintptr_t) + 8 + 8;
-    constexpr size_t staticSurfaceBytes = 4 * 4 * 4;
-    constexpr size_t dynamicInstanceBytes = 8 + 4 + sizeof(Matrix) + 8 + 8;
-    constexpr size_t sceneInstanceBytes = sizeof(Matrix) + 8 + 8 + 4 + 4;
-    instanceLayouts.resize(prepared.instances.size());
-    size_t surfaceCount = 0, primaryCount = 0, inputCount[2] = {}, staticBytes = 0, dynamicBytes = 0;
-    for (size_t index = 0, slot = 0; index < prepared.instances.size(); ++index) {
-      const auto &instance = prepared.instances[index];
-      const auto &draw = instance[0].draw;
-      if (instanceViews[index].conversion >= 0)
-        commitMesh(command, conversions[instanceViews[index].conversion]);
-      const auto &geometry = *instanceViews[index].view->geometry;
-      if (digestEnabled)
-        geometryDigest = hashBytes(&instanceViews[index].view->contentDigest,
-                                   sizeof(instanceViews[index].view->contentDigest), geometryDigest);
-      if (surfaceCount > 0xffffffu)
-        throw VK_ERROR_TOO_MANY_OBJECTS;
-      auto &layout = instanceLayouts[index];
-      layout = {surfaceCount, primaryCount, inputCount[draw.classification]++, staticBytes, dynamicBytes, slot};
-      // Each surface takes its geometry groups, as the recording loop assigns them.
-      size_t groupIndex = 0;
-      for (const auto &preparedSurface : instance) {
-        do
-          ++surfaceCount, ++groupIndex;
-        while (groupIndex < geometry.groups.size() &&
-               geometry.groups[groupIndex].surface == preparedSurface.draw.surfaceIndex);
-      }
-      primaryCount += instance.size();
-      slot += instance.size();
-      if (draw.classification == 0)
-        staticBytes += staticInstanceBytes + staticSurfaceBytes * instance.size();
-      else
-        dynamicBytes += dynamicInstanceBytes;
-    }
-    surfaces.resize(surfaceCount);
-    primaryDraws.resize(primaryCount);
-    inputs[0].resize(inputCount[0]);
-    inputs[1].resize(inputCount[1]);
-    staticGeometry.resize(staticBytes);
-    dynamicGeometry.resize(dynamicBytes);
-    const size_t sceneBase = scene.size();
-    scene.resize(sceneBase + sceneInstanceBytes * prepared.instances.size());
-    // Pass 3, parallel: fill every instance's disjoint ranges. History and
-    // previous vertices are only read here; staging follows in pass 4.
-    auto fill = [&](size_t first, size_t last) {
-      uint32_t decodedFactor = 0;
-      bool factorDecoded = false;
-      float factorValues[4] = {};
-      for (size_t index = first; index < last; ++index) {
-        const auto &instance = prepared.instances[index];
-        const auto &draw = instance[0].draw;
-        const auto &layout = instanceLayouts[index];
-        const auto &view = *instanceViews[index].view;
-        const auto &geometry = *view.geometry;
-        // Frame-local identities never gain history (all surfaces share the id).
-        const uint64_t temporalId = prepared.persistentIds.count(draw.instanceId) ? draw.instanceId : 0;
-        const auto &model = draw.model;
-        auto write = [](uint8_t *&cursor, const void *data, size_t size) {
-          std::memcpy(cursor, data, size);
-          cursor += size;
-        };
-        uint8_t *staticCursor = staticGeometry.data() + layout.staticOffset;
-        if (draw.classification == 1) {
-          uint8_t *cursor = dynamicGeometry.data() + layout.dynamicOffset;
-          write(cursor, &draw.instanceId, sizeof(draw.instanceId));
-          write(cursor, &draw.instanceIndex, sizeof(draw.instanceIndex));
-          write(cursor, model.data(), sizeof(model));
-          write(cursor, &geometry.revision, sizeof(geometry.revision));
-          write(cursor, &geometry.fingerprint, sizeof(geometry.fingerprint));
-        }
-        if (draw.classification == 0) {
-          write(staticCursor, &draw.instanceId, sizeof(draw.instanceId));
-          write(staticCursor, &draw.instanceIndex, sizeof(draw.instanceIndex));
-          write(staticCursor, model.data(), sizeof(model));
-          const auto identity = reinterpret_cast<uintptr_t>(draw.mesh.get());
-          write(staticCursor, &identity, sizeof(identity));
-          write(staticCursor, &geometry.revision, sizeof(geometry.revision));
-          write(staticCursor, &geometry.fingerprint, sizeof(geometry.fingerprint));
-        }
-        float scale = 0;
-        for (int c = 0; c < 3; ++c)
-          scale = std::max(scale, std::hypot(model[c * 4], model[c * 4 + 1], model[c * 4 + 2]));
-        inputs[draw.classification][layout.input] = {draw.instanceId, geometry.accel->address, draw.instanceIndex,
-                                                     uint32_t(layout.surface), model, geometry.diagonal * scale,
-                                                     geometry.revision};
-        uint8_t *sceneCursor = scene.data() + sceneBase + sceneInstanceBytes * index;
-        write(sceneCursor, model.data(), sizeof(model));
-        write(sceneCursor, &view.fingerprint, sizeof(view.fingerprint));
-        write(sceneCursor, &draw.instanceId, sizeof(draw.instanceId));
-        write(sceneCursor, &draw.instanceIndex, sizeof(draw.instanceIndex));
-        write(sceneCursor, &draw.classification, sizeof(draw.classification));
-        size_t groupIndex = 0, next = layout.surface, primary = layout.primary, slot = layout.slot;
-        for (const auto &preparedSurface : instance) {
-          const auto &surface = preparedSurface.draw;
-          const auto &material = *surface.material;
-          const auto &entry = *surfaceSlots[slot++];
-          TraceSurface value;
-          value.textureState[0] = entry.albedo;
-          value.textureState[2] = entry.emissive;
-          std::copy_n(entry.pbr, 4, value.pbr);
-          std::copy_n(entry.decode, 4, value.material);
-          std::copy_n(entry.maps, 4, value.pbrTextures);
-          std::copy_n(entry.emission, 4, value.emission);
-          value.vertices = view.vertices.at(surface.surfaceIndex)->address;
-          const uint64_t debugKey[] = {surface.instanceId, surface.instanceIndex, surface.surfaceIndex};
-          value.debugIdentity = hashBytes(debugKey, sizeof(debugKey));
-          value.indices = geometry.input->address + geometry.indexOffsets.at(surface.surfaceIndex);
-          const scene::TemporalHistory::Key temporalKey{temporalId, surface.instanceIndex, surface.surfaceIndex};
-          // A texture upload (including an unrelated animated tile in a shared
-          // terrain atlas) does not change vertex correspondence. Keep motion and
-          // let per-pixel depth/normal rejection, lighting confidence and TAA color
-          // clipping respond to the shading that actually changed on screen.
-          if (const auto *previous = history.previousGeometry(surface, temporalId)) {
-            if (const auto *old = previousVertices.find(temporalKey)) {
-              value.previousVertices = (*old)->address;
-              value.previousModel = previous->draw.model;
-            }
-          }
-          std::copy_n(material.tint, 4, value.tint);
-          std::copy(preparedSurface.uv.begin(), preparedSurface.uv.end(), value.uv);
-          const auto &b = surface.blend;
-          // Blend factors are nearly always the same constant: decode each once.
-          if (b.factor != decodedFactor || !factorDecoded) {
-            decodedFactor = b.factor;
-            factorDecoded = true;
-            factorValues[0] = linear(float((b.factor >> 16) & 255) / 255);
-            factorValues[1] = linear(float((b.factor >> 8) & 255) / 255);
-            factorValues[2] = linear(float(b.factor & 255) / 255);
-            factorValues[3] = float(b.factor >> 24) / 255;
-          }
-          std::copy_n(factorValues, 4, value.factor);
-          value.state[0] = (b.colorOp & 3u) | (b.colorOp & 4u) << 10 | (b.alphaOpTexture & 4u) << 11 |
-                           b.color1 << 2 | b.color2 << 4 | (b.alphaOpTexture & 3u) << 6 | b.alpha1 << 8 |
-                           b.alpha2 << 10;
-          value.state[1] = surface.ignoreAlpha ? 7 : surface.alphaOverride ? surface.compare : material.compare;
-          const float reference = surface.alphaOverride ? surface.reference : material.reference;
-          std::memcpy(&value.state[2], &reference, 4);
-          value.state[3] = uint32_t(surface.ignoreAlpha) | uint32_t(b.enabled) << 1 |
-                           uint32_t(surface.doubleSided) << 2 | uint32_t(material.transmission) << 3 |
-                           uint32_t(draw.classification == 0) << 4 | uint32_t(material.translucent && !surface.decal) << 5 | uint32_t(surface.decal) << 6;
-          if (draw.classification == 0) {
-            write(staticCursor, value.tint, sizeof(value.tint));
-            write(staticCursor, value.factor, sizeof(value.factor));
-            write(staticCursor, value.state, sizeof(value.state));
-            write(staticCursor, value.material, sizeof(value.material));
-          }
-          primaryDraws[primary++] = {model, uint32_t(next), uint32_t(surface.surface->indices.size()), b.enabled};
-          do {
-            const auto &group = geometry.groups.at(groupIndex++);
-            value.triangleMap = group.triangleMap ? geometry.input->address + group.triangleMap : 0;
-            value.traceIndices = geometry.input->address + group.indices;
-            surfaces[next++] = value;
-          } while (groupIndex < geometry.groups.size() &&
-                   geometry.groups[groupIndex].surface == surface.surfaceIndex);
         }
       }
-    };
-    constexpr size_t instancesPerTask = 256;
-    const size_t tasks = (prepared.instances.size() + instancesPerTask - 1) / instancesPerTask;
-    workers->run(tasks, [&](size_t task) {
-      fill(task * instancesPerTask, std::min(prepared.instances.size(), (task + 1) * instancesPerTask));
-    });
-    scene.insert(scene.end(), materialScene.begin(), materialScene.end());
-    // Pass 4, serial: previous-vertex and history staging. Consumes the
-    // prepared draws: each surface moves into the temporal history.
-    const uint64_t stageStart = ticks();
-    for (size_t index = 0; index < prepared.instances.size(); ++index) {
-      auto instance = prepared.instances[index];
-      const auto &draw = instance[0].draw;
-      const uint64_t temporalId = prepared.persistentIds.count(draw.instanceId) ? draw.instanceId : 0;
-      const auto &view = *instanceViews[index].view;
-      if (options.pbrLocalReuse)
-        for (const auto &preparedSurface : instance) {
-          const auto &surface = preparedSurface.draw;
-          const uint64_t debugKey[] = {surface.instanceId, surface.instanceIndex, surface.surfaceIndex};
-          const uint64_t values[] = {view.fingerprint, hashBytes(debugKey, sizeof(debugKey)),
-                                     scene::TemporalHistory::materialSignature(surface),
-                                     preparedSurface.animationFrame};
-          reuseSignature = hashBytes(values, sizeof(values), reuseSignature);
-          reuseSignature = hashBytes(draw.model.data(), sizeof(draw.model), reuseSignature);
-        }
-      if (!temporalId)
-        continue;
-      for (const auto &preparedSurface : instance)
-        pendingVertices.emplace({temporalId, preparedSurface.draw.instanceIndex, preparedSurface.draw.surfaceIndex},
-                                view.vertices.at(preparedSurface.draw.surfaceIndex));
-      for (auto &preparedSurface : instance)
-        history.stage(std::move(preparedSurface.draw), temporalId, preparedSurface.animationFrame);
     }
-    temporalTicks += ticks() - stageStart;
+    const auto flags = tables.flags();
+    uint64_t reuseSignature = tables.reuseSignature();
+    const bool hasCacheReceivers = flags.receivers, hasBlendedGeometry = flags.blended;
+    decalMaterialsActive = flags.decal;
+    // Texture descriptors in first-use order: the static prefix's (resolved
+    // again only when the prefix changes) and the frame's other materials.
+    {
+      ScopedTicks time{materialTicks};
+      auto sampled = [&](const trace::DescriptorRequest &request) {
+        switch (request.kind) {
+        case trace::DescriptorRequest::Albedo:
+          return resources.sampledMaterial(request.material, command);
+        case trace::DescriptorRequest::Map:
+          return resources.sampledTexture(request.material, *request.texture, command);
+        default:
+          return resources.sampledEmission(request.material, command);
+        }
+      };
+      textures.reserve(tables.requestCount() + 1);
+      if (const auto *prefix = tables.prefix()) {
+        if (prefixTexturesGeneration != prefix->generation) {
+          prefixTextures.clear();
+          for (const auto &request : prefix->requests)
+            prefixTextures.push_back(sampled(request));
+          prefixTexturesGeneration = prefix->generation;
+        }
+        textures = prefixTextures;
+      }
+      for (const auto &request : tables.tail().requests)
+        textures.push_back(sampled(request));
+    }
+    breakdown.traceInstances += tables.instanceCount();
     lap(breakdown.traceSurfacesMilliseconds);
-    reserveSurfaces = surfaces.size();
-    reserveStatic = staticGeometry.size();
-    reserveDynamic = dynamicGeometry.size();
-    reserveInputs[0] = inputs[0].size();
-    reserveInputs[1] = inputs[1].size();
-    breakdown.traceSurfaces += surfaces.size();
-    breakdown.primaryDraws += primaryDraws.size();
+    breakdown.traceSurfaces += tables.surfaceCount();
+    breakdown.primaryDraws += tables.primaryCount();
     // Retire absent deformation instances after their last-use fence. Rigid
     // geometry remains cached for the lifetime of its shared CPU mesh.
     for (auto it = meshes.begin(); it != meshes.end();) {
@@ -459,52 +202,74 @@ namespace remix {
     buildBottom(command);
     // Compaction is also an AS write, including on a frame with no new BLAS work.
     barrier(command, buildStage, asWrite, buildStage, asRead);
-    buildTop(command, inputs, options.forceRebuild);
+    buildTop(command, tables.staticInputs(), tables.dynamicInputs(), options.forceRebuild,
+             tables.staticGeneration());
     barrier(command, buildStage, asWrite, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, asRead);
     if (timestamps)
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, timestamps, 1);
     lap(breakdown.traceAccelerationMilliseconds);
-    if (surfaces.empty())
-      surfaces.emplace_back();
-    for (const auto &surface : surfaces)
-      append(&surface, offsetof(TraceSurface, previousVertices));
+    // An empty frame uploads one default surface.
+    const TraceSurface emptySurface{};
+    const size_t prefixSurfaceCount = tables.prefixSurfaces(), tailSurfaceCount = tables.tail().surfaces.size();
+    const bool noSurfaces = !prefixSurfaceCount && !tailSurfaceCount;
+    const size_t surfaceCount = noSurfaces ? 1 : prefixSurfaceCount + tailSurfaceCount;
+    const void *prefixData = prefixSurfaceCount ? tables.prefix()->surfaces.data() : nullptr;
+    const void *tailData = noSurfaces ? &emptySurface : tables.tail().surfaces.data();
+    const size_t prefixBytes = prefixSurfaceCount * sizeof(TraceSurface);
+    const size_t tableBytes = surfaceCount * sizeof(TraceSurface);
+    tables.signature(signature);
     if (digestEnabled) {
       // Device addresses depend on allocation order; hash everything else.
-      digest = geometryDigest;
-      for (const auto &surface : surfaces) {
+      digest = tables.geometryDigest();
+      auto hashSurface = [&](const TraceSurface &surface) {
         auto copy = surface;
         const bool history = copy.previousVertices != 0;
         copy.vertices = copy.indices = copy.triangleMap = copy.traceIndices = 0;
         copy.previousVertices = history;
         digest = hashBytes(&copy, sizeof(copy), digest);
-      }
+      };
+      if (noSurfaces)
+        hashSurface(emptySurface);
+      for (size_t i = 0; i < prefixSurfaceCount + tailSurfaceCount; ++i)
+        hashSurface(tables.surface(i));
       for (unsigned i = 0; i < 2; ++i)
-        for (const auto &input : inputs[i]) {
+        for (const auto &input : i ? tables.dynamicInputs() : tables.staticInputs()) {
           // boundsRevision counts rebuilds since startup: frame-count dependent.
           const uint64_t values[] = {i, input.id, input.sub, input.customIndex};
           digest = hashBytes(values, sizeof(values), digest);
           digest = hashBytes(input.model.data(), sizeof(input.model), digest);
           digest = hashBytes(&input.diagonal, sizeof(input.diagonal), digest);
         }
-      for (const auto &draw : primaryDraws) {
+      for (size_t i = 0; i < tables.primaryCount(); ++i) {
+        const auto &draw = tables.primary(i);
         const uint32_t values[] = {draw.surfaceIndex, draw.count, draw.blended};
         digest = hashBytes(draw.model.data(), sizeof(draw.model), digest);
         digest = hashBytes(values, sizeof(values), digest);
       }
     }
     lap(breakdown.signatureMilliseconds);
-    const auto tableBytes = surfaces.size() * sizeof(surfaces[0]);
     // A diagnostic placement switch replaces only this completed slot's table.
-    if (table && table->host == deviceLocalScene)
+    if (table && table->host == deviceLocalScene) {
       table.reset();
+      tableVersion = 0;
+    }
     if (deviceLocalScene) {
-      hostBuffer(tableUpload, surfaces.data(), tableBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+      if (!tableUpload || tableUpload->size < tableBytes)
+        tableUpload = buffer(tableBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true);
+      write(*tableUpload, {{prefixData, prefixBytes}, {tailData, tableBytes - prefixBytes}});
       if (!table || table->size < tableBytes)
         table = buffer(tableBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
       const VkBufferCopy copy{.size = tableBytes};
       vkCmdCopyBuffer(command, tableUpload->handle, table->handle, 1, &copy);
     } else {
-      hostBuffer(table, surfaces.data(), tableBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+      // This slot's table may already hold the kept static prefix.
+      bool kept = table && table->size >= tableBytes && tableVersion && tableVersion == tables.prefixVersion();
+      if (!table || table->size < tableBytes) {
+        table = buffer(tableBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
+        kept = false;
+      }
+      write(*table, {{prefixData, prefixBytes}, {tailData, tableBytes - prefixBytes}}, kept ? prefixBytes : 0);
+      tableVersion = tables.prefixVersion();
     }
     lap(breakdown.tableMilliseconds);
     // Emission constants, UVs and texture fingerprints already participate in
@@ -622,7 +387,7 @@ namespace remix {
     frame.config[1] = options.bounces;
     frame.target[0] = extent.width;
     frame.target[1] = extent.height;
-    frame.target[2] = uint32_t(!inputs[0].empty()) | uint32_t(!inputs[1].empty()) << 1;
+    frame.target[2] = uint32_t(!tables.staticInputs().empty()) | uint32_t(!tables.dynamicInputs().empty()) << 1;
     frame.target[3] = options.rasterPrimary;
     // Reserved private word; included in scene-change detection. Raw/reference
     // and multi-sample rendering retain one estimator at every surface pixel.
@@ -651,15 +416,17 @@ namespace remix {
     const auto temporalEpoch = resources.temporalEpoch();
     append(&temporalEpoch, sizeof(temporalEpoch));
     lap(breakdown.lightingMilliseconds);
-    configureSharc(frame, options, temporalEpoch, std::move(staticGeometry), std::move(dynamicGeometry),
-                   hasCacheReceivers);
+    configureSharc(frame, options, temporalEpoch, tables.staticBytes(), tables.staticGeneration(),
+                   tables.dynamicBytes(), hasCacheReceivers);
     lap(breakdown.sharcMilliseconds);
-    reserveScene = scene.size();
-    const bool sceneChanged = scene != lastScene;
+    // Equal signatures stay interchangeable: keep the newest, whose prefix is
+    // the one kept (an older prefix would otherwise stay alive with it).
+    const bool sceneChanged = !signature.equal(lastScene);
+    lastScene = std::move(signature);
     if (sceneChanged || history.reset())
       reconstructionWarmFrames = 0;
     // An unchanged world can reuse its cached output once both histories are warm.
-    if (scene == lastScene && !profileEveryFrame && !std::getenv("REMIX_PATH_LINEAR_CAPTURE") &&
+    if (!sceneChanged && !profileEveryFrame && !std::getenv("REMIX_PATH_LINEAR_CAPTURE") &&
         !options.accumulate && !debugView && !postProcessing->needsGuide() && denoiser && !denoiser->statistics().redrawRequested &&
         !history.reset() && !(upscaler && reconstructionWarmFrames < 128) &&
         !(sharc.stats.active && sharc.hasReceivers && sharc.warmFrames < 2 * options.sharcAccumulationFrames))
@@ -667,7 +434,6 @@ namespace remix {
     if (sceneChanged) {
       ++stats.sceneGeneration;
       stats.accumulationCount = 0;
-      lastScene = std::move(scene);
     }
     lap(breakdown.signatureMilliseconds);
     if (options.accumulate != bool(stats.accumulationEnabled))
@@ -691,17 +457,21 @@ namespace remix {
     previousLocalActive = frame.localConfig[0];
     previousLocalAdaptive = frame.localConfig[3] & 0x80000000u;
     temporalFrame = {};
+    // The frame's draws, and the static set's when it is traced from its units.
+    const bool staticUnits = prepared.staticUnits;
     temporalFrame.shadow[2] =
+        (staticUnits && statics.livePbrSurfaces()) ||
         std::any_of(resources.draws().begin(), resources.draws().end(),
                     [](const auto &draw) { return draw.traced() && draw.material->pbr; });
     temporalFrame.shadow[3] =
+        (staticUnits && statics.liveSurfaces() > statics.livePbrSurfaces()) ||
         std::any_of(resources.draws().begin(), resources.draws().end(),
                     [](const auto &draw) { return draw.traced() && !draw.material->pbr; });
+    // Table entries with blending enabled (state[3] bit 1): blended geometry.
     temporalFrame.translucency[0] = denoiser && (postReblur || (rrActive() && postCapabilities.reblurShSupported)) && options.translucencyDenoiser &&
-        std::any_of(surfaces.begin(), surfaces.end(), [](const auto &surface) { return (surface.state[3] & 2u) != 0; });
+        hasBlendedGeometry;
     temporalFrame.translucency[1] = denoiser && postReblur && !rrActive() && options.translucencyReuse &&
-        options.bounces > 0 && options.indirectClamp == 0 && !debugView &&
-        std::any_of(surfaces.begin(), surfaces.end(), [](const auto &surface) { return (surface.state[3] & 2u) != 0; });
+        options.bounces > 0 && options.indirectClamp == 0 && !debugView && hasBlendedGeometry;
     temporalFrame.local[0] = denoiser && postLocalDenoise;
     temporalFrame.local[1] = frame.localConfig[0];
     temporalFrame.local[2] = localResponsiveFrames;
@@ -813,7 +583,7 @@ namespace remix {
       reuseSignature = hashBytes(settings, sizeof(settings), reuseSignature);
     }
     configurePbrReuse(command, frame, options, reuseSignature,
-                      inputs[1].empty() && temporalFrame.local[2] == 0 && !history.reset());
+                      tables.dynamicInputs().empty() && temporalFrame.local[2] == 0 && !history.reset());
     const bool querySharc = sharc.stats.active && (sharc.hasReceivers || options.sharcDebug);
     configureIndirect(frame, options, querySharc);
     beginRayProfile(command, frame);
@@ -837,7 +607,7 @@ namespace remix {
       textures.push_back(resources.sampledMaterial(resources.defaultMaterial(), command));
     breakdown.textureDescriptors += textures.size();
     textures.resize(PathTracer::textureLimit, textures.front());
-    VkDescriptorBufferInfo buffers[] = {{table->handle, 0, surfaces.size() * sizeof(surfaces[0])},
+    VkDescriptorBufferInfo buffers[] = {{table->handle, 0, tableBytes},
                                         {uniform->handle, 0, sizeof(frame)}};
     VkDescriptorImageInfo images[] = {{VK_NULL_HANDLE, world->view, VK_IMAGE_LAYOUT_GENERAL},
                                       {VK_NULL_HANDLE, transmission->view, VK_IMAGE_LAYOUT_GENERAL},
@@ -1058,7 +828,7 @@ namespace remix {
                                  frame.indirectResults,
                                  stats.sceneGeneration,
                                  stats.staticTlasBuilds,
-                                 hashBytes(surfaces.data(), surfaces.size() * sizeof(surfaces[0]))};
+                                 hashBytes(tailData, tableBytes - prefixBytes, hashBytes(prefixData, prefixBytes))};
       traceState.clear();
       for (auto value : values) {
         traceState += std::to_string(value);
@@ -1101,50 +871,55 @@ namespace remix {
     stats.peakAccelerationBytes = std::max(stats.accelerationBytes, stats.peakAccelerationBytes);
   }
 
-  scene::TraceFrame PathTracer::prepareScene(const RasterRenderer &resources,
-                                             const TraceOptions &options) const {
+  scene::TraceFrame PathTracer::prepareScene(RasterRenderer &resources, const TraceOptions &options) const {
     using Clock = std::chrono::steady_clock;
+    auto &g = *m_gpu;
     const char *profile = std::getenv("REMIX_OPACITY_PROFILE");
     const auto start = profile ? Clock::now() : Clock::time_point{};
-    auto frame = scene::prepareTraceFrame(
-        resources.draws(),
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - m_gpu->epoch).count(),
-        options.emissiveLights && options.localLights &&
-            (options.freezeEmissiveRadiance || options.stabilizeEmissiveLighting),
-        m_gpu->surfaceEmissionCache);
-    const auto prepared = profile ? Clock::now() : Clock::time_point{};
-    // Coverage proof is CPU-only and can overlap the previous GPU submission.
-    // Keep the result on this immutable frame, alongside its animated UVs.
-    // Cached partitions are found on workers; the rest (new, revalidated or
-    // replaced entries) go through partition() in draw order, as before. The
-    // profile's lookup and hit counters need every lookup in partition().
-    if (!profile) {
-      if (!m_gpu->workers)
-        m_gpu->workers = std::make_unique<WorkerPool>();
-      constexpr size_t instancesPerTask = 512;
-      const size_t count = frame.instances.size();
-      m_gpu->workers->run((count + instancesPerTask - 1) / instancesPerTask, [&](size_t task) {
-        for (size_t i = task * instancesPerTask; i < std::min(count, (task + 1) * instancesPerTask); ++i)
-          for (auto &surface : frame.instances[i])
-            surface.opacity = m_gpu->opacityCache.find(surface.draw, surface.uv);
-      });
+    if (!g.workers)
+      g.workers = std::make_unique<WorkerPool>();
+    const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - g.epoch).count();
+    const bool filterEmission = options.emissiveLights && options.localLights &&
+                                (options.freezeEmissiveRadiance || options.stabilizeEmissiveLighting);
+    // The persistent static set stays in the tracer's units (updated from the
+    // handles that changed); the frame's other draws are prepared as before:
+    // coverage proof is CPU-only and can overlap the previous GPU submission,
+    // and cached partitions are found on workers, the rest proved in draw
+    // order. The opacity profile's lookup and hit counters need every lookup
+    // in partition(): it traces the static set as draws.
+    g.statics.resetStatistics();
+    Clock::time_point prepared{};
+    scene::TraceFrame frame;
+    if (profile) {
+      resources.expandStatic();
+      frame = scene::prepareTraceFrame(resources.draws(), seconds, filterEmission, g.surfaceEmissionCache);
+      prepared = Clock::now();
+      for (auto instance : frame.instances)
+        for (auto &surface : instance)
+          surface.opacity = g.opacityCache.partition(surface.draw, surface.uv);
+    } else {
+      frame = scene::prepareSceneFrame(resources, &g.statics, g.opacityCache, g.workers.get(), false, seconds,
+                                       filterEmission, g.surfaceEmissionCache);
     }
-    for (auto instance : frame.instances)
-      for (auto &surface : instance)
-        if (!surface.opacity)
-          surface.opacity = m_gpu->opacityCache.partition(surface.draw, surface.uv);
     const auto classified = profile ? Clock::now() : Clock::time_point{};
     m_gpu->opacityCache.prune();
     const auto pruned = profile ? Clock::now() : Clock::time_point{};
     if (std::getenv("REMIX_OPACITY_DIAGNOSTICS")) {
       uint64_t reasons[scene::OpacityPartition::Count] = {}, mixed = 0;
+      auto count = [&](const scene::TraceFrame::Surface &surface) {
+        const auto &partition = surface.opacity;
+        mixed += partition->key[0] == 2;
+        for (unsigned i = 0; i < scene::OpacityPartition::Count; ++i)
+          reasons[i] += partition->reasons[i];
+      };
       for (const auto &instance : frame.instances)
-        for (const auto &surface : instance) {
-          const auto &partition = surface.opacity;
-          mixed += partition->key[0] == 2;
-          for (unsigned i = 0; i < scene::OpacityPartition::Count; ++i)
-            reasons[i] += partition->reasons[i];
-        }
+        for (const auto &surface : instance)
+          count(surface);
+      if (frame.staticUnits)
+        for (const uint32_t slot : g.statics.order())
+          if (!g.statics.units()[slot].singular)
+            for (const auto &surface : g.statics.units()[slot].surfaces)
+              count(surface);
       std::fprintf(stderr, "OPACITY mixed_surfaces=%llu", static_cast<unsigned long long>(mixed));
       const char *names[] = {"solid",   "one_sided",       "blended",          "transmission",  "alpha_test",
                              "invalid", "missing_texture", "texture_boundary", "texture_cutout"};
@@ -1194,6 +969,95 @@ namespace remix {
       }
     }
     return frame;
+  }
+
+  // The frame's mesh views, in draw order: pass 0 finds the views whose lookup
+  // changes nothing (unstreamed and up to date) on workers, together with the
+  // opacity partitions; pass 1 looks up the rest serially (new views,
+  // conversions and streamed lineages, whose transfers depend on order); the
+  // CPU halves of the conversions (skinning, BLAS input assembly and hashing)
+  // run on workers, and the uploads follow in draw order.
+  void PathTracer::Gpu::TableViews::resolveViews(const std::vector<Span> &instances,
+                                                 std::vector<const MeshView *> &views) {
+    auto &g = *gpu;
+    const size_t count = instances.size();
+    size_t partitionTotal = 0;
+    g.partitionOffsets.resize(count);
+    for (size_t index = 0; index < count; ++index) {
+      g.partitionOffsets[index] = partitionTotal;
+      partitionTotal += instances[index][0].draw.mesh->surfaces.size();
+    }
+    g.partitionStorage.assign(partitionTotal, nullptr); // Stable: conversions keep pointers.
+    g.instanceViews.resize(count);
+    {
+      ScopedTicks time{g.geometryTicks};
+      constexpr size_t instancesPerTask = 512;
+      g.workers->run((count + instancesPerTask - 1) / instancesPerTask, [&](size_t task) {
+        for (size_t index = task * instancesPerTask; index < std::min(count, (task + 1) * instancesPerTask);
+             ++index) {
+          const auto instance = instances[index];
+          auto *partitions = g.partitionStorage.data() + g.partitionOffsets[index];
+          for (const auto &preparedSurface : instance)
+            partitions[preparedSurface.draw.surfaceIndex] = preparedSurface.opacity.get();
+          const auto &draw = instance[0].draw;
+          g.instanceViews[index] = {g.findView(draw, partitions, draw.mesh->surfaces.size()), -1};
+        }
+      });
+    }
+    size_t pendingConversions = 0;
+    for (size_t index = 0; index < count; ++index) {
+      if (g.instanceViews[index].view)
+        continue;
+      const auto &draw = instances[index][0].draw;
+      if (pendingConversions == g.conversions.size())
+        g.conversions.emplace_back();
+      bool convert = false;
+      auto &view = g.meshView(draw, g.partitionStorage.data() + g.partitionOffsets[index],
+                              draw.mesh->surfaces.size(), g.conversions[pendingConversions], convert);
+      g.instanceViews[index] = {&view, convert ? int32_t(pendingConversions++) : -1};
+    }
+    if (pendingConversions) {
+      ScopedTicks time{g.geometryTicks};
+      g.workers->run(pendingConversions, [&](size_t i) { convertMesh(g.conversions[i]); });
+    }
+    views.resize(count);
+    for (size_t index = 0; index < count; ++index) {
+      if (g.instanceViews[index].conversion >= 0)
+        g.commitMesh(command, g.conversions[g.instanceViews[index].conversion]);
+      views[index] = g.instanceViews[index].view;
+    }
+  }
+
+  bool PathTracer::Gpu::TableViews::findViews(const std::vector<Span> &instances,
+                                              std::vector<const MeshView *> &views) {
+    auto &g = *gpu;
+    views.resize(instances.size());
+    std::vector<const scene::OpacityPartition *> partitions;
+    for (size_t index = 0; index < instances.size(); ++index) {
+      const auto instance = instances[index];
+      const auto &draw = instance[0].draw;
+      partitions.assign(draw.mesh->surfaces.size(), nullptr);
+      for (const auto &preparedSurface : instance)
+        partitions[preparedSurface.draw.surfaceIndex] = preparedSurface.opacity.get();
+      views[index] = g.findView(draw, partitions.data(), partitions.size());
+      if (!views[index])
+        return false;
+    }
+    return true;
+  }
+
+  PathTracer::StaticStatistics PathTracer::staticStatistics() const {
+    auto out = m_gpu->staticStatistics;
+    const auto &sync = m_gpu->statics.statistics();
+    out.changes = sync.changes;
+    out.syncMilliseconds = sync.milliseconds;
+    return out;
+  }
+
+  void PathTracer::setStaticValidation(bool enabled) {
+    m_gpu->staticValidation = enabled;
+    if (!enabled)
+      m_gpu->staticMismatchLogged = false;
   }
 
   void PathTracer::prepare(VkCommandBuffer command, RasterRenderer &resources, const TraceOptions &options,

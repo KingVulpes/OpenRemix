@@ -15,6 +15,7 @@ namespace remix {
     primaryRecording.reset = false; // This slot's secondaries have completed.
     retiredGeometry.clear();
     retiredBuffers.clear();
+    retiredStates.clear();
     retired.clear();
     bufferCache->trimMemory(bufferMemory);
     std::erase_if(bufferMemory, [](const auto &block) { return block.use_count() == 1; });
@@ -76,6 +77,7 @@ namespace remix {
         retired.push_back(compact);
         retired.push_back(std::move(geometry.accel));
         geometry.accel = std::move(compact);
+        tables.compacted(&geometry); // Kept TLAS inputs follow the new address.
         ++stats.blasCompactions;
       }
       compactPending.clear();

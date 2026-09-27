@@ -155,7 +155,7 @@ namespace remix {
     const bool perspective = m_raster.cameraValid() &&
                              upscale::supportsCamera(m_raster.projection());
     const bool detectedLocal =
-        m_raster.hasSphereLights() ||
+        m_raster.hasSphereLights() || m_raster.staticEmissiveCount() ||
         std::any_of(m_raster.draws().begin(), m_raster.draws().end(),
                     [](const auto &draw) {
                       const auto &e = draw.material->emission;

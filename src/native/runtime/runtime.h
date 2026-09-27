@@ -226,6 +226,8 @@ private:
   // Completed values of the previous attempt, for the Diagnostics panel.
   remixapi_FramePerformanceEXT m_previousPerformance{};
   remixapi_FrameBreakdownEXT m_previousBreakdown{};
+  // The persistent static set of this and the previous attempt.
+  PathTracer::StaticStatistics m_staticStatistics{}, m_previousStatic{};
   bool m_frameStarted = false;
   bool m_failed = false;
   bool m_deviceLost = false;

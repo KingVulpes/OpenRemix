@@ -20,6 +20,8 @@ namespace remix {
     swap(timingPending, frame.timingPending);
     swap(traceState, frame.traceState);
     swap(table, frame.table);
+    swap(tableVersion, frame.tableVersion);
+    swap(retiredStates, frame.retiredStates);
     swap(tableUpload, frame.tableUpload);
     swap(uniform, frame.uniform);
     swap(scratch, frame.scratch);
@@ -125,6 +127,10 @@ namespace remix {
         vkDestroyQueryPool(device, frame.sharcTimestamps, nullptr);
       frame = {};
     }
+    // Kept static tables refer to the views, and history states hold buffers.
+    tables.reset();
+    statics.clear();
+    retiredStates.clear();
     retiredGeometry.clear();
     retiredBuffers.clear();
     meshes.clear();
@@ -227,7 +233,7 @@ namespace remix {
     transmission.reset();
     extent = {};
     imagesInitialized = false;
-    lastScene.clear();
+    lastScene = {};
     stats.accumulationCount = 0;
   }
 

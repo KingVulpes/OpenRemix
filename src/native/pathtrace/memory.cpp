@@ -113,6 +113,32 @@ namespace remix {
     check(result);
   }
 
+  void PathTracer::Gpu::write(Buffer &buffer, std::initializer_list<std::pair<const void *, size_t>> parts,
+                              size_t offset) {
+    size_t size = 0;
+    for (const auto &part : parts)
+      size += part.second;
+    if (size <= offset)
+      return;
+    ScopedMilliseconds time{performance.uploadMilliseconds};
+    performance.uploadBytes += size - offset;
+    if (!buffer.mapped)
+      check(vkMapMemory(device, buffer.memory, 0, VK_WHOLE_SIZE, 0, &buffer.mapped));
+    size_t position = 0;
+    for (const auto &[data, bytes] : parts) {
+      const size_t skip = offset > position ? std::min(offset - position, bytes) : 0;
+      if (bytes > skip)
+        std::memcpy(static_cast<char *>(buffer.mapped) + position + skip, static_cast<const char *>(data) + skip,
+                    bytes - skip);
+      position += bytes;
+    }
+    VkMappedMemoryRange flush = {
+        .sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = buffer.memory,
+        .offset = buffer.memoryOffset,
+        .size = buffer.block ? align(size, buffer.atomSize) : VK_WHOLE_SIZE};
+    check(vkFlushMappedMemoryRanges(device, 1, &flush));
+  }
+
   void PathTracer::Gpu::hostBuffer(std::unique_ptr<Buffer> &out, const void *data, size_t size,
                                    VkBufferUsageFlags usage) {
     if (!out || out->size < size)

@@ -166,6 +166,23 @@ namespace remix {
                           {"Present: release", b.presentReleaseMilliseconds}};
       for (const auto &row : rows)
         ImGui::Text("%-18s %7.3f ms", row.name, row.value);
+      // The persistent static set: its sync is part of scene, its tables part
+      // of trace surfaces.
+      const auto &st = m_previousStatic;
+      ImGui::Text("%-18s %7.3f ms", "Static sync", st.syncMilliseconds);
+      ImGui::Text("%-18s %7.3f ms", "Static tables", st.tableMilliseconds);
+      if (st.active)
+        ImGui::TextWrapped("Static set: %llu instances, surfaces reused %llu, rebuilt %llu (%llu instances); "
+                           "dynamic surfaces %llu; changes %llu, layouts %llu, temporal %llu",
+                           (unsigned long long)st.units, (unsigned long long)st.reusedSurfaces,
+                           (unsigned long long)st.rebuiltSurfaces, (unsigned long long)st.rebuiltUnits,
+                           (unsigned long long)st.dynamicSurfaces, (unsigned long long)st.changes,
+                           (unsigned long long)st.relayouts, (unsigned long long)st.temporalSurfaces);
+      else
+        ImGui::TextWrapped("Static set: not in use (dynamic surfaces %llu)", (unsigned long long)st.dynamicSurfaces);
+      if (st.validations)
+        ImGui::TextWrapped("Static validation: %llu mismatches%s%s", (unsigned long long)st.mismatches,
+                           st.mismatches ? ": " : "", st.mismatches ? st.mismatch : "");
       ImGui::TextWrapped("Instances %llu, surfaces %llu, primary draws %llu, raster draws %llu, textures %llu",
                          (unsigned long long)b.traceInstances, (unsigned long long)b.traceSurfaces,
                          (unsigned long long)b.primaryDraws, (unsigned long long)b.rasterDraws,

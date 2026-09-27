@@ -1,5 +1,6 @@
 #pragma once
 #include "pathtrace/buffer_cache.h"
+#include "pathtrace/frame_tables.h"
 #include "pathtrace/renderer.h"
 #include "pathtrace/tlas_policy.h"
 #include "platform/timing.h"
@@ -7,6 +8,7 @@
 #include "scene/emission.h"
 #include "scene/light_bvh.h"
 #include "scene/opacity.h"
+#include "scene/static_scene.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -78,19 +80,8 @@ namespace remix::trace::detail {
     float uv[4] = {};
     float color[4] = {};
   };
-  struct TraceSurface {
-    uint64_t vertices = 0, indices = 0;
-    float tint[4] = {}, uv[4] = {}, factor[4] = {};
-    uint32_t state[4] = {}, textureState[4] = {};
-    uint64_t triangleMap = 0, traceIndices = 0;
-    uint64_t previousVertices = 0, debugIdentity = 0;
-    Matrix previousModel{};
-    float emission[4] = {};
-    float pbr[4] = {};            // perceptual roughness, metalness, enabled, reserved
-    uint32_t pbrTextures[4] = {}; // roughness, metalness, normal; index + 1
-    uint32_t material[4] = {};    // scene::MaterialDecode: flags, specular metal, tint halves r|g, b
-  };
-  static_assert(sizeof(TraceSurface) == 256 && sizeof(TraceVertex) == 48);
+  // TraceSurface: pathtrace/frame_tables.h.
+  static_assert(sizeof(TraceVertex) == 48);
   struct Frame {
     Matrix inverseCamera, camera;
     float eye[4] = {}, direction[4] = {}, radiance[4] = {};
@@ -123,7 +114,6 @@ namespace remix::trace::detail {
                 offsetof(Frame, sharcHash) == 240 && offsetof(Frame, sharcConfig) == 272 &&
                 offsetof(Frame, sharcGrid) == 288 && offsetof(Frame, sharcPreviousCamera) == 304 &&
                 offsetof(Frame, sun) == 320);
-  inline float linear(float c) { return c <= .04045f ? c / 12.92f : std::pow((c + .055f) / 1.055f, 2.4f); }
   inline void barrier(VkCommandBuffer command, VkPipelineStageFlags source, VkAccessFlags writes,
                       VkPipelineStageFlags destination, VkAccessFlags reads) {
     VkMemoryBarrier b = {
@@ -284,11 +274,7 @@ namespace remix {
     postfx::Renderer *postProcessing = nullptr;
     bool retainPostExposure = false;
     VkDescriptorSetLayout postSetLayout{};
-    struct PrimaryDraw {
-      scene::Matrix model;
-      uint32_t surfaceIndex = 0, count = 0;
-      bool blended = false;
-    };
+    using PrimaryDraw = trace::PrimaryDraw;
     struct PrimaryPush {
       scene::Matrix model;
       float jitter[2] = {};
@@ -297,21 +283,9 @@ namespace remix {
     };
     static_assert(sizeof(PrimaryPush) == 96);
     std::array<float, 4> primaryReverseDepth{};
-    std::vector<PrimaryDraw> primaryDraws;
-    // Per-material surface fields of the frame being prepared (Gpu::prepare).
-    struct MaterialSlots {
-      uint32_t albedo = 0, emissive = 0;
-      float pbr[4] = {}, emission[4] = {};
-      uint32_t decode[4] = {}, maps[4] = {};
-    };
-    std::unordered_map<const scene::Material *, MaterialSlots> materialSlots;
-    std::vector<const MaterialSlots *> surfaceSlots; // per prepared surface, in draw order
-    // Each instance's ranges in the frame's surface, primary, instance and
-    // signature tables, so the tables can be filled in parallel.
-    struct InstanceLayout {
-      size_t surface = 0, primary = 0, input = 0, staticOffset = 0, dynamicOffset = 0, slot = 0;
-    };
-    std::vector<InstanceLayout> instanceLayouts;
+    // The frame's primary draws (the frame tables' static prefix, then the rest).
+    size_t primaryCount() const { return tables.primaryCount(); }
+    const PrimaryDraw &primaryDraw(size_t i) const { return tables.primary(i); }
     std::unique_ptr<Image> primary[7];
     VkRenderPass primaryPass[2] = {};
     VkFramebuffer primaryFramebuffer[2] = {};
@@ -491,6 +465,34 @@ namespace remix {
       }
     };
     std::unordered_map<std::string, std::weak_ptr<Geometry>, ContentHash> geometryCache;
+    // Persistent static set ("rtx.native.scene.persistentStatic"): the units
+    // (with their temporal history) and the frame tables that keep their
+    // surface table entries across frames. The Env of the tables: the
+    // tracer's mesh views.
+    struct TableViews {
+      using View = MeshView;
+      using VertexTable = scene::TemporalTable<std::shared_ptr<trace::detail::Buffer>>;
+      using Span = scene::TraceFrame::InstanceList::ConstSpan;
+      PathTracer::Gpu *gpu = nullptr;
+      VkCommandBuffer command = VK_NULL_HANDLE;
+      void resolveViews(const std::vector<Span> &instances, std::vector<const MeshView *> &views);
+      bool findViews(const std::vector<Span> &instances, std::vector<const MeshView *> &views);
+      std::shared_ptr<const void> owner(const MeshView &view, uint32_t surface) const {
+        return view.vertices.at(surface);
+      }
+      [[noreturn]] void tooManyObjects() const { throw VK_ERROR_TOO_MANY_OBJECTS; }
+    };
+    scene::StaticScene statics;
+    trace::FrameTables<TableViews> tables;
+    std::vector<std::shared_ptr<const void>> retiredStates;
+    uint64_t prepareSerial = 0, renderedSerial = 0;
+    // The frame tables' prefix version this slot's surface table holds.
+    uint64_t tableVersion = 0;
+    // The static prefix's texture descriptors, resolved once per prefix.
+    std::vector<VkDescriptorImageInfo> prefixTextures;
+    uint64_t prefixTexturesGeneration = 0;
+    bool staticValidation = false, staticMismatchLogged = false;
+    PathTracer::StaticStatistics staticStatistics;
     scene::OpacityCache opacityCache;
     scene::SurfaceEmissionCache surfaceEmissionCache;
     using MeshViewKey = std::tuple<const scene::Mesh *, uint64_t, uint32_t, std::string>;
@@ -526,6 +528,7 @@ namespace remix {
       float localIntensity = 0, localRange = 0;
       float previousEye[3] = {}, light[9] = {};
       std::vector<uint8_t> geometry, dynamicGeometry;
+      uint64_t geometryGeneration = 0; // the frame tables' static prefix geometry holds
       remixapi_SharcStatisticsEXT stats{.structSize = sizeof(remixapi_SharcStatisticsEXT)};
     } sharc;
     struct LinearCapture {
@@ -556,19 +559,23 @@ namespace remix {
       std::vector<std::shared_ptr<Geometry>> compactPending, retiredGeometry;
       std::vector<std::shared_ptr<Buffer>> retiredBuffers;
       scene::TemporalTable<std::shared_ptr<Buffer>> retiredVertices;
+      std::vector<std::shared_ptr<const void>> retiredStates;
+      uint64_t tableVersion = 0;
     } frames[gpuFrameCount];
     uint32_t frameIndex = 0;
     void swapFrame(FrameResources &frame);
     void selectFrame(uint32_t slot);
     void beginSharc(const TraceOptions &options);
     void destroySharc(bool temporalOnly = false);
+    // geometryGeneration: nonzero when geometry is the frame tables' static
+    // prefix of that generation (equal generations, equal bytes).
     void configureSharc(Frame &frame, const TraceOptions &options, scene::TemporalEpoch epoch,
-                        std::vector<uint8_t> geometry, std::vector<uint8_t> dynamicGeometry,
-                        bool hasReceivers);
+                        const std::vector<uint8_t> &geometry, uint64_t geometryGeneration,
+                        const std::vector<uint8_t> &dynamicGeometry, bool hasReceivers);
     void recordSharc(VkCommandBuffer command, const TraceOptions &options);
     void finishSharc(VkCommandBuffer command);
     void sharcPipeline(const uint32_t *code, size_t size, VkPipelineLayout pipelineLayout, VkPipeline &out);
-    std::vector<uint8_t> lastScene;
+    trace::SceneSignature lastScene;
     uint64_t sequence = 0;
     float previousDirectClamp = 0, previousIndirectClamp = 0;
     bool previousFireflyFilter = false;
@@ -585,6 +592,8 @@ namespace remix {
     std::unique_ptr<Buffer> buffer(VkDeviceSize size, VkBufferUsageFlags usage, bool host = false,
                                    bool reusable = false);
     void write(Buffer &buffer, const void *data, size_t size);
+    // Writes consecutive parts; offset skips bytes the buffer already holds.
+    void write(Buffer &buffer, std::initializer_list<std::pair<const void *, size_t>> parts, size_t offset = 0);
     void hostBuffer(std::unique_ptr<Buffer> &out, const void *data, size_t size, VkBufferUsageFlags usage);
     std::unique_ptr<Buffer> upload(VkCommandBuffer command, const void *data, size_t size,
                                    VkBufferUsageFlags usage);
@@ -593,12 +602,15 @@ namespace remix {
     MeshView &mesh(VkCommandBuffer command, const scene::Draw &draw,
                    const std::vector<const scene::OpacityPartition *> &partitions);
     uint64_t geometryTicks = 0; // FramePerformanceEXT geometry time, per-instance timer.
-    // Previous frame's sizes, reserved up front for this frame's tables.
-    size_t reserveSurfaces = 0, reserveScene = 0, reserveStatic = 0, reserveDynamic = 0, reserveInputs[2] = {};
     void complete(VkCommandBuffer command);
     void buildBottom(VkCommandBuffer command);
     std::unique_ptr<Buffer> topScratch;
-    void buildTop(VkCommandBuffer command, const std::vector<trace::InstanceInput> inputs[2], bool force);
+    // staticGeneration: nonzero when staticInputs are the frame tables' static
+    // prefix of that generation; one the static TLAS was built from (or found
+    // equal to) is not compared again.
+    void buildTop(VkCommandBuffer command, const std::vector<trace::InstanceInput> &staticInputs,
+                  const std::vector<trace::InstanceInput> &dynamicInputs, bool force, uint64_t staticGeneration);
+    uint64_t tlasStaticGeneration = 0;
     std::unique_ptr<Image> image(bool colorAttachment = false,
                                  VkFormat format = VK_FORMAT_R32G32B32A32_SFLOAT, VkExtent2D size = {});
     void destroyPost();

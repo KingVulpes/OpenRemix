@@ -132,6 +132,20 @@ namespace remix {
                           "(face morphs, particles) keeps its identity, so the path tracer refits the\n"
                           "existing BLAS and motion vectors follow the surface. Off: the refresh replaces\n"
                           "the mesh (full BLAS build). Applies to refreshes after the change.");
+      ui::Checkbox("Persistent static scene", &settings.persistentStatic);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Retained static instances (DrawRetainedInstances) stay in the path tracer's own\n"
+                          "copy, updated only where they change: unchanged ones cost no per-frame work in\n"
+                          "the draw list, scene preparation, surface table, temporal history or scene\n"
+                          "signature. The same output as without it. Path tracing only; applies from the\n"
+                          "next frame.");
+      ImGui::BeginDisabled(!settings.persistentStatic);
+      ui::Checkbox("Validate persistent static scene", &settings.persistentStaticValidation);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Diagnostic: every frame, rebuild the kept static tables from scratch and compare\n"
+                          "them. The first difference is logged and shown in Diagnostics > Present CPU\n"
+                          "breakdown. Costs about what the setting saves.");
+      ImGui::EndDisabled();
     }
   }
 } // namespace remix

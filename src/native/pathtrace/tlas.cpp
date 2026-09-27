@@ -4,8 +4,10 @@ namespace remix {
   using namespace scene;
   using namespace trace::detail;
 
-  void PathTracer::Gpu::buildTop(VkCommandBuffer command, const std::vector<trace::InstanceInput> inputs[2],
-                                 bool force) {
+  void PathTracer::Gpu::buildTop(VkCommandBuffer command, const std::vector<trace::InstanceInput> &staticInputs,
+                                 const std::vector<trace::InstanceInput> &dynamicInputs, bool force,
+                                 uint64_t staticGeneration) {
+    const std::vector<trace::InstanceInput> *inputs[2] = {&staticInputs, &dynamicInputs};
     ScopedMilliseconds time{performance.accelerationMilliseconds};
     VkAccelerationStructureGeometryKHR geometry[2] = {};
     VkAccelerationStructureBuildGeometryInfoKHR builds[2] = {};
@@ -15,17 +17,22 @@ namespace remix {
     VkDeviceSize scratchBytes = 0;
     for (unsigned i = 0; i < 2; ++i) {
       auto &top = tlas[i];
-      reasons[i] = top.policy.reason(inputs[i], i != 0, force && i != 0);
-      changed[i] = reasons[i] || top.policy.changed(inputs[i]);
+      // The static prefix the static TLAS already holds: nothing to compare.
+      if (i == 0 && staticGeneration && staticGeneration == tlasStaticGeneration && top.policy.initialized)
+        continue;
+      reasons[i] = top.policy.reason(*inputs[i], i != 0, force && i != 0);
+      changed[i] = reasons[i] || top.policy.changed(*inputs[i]);
       if (i == 1)
         stats.dynamicRebuildReason = changed[i] ? reasons[i] : 0;
+      if (i == 0)
+        tlasStaticGeneration = changed[i] ? 0 : staticGeneration;
       if (!changed[i])
         continue;
-      count[i] = uint32_t(inputs[i].size());
+      count[i] = uint32_t(inputs[i]->size());
       if (count[i] > asProperties.maxInstanceCount)
         throw VK_ERROR_TOO_MANY_OBJECTS;
       std::vector<VkAccelerationStructureInstanceKHR> data;
-      for (const auto &input : inputs[i]) {
+      for (const auto &input : *inputs[i]) {
         VkAccelerationStructureInstanceKHR instance = {};
         for (int r = 0; r < 3; ++r)
           for (int c = 0; c < 4; ++c)
@@ -86,9 +93,11 @@ namespace remix {
       buildAs(command, 1, &builds[i], &ranges);
       address += align(update ? sizes[i].updateScratchSize : sizes[i].buildScratchSize,
                        asProperties.minAccelerationStructureScratchOffsetAlignment);
-      tlas[i].policy.commit(inputs[i], reasons[i]);
-      if (!i)
+      tlas[i].policy.commit(*inputs[i], reasons[i]);
+      if (!i) {
+        tlasStaticGeneration = staticGeneration;
         ++stats.staticTlasBuilds;
+      }
       else if (update)
         ++stats.dynamicTlasRefits;
       else

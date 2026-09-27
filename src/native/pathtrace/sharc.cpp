@@ -209,7 +209,8 @@ namespace remix {
   }
 
   void PathTracer::Gpu::configureSharc(Frame &frame, const TraceOptions &options, scene::TemporalEpoch currentEpoch,
-                                      std::vector<uint8_t> geometry, std::vector<uint8_t> dynamicGeometry, bool hasReceivers) {
+                                      const std::vector<uint8_t> &geometry, uint64_t geometryGeneration,
+                                      const std::vector<uint8_t> &dynamicGeometry, bool hasReceivers) {
     if (!sharc.stats.active)
       return;
     // Eligibility covers every traced surface, including off-screen receivers.
@@ -222,14 +223,18 @@ namespace remix {
       s.gpuUpdateMilliseconds = s.gpuResolveMilliseconds = 0;
       s.gpuTimingsAvailable = 0;
     }
+    // The static prefix geometry already held is equal without a compare.
+    const bool sameGeometry = geometryGeneration && geometryGeneration == sharc.geometryGeneration;
+    const bool geometryChanged = !sameGeometry && sharc.geometry != geometry;
     sharc.clear |= sharc.epoch != currentEpoch || sharc.reset != options.sharcReset ||
-                   sharc.scale != options.sharcSceneScale || sharc.bounces != options.bounces ||
-                   sharc.geometry != geometry;
+                   sharc.scale != options.sharcSceneScale || sharc.bounces != options.bounces || geometryChanged;
     sharc.epoch = currentEpoch;
     sharc.reset = options.sharcReset;
     sharc.scale = options.sharcSceneScale;
     sharc.bounces = options.bounces;
-    sharc.geometry = std::move(geometry);
+    if (geometryChanged)
+      sharc.geometry = geometry;
+    sharc.geometryGeneration = geometryGeneration;
     float light[9];
     std::copy_n(frame.direction, 3, light);
     std::copy_n(frame.radiance, 3, light + 3);
@@ -257,11 +262,13 @@ namespace remix {
       sharc.localIntensity = frame.localScale[0];
       sharc.localRange = frame.localScale[1];
     }
-    if (localChanged || difference > 1e-7f || angle < .9999999f || sharc.dynamicGeometry != dynamicGeometry)
+    const bool dynamicChanged = sharc.dynamicGeometry != dynamicGeometry;
+    if (localChanged || difference > 1e-7f || angle < .9999999f || dynamicChanged)
       sharc.responsiveFrames = 32;
     else if (sharc.responsiveFrames)
       --sharc.responsiveFrames;
-    sharc.dynamicGeometry = std::move(dynamicGeometry);
+    if (dynamicChanged)
+      sharc.dynamicGeometry = dynamicGeometry;
     std::copy_n(light, 9, sharc.light);
     if (sharc.clear)
       sharc.warmFrames = 0;

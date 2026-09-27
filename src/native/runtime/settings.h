@@ -22,6 +22,14 @@ namespace remix::config {
     bool refreshGeometry = false;
     // Answer remixapi_GetMemoryPressure from the driver's device-local budget.
     bool memoryPressure = false;
+    // Trace retained static instances from the path tracer's own copy of
+    // them, updated only where they change, instead of rebuilding their
+    // frame tables every frame. Output-identical; it keeps state, so it is
+    // off by default.
+    bool persistentStatic = false;
+    // Diagnostic: rebuild the kept static tables every frame and compare;
+    // the first difference is logged and shown in Diagnostics.
+    bool persistentStaticValidation = false;
     bool operator==(const Settings &) const = default;
   };
   using UnknownSettings = std::map<std::string, std::string>;

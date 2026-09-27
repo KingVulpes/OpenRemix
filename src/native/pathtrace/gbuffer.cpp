@@ -22,7 +22,6 @@ namespace remix {
     primaryLayout = VK_NULL_HANDLE;
     for (auto &target : primary)
       target.reset();
-    primaryDraws.clear();
     primaryInitialized = false;
   }
 
@@ -248,7 +247,7 @@ namespace remix {
         vkCmdBindDescriptorSets(target, VK_PIPELINE_BIND_POINT_GRAPHICS, primaryLayout, 0, 1, &set, 0,
                                 nullptr);
         for (size_t i = first; i < last; ++i) {
-          const auto &draw = primaryDraws[i];
+          const auto &draw = primaryDraw(i);
           if (pass && draw.blended)
             continue;
           PrimaryPush push{draw.model,
@@ -263,7 +262,7 @@ namespace remix {
       };
       // The same commands in the same order; thousands of draws are split
       // into contiguous ranges recorded concurrently as secondary buffers.
-      const size_t count = primaryDraws.size();
+      const size_t count = primaryCount();
       const size_t tasks =
           workers && count >= 4096 ? std::min<size_t>(workers->threads(), (count + 2047) / 2048) : 0;
       vkCmdBeginRenderPass(command, &begin,

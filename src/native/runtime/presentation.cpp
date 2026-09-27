@@ -47,6 +47,7 @@ void RemixNativeRuntime::presented() {
     struct CompletePerformance {
       remixapi_FramePerformanceEXT &out;
       remixapi_FrameBreakdownEXT &breakdown;
+      PathTracer::StaticStatistics &statics;
       const std::unique_ptr<PathTracer> &tracer;
       const RasterRenderer &raster;
       const uint64_t &presentations;
@@ -79,6 +80,7 @@ void RemixNativeRuntime::presented() {
             frame.uiMilliseconds + frame.snapshotMilliseconds;
         frame.otherMilliseconds = std::max(0.0, out.recordMilliseconds - covered);
         breakdown = frame;
+        statics = tracer ? tracer->staticStatistics() : PathTracer::StaticStatistics{};
         if (!tracer)
           return;
         const auto p = tracer->performance();
@@ -107,10 +109,12 @@ void RemixNativeRuntime::presented() {
     auto &p = m_framePerformance;
     m_previousPerformance = p;
     m_previousBreakdown = m_frameBreakdown;
+    m_previousStatic = m_staticStatistics;
     p = {.structSize = sizeof(p), .attempts = p.attempts + 1, .presentations = m_presentationCount};
     m_frameBreakdown = {.structSize = sizeof(m_frameBreakdown)};
     // Destroyed after presentTime, so recordMilliseconds is final.
-    CompletePerformance completePerformance{p, m_frameBreakdown, m_pathTracer, m_raster, m_presentationCount};
+    CompletePerformance completePerformance{p,        m_frameBreakdown, m_staticStatistics,
+                                            m_pathTracer, m_raster,       m_presentationCount};
     ScopedMilliseconds presentTime{p.presentMilliseconds};
     if (m_pathTracer)
       m_pathTracer->resetPerformance();
@@ -160,6 +164,19 @@ void RemixNativeRuntime::presented() {
         return REMIXAPI_ERROR_CODE_SUCCESS;
       }
       prepareSettings();
+      {
+        // A persistent static set is traced from the tracer's own copy of it.
+        // Any other consumer of this frame (raster rendering, a frame without
+        // the tracer) takes the set into the draw list, as without it.
+        const auto &settings = m_profiles.current();
+        const bool traceStatic = m_pathTracer && m_targetBackend && m_backend != 0 && !m_loading;
+        if (!traceStatic)
+          m_raster.expandStatic();
+        // From the next replay on.
+        m_raster.setPersistentStatic(settings.persistentStatic && traceStatic);
+        if (m_pathTracer)
+          m_pathTracer->setStaticValidation(settings.persistentStatic && settings.persistentStaticValidation);
+      }
       m_raster.setSkyTarget(m_pathTracer ? m_pathTracer->skyPass()
                                          : VK_NULL_HANDLE);
       m_rasterPreparing = !m_raster.preparePipelines(m_backend != 0);

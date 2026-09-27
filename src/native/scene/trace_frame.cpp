@@ -15,11 +15,12 @@ TraceFrame prepareTraceFrame(const std::vector<Draw> &draws, double seconds, boo
     if (draw.instanceId)
       frame.persistentIds.insert(draw.instanceId);
   uint64_t legacy = UINT64_MAX, legacyId = 0;
+  frame.instances.reserve(draws.size());
   for (const auto &draw : draws) {
     if (!draw.traced())
       continue;
     if (!draw.surfaceIndex)
-      frame.instances.emplace_back();
+      frame.instances.start();
     if (frame.instances.empty())
       throw REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
     auto copy = draw;
@@ -36,7 +37,7 @@ TraceFrame prepareTraceFrame(const std::vector<Draw> &draws, double seconds, boo
       }
       copy.instanceId = legacyId;
     }
-    frame.instances.back().push_back({std::move(copy)});
+    frame.instances.push({std::move(copy)});
   }
   const auto order = [](const auto &a, const auto &b) {
     return std::tie(a[0].draw.classification, a[0].draw.instanceId, a[0].draw.instanceIndex) <
@@ -44,21 +45,21 @@ TraceFrame prepareTraceFrame(const std::vector<Draw> &draws, double seconds, boo
   };
   // Keys are unique (checked below), so the order is the same either way;
   // retained replay usually submits it already.
-  if (!std::is_sorted(frame.instances.begin(), frame.instances.end(), order))
-    std::sort(frame.instances.begin(), frame.instances.end(), order);
+  if (!frame.instances.sorted(order))
+    frame.instances.sort(order);
   for (size_t i = 1; i < frame.instances.size(); ++i) {
     const auto &a = frame.instances[i - 1][0].draw, &b = frame.instances[i][0].draw;
     if (a.instanceId == b.instanceId && a.instanceIndex == b.instanceIndex)
       throw REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
   }
   // Singular transforms cannot produce valid Vulkan instances or emitters.
-  std::erase_if(frame.instances, [](const auto &instance) {
+  frame.instances.erase([](const auto &instance) {
     const auto &m = instance[0].draw.model;
     const float det = m[0] * (m[5] * m[10] - m[9] * m[6]) - m[4] * (m[1] * m[10] - m[9] * m[2]) +
                       m[8] * (m[1] * m[6] - m[5] * m[2]);
     return std::abs(det) < 1e-12f;
   });
-  for (auto &instance : frame.instances)
+  for (auto instance : frame.instances)
     for (auto &surface : instance) {
       const auto &draw = surface.draw;
       const auto &material = *draw.material;

@@ -401,7 +401,7 @@ namespace remix {
     // prepared draws: each surface moves into the temporal history.
     const uint64_t stageStart = ticks();
     for (size_t index = 0; index < prepared.instances.size(); ++index) {
-      auto &instance = prepared.instances[index];
+      auto instance = prepared.instances[index];
       const auto &draw = instance[0].draw;
       const uint64_t temporalId = prepared.persistentIds.count(draw.instanceId) ? draw.instanceId : 0;
       const auto &view = *instanceViews[index].view;
@@ -1129,7 +1129,7 @@ namespace remix {
             surface.opacity = m_gpu->opacityCache.find(surface.draw, surface.uv);
       });
     }
-    for (auto &instance : frame.instances)
+    for (auto instance : frame.instances)
       for (auto &surface : instance)
         if (!surface.opacity)
           surface.opacity = m_gpu->opacityCache.partition(surface.draw, surface.uv);

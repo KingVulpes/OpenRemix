@@ -27,7 +27,7 @@ and meshes. Each frame, submit cameras, lights, instances and game UI, then call
 
 Raster is the default; select path tracing with
 `SetConfigVariable("rtx.native.backend", "pathtrace")`.
-See the [native sample](samples/remix-native) and [API guide](docs/api.md).
+See the [native sample](samples/remix-native).
 
 ## Building
 

@@ -50,6 +50,10 @@ subdir('third_party/fsr31')
 subdir('third_party/dlss')
 subdir('src/native')
 subdir('samples/remix-native')
+# The benchmark uses narrow SDK paths and a desktop window.
+if host_machine.system() in ['linux', 'darwin']
+  subdir('samples/remix-bench')
+endif
 if get_option('enable_tests')
   subdir('tests')
 endif

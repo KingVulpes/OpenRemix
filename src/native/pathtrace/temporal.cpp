@@ -385,6 +385,8 @@ namespace remix {
       g.pbrReuse.valid = true;
     }
     g.history.commit();
+    // The static set's history: this prepared frame is now the committed one.
+    g.statics.committed(g.prepareSerial, g.retiredStates);
     if (g.upscaler && g.reconstructionWarmFrames < 128)
       ++g.reconstructionWarmFrames;
     if (g.sharc.stats.active && g.sharc.hasReceivers) {

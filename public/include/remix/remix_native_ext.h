@@ -178,6 +178,63 @@ typedef struct remixapi_FramePerformanceEXT {
   uint64_t memoryAllocations, memoryAllocationBytes;
 } remixapi_FramePerformanceEXT;
 
+// CPU wall-time breakdown of the last Present attempt's command recording.
+// Every phase up to otherMilliseconds is nested within
+// FramePerformanceEXT.recordMilliseconds; the named sub-phases (skinning,
+// material, temporal) are nested within their parent. FramePerformanceEXT
+// geometry time is nested within traceSurfaces and its acceleration time within
+// traceAcceleration. Within traceSurfaces, material is the draw-order material
+// slot assignment and temporal the history staging; per-surface table filling
+// (including history lookups) runs on worker threads and is not split out.
+// otherMilliseconds is the part of recordMilliseconds that no phase covers. presentSetup (settings, pipelines, frame slot selection) and
+// presentRelease (history commit, snapshot and draw list release) are the
+// parts of presentMilliseconds outside scene, fence, acquire, record, submit
+// and queue present.
+typedef struct remixapi_FrameBreakdownEXT {
+  uint32_t structSize, reserved;
+  double rasterPrepareMilliseconds, rasterSkinningMilliseconds;
+  double traceBeginMilliseconds, traceSetupMilliseconds;
+  double traceSurfacesMilliseconds, materialMilliseconds, temporalMilliseconds;
+  double retireMilliseconds, traceAccelerationMilliseconds, tableMilliseconds;
+  double lightingMilliseconds, sharcMilliseconds, signatureMilliseconds;
+  double descriptorMilliseconds, primaryMilliseconds, passesMilliseconds;
+  double postMilliseconds, compositeMilliseconds, uiMilliseconds;
+  double snapshotMilliseconds, otherMilliseconds;
+  double presentSetupMilliseconds, presentReleaseMilliseconds;
+  uint64_t traceInstances, traceSurfaces, primaryDraws, rasterDraws;
+  uint64_t textureDescriptors, rasterSkinnedVertices, rasterUploadBytes, reserved2;
+} remixapi_FrameBreakdownEXT;
+
+// GPU pass timings of the newest completed frame, while the
+// "rtx.native.gpuPassTimers" setting is on (available is 0 otherwise). A frame
+// is one command buffer on one queue (queueFamily). Every pass is a range of
+// two timestamps written at the bottom of the pipe: its time is what the
+// queue took to finish the pass after the work recorded before it, so passes
+// do not overlap. Passes may nest (parent, depth); selfMilliseconds excludes
+// nested passes. frameMilliseconds spans the whole command buffer and equals
+// passMilliseconds (top-level passes) plus untimedMilliseconds (barriers and
+// commands outside any pass). width/height are the pass's dispatch or render
+// resolution (0 when it has none). Passes are in recording order; truncated
+// counts passes that did not fit. Results trail the recorded frame by the
+// frame-slot count; reading them never waits for the GPU.
+#define REMIXAPI_GPU_PASS_TIMING_CAPACITY_EXT 128
+typedef struct remixapi_GpuPassTimingEXT {
+  char name[56];
+  uint32_t width, height;
+  uint32_t depth, parent; // parent: index of the enclosing pass, or UINT32_MAX
+  double milliseconds, selfMilliseconds;
+} remixapi_GpuPassTimingEXT;
+typedef struct remixapi_GpuPassTimingsEXT {
+  uint32_t structSize, available;
+  uint32_t passCount, truncated;
+  uint32_t queueFamily, timestampValidBits;
+  uint64_t frame; // frames recorded since Startup, at the measured frame
+  double frameMilliseconds, passMilliseconds, untimedMilliseconds;
+  double timestampPeriod; // nanoseconds per tick
+  uint32_t renderWidth, renderHeight, outputWidth, outputHeight;
+  remixapi_GpuPassTimingEXT passes[REMIXAPI_GPU_PASS_TIMING_CAPACITY_EXT];
+} remixapi_GpuPassTimingsEXT;
+
 // Optional CameraInfo pNext. Epochs persist in every packet, including replacement
 // submissions. Increment historyResetEpoch for cuts and floating-origin rebases.
 #define REMIXAPI_STRUCT_TYPE_CAMERA_TEMPORAL_EXT ((remixapi_StructType)0x7fff1003)
@@ -275,6 +332,10 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetBackendCapabilitiesEXT(rem
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetTracingStatisticsEXT(remixapi_TracingStatisticsEXT* statistics);
 typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_GetFramePerformanceEXT)(remixapi_FramePerformanceEXT* statistics);
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetFramePerformanceEXT(remixapi_FramePerformanceEXT* statistics);
+typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_GetFrameBreakdownEXT)(remixapi_FrameBreakdownEXT* statistics);
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetFrameBreakdownEXT(remixapi_FrameBreakdownEXT* statistics);
+typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_GetGpuPassTimingsEXT)(remixapi_GpuPassTimingsEXT* timings);
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetGpuPassTimingsEXT(remixapi_GpuPassTimingsEXT* timings);
 typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_GetDenoisingCapabilitiesEXT)(remixapi_DenoisingCapabilitiesEXT* capabilities);
 typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_GetDenoisingStatisticsEXT)(remixapi_DenoisingStatisticsEXT* statistics);
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetDenoisingCapabilitiesEXT(remixapi_DenoisingCapabilitiesEXT* capabilities);

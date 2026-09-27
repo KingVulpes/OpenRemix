@@ -4,23 +4,36 @@
 #include <limits>
 
 namespace remix::scene {
+  namespace {
+    // weak.lock() == shared, without the reference-count traffic of lock().
+    template <class A, class B> bool sameOwner(const std::weak_ptr<A> &weak, const std::shared_ptr<B> &shared) {
+      return shared ? !weak.owner_before(shared) && !shared.owner_before(weak) : weak.expired();
+    }
+  } // namespace
   OpacityCache::OpacityCache(uint32_t subTexelPrecisionBits, bool profile)
       : profile(profile), texelMargin(std::ldexp(2.f, -int(std::min(subTexelPrecisionBits, 24u)))) {}
 
   OpacityCache::TextureEntries &OpacityCache::coverage(const std::shared_ptr<Texture> &texture) {
     auto &cache = textures[texture.get()];
-    if (cache.owner.lock() == texture)
+    if (sameOwner(cache.owner, texture))
       return cache;
     if (profile)
       ++statistics.textures;
     const auto &p = texture->pixels;
     TextureEntries next{texture, p.width, {}};
+    // Compressed textures carry only a mip-0 bitmask of non-opaque texels. A
+    // fully opaque one needs no summed-area table (empty prefix = all solid).
+    if (p.compressed && p.compressed->transparent.empty()) {
+      cache = std::move(next);
+      return cache;
+    }
     const size_t stride = size_t(p.width) + 1;
     next.prefix.resize(stride * (size_t(p.height) + 1));
     for (uint32_t y = 0; y < p.height; ++y) {
       uint32_t row = 0;
       for (uint32_t x = 0; x < p.width; ++x) {
-        row += p.mips[0][4 * (size_t(y) * p.width + x) + 3] != 255;
+        row += p.compressed ? p.compressed->transparentTexel(x, y, p.width)
+                            : p.mips[0][4 * (size_t(y) * p.width + x) + 3] != 255;
         next.prefix[(size_t(y) + 1) * stride + x + 1] = next.prefix[size_t(y) * stride + x + 1] + row;
       }
     }
@@ -107,6 +120,63 @@ namespace remix::scene {
     return P::Solid;
   }
 
+  bool OpacityCache::key(const Draw &draw, const std::array<float, 4> &uv, Key &out,
+                         std::array<uint32_t, 2> &dimensions) const {
+    const auto &m = *draw.material;
+    const auto &b = draw.blend;
+    const auto compare = draw.ignoreAlpha ? 7 : draw.alphaOverride ? draw.compare : m.compare;
+    const float reference = draw.alphaOverride ? draw.reference : m.reference;
+    bool finite = std::isfinite(reference) && std::isfinite(m.tint[3]);
+    for (float value : uv)
+      finite &= std::isfinite(value);
+    // NaNs cannot be keys in an ordered map.
+    if (!finite)
+      return false;
+    // Double-sided coverage does not depend on oneSidedOpaque: those entries
+    // stay shared between both settings.
+    const uint32_t flags = uint32_t(draw.doubleSided) | uint32_t(b.enabled) << 1 | uint32_t(m.transmission) << 2 |
+                           uint32_t(oneSidedOpaque && !draw.doubleSided) << 3;
+    const auto &texture = m.texture;
+    dimensions = {};
+    if (texture) {
+      const auto &p = texture->pixels;
+      // Resource decoding bounds dimensions to 16384; reject malformed CPU
+      // snapshots too, keeping prefix counts and allocation arithmetic bounded.
+      if (p.width && p.height && p.width <= 16384 && p.height <= 16384 &&
+          (p.compressed ? p.compressed->transparent.empty() ||
+                              p.compressed->transparent.size() == (size_t(p.width) * p.height + 63) / 64
+                        : !p.mips.empty() && p.mips[0].size() == size_t(p.width) * p.height * 4))
+        dimensions = {p.width, p.height};
+    }
+    out = Key{dimensions,
+              uv,
+              uint32_t(compare),
+              reference,
+              m.tint[3],
+              b.alphaOpTexture,
+              b.alpha1,
+              b.alpha2,
+              b.factor >> 24,
+              flags,
+              uint32_t(m.filter) | uint32_t(m.wrapU) << 8 | uint32_t(m.wrapV) << 16};
+    return true;
+  }
+
+  std::shared_ptr<const OpacityPartition> OpacityCache::find(const Draw &draw,
+                                                             const std::array<float, 4> &uv) const {
+    Key key;
+    std::array<uint32_t, 2> dimensions;
+    if (!this->key(draw, uv, key, dimensions))
+      return nullptr;
+    const auto cache = surfaces.find(draw.surface.get());
+    if (cache == surfaces.end() || !sameOwner(cache->second.owner, draw.surface))
+      return nullptr;
+    const auto found = cache->second.entries.find(key);
+    if (found == cache->second.entries.end() || !sameOwner(found->second.texture, draw.material->texture))
+      return nullptr;
+    return found->second.partition;
+  }
+
   std::shared_ptr<const OpacityPartition> OpacityCache::partition(const Draw &draw,
                                                                   const std::array<float, 4> &uv) {
     using P = OpacityPartition;
@@ -116,40 +186,16 @@ namespace remix::scene {
     const auto &b = draw.blend;
     const auto compare = draw.ignoreAlpha ? 7 : draw.alphaOverride ? draw.compare : m.compare;
     const float reference = draw.alphaOverride ? draw.reference : m.reference;
-    bool finite = std::isfinite(reference) && std::isfinite(m.tint[3]);
-    for (float value : uv)
-      finite &= std::isfinite(value);
-    // NaNs cannot be keys in an ordered map.
-    if (!finite) {
+    const auto &texture = m.texture;
+    Key key;
+    std::array<uint32_t, 2> dimensions;
+    if (!this->key(draw, uv, key, dimensions)) {
       auto result = std::make_shared<P>();
       result->triangles = uint32_t(draw.surface->indices.size() / 3);
       result->key.assign(1, 0);
       result->reasons[P::Invalid] = result->triangles;
       return result;
     }
-    const uint32_t flags =
-        uint32_t(draw.doubleSided) | uint32_t(b.enabled) << 1 | uint32_t(m.transmission) << 2;
-    const auto &texture = m.texture;
-    std::array<uint32_t, 2> dimensions{};
-    if (texture) {
-      const auto &p = texture->pixels;
-      // Resource decoding bounds dimensions to 16384; reject malformed CPU
-      // snapshots too, keeping prefix counts and allocation arithmetic bounded.
-      if (p.width && p.height && p.width <= 16384 && p.height <= 16384 && !p.mips.empty() &&
-          p.mips[0].size() == size_t(p.width) * p.height * 4)
-        dimensions = {p.width, p.height};
-    }
-    const Key key{dimensions,
-                  uv,
-                  compare,
-                  reference,
-                  m.tint[3],
-                  b.alphaOpTexture,
-                  b.alpha1,
-                  b.alpha2,
-                  b.factor >> 24,
-                  flags,
-                  uint32_t(m.filter) | uint32_t(m.wrapU) << 8 | uint32_t(m.wrapV) << 16};
     TextureEntries *pixels = nullptr;
     auto getPixels = [&]() -> TextureEntries * {
       if (!pixels && dimensions[0])
@@ -157,7 +203,7 @@ namespace remix::scene {
       return pixels;
     };
     auto &cache = surfaces[draw.surface.get()];
-    if (cache.owner.lock() != draw.surface) {
+    if (!sameOwner(cache.owner, draw.surface)) {
       if (profile)
         ++statistics.owners;
       cache = {draw.surface, {}};
@@ -169,13 +215,15 @@ namespace remix::scene {
       // Revalidate the exact rectangle predicates that produced this partition.
       // Weak ownership still prevents an address-reused snapshot from skipping
       // validation. Queued frames keep their immutable partition independently.
+      const bool sameTexture = sameOwner(entry.texture, texture);
       const bool same =
-          entry.regions.empty() || entry.texture.lock() == texture ||
+          entry.regions.empty() || sameTexture ||
           (getPixels() && std::all_of(entry.regions.begin(), entry.regions.end(), [&](const auto &region) {
              return pixels->solid(region.first) == region.second;
            }));
       if (same) {
-        entry.texture = texture;
+        if (!sameTexture)
+          entry.texture = texture;
         if (profile)
           ++statistics.hits;
         return entry.partition;
@@ -186,7 +234,9 @@ namespace remix::scene {
       ++statistics.proofs;
     auto result = std::make_shared<P>();
     result->triangles = uint32_t(draw.surface->indices.size() / 3);
-    P::Reason uniform = !draw.doubleSided ? P::OneSided
+    // With oneSidedOpaque, facing is rejected by traversal (see opacity.h), so
+    // a one-sided surface needs the same coverage proof as a double-sided one.
+    P::Reason uniform = !draw.doubleSided && !oneSidedOpaque ? P::OneSided
                         : b.enabled       ? P::Blended
                         : m.transmission  ? P::Transmission
                                           : P::Solid;

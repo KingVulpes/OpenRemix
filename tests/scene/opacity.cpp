@@ -164,8 +164,40 @@ int main() {
   require(cache.partition(draw, uv) == partition,
           "Immutable coverage was not cached");
   draw.doubleSided = false;
-  require(cache.partition(draw, uv)->reasons[OpacityPartition::OneSided] == 2,
+  const auto oneSided = cache.partition(draw, uv);
+  require(oneSided->reasons[OpacityPartition::OneSided] == 2,
           "Facing eligibility reused a double-sided partition");
+  // Hardware face culling: a one-sided surface takes the double-sided proof
+  // (traversal rejects its back faces); cached apart from the default.
+  cache.setOneSidedOpaque(true);
+  const auto culled = cache.partition(draw, uv);
+  require(culled != oneSided && culled->key == partition->key &&
+              culled->reasons[OpacityPartition::Solid] == 1 &&
+              culled->reasons[OpacityPartition::TextureCutout] == 1 &&
+              !culled->reasons[OpacityPartition::OneSided],
+          "Hardware face culling did not prove one-sided coverage per triangle");
+  require(cache.find(draw, uv) == culled, "Hardware face culling coverage was not cached");
+  draw.doubleSided = true;
+  require(cache.partition(draw, uv) == partition,
+          "Hardware face culling changed double-sided coverage");
+  draw.doubleSided = false;
+  auto blended = draw;
+  blended.blend.enabled = true;
+  require(!cache.opaque(blended, uv), "Hardware face culling made a blended sheet opaque");
+  blended = draw;
+  blended.material = std::make_shared<Material>(*draw.material);
+  blended.material->transmission = true;
+  require(!cache.opaque(blended, uv), "Hardware face culling made transmission opaque");
+  blended = draw;
+  blended.ignoreAlpha = true;
+  require(cache.opaque(blended, uv), "Hardware face culling missed an unconditional one-sided surface");
+  blended.alphaOverride = true;
+  blended.ignoreAlpha = false;
+  blended.compare = 0;
+  require(!cache.opaque(blended, uv), "Hardware face culling made a never-passing surface opaque");
+  cache.setOneSidedOpaque(false);
+  require(cache.partition(draw, uv) == oneSided && cache.find(draw, uv) == oneSided,
+          "Disabling hardware face culling did not restore one-sided coverage");
   draw.doubleSided = true;
   draw.surface = std::make_shared<Surface>(*draw.surface);
   draw.surface->vertices[0].color[3] = 0;

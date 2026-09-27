@@ -148,3 +148,14 @@ namespace ImGui
     void MyFunction(const char* name, MyMatrix44* mtx);
 }
 */
+
+//---- OpenRemix: one current-context pointer per thread (see "Implicit context" in imgui.cpp).
+// Asynchronous presentation records the frame's draw data on OpenRemix's render
+// thread while the Startup thread keeps feeding input events to the same context;
+// each thread selects the context itself. With everything on one thread this is
+// the stock single global.
+#ifndef GImGui
+struct ImGuiContext;
+inline thread_local ImGuiContext* RemixImGuiCurrentContext = nullptr;
+#define GImGui RemixImGuiCurrentContext
+#endif

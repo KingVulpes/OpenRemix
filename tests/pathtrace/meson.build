@@ -1,8 +1,23 @@
 policy_test = executable('remix-tlas-policy-test', 'tlas_policy.cpp',
   include_directories : test_includes, link_with : pathtrace_library)
 test('Tracing scene and TLAS policy', policy_test)
+static_scene_test = executable('remix-static-scene-test', 'static_scene.cpp',
+  include_directories : test_includes, link_with : scene_library, dependencies : threads_dep)
+test('Persistent static set matches the rebuild path', static_scene_test)
 upscale_depth_test = executable('remix-upscale-depth-test', 'upscale_depth.cpp', include_directories : test_includes)
 test('FSR wide-frustum depth precision', upscale_depth_test)
+# Needs a display and a ray-tracing device: skipped unless REMIX_TEST_MATERIAL_GPU is set.
+material_ext_gpu_test = executable('remix-material-extensions-gpu-test', 'material_ext.cpp',
+  include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep] + [runtime_test_dep])
+test('Spec/gloss and albedo tint match the fork on the GPU', material_ext_gpu_test,
+  args : [meson.current_build_dir() / 'material-ext-scenes'],
+  env : get_option('gpu_tests') ? ['REMIX_TEST_MATERIAL_GPU=1'] : [], timeout : 600, is_parallel : false)
+# CPU cost of Present for a Fallout 4-sized scene. A benchmark, not a test:
+# meson test --benchmark "FO4 frame CPU cost" (display + ray-tracing device).
+fo4_frame_benchmark = executable('remix-fo4-frame-benchmark', 'fo4_frame.cpp',
+  include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep] + [runtime_test_dep])
+benchmark('FO4 frame CPU cost', fo4_frame_benchmark, env : ['REMIX_BENCH_FO4=1'], timeout : 1800,
+  verbose : true)
 if get_option('gpu_tests')
   subdir('upscale')
   if system != 'windows'
@@ -227,6 +242,8 @@ if get_option('gpu_tests')
     args : [meson.current_build_dir() / 'opacity-scenes', 'opaque-variants'], timeout : 180)
   test('Compatible mesh updates and queued version isolation', pathtrace_test,
     args : [meson.current_build_dir() / 'mesh-update-scenes', 'mesh-update'], timeout : 120)
+  test('Refreshed mesh geometry refits in place', pathtrace_test,
+    args : [meson.current_build_dir() / 'mesh-refresh-scenes', 'mesh-refresh'], timeout : 120)
   test('Geometry content reuse and shading history invalidation', pathtrace_test,
     args : [meson.current_build_dir() / 'geometry-history-scenes', 'geometry-history'], timeout : 120)
   test('Path tracing capabilities and GPU scenes', pathtrace_test,

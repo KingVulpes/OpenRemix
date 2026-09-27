@@ -50,6 +50,9 @@ namespace remix {
     auto next = m_profiles.current();
     if (config::set(next, key, value) != config::SetResult::Success || !m_profiles.edit(next))
       return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+    // Texture creation needs no frame boundary: later CreateTexture calls see it.
+    m_raster.setKeepCompressedTextures(m_profiles.current().compressedTextures);
+    m_raster.setRefreshGeometry(m_profiles.current().refreshGeometry);
     return REMIXAPI_ERROR_CODE_SUCCESS;
   }
 
@@ -128,6 +131,10 @@ namespace remix {
   void RemixNativeRuntime::applySettings() {
     const auto &settings = m_profiles.current();
     m_requestedBackend = settings.backend;
+    m_raster.setKeepCompressedTextures(settings.compressedTextures);
+    m_raster.setRefreshGeometry(settings.refreshGeometry);
+    // Read by the frame's recording (the render thread with asynchronous presentation).
+    m_gpuTimersEnabled = settings.gpuPassTimers;
     // Startup needs the requested presenter settings before there is a target.
     // Tracing settings activate in prepareSettings only after preflight
     // succeeds.
@@ -147,11 +154,14 @@ namespace remix {
                           ngxCapabilities.sdk &&
                           (!ngxCapabilities.initializationComplete ||
                            ngxCapabilities.sr || ngxCapabilities.rr);
-    const bool perspective = m_raster.cameraValid() &&
-                             upscale::supportsCamera(m_raster.projection());
+    // This frame: the API's scene, or the published frame with asynchronous
+    // presentation (published before settings are prepared).
+    const auto &frame = renderer();
+    const bool perspective = frame.cameraValid() &&
+                             upscale::supportsCamera(frame.projection());
     const bool detectedLocal =
-        m_raster.hasSphereLights() ||
-        std::any_of(m_raster.draws().begin(), m_raster.draws().end(),
+        frame.hasSphereLights() || frame.staticEmissiveCount() ||
+        std::any_of(frame.draws().begin(), frame.draws().end(),
                     [](const auto &draw) {
                       const auto &e = draw.material->emission;
                       return draw.traced() &&
@@ -218,7 +228,7 @@ namespace remix {
         const auto status = vkDeviceWaitIdle(m_device);
         if (status != VK_SUCCESS)
           throw status;
-        retireTracer(std::move(m_pathTracer), m_raster.depthLifetime());
+        retireTracer(std::move(m_pathTracer), renderer().depthLifetime());
       }
       m_activePreparationKey.clear();
       m_backend = m_targetBackend = 0;
@@ -232,14 +242,14 @@ namespace remix {
         next->key = key;
         next->generation = ++m_preparationGeneration;
         next->revision = revision;
-        next->depth = m_raster.depthLifetime();
+        next->depth = renderer().depthLifetime();
         const auto physical = m_physicalDevice;
         const auto device = m_device;
         const auto family = m_queueFamily;
         const auto pass = m_renderPass;
         const auto extent = m_swapchainExtent;
-        const auto depthFormat = m_raster.depthFormat();
-        const auto depth = m_raster.depthView();
+        const auto depthFormat = renderer().depthFormat();
+        const auto depth = renderer().depthView();
         const bool srgb = m_swapchainFormat == VK_FORMAT_R8G8B8A8_SRGB ||
                           m_swapchainFormat == VK_FORMAT_B8G8R8A8_SRGB;
         const bool encode = m_srgb && !srgb;
@@ -282,16 +292,16 @@ namespace remix {
           if (m_preparation->tracer->finishPreparation(m_queue)) {
             // Raster sky/overlay states are also required by the replacement.
             // Discover them before activation while the old renderer is usable.
-            m_raster.setSkyTarget(m_preparation->tracer->skyPass());
-            const bool rasterReady = m_raster.preparePipelines(true);
-            m_raster.setSkyTarget(m_pathTracer ? m_pathTracer->skyPass()
-                                               : VK_NULL_HANDLE);
+            renderer().setSkyTarget(m_preparation->tracer->skyPass());
+            const bool rasterReady = renderer().preparePipelines(true);
+            renderer().setSkyTarget(m_pathTracer ? m_pathTracer->skyPass()
+                                                 : VK_NULL_HANDLE);
             if (!rasterReady)
               return;
             const auto status = vkDeviceWaitIdle(m_device);
             if (status != VK_SUCCESS)
               throw status;
-            retireTracer(std::move(m_pathTracer), m_raster.depthLifetime());
+            retireTracer(std::move(m_pathTracer), renderer().depthLifetime());
             m_pathTracer = std::move(m_preparation->tracer);
             m_exposureState = m_pathTracer->exposureState();
             m_activePreparationKey = m_preparation->key;
@@ -343,7 +353,8 @@ namespace remix {
   }
 
   upscale::Statistics RemixNativeRuntime::reconstructionStatistics() const {
-    auto result = m_pathTracer ? m_pathTracer->upscalingStatistics() : upscale::Statistics{};
+    const auto *busy = busyState();
+    auto result = busy ? busy->upscaling : m_pathTracer ? m_pathTracer->upscalingStatistics() : upscale::Statistics{};
     result.requested = m_profiles.current().trace.upscaler;
     if (m_ngx) {
       const auto caps = m_ngx->capabilities();
@@ -362,11 +373,12 @@ namespace remix {
   }
 
   remixapi_TracingStatisticsEXT RemixNativeRuntime::tracingStatistics() const {
-    auto result = m_pathTracer
-                      ? m_pathTracer->statistics()
-                      : remixapi_TracingStatisticsEXT{.structSize = sizeof(remixapi_TracingStatisticsEXT)};
+    const auto *busy = busyState();
+    auto result = busy           ? busy->tracing
+                  : m_pathTracer ? m_pathTracer->statistics()
+                                 : remixapi_TracingStatisticsEXT{.structSize = sizeof(remixapi_TracingStatisticsEXT)};
     result.redrawRequested =
-        preparationPending() || (m_backend && m_postProcessing && m_postProcessing->statistics().adapting) ||
+        preparationPending() || (m_backend && m_postProcessing && postProcessingStatistics().adapting) ||
         (m_backend &&
          (result.redrawRequested || m_profiles.current().trace.accumulate)) ||
         m_backend != m_targetBackend ||
@@ -374,8 +386,10 @@ namespace remix {
     return result;
   }
   remixapi_SharcStatisticsEXT RemixNativeRuntime::sharcStatistics() const {
-    auto result = m_pathTracer ? m_pathTracer->sharcStatistics()
-                              : remixapi_SharcStatisticsEXT{.structSize = sizeof(remixapi_SharcStatisticsEXT)};
+    const auto *busy = busyState();
+    auto result = busy           ? busy->sharc
+                  : m_pathTracer ? m_pathTracer->sharcStatistics()
+                                 : remixapi_SharcStatisticsEXT{.structSize = sizeof(remixapi_SharcStatisticsEXT)};
     result.requested = m_profiles.current().trace.sharc;
     if (!m_pathTracer)
       std::strncpy(result.unavailableReason, REMIX_HAS_SHARC ? "Path tracing is inactive" : "SHARC was disabled at build time",
@@ -383,29 +397,35 @@ namespace remix {
     return result;
   }
   remixapi_LocalLightGuidingStatisticsEXT RemixNativeRuntime::localLightGuidingStatistics() const {
-    auto result = m_pathTracer ? m_pathTracer->localLightGuidingStatistics()
+    const auto *busy = busyState();
+    auto result = busy ? busy->guiding : m_pathTracer ? m_pathTracer->localLightGuidingStatistics()
         : remixapi_LocalLightGuidingStatisticsEXT{.structSize = sizeof(remixapi_LocalLightGuidingStatisticsEXT)};
     result.requested = m_profiles.current().trace.localGuiding;
     result.influenceRange = m_profiles.current().trace.localRange;
     return result;
   }
   remixapi_LocalLightStatisticsEXT RemixNativeRuntime::localLightStatistics() const {
-    auto result = m_pathTracer ? m_pathTracer->localLightStatistics()
+    const auto *busy = busyState();
+    auto result = busy ? busy->localLight : m_pathTracer ? m_pathTracer->localLightStatistics()
         : remixapi_LocalLightStatisticsEXT{.structSize = sizeof(remixapi_LocalLightStatisticsEXT)};
     result.enabled = m_profiles.current().trace.localLights;
     result.samples = m_profiles.current().trace.localSamples;
     return result;
   }
   remixapi_ShadowStatisticsEXT RemixNativeRuntime::shadowStatistics() const {
-    auto result = m_pathTracer ? m_pathTracer->shadowStatistics()
-                              : remixapi_ShadowStatisticsEXT{.structSize = sizeof(remixapi_ShadowStatisticsEXT)};
+    const auto *busy = busyState();
+    auto result = busy           ? busy->shadow
+                  : m_pathTracer ? m_pathTracer->shadowStatistics()
+                                 : remixapi_ShadowStatisticsEXT{.structSize = sizeof(remixapi_ShadowStatisticsEXT)};
     result.requested = m_profiles.current().trace.sigma;
     return result;
   }
   remixapi_DenoisingStatisticsEXT RemixNativeRuntime::denoisingStatistics() const {
+    const auto *busy = busyState();
     auto result =
-        m_pathTracer ? m_pathTracer->denoisingStatistics()
-                     : remixapi_DenoisingStatisticsEXT{.structSize = sizeof(remixapi_DenoisingStatisticsEXT)};
+        busy           ? busy->denoising
+        : m_pathTracer ? m_pathTracer->denoisingStatistics()
+                       : remixapi_DenoisingStatisticsEXT{.structSize = sizeof(remixapi_DenoisingStatisticsEXT)};
     result.requestedDenoiser = m_profiles.current().trace.denoiser;
     result.requestedTaa = m_profiles.current().trace.taa;
     if (!m_pathTracer && ((m_profiles.current().trace.denoiser && !m_denoiseCapabilities.reblurShSupported) ||
@@ -414,6 +434,98 @@ namespace remix {
                    sizeof(result.unavailableReason) - 1);
     return result;
   }
+  remixapi_ErrorCode RemixNativeRuntime::vramStatistics(remixapi_VramStats &stats) const {
+    stats = {};
+    if (!m_initialized)
+      return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+    if (!m_profiles.current().vramStatistics)
+      return REMIXAPI_ERROR_CODE_FEATURE_UNAVAILABLE;
+    // OpenRemix has no central allocator: report the resources that own
+    // device memory directly. Pipeline, descriptor, swapchain and upscaler
+    // allocations are not itemized; the driver figures below include them.
+    // While the render thread works on a frame: the last completed frame's.
+    const auto *busy = busyState();
+    const auto raster = busy ? busy->memory : renderer().memoryStatistics();
+    stats.usedMaterialTextureBytes = raster.textureBytes;
+    stats.forkTextureCacheCount = raster.textureCount;
+    stats.usedBufferBytes = raster.geometryBytes;
+    stats.poolRetainedBytes = raster.pooledBytes;
+    if (m_pathTracer) {
+      stats.usedAccelerationStructureBytes =
+          busy ? busy->tracing.accelerationBytes : m_pathTracer->statistics().accelerationBytes;
+      stats.usedRenderTargetBytes = busy ? busy->denoising.memoryBytes : m_pathTracer->denoisingStatistics().memoryBytes;
+    }
+    stats.totalUsedBytes = stats.usedMaterialTextureBytes + stats.usedBufferBytes +
+                           stats.usedAccelerationStructureBytes + stats.usedRenderTargetBytes;
+    stats.totalAllocatedBytes = stats.totalUsedBytes + stats.poolRetainedBytes;
+    if (m_memoryBudget) {
+      // Process-wide usage and budget of device-local heaps.
+      VkPhysicalDeviceMemoryBudgetPropertiesEXT budget = {
+          .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
+      VkPhysicalDeviceMemoryProperties2 memory = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2,
+                                                  .pNext = &budget};
+      vkGetPhysicalDeviceMemoryProperties2(m_physicalDevice, &memory);
+      for (uint32_t i = 0; i < memory.memoryProperties.memoryHeapCount; ++i)
+        if (memory.memoryProperties.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
+          stats.driverAllocatedBytes += budget.heapUsage[i];
+          stats.driverBudgetBytes += budget.heapBudget[i];
+        }
+    }
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  }
+
+  void RemixNativeRuntime::publishState() {
+    // Render thread idle: the last completed frame's values, for the getters
+    // while the frame about to be handed over renders.
+    auto &s = m_published;
+    s.performance = m_framePerformance;
+    s.breakdown = m_frameBreakdown;
+    s.presentations = m_presentationCount;
+    s.frameStarted = m_frameStarted;
+    s.digest = (m_pathTracer ? m_pathTracer->frameDigest() : 0) * 31 + renderer().profile().digest;
+    s.upscaling = m_pathTracer ? m_pathTracer->upscalingStatistics() : upscale::Statistics{};
+    s.post = m_postProcessing ? m_postProcessing->statistics() : postfx::Statistics{};
+    if (m_pathTracer) {
+      s.tracing = m_pathTracer->statistics();
+      s.sharc = m_pathTracer->sharcStatistics();
+      s.shadow = m_pathTracer->shadowStatistics();
+      s.localLight = m_pathTracer->localLightStatistics();
+      s.guiding = m_pathTracer->localLightGuidingStatistics();
+      s.denoising = m_pathTracer->denoisingStatistics();
+    } else {
+      s.tracing = {.structSize = sizeof(remixapi_TracingStatisticsEXT)};
+      s.sharc = {.structSize = sizeof(remixapi_SharcStatisticsEXT)};
+      s.shadow = {.structSize = sizeof(remixapi_ShadowStatisticsEXT)};
+      s.localLight = {.structSize = sizeof(remixapi_LocalLightStatisticsEXT)};
+      s.guiding = {.structSize = sizeof(remixapi_LocalLightGuidingStatisticsEXT)};
+      s.denoising = {.structSize = sizeof(remixapi_DenoisingStatisticsEXT)};
+    }
+    // Taken by the render thread after its frame (a walk of every cached
+    // texture and mesh), while GetVramStats answers.
+    s.memory = m_profiles.current().vramStatistics ? m_renderedMemory : RasterRenderer::MemoryStatistics{};
+    s.gpuTimings = m_gpuTimers.latest();
+  }
+
+  void RemixNativeRuntime::updateMemoryPressure() {
+    uint64_t usage = 0, budget = 0;
+    if (m_profiles.current().memoryPressure && m_memoryBudget) {
+      // As the fork: the largest device-local heap by budget, whole process
+      // (the host's own D3D11 resources on a shared device count too).
+      VkPhysicalDeviceMemoryBudgetPropertiesEXT heaps = {
+          .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
+      VkPhysicalDeviceMemoryProperties2 memory = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2,
+                                                  .pNext = &heaps};
+      vkGetPhysicalDeviceMemoryProperties2(m_physicalDevice, &memory);
+      for (uint32_t i = 0; i < memory.memoryProperties.memoryHeapCount; ++i)
+        if ((memory.memoryProperties.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) &&
+            heaps.heapBudget[i] > budget) {
+          usage = heaps.heapUsage[i];
+          budget = heaps.heapBudget[i];
+        }
+    }
+    m_memoryPressure.update(usage, budget, ++m_memoryPressureFrame);
+  }
+
   remixapi_FeatureAvailability RemixNativeRuntime::getFeatureAvailability() const {
     remixapi_FeatureAvailability result{};
 #ifdef REMIX_HAS_NRD

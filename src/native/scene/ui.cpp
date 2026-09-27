@@ -132,7 +132,6 @@ namespace remix {
     if (!pixels || !width || !height) {
       throw invalid;
     }
-    auto texture = std::make_shared<Texture>();
     remixapi_TextureInfo info = {};
     info.width = width;
     info.height = height;
@@ -143,8 +142,31 @@ namespace remix {
         format != REMIXAPI_FORMAT_B8G8R8A8_UNORM && format != REMIXAPI_FORMAT_B8G8R8A8_SRGB) {
       throw invalid;
     }
-    texture->pixels = decodeTexture(info);
-    texture->pixels.srgb = true;
+    // Hosts resubmit the captured UI every frame, mostly unchanged. An image
+    // equal to the current one keeps its texture (and, at the same opacity,
+    // the whole draw), so the renderer neither decodes nor uploads it again.
+    const auto *previous = m_overlay.empty() ? nullptr : &m_overlay.front();
+    auto sameImage = [&](const Pixels &p, const uint8_t *bytes) {
+      return p.width == width && p.height == height && p.mips.size() == 1 && p.hdrMips.empty() &&
+             !p.compressed && p.srgb && std::memcmp(p.mips[0].data(), bytes, p.mips[0].size()) == 0;
+    };
+    std::shared_ptr<Texture> texture;
+    const bool rgba = format == REMIXAPI_FORMAT_R8G8B8A8_UNORM || format == REMIXAPI_FORMAT_R8G8B8A8_SRGB;
+    if (previous && rgba && sameImage(previous->material->texture->pixels, static_cast<const uint8_t *>(pixels)))
+      texture = previous->material->texture; // RGBA decoding is a plain copy.
+    if (!texture) {
+      auto decoded = decodeTexture(info);
+      decoded.srgb = true;
+      if (previous && sameImage(previous->material->texture->pixels, decoded.mips[0].data()))
+        texture = previous->material->texture;
+      else {
+        texture = std::make_shared<Texture>();
+        texture->pixels = std::move(decoded);
+      }
+    }
+    if (previous && texture == previous->material->texture &&
+        previous->material->tint[3] == std::max(0.0f, opacity))
+      return;
     Draw draw;
     draw.ui = true;
     draw.depth = false;

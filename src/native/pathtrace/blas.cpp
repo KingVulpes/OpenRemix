@@ -10,8 +10,12 @@ namespace remix {
     completePbrReuse();
     completeRayProfile();
     uploads.clear();
+    staging.used = 0;
+    const bool geometryReleased = !retiredGeometry.empty();
+    primaryRecording.reset = false; // This slot's secondaries have completed.
     retiredGeometry.clear();
     retiredBuffers.clear();
+    retiredStates.clear();
     retired.clear();
     bufferCache->trimMemory(bufferMemory);
     std::erase_if(bufferMemory, [](const auto &block) { return block.use_count() == 1; });
@@ -73,15 +77,20 @@ namespace remix {
         retired.push_back(compact);
         retired.push_back(std::move(geometry.accel));
         geometry.accel = std::move(compact);
+        tables.compacted(&geometry); // Kept TLAS inputs follow the new address.
         ++stats.blasCompactions;
       }
       compactPending.clear();
     }
-    for (auto it = geometryCache.begin(); it != geometryCache.end();) {
-      if (it->second.expired())
-        it = geometryCache.erase(it);
-      else
-        ++it;
+    // Static geometry is released only through retiredGeometry (just cleared
+    // above); skip the scan of the whole cache when nothing was retired.
+    if (geometryReleased) {
+      for (auto it = geometryCache.begin(); it != geometryCache.end();) {
+        if (it->second.expired())
+          it = geometryCache.erase(it);
+        else
+          ++it;
+      }
     }
     // Release empty arena blocks after the last-use fence; retain one for reuse.
     for (auto it = arenas.begin(); it != arenas.end() && arenas.size() > 1;) {

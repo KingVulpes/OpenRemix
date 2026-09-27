@@ -12,6 +12,34 @@ namespace remix::config {
     uint32_t backend = 0;
     bool vsync = false;
     std::array<float, 4> clearColor = {0.025f, 0.035f, 0.055f, 1.f};
+    // Upload BC textures as GPU BC images instead of decoding them on the CPU.
+    // Applies to textures created after the change; no restart needed.
+    bool compressedTextures = false;
+    // Fill GetVramStats from OpenRemix's allocations and the driver budget.
+    bool vramStatistics = false;
+    // Honour remixapi_MeshInfoRefreshGeometryEXT: a refresh keeps the mesh's
+    // update lineage, so the tracer refits its BLAS instead of rebuilding.
+    bool refreshGeometry = false;
+    // Answer remixapi_GetMemoryPressure from the driver's device-local budget.
+    bool memoryPressure = false;
+    // Trace retained static instances from the path tracer's own copy of
+    // them, updated only where they change, instead of rebuilding their
+    // frame tables every frame. Output-identical; it keeps state, so it is
+    // off by default.
+    bool persistentStatic = false;
+    // Diagnostic: rebuild the kept static tables every frame and compare;
+    // the first difference is logged and shown in Diagnostics.
+    bool persistentStaticValidation = false;
+    // Asynchronous presentation: Present captures the frame and returns; a
+    // dedicated render thread prepares, records, submits and presents it while
+    // the host continues. Changes timing and threading, so it is off by
+    // default; toggling drains the render thread and applies at the next
+    // Present.
+    bool asyncPresent = false;
+    // Diagnostic: timestamp every GPU pass of a frame and show the costs in
+    // Diagnostics (and GetGpuPassTimingsEXT). Off by default; off records no
+    // additional queries.
+    bool gpuPassTimers = false;
     bool operator==(const Settings &) const = default;
   };
   using UnknownSettings = std::map<std::string, std::string>;

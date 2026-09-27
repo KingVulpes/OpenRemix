@@ -140,6 +140,15 @@ namespace remix::scene {
     if (auto it = m.emissionCache.find(key); it != m.emissionCache.end())
       return it->second;
     const auto &p = m.emissionTexture->pixels;
+    // Compressed textures keep no decoded mip 0; their <=64x64 preview level is
+    // an area-filtered stand-in for these stratified triangle averages.
+    const auto *compressed = p.compressed.get();
+    const uint32_t width = compressed ? compressed->previewWidth : p.width;
+    const uint32_t height = compressed ? compressed->previewHeight : p.height;
+    const uint8_t *texels =
+        compressed ? compressed->preview.data() : p.mips.empty() ? nullptr : p.mips[0].data();
+    const float *hdrTexels = compressed ? (compressed->hdrPreview.empty() ? nullptr : compressed->hdrPreview.data())
+                                        : (p.hdrMips.empty() ? nullptr : p.hdrMips[0].data());
     auto coord = [](float value, uint32_t size, uint8_t wrap) {
       if (wrap <= 1)
         value -= std::floor(value);
@@ -161,9 +170,9 @@ namespace remix::scene {
       }
       if ((m.wrapU == 4 && (u < 0 || u > 1)) || (m.wrapV == 4 && (v < 0 || v > 1)))
         continue;
-      const auto index = 4 * (size_t(coord(v, p.height, m.wrapV)) * p.width + coord(u, p.width, m.wrapU));
+      const auto index = 4 * (size_t(coord(v, height, m.wrapV)) * width + coord(u, width, m.wrapU));
       for (unsigned c = 0; c < 3; ++c) {
-        const float value = p.hdrMips.empty() ? channels[p.mips[0][index + c]] : p.hdrMips[0][index + c];
+        const float value = hdrTexels ? hdrTexels[index + c] : channels[texels[index + c]];
         result[c] += value * m.emission[c] / 256;
       }
     }

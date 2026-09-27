@@ -24,6 +24,14 @@ vec4 combine(uint op, vec4 a, vec4 b) {
 }
 void main() {
   vec4 texel = texture(albedo, uv);
+  // remixapi_MaterialInfoOpaqueAlbedoTintEXT (scene::MaterialDecode): half
+  // tints in the high words of state.x/y/w. A multiply on the texture's gamma
+  // values; an sRGB view samples linear, so the tint is linearized to match.
+  if ((draw.state.w & 4) != 0) {
+    vec3 tint = vec3(unpackHalf2x16(draw.state.x >> 16).x, unpackHalf2x16(draw.state.y >> 16).x,
+                     unpackHalf2x16(draw.state.w >> 16).x);
+    texel.rgb *= (draw.state.w & 8) != 0 ? pow(tint, vec3(2.2)) : tint;
+  }
   vec4 vertex = vec4(linearColor(vertexColor.rgb), vertexColor.a);
   uint s = draw.state.x;
   vec4 a = combine((s & 3) | ((s >> 10) & 4), arg((s >> 2) & 3, texel, vertex), arg((s >> 4) & 3, texel, vertex));
@@ -31,7 +39,7 @@ void main() {
   result = vec4(a.rgb, b.a) * draw.tint;
   if ((draw.state.w & 1) != 0) result.a = 1;
   float ref = uintBitsToFloat(draw.state.z);
-  uint op = draw.state.y;
+  uint op = draw.state.y & 0xffffu;
   bool pass = op == 7 || (op == 1 && result.a < ref) || (op == 2 && result.a == ref) ||
     (op == 3 && result.a <= ref) || (op == 4 && result.a > ref) ||
     (op == 5 && result.a != ref) || (op == 6 && result.a >= ref);

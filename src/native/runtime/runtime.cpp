@@ -31,6 +31,11 @@
 
 namespace remix {
   RemixNativeRuntime::~RemixNativeRuntime() {
+    // Without a Shutdown: the render thread's frame completes first.
+    waitRenderThread();
+    if (m_asyncActive)
+      switchPresentation(false);
+    m_renderThread.stop();
     if (m_device && !m_deviceLost) {
       vkDeviceWaitIdle(m_device);
     }
@@ -113,7 +118,7 @@ namespace remix {
         return finish(status);
       }
       applySettings();
-      m_raster.initializeGpu(m_physicalDevice, m_device);
+      m_raster.initializeGpu(m_physicalDevice, m_device, m_textureCompression);
       status = createFrameResources();
       if (status != REMIXAPI_ERROR_CODE_SUCCESS) {
         return finish(status);
@@ -141,6 +146,16 @@ namespace remix {
         return status;
       }
     }
+    // Asynchronous presentation: the render thread finishes its frame, its GPU
+    // state returns to the API's renderer and the thread is joined before
+    // anything it uses is released.
+    waitRenderThread();
+    if (m_asyncActive)
+      switchPresentation(false);
+    m_renderThread.stop();
+    m_frameScene.reset();
+    m_asyncCaller = m_previousAsyncCaller = m_asyncRender = {};
+    m_renderedMemory = {};
     if (m_device && !m_deviceLost) {
       vkDeviceWaitIdle(m_device);
     }
@@ -232,6 +247,7 @@ namespace remix {
       if (m_commandPool) {
         vkDestroyCommandPool(m_device, m_commandPool, nullptr);
       }
+      m_gpuTimers.shutdown();
       vkDestroyDevice(m_device, nullptr);
     }
     if (m_surface) {

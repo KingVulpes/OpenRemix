@@ -2,11 +2,13 @@
 #include <SDL3/SDL.h>
 #include <remix/remix_c.h>
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace {
   remixapi_Interface api = {};
@@ -150,6 +152,23 @@ int main(int argc, char **argv) {
   auto libraryPath = argv[1];
 #endif
   ok(remixapi_lib_loadRemixDllAndInitialize(libraryPath, &api, &library));
+  // remix_fo4_ext.h named export; zero until enabled and presented.
+#if defined(_WIN32)
+  const auto getMemoryPressure =
+      reinterpret_cast<PFN_remixapi_GetMemoryPressure>(GetProcAddress(library, "remixapi_GetMemoryPressure"));
+#else
+  const auto getMemoryPressure =
+      reinterpret_cast<PFN_remixapi_GetMemoryPressure>(dlsym(library, "remixapi_GetMemoryPressure"));
+#endif
+  require(getMemoryPressure != nullptr, "remixapi_GetMemoryPressure not exported");
+  remixapi_MemoryPressureInfo pressure = {};
+  require(getMemoryPressure(nullptr) == REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS &&
+              getMemoryPressure(&pressure) == REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS,
+          "Memory pressure accepted a missing structSize");
+  pressure.structSize = sizeof(pressure);
+  ok(getMemoryPressure(&pressure));
+  require(!pressure.level && !pressure.requestHostRelease && !pressure.usageBytes && !pressure.budgetBytes,
+          "Memory pressure reported before startup");
   auto selectBackend = [&] {
     if (const char *backend = std::getenv("REMIX_TEST_BACKEND")) {
       const auto status = api.SetConfigVariable("rtx.native.backend", backend);
@@ -189,6 +208,164 @@ int main(int argc, char **argv) {
     ok(scene.create(api));
     ok(scene.draw(api, 0, 640, 480));
     ok(api.Present(nullptr));
+    return 0;
+  }
+  if (argc > 2 && std::strcmp(argv[2], "compressed") == 0) {
+    // "Keep BC textures compressed" on a real device: every BC format uploads
+    // as a BC image, an sRGB albedo doubles as a linear data map (UNORM alias
+    // view), and both backends sample them. Run with validation layers.
+    ok(api.Startup(&startup));
+    ok(api.SetConfigVariable("rtx.native.textures.keepCompressed", "1"));
+    ok(api.SetConfigVariable("rtx.native.vramStatistics", "1"));
+    ok(api.SetConfigVariable("rtx.native.memoryPressure", "1"));
+    selectBackend();
+    SampleScene scene;
+    ok(scene.create(api));
+    const remixapi_Format formats[] = {
+        REMIXAPI_FORMAT_BC7_SRGB,          REMIXAPI_FORMAT_BC7_UNORM,       REMIXAPI_FORMAT_BC1_RGB_SRGB,
+        REMIXAPI_FORMAT_BC1_RGBA_SRGB_EXT, REMIXAPI_FORMAT_BC3_SRGB,        REMIXAPI_FORMAT_BC4_UNORM_EXT,
+        REMIXAPI_FORMAT_BC5_UNORM,         REMIXAPI_FORMAT_BC6H_UFLOAT_EXT, REMIXAPI_FORMAT_BC6H_SFLOAT_EXT};
+    uint32_t seed = 12345;
+    std::vector<remixapi_MeshHandle> meshes;
+    for (unsigned i = 0; i < std::size(formats); ++i) {
+      const bool halfBlocks = formats[i] == REMIXAPI_FORMAT_BC1_RGB_SRGB || formats[i] == REMIXAPI_FORMAT_BC1_RGBA_SRGB_EXT ||
+                         formats[i] == REMIXAPI_FORMAT_BC4_UNORM_EXT;
+      std::vector<uint8_t> blocks;
+      for (uint32_t size = 64; size; size /= 2) // 64x64 with 7 mips; the last three are partial blocks.
+        for (uint32_t b = 0; b < ((size + 3) / 4) * ((size + 3) / 4) * (halfBlocks ? 8u : 16u); ++b)
+          blocks.push_back(uint8_t((seed = seed * 1664525u + 1013904223u) >> 24));
+      remixapi_TextureInfo texture = {};
+      texture.sType = REMIXAPI_STRUCT_TYPE_TEXTURE_INFO;
+      texture.hash = 0x900 + i;
+      texture.width = texture.height = 64;
+      texture.depth = 1;
+      texture.mipLevels = 7;
+      texture.format = formats[i];
+      texture.data = blocks.data();
+      texture.dataSize = blocks.size();
+      remixapi_TextureHandle handle;
+      ok(api.CreateTexture(&texture, &handle));
+#if defined(_WIN32)
+      const std::wstring albedo = L"0x900";
+      const std::wstring hex[] = {L"0x900", L"0x901", L"0x902", L"0x903", L"0x904", L"0x905", L"0x906", L"0x907", L"0x908"};
+      const std::wstring &own = hex[i];
+#else
+      const std::string hex[] = {"0x900", "0x901", "0x902", "0x903", "0x904", "0x905", "0x906", "0x907", "0x908"};
+      const std::string &own = hex[i];
+      const std::string albedo = "0x900";
+#endif
+      remixapi_MaterialInfoOpaqueEXT opaque = {};
+      opaque.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_EXT;
+      opaque.albedoConstant = {1, 1, 1};
+      opaque.opacityConstant = 1;
+      opaque.alphaTestType = i == 3 ? 4 : 7; // BC1 RGBA cutout
+      opaque.alphaReferenceValue = 128;
+      if (formats[i] == REMIXAPI_FORMAT_BC4_UNORM_EXT)
+        opaque.roughnessTexture = own.c_str();
+      remixapi_MaterialInfo material = {};
+      material.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO;
+      material.pNext = &opaque;
+      material.hash = 0x980 + i;
+      material.albedoTexture = formats[i] == REMIXAPI_FORMAT_BC4_UNORM_EXT ? albedo.c_str() : own.c_str();
+      if (i == 0)
+        material.normalTexture = albedo.c_str(); // Linear alias of the sRGB albedo image.
+      if (formats[i] == REMIXAPI_FORMAT_BC6H_UFLOAT_EXT) {
+        material.emissiveTexture = own.c_str();
+        material.emissiveIntensity = 2;
+        material.emissiveColorConstant = {1, 1, 1};
+      }
+      material.wrapModeU = material.wrapModeV = 1;
+      remixapi_MaterialHandle handleMaterial;
+      ok(api.CreateMaterial(&material, &handleMaterial));
+      remixapi_HardcodedVertex vertices[4] = {};
+      const float corner[4][2] = {{-.4f, -.4f}, {.4f, -.4f}, {.4f, .4f}, {-.4f, .4f}};
+      for (unsigned v = 0; v < 4; ++v) {
+        vertices[v].position[0] = corner[v][0] + (float(i % 3) - 1);
+        vertices[v].position[1] = corner[v][1] + (float(i / 3) - 1);
+        vertices[v].position[2] = 3;
+        vertices[v].texcoord[0] = v == 1 || v == 2 ? 1.f : 0.f;
+        vertices[v].texcoord[1] = v >= 2 ? 0.f : 1.f;
+        vertices[v].color = 0xffffffff;
+        vertices[v].normal[2] = -1;
+      }
+      const uint32_t indices[] = {0, 2, 1, 0, 3, 2};
+      remixapi_MeshInfoSurfaceTriangles surface = {};
+      surface.vertices_values = vertices;
+      surface.vertices_count = 4;
+      surface.indices_values = indices;
+      surface.indices_count = 6;
+      surface.material = handleMaterial;
+      remixapi_MeshInfo mesh = {};
+      mesh.sType = REMIXAPI_STRUCT_TYPE_MESH_INFO;
+      mesh.hash = 0x9c0 + i;
+      mesh.surfaces_count = 1;
+      mesh.surfaces_values = &surface;
+      ok(api.CreateMeshBatched(&mesh, &meshes.emplace_back()));
+    }
+    int frame = 0;
+    remixapi_VramStats vram = {};
+    // Present until `done` (pipelines prepare asynchronously), then 10 more.
+    auto render = [&](auto done, const char *what) {
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(300);
+      for (int extra = 0; extra < 10; ++frame) {
+        ok(api.PumpEvents());
+        ok(scene.draw(api, float(frame) * .02f, 640, 480));
+        for (auto mesh : meshes) {
+          remixapi_InstanceInfo instance = {};
+          instance.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO;
+          instance.mesh = mesh;
+          instance.doubleSided = 1;
+          instance.transform.matrix[0][0] = instance.transform.matrix[1][1] = instance.transform.matrix[2][2] = 1;
+          ok(api.DrawInstance(&instance));
+        }
+        ok(api.Present(nullptr));
+        ok(api.GetVramStats(&vram));
+        if (done())
+          ++extra;
+        require(std::chrono::steady_clock::now() < deadline, what);
+      }
+    };
+    render([&] { return vram.forkTextureCacheCount >= std::size(formats) - 1; }, "Raster never uploaded textures");
+    const auto pathtrace = api.SetConfigVariable("rtx.native.backend", "pathtrace");
+    if (pathtrace != REMIXAPI_ERROR_CODE_FEATURE_UNAVAILABLE) {
+      ok(pathtrace);
+      // The BC4 roughness map and the linear normal alias are sampled only by the tracer.
+      render([&] { return vram.usedAccelerationStructureBytes > 0; }, "Path tracing never activated");
+      ok(api.SetConfigVariable("rtx.native.backend", "raster"));
+      render([] { return true; }, "Raster frames");
+    }
+    std::fprintf(stderr,
+                 "VRAM: textures %llu B (%llu entries), buffers %llu B, pool %llu B, AS %llu B, "
+                 "targets %llu B, driver %llu / %llu MiB\n",
+                (unsigned long long)vram.usedMaterialTextureBytes, (unsigned long long)vram.forkTextureCacheCount,
+                (unsigned long long)vram.usedBufferBytes, (unsigned long long)vram.poolRetainedBytes,
+                (unsigned long long)vram.usedAccelerationStructureBytes,
+                (unsigned long long)vram.usedRenderTargetBytes,
+                (unsigned long long)(vram.driverAllocatedBytes >> 20),
+                (unsigned long long)(vram.driverBudgetBytes >> 20));
+    require(vram.usedMaterialTextureBytes > 0 && vram.forkTextureCacheCount >= std::size(formats) &&
+                vram.totalAllocatedBytes >= vram.totalUsedBytes &&
+                vram.totalUsedBytes >= vram.usedMaterialTextureBytes,
+            "VRAM statistics missing textures");
+    const uint64_t driverBudget = vram.driverBudgetBytes;
+    ok(api.SetConfigVariable("rtx.native.vramStatistics", "0"));
+    require(api.GetVramStats(&vram) == REMIXAPI_ERROR_CODE_FEATURE_UNAVAILABLE && !vram.totalUsedBytes,
+            "Disabled VRAM statistics still reported");
+    // Memory pressure follows the driver's device-local budget once enabled.
+    ok(getMemoryPressure(&pressure));
+    std::fprintf(stderr, "Memory pressure: level %u, %llu / %llu MiB, release %llu MiB, frame %u\n",
+                 pressure.level, (unsigned long long)(pressure.usageBytes >> 20),
+                 (unsigned long long)(pressure.budgetBytes >> 20),
+                 (unsigned long long)(pressure.bytesToRelease >> 20), pressure.frame);
+    require(pressure.frame > 0 && (!driverBudget || (pressure.budgetBytes && pressure.usageBytes)),
+            "Enabled memory pressure missing the driver budget");
+    ok(api.SetConfigVariable("rtx.native.memoryPressure", "0"));
+    ok(api.Present(nullptr));
+    ok(getMemoryPressure(&pressure));
+    require(!pressure.level && !pressure.usageBytes && !pressure.budgetBytes, "Disabled memory pressure still reported");
+    ok(api.Shutdown());
+    ok(remixapi_lib_shutdownAndUnloadRemixDll(&api, library));
+    std::puts("Compressed BC textures rendered in raster and path tracing");
     return 0;
   }
   if (!gpu && !fault) {

@@ -161,6 +161,9 @@ namespace remix::config {
                                 10, 0, true));
         TRACE(overrideLight, 0, 1);
         TRACE(lightIntensity, 0, 20);
+        TRACE(hardwareFaceCulling, 0, 1);
+        TRACE(combinedTlas, 0, 1);
+        TRACE(shadowEarlyOut, 0, 1);
         for (size_t i = 0; i < 3; ++i) {
           result.push_back(scalar(
               "rtx.native.pathtrace.lightDirection." + std::string(1, "xyz"[i]),
@@ -173,6 +176,15 @@ namespace remix::config {
           result.push_back(scalar(
               "rtx.native.clearColor." + std::string(1, "rgba"[i]),
               [i](auto &s) -> auto & { return s.clearColor[i]; }, 0, 1));
+        result.push_back(scalar("rtx.native.textures.keepCompressed", FIELD(compressedTextures), 0, 1));
+        result.push_back(scalar("rtx.native.vramStatistics", FIELD(vramStatistics), 0, 1));
+        result.push_back(scalar("rtx.native.meshes.refreshInPlace", FIELD(refreshGeometry), 0, 1));
+        result.push_back(scalar("rtx.native.memoryPressure", FIELD(memoryPressure), 0, 1));
+        result.push_back(scalar("rtx.native.scene.persistentStatic", FIELD(persistentStatic), 0, 1));
+        result.push_back(
+            scalar("rtx.native.scene.persistentStaticValidation", FIELD(persistentStaticValidation), 0, 1));
+        result.push_back(scalar("rtx.native.asyncPresent", FIELD(asyncPresent), 0, 1));
+        result.push_back(scalar("rtx.native.gpuPassTimers", FIELD(gpuPassTimers), 0, 1));
 #undef TRACE
 #undef FIELD
         return result;

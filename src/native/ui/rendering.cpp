@@ -17,6 +17,15 @@ namespace remix {
     if (!m_traceUnavailable.empty())
       ImGui::TextWrapped("Path tracing unavailable: %s", m_traceUnavailable.c_str());
     ui::Checkbox("VSync", &settings.vsync);
+    ui::Checkbox("Asynchronous present", &settings.asyncPresent);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Present captures the frame and returns; OpenRemix's render thread prepares, records,\n"
+                        "submits and presents it while the game starts its next frame. At most one frame is\n"
+                        "in flight: the next Present waits only for that handoff. Statistics describe the last\n"
+                        "completed frame. Off: the whole frame runs inside Present, as before.\n"
+                        "Applies at the next Present (the render thread is drained first).");
+    if (settings.asyncPresent && m_headless)
+      ImGui::TextDisabled("%s", "The headless editor always presents synchronously.");
     if (ImGui::CollapsingHeader("Sampling and visibility", ImGuiTreeNodeFlags_DefaultOpen)) {
       int primary = options.rasterPrimary ? 0 : 1;
       if (ui::Combo("Primary visibility", &primary, "Rasterized G-buffer\0Ray traced\0"))
@@ -92,6 +101,84 @@ namespace remix {
       if (rrActive)
         ImGui::TextWrapped("Ray Reconstruction manages denoising and independent sampling. Saved settings "
                            "resume when it is disabled.");
+    }
+    if (ImGui::CollapsingHeader("Memory")) {
+      ui::Checkbox("Keep BC textures compressed", &settings.compressedTextures);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Upload BC1-BC7 textures as GPU BC images instead of decoding them to RGBA on the CPU.\n"
+                          "Uses 4-8x less VRAM and system memory and removes the decode from CreateTexture.\n"
+                          "Applies to textures created after the change; no restart needed.");
+      if (settings.compressedTextures && !m_textureCompression)
+        ImGui::TextWrapped("%s", "This GPU cannot sample BC formats: textures are decoded once at upload.");
+      ui::Checkbox("Report VRAM statistics", &settings.vramStatistics);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Answer GetVramStats with OpenRemix's texture, geometry, acceleration-structure\n"
+                          "and denoiser allocations, plus the driver's device-local usage and budget.");
+      ui::Checkbox("Report memory pressure", &settings.memoryPressure);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Answer remixapi_GetMemoryPressure from the driver's device-local usage and budget:\n"
+                          "levels at 90/94/97%% of the budget; at the critical level the host is asked to\n"
+                          "release far content. Off: the host always reads no pressure.");
+      if (settings.memoryPressure) {
+        if (!m_memoryBudget)
+          ImGui::TextWrapped("%s", "VK_EXT_memory_budget is unavailable: no pressure is reported.");
+        const auto pressure = m_memoryPressure.sample();
+        static const char *const levels[] = {"none", "elevated", "high", "critical"};
+        ImGui::TextDisabled("Pressure: %s | %.0f / %.0f MiB | release %.0f MiB%s", levels[pressure.level & 3],
+                            pressure.usageBytes / 1048576.0, pressure.budgetBytes / 1048576.0,
+                            pressure.bytesToRelease / 1048576.0,
+                            pressure.requestHostRelease ? " | host asked to release" : "");
+      }
+      const auto memory = renderer().memoryStatistics();
+      ImGui::TextDisabled("Textures: %llu, %.1f MiB (%.1f MiB BC) | geometry %.1f MiB",
+                          (unsigned long long)memory.textureCount, memory.textureBytes / 1048576.0,
+                          memory.compressedTextureBytes / 1048576.0, memory.geometryBytes / 1048576.0);
+    }
+    if (ImGui::CollapsingHeader("Geometry")) {
+      ui::Checkbox("Refresh mesh geometry in place", &settings.refreshGeometry);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Honour remixapi_MeshInfoRefreshGeometryEXT: a host refreshing a mesh's vertices\n"
+                          "(face morphs, particles) keeps its identity, so the path tracer refits the\n"
+                          "existing BLAS and motion vectors follow the surface. Off: the refresh replaces\n"
+                          "the mesh (full BLAS build). Applies to refreshes after the change.");
+      ui::Checkbox("Persistent static scene", &settings.persistentStatic);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Retained static instances (DrawRetainedInstances) stay in the path tracer's own\n"
+                          "copy, updated only where they change: unchanged ones cost no per-frame work in\n"
+                          "the draw list, scene preparation, surface table, temporal history or scene\n"
+                          "signature. The same output as without it. Path tracing only; applies from the\n"
+                          "next frame.");
+      ImGui::BeginDisabled(!settings.persistentStatic);
+      ui::Checkbox("Validate persistent static scene", &settings.persistentStaticValidation);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Diagnostic: every frame, rebuild the kept static tables from scratch and compare\n"
+                          "them. The first difference is logged and shown in Diagnostics > Present CPU\n"
+                          "breakdown. Costs about what the setting saves.");
+      ImGui::EndDisabled();
+    }
+    // Path tracing GPU cost; each is off by default and renders the same image.
+    if (ImGui::CollapsingHeader("GPU optimizations")) {
+      ui::Checkbox("Hardware face culling", &options.hardwareFaceCulling);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("One-sided surfaces without alpha test or blending become hardware-opaque in their\n"
+                          "acceleration structures, and ray traversal rejects the back faces of one-sided\n"
+                          "instances instead of the shader. Same image. Applies at the next frame: changed\n"
+                          "meshes rebuild their BLAS (both variants stay in memory until a mesh is released).\n"
+                          "rtx.native.pathtrace.hardwareFaceCulling");
+      ui::Checkbox("Combined acceleration structure", &options.combinedTlas);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Static and dynamic instances share one top-level acceleration structure, so every\n"
+                          "ray traverses once instead of twice. Moving instances refit it; static changes and\n"
+                          "added or removed instances rebuild it over all instances (\"TLAS builds\" in the\n"
+                          "GPU pass timings). Same image. Applies at the next frame.\n"
+                          "rtx.native.pathtrace.combinedTlas");
+      ui::Checkbox("Shadow ray early-out", &options.shadowEarlyOut);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Shadow, sky and local-light visibility rays stop at the first blocker instead of\n"
+                          "searching for the nearest hit; translucent sheets on the way are still multiplied\n"
+                          "in, as before. SIGMA's sun shadow ray keeps its nearest-blocker search. Same image.\n"
+                          "Applies at the next frame (the specialized shaders compile in the background).\n"
+                          "rtx.native.pathtrace.shadowEarlyOut");
     }
   }
 } // namespace remix

@@ -24,6 +24,9 @@ struct Surface {
   vec4 emission;
   vec4 pbr;
   uvec4 pbrTextures;
+  // Fork material extensions (scene::MaterialDecode): flags, packed specular
+  // metal parameters, albedo tint as halves (r|g<<16, b).
+  uvec4 material;
 };
 // Shading reads the AS index order directly. Only debug identity needs the
 // original triangle mapping; motion still addresses the original vertex array.
@@ -67,10 +70,36 @@ vec3 environmentRadiance(vec3 direction) {
   vec2 uv=vec2(atan(d.z,d.x)/(2*3.14159265359)+.5,acos(clamp(d.y,-1,1))/3.14159265359);
   return frame.skyRadiance.rgb*textureLod(textures[nonuniformEXT(uint(frame.skyRadiance.w)-1)],uv,0).rgb;
 }
-vec2 materialParameters(Surface s,vec2 uv) {
+// Metalness from a spec/gloss map's specular level (red, gamma), as the
+// dxvk-remix fork derives it (remixapi_MaterialInfoOpaqueSpecGlossEXT). p holds
+// the fork's packed parameters; metal texels take spec * tint as their albedo.
+float specularMetal(uint p,float spec,inout vec3 albedo) {
+  float low=float(p&15u)/15,high=float((p>>4)&15u)/15,strength=float((p>>12)&15u)/15;
+  uint lumCode=(p>>8)&15u,t=p>>16;
+  vec3 tint=vec3(float(t&31u)/31,float((t>>5)&63u)/63,float((t>>11)&31u)/31);
+  float level=t!=0u?spec*max(tint.r,max(tint.g,tint.b)):spec;
+  float mask=clamp((level-low)/max(high-low,1.0/255),0,1);
+  if(lumCode<15u) {
+    // Code 0 has equal smoothstep edges; it cuts every non-black texel.
+    float lumMax=pow(float(lumCode)/15,2.2),lum=dot(albedo,vec3(.2126,.7152,.0722));
+    mask*=1-(lumMax>0?smoothstep(.25*lumMax,lumMax,lum):float(lum>0));
+  }
+  float metal=strength*mask;
+  if(t!=0u)albedo=mix(albedo,pow(clamp(spec*tint,0,1),vec3(2.2)),metal);
+  return metal;
+}
+// Perceptual roughness and metalness; albedo is the linear material colour.
+// A smoothness map (spec/gloss extension) decodes as max(1 - smoothness,
+// roughness constant), smoothness from green or red.
+vec2 materialParameters(Surface s,vec2 uv,inout vec3 albedo) {
   uv=uv*s.uv.xy+s.uv.zw;
-  return clamp(vec2(s.pbrTextures.x==0?s.pbr.x:textureLod(textures[nonuniformEXT(s.pbrTextures.x-1)],uv,0).r,
-                    s.pbrTextures.y==0?s.pbr.y:textureLod(textures[nonuniformEXT(s.pbrTextures.y-1)],uv,0).r),0,1);
+  float metallic=s.pbrTextures.y==0?s.pbr.y:textureLod(textures[nonuniformEXT(s.pbrTextures.y-1)],uv,0).r;
+  if(s.pbrTextures.x==0)return clamp(vec2(s.pbr.x,metallic),0,1);
+  vec4 map=textureLod(textures[nonuniformEXT(s.pbrTextures.x-1)],uv,0);
+  uint flags=s.material.x;
+  float roughness=(flags&1u)!=0?max(1-((flags&2u)!=0?map.g:map.r),s.pbr.x):map.r;
+  if((flags&4u)!=0)metallic=max(metallic,specularMetal(s.material.y,map.r,albedo));
+  return clamp(vec2(roughness,metallic),0,1);
 }
 mat3 materialBasis(vec3 n,vec3 e1,vec3 e2,vec2 u1,vec2 u2) {
   float det=u1.x*u2.y-u1.y*u2.x;
@@ -132,8 +161,15 @@ float materialAlpha(Surface s, vec2 uv, float vertex) {
   if ((s.state.w&8)!=0) alpha*=.2;
   return clamp(alpha,0,1);
 }
+// remixapi_MaterialInfoOpaqueAlbedoTintEXT (fork semantics): a multiply on the
+// texture's gamma values. An sRGB view samples linear, so the tint is linearized.
+vec3 albedoTint(Surface s) {
+  vec3 tint=vec3(unpackHalf2x16(s.material.z),unpackHalf2x16(s.material.w).x);
+  return (s.material.x&16u)!=0?pow(tint,vec3(2.2)):tint;
+}
 vec4 materialColor(Surface s, vec2 uv, vec4 vertex) {
   vec4 texel = textureLod(textures[nonuniformEXT(s.textureState.x)], uv * s.uv.xy + s.uv.zw, 0);
+  if ((s.material.x&8u)!=0) texel.rgb*=albedoTint(s);
   vertex.rgb = linearColor(vertex.rgb);
   uint op = s.state.x;
   vec4 color = combine((op&3)|((op>>10)&4), arg((op>>2)&3,texel,vertex,s.factor), arg((op>>4)&3,texel,vertex,s.factor));

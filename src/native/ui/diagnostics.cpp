@@ -2,10 +2,122 @@
 #include "ui/widgets.h"
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <imgui.h>
+#include <string>
 #include <utility>
+#include <vector>
 
 namespace remix {
+  void RemixNativeRuntime::drawGpuPassTimings(bool enabled) {
+    if (!enabled)
+      return;
+    if (!m_gpuTimers.supported()) {
+      ImGui::TextWrapped("Unavailable: the queue family has no timestamp support.");
+      return;
+    }
+    const auto &t = gpuPassTimings();
+    if (!t.available) {
+      ImGui::TextWrapped("Waiting for a completed frame.");
+      return;
+    }
+    ImGui::TextWrapped("GPU frame %.3f ms = passes %.3f + between passes %.3f (frame %llu, queue family %u)",
+                       t.frameMilliseconds, t.passMilliseconds, t.untimedMilliseconds, (unsigned long long)t.frame,
+                       t.queueFamily);
+    ImGui::TextWrapped("Render %ux%u, output %ux%u", t.renderWidth, t.renderHeight, t.outputWidth, t.outputHeight);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Each pass is timed from the end of the work before it to its own end (bottom of\n"
+                        "the pipe), so passes do not overlap and their own times add up to the frame.\n"
+                        "Own time excludes nested passes. Passes that wait for the swapchain image or\n"
+                        "for presentation include that wait.");
+    if (t.truncated)
+      ImGui::TextWrapped("%u passes not timed (query limit)", t.truncated);
+    // Sorted by own time; the time between passes is a row of its own, so the
+    // column adds up to the frame.
+    const auto order = gpu::byCost(t);
+    const uint32_t untimedRow = uint32_t(t.passes.size());
+    std::vector<uint32_t> rows;
+    rows.reserve(order.size() + 1);
+    bool untimedPlaced = false;
+    for (const auto index : order) {
+      if (!untimedPlaced && t.untimedMilliseconds >= t.passes[index].selfMilliseconds) {
+        rows.push_back(untimedRow);
+        untimedPlaced = true;
+      }
+      rows.push_back(index);
+    }
+    if (!untimedPlaced)
+      rows.push_back(untimedRow);
+    const double frame = std::max(t.frameMilliseconds, 1e-9);
+    auto size = [](const gpu::PassTiming &pass, char *out, size_t bytes) {
+      if (pass.width && pass.height)
+        std::snprintf(out, bytes, "%ux%u", pass.width, pass.height);
+      else
+        std::snprintf(out, bytes, "-");
+    };
+    if (ImGui::SmallButton("Copy as text")) {
+      std::string text;
+      char line[160], dims[32];
+      std::snprintf(line, sizeof(line),
+                    "GPU frame %.3f ms (passes %.3f, between passes %.3f); render %ux%u, output %ux%u\n",
+                    t.frameMilliseconds, t.passMilliseconds, t.untimedMilliseconds, t.renderWidth, t.renderHeight,
+                    t.outputWidth, t.outputHeight);
+      text += line;
+      for (const auto row : rows) {
+        if (row == untimedRow) {
+          std::snprintf(line, sizeof(line), "%-56s %11s %8.3f %8.3f %5.1f%%\n", "Between passes (untimed)", "-",
+                        t.untimedMilliseconds, t.untimedMilliseconds, 100 * t.untimedMilliseconds / frame);
+        } else {
+          const auto &pass = t.passes[row];
+          size(pass, dims, sizeof(dims));
+          std::snprintf(line, sizeof(line), "%-56s %11s %8.3f %8.3f %5.1f%%\n", pass.name, dims,
+                        pass.selfMilliseconds, pass.milliseconds, 100 * pass.selfMilliseconds / frame);
+        }
+        text += line;
+      }
+      ImGui::SetClipboardText(text.c_str());
+    }
+    if (!ImGui::BeginTable("gpuPasses", 5,
+                           ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingFixedFit))
+      return;
+    ImGui::TableSetupColumn("Pass", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupColumn("Size");
+    ImGui::TableSetupColumn("Own ms");
+    ImGui::TableSetupColumn("Incl. ms");
+    ImGui::TableSetupColumn("%");
+    ImGui::TableHeadersRow();
+    auto cells = [&](const char *name, const char *dims, double self, double inclusive, bool nested) {
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      if (nested)
+        ImGui::TextDisabled("%s", name);
+      else
+        ImGui::TextUnformatted(name);
+      ImGui::TableNextColumn();
+      ImGui::TextUnformatted(dims);
+      ImGui::TableNextColumn();
+      ImGui::Text("%7.3f", self);
+      ImGui::TableNextColumn();
+      ImGui::Text("%7.3f", inclusive);
+      ImGui::TableNextColumn();
+      ImGui::Text("%5.1f", 100 * self / frame);
+    };
+    char dims[32];
+    for (const auto row : rows) {
+      if (row == untimedRow) {
+        cells("Between passes (untimed)", "-", t.untimedMilliseconds, t.untimedMilliseconds, false);
+        continue;
+      }
+      const auto &pass = t.passes[row];
+      size(pass, dims, sizeof(dims));
+      // Containers (own time is what their nested passes leave out) are dimmed.
+      cells(pass.name, dims, pass.selfMilliseconds, pass.milliseconds,
+            pass.selfMilliseconds + 1e-9 < pass.milliseconds);
+    }
+    cells("Total", "-", t.frameMilliseconds, t.frameMilliseconds, false);
+    ImGui::EndTable();
+  }
+
   void RemixNativeRuntime::drawDiagnosticsTab(config::Settings &settings) {
     if (m_pipelines) {
       const auto s = m_pipelines->statistics();
@@ -108,7 +220,7 @@ namespace remix {
       const auto &io = ImGui::GetIO();
       ImGui::TextWrapped("Presentation: %.2f ms / %.1f FPS", io.Framerate > 0 ? 1000.0f / io.Framerate : 0.0f,
                          io.Framerate);
-      ImGui::TextWrapped("Scene: %zu surface draws", m_raster.pendingDrawCount());
+      ImGui::TextWrapped("Scene: %zu surface draws", renderer().pendingDrawCount());
       auto s = tracingStatistics();
       ImGui::TextWrapped("Accumulated frames: %llu", (unsigned long long)s.accumulationCount);
       ImGui::TextWrapped("BLAS builds / refits / compactions: %llu / %llu / %llu",
@@ -127,6 +239,98 @@ namespace remix {
           ImGui::SetTooltip("Tracing includes sun and local shadows, indirect rays, and transparent "
                             "sheets.\nDenoiser timings are reported separately.");
       }
+    }
+    if (ImGui::CollapsingHeader("GPU pass timings", ImGuiTreeNodeFlags_DefaultOpen)) {
+      ui::Checkbox("GPU pass timers", &settings.gpuPassTimers);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Timestamps around every GPU pass of the frame (rtx.native.gpuPassTimers).\n"
+                          "Off records no extra queries. Results are read after the frame's fence,\n"
+                          "without waiting, so they describe the frame completed two frames ago.");
+      drawGpuPassTimings(settings.gpuPassTimers);
+    }
+    if (ImGui::CollapsingHeader("Present CPU breakdown")) {
+      // Previous Present; this panel is drawn while the current one records.
+      const auto &p = m_previousPerformance;
+      const auto &b = m_previousBreakdown;
+      ImGui::TextWrapped("Present %.2f ms: scene %.2f, fence %.2f, acquire %.2f, record %.2f, submit %.2f, "
+                         "queue present %.2f",
+                         p.presentMilliseconds, p.sceneMilliseconds, p.fenceMilliseconds, p.acquireMilliseconds,
+                         p.recordMilliseconds, p.submitMilliseconds, p.queuePresentMilliseconds);
+      if (m_asyncActive) {
+        // Asynchronous presentation: the frame above ran on the render thread;
+        // its Present on the caller's thread is split out here. Present, setup
+        // and the rows below include the caller's setup and capture, not its
+        // wait for the handoff.
+        const auto &c = m_previousAsyncCaller;
+        ImGui::TextWrapped("Caller Present %.2f ms: handoff wait %.2f, setup %.2f (developer UI %.2f), capture "
+                           "%.2f | render thread %.2f ms",
+                           c.callMilliseconds, c.waitMilliseconds, c.setupMilliseconds, c.uiMilliseconds,
+                           c.captureMilliseconds, m_asyncRender.renderMilliseconds);
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Handoff wait: time Present waited for the render thread to finish the previous\n"
+                            "frame (the render thread is the bottleneck when it is large). Capture: publishing\n"
+                            "the frame's draw lists, lights and static-set changes to the render thread.\n"
+                            "Render thread: scene preparation through queue present, excluding the caller.");
+        ImGui::TextWrapped("This Present waited %.2f ms for that frame; handed off %llu, presented %llu",
+                           m_asyncCaller.waitMilliseconds, (unsigned long long)m_asyncCaller.handedOff,
+                           (unsigned long long)m_asyncRender.rendered);
+      }
+      struct Row {
+        const char *name;
+        double value;
+      };
+      const Row rows[] = {{"Raster prepare", b.rasterPrepareMilliseconds},
+                          {"  raster skinning", b.rasterSkinningMilliseconds},
+                          {"Tracer begin", b.traceBeginMilliseconds},
+                          {"Tracer setup", b.traceSetupMilliseconds},
+                          {"Trace surfaces", b.traceSurfacesMilliseconds},
+                          {"  geometry", p.geometryMilliseconds},
+                          {"  materials", b.materialMilliseconds},
+                          {"  temporal", b.temporalMilliseconds},
+                          {"Retire", b.retireMilliseconds},
+                          {"Acceleration", b.traceAccelerationMilliseconds},
+                          {"Surface table", b.tableMilliseconds},
+                          {"Lighting", b.lightingMilliseconds},
+                          {"SHARC", b.sharcMilliseconds},
+                          {"Scene signature", b.signatureMilliseconds},
+                          {"Descriptors", b.descriptorMilliseconds},
+                          {"Primary G-buffer", b.primaryMilliseconds},
+                          {"Passes", b.passesMilliseconds},
+                          {"Post-processing", b.postMilliseconds},
+                          {"Composite", b.compositeMilliseconds},
+                          {m_asyncActive ? "Developer UI draw" : "Developer UI", b.uiMilliseconds},
+                          {"Snapshot", b.snapshotMilliseconds},
+                          {"Other", b.otherMilliseconds},
+                          {"Present: setup", b.presentSetupMilliseconds},
+                          {"Present: release", b.presentReleaseMilliseconds}};
+      for (const auto &row : rows)
+        ImGui::Text("%-18s %7.3f ms", row.name, row.value);
+      // The persistent static set: its sync is part of scene, its tables part
+      // of trace surfaces.
+      const auto &st = m_previousStatic;
+      ImGui::Text("%-18s %7.3f ms", "Static sync", st.syncMilliseconds);
+      ImGui::Text("%-18s %7.3f ms", "Static tables", st.tableMilliseconds);
+      if (st.active)
+        ImGui::TextWrapped("Static set: %llu instances, surfaces reused %llu, rebuilt %llu (%llu instances); "
+                           "dynamic surfaces %llu; changes %llu, layouts %llu, temporal %llu",
+                           (unsigned long long)st.units, (unsigned long long)st.reusedSurfaces,
+                           (unsigned long long)st.rebuiltSurfaces, (unsigned long long)st.rebuiltUnits,
+                           (unsigned long long)st.dynamicSurfaces, (unsigned long long)st.changes,
+                           (unsigned long long)st.relayouts, (unsigned long long)st.temporalSurfaces);
+      else
+        ImGui::TextWrapped("Static set: not in use (dynamic surfaces %llu)", (unsigned long long)st.dynamicSurfaces);
+      if (st.validations)
+        ImGui::TextWrapped("Static validation: %llu mismatches%s%s", (unsigned long long)st.mismatches,
+                           st.mismatches ? ": " : "", st.mismatches ? st.mismatch : "");
+      ImGui::TextWrapped("Instances %llu, surfaces %llu, primary draws %llu, raster draws %llu, textures %llu",
+                         (unsigned long long)b.traceInstances, (unsigned long long)b.traceSurfaces,
+                         (unsigned long long)b.primaryDraws, (unsigned long long)b.rasterDraws,
+                         (unsigned long long)b.textureDescriptors);
+      ImGui::TextWrapped("Geometry conversions %llu, uploads %.2f MiB (raster %.2f MiB), raster skinned "
+                         "vertices %llu",
+                         (unsigned long long)p.geometryConversions, double(p.uploadBytes) / (1024 * 1024),
+                         double(b.rasterUploadBytes) / (1024 * 1024),
+                         (unsigned long long)b.rasterSkinnedVertices);
     }
     if (ImGui::CollapsingHeader("Input and clear color", ImGuiTreeNodeFlags_DefaultOpen)) {
       ui::ColorEdit3("Clear color", settings.clearColor.data());

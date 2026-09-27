@@ -6,6 +6,20 @@ namespace remix {
 
   void RasterRenderer::prepare(VkCommandBuffer command, bool tracing) {
     auto &g = *m_gpu;
+    m_profile = {};
+    g.uploadBytes = 0;
+    struct Finish {
+      Profile &profile;
+      const uint64_t &uploads;
+      std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
+      uint64_t skinning = 0;
+      ~Finish() {
+        profile.prepareMilliseconds =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
+        profile.skinningMilliseconds = tickMilliseconds(skinning);
+        profile.uploadBytes = uploads;
+      }
+    } finish{m_profile, g.uploadBytes};
     g.commands.clear();
     for (auto &buffer : g.uploads)
       g.recycle(std::move(buffer));
@@ -90,6 +104,7 @@ namespace remix {
     }
     ordered.insert(ordered.end(), m_overlay.begin(), m_overlay.end());
     ordered.insert(ordered.end(), m_uiDraws.begin(), m_uiDraws.end());
+    m_profile.draws = ordered.size();
     std::vector<Vertex> skinned;
     const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - g.epoch).count();
     for (const auto &draw : ordered) {
@@ -105,6 +120,8 @@ namespace remix {
       out.baseVertex = draw.vertexOffset;
       out.layer = layer(draw);
       if (draw.surface->bonesPerVertex) {
+        ScopedTicks skinTime{finish.skinning};
+        m_profile.skinnedVertices += draw.surface->vertices.size();
         out.vertices = VK_NULL_HANDLE;
         out.vertexOffset = skinned.size() * sizeof(Vertex);
         if (skinned.size() + draw.surface->vertices.size() > 8 * 1024 * 1024) {
@@ -151,11 +168,30 @@ namespace remix {
       out.push.state[3] =
           uint32_t(draw.ignoreAlpha) |
           (g.encodeOutput && !(g.skyPass && draw.camera == REMIXAPI_CAMERA_TYPE_SKY) ? 2u : 0u);
+      // Albedo tint (fork extension) as halves in the unused high words; the
+      // roughness/metal decodes have no raster (unlit) counterpart.
+      if (const auto decode = materialDecode(mat); decode.flags & MaterialDecode::albedoTint) {
+        out.push.state[0] |= uint32_t(decode.tint[0]) << 16;
+        out.push.state[1] |= uint32_t(decode.tint[1]) << 16;
+        out.push.state[3] |= 4u | ((decode.flags & MaterialDecode::albedoSrgb) ? 8u : 0u) |
+                             uint32_t(decode.tint[2]) << 16;
+      }
       out.push.factor[0] = linear(float((b.factor >> 16) & 255) / 255);
       out.push.factor[1] = linear(float((b.factor >> 8) & 255) / 255);
       out.push.factor[2] = linear(float(b.factor & 255) / 255);
       out.push.factor[3] = float(b.factor >> 24) / 255;
       g.commands.push_back(out);
+    }
+    static const bool digestEnabled = std::getenv("REMIX_FRAME_DIGEST") != nullptr;
+    if (digestEnabled) {
+      uint64_t digest = hashBytes(skinned.data(), skinned.size() * sizeof(Vertex));
+      for (const auto &command : g.commands) {
+        const uint64_t values[] = {command.vertices ? 0u : command.vertexOffset, command.firstIndex, command.count,
+                                   uint64_t(int64_t(command.baseVertex)), uint64_t(command.layer)};
+        digest = hashBytes(values, sizeof(values), digest);
+        digest = hashBytes(&command.push, sizeof(command.push), digest);
+      }
+      m_profile.digest = digest;
     }
     if (!skinned.empty()) {
       g.skin = g.geometryBuffer(skinned.data(), skinned.size() * sizeof(Vertex),

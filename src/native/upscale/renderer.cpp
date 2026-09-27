@@ -1,4 +1,5 @@
 #include "upscale/renderer.h"
+#include "platform/gpu_timers.h"
 #include "runtime/pipelines.h"
 #include "postfx/renderer.h"
 #include "upscale/camera.h"
@@ -433,9 +434,18 @@ void Renderer::record(VkCommandBuffer command, Input color, Input depth,
                      sizeof(depthProjection), &depthProjection);
   const uint32_t prepareMode = g.ngx ? 0 : 2;
   vkCmdPushConstants(command, g.layout, VK_SHADER_STAGE_COMPUTE_BIT, sizeof(projection), 4, &prepareMode);
-  vkCmdDispatch(command, (g.render.width + 7) / 8, (g.render.height + 7) / 8,
-                1);
+  {
+    gpu::GpuScope scope(command, "Upscaler input preparation", g.render);
+    vkCmdDispatch(command, (g.render.width + 7) / 8, (g.render.height + 7) / 8,
+                  1);
+  }
   barrier(command);
+  // The upscaler's resolution is its output; its input is the render size.
+  gpu::GpuScope upscaleTime(command,
+                            g.stats.backend == Backend::DlssRr   ? "DLSS Ray Reconstruction"
+                            : g.stats.backend == Backend::DlssSr ? "DLSS Super Resolution"
+                                                                 : "FSR 3.1 upscaling",
+                            g.display);
   const bool resetHistory = reset || !g.initialized;
   try {
     // A failed context uses the already compiled spatial resolve until the
@@ -537,6 +547,7 @@ void Renderer::record(VkCommandBuffer command, Input color, Input depth,
     vkCmdDispatch(command, (g.display.width + 7) / 8, (g.display.height + 7) / 8, 1);
   }
   barrier(command);
+  upscaleTime.close();
   if (g.timestamps)
     vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                         g.timestamps, 1);

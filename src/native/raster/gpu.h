@@ -1,11 +1,13 @@
 #pragma once
 #include "raster/renderer.h"
+#include "platform/timing.h"
 #include "runtime/pipelines.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <functional>
 #include <utility>
 
 namespace remix::raster::detail {
@@ -38,7 +40,18 @@ namespace remix::raster::detail {
     VkImage image = VK_NULL_HANDLE;
     VkImageView view = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    uint32_t levels = 0;
+    VkComponentMapping components = {};
+    VkDeviceSize bytes = 0; // Device allocation size, for VRAM statistics.
+    uint32_t width = 0, height = 0;
+    VkImageCreateFlags flags = 0;
+    // UNORM view of an sRGB (mutable-format) image: data maps alias it.
+    VkImageView linearView = VK_NULL_HANDLE;
     ~Image() {
+      if (linearView) {
+        vkDestroyImageView(device, linearView, nullptr);
+      }
       if (view) {
         vkDestroyImageView(device, view, nullptr);
       }
@@ -96,7 +109,8 @@ namespace remix {
     };
     struct TextureGpu {
       std::weak_ptr<scene::Texture> owner;
-      std::unique_ptr<Image> data;
+      std::unique_ptr<Image> data; // Null for a linear alias of another entry's image.
+      VkImageView view = VK_NULL_HANDLE; // Sampled view: data->view or the alias.
     };
     struct MaterialGpu {
       VkDevice device;
@@ -139,6 +153,7 @@ namespace remix {
       std::unique_ptr<Buffer> skin;
     } frames[gpuFrameCount];
     uint32_t frameIndex = 0;
+    uint64_t uploadBytes = 0; // Staged by buffer(), for RasterRenderer::profile().
     std::vector<Command> commands;
     std::chrono::steady_clock::time_point epoch = std::chrono::steady_clock::now();
 
@@ -148,12 +163,26 @@ namespace remix {
     std::unique_ptr<Buffer> allocateBuffer(size_t size, VkBufferUsageFlags usage,
                                            VkMemoryPropertyFlags flags);
     std::unique_ptr<Buffer> buffer(const void *data, size_t size, VkBufferUsageFlags usage);
+    // Host-visible buffer whose contents write(mapped) fills directly.
+    std::unique_ptr<Buffer> buffer(size_t size, VkBufferUsageFlags usage,
+                                   const std::function<void(uint8_t *)> &write);
+    // Large sampled images whose last use has completed, reused by image() for
+    // an identical description (a per-frame screen overlay of the same size).
+    std::vector<std::unique_ptr<Image>> reusableImages;
+    void recycle(std::unique_ptr<Image> image);
     std::unique_ptr<Buffer> geometryBuffer(const void *data, size_t size, VkBufferUsageFlags usage,
                                            VkCommandBuffer command);
     std::unique_ptr<Image> image(uint32_t width, uint32_t height, uint32_t levels, VkFormat format,
-                                 bool isDepth);
+                                 bool isDepth, VkImageCreateFlags flags = 0,
+                                 VkComponentMapping components = {});
     MeshGpu &mesh(const std::shared_ptr<scene::Surface> &source, VkCommandBuffer command);
     TextureGpu &texture(const std::shared_ptr<scene::Texture> &source, VkCommandBuffer command);
+    TextureGpu uploadPixels(const std::shared_ptr<scene::Texture> &owner, const scene::Pixels &p,
+                            VkCommandBuffer command, VkImageCreateFlags flags);
+    TextureGpu &compressedTexture(const std::shared_ptr<scene::Texture> &source, VkCommandBuffer command);
+    void copyLevels(VkCommandBuffer command, VkImage image, uint32_t levels,
+                    const std::vector<VkBufferImageCopy> &copies);
+    bool textureCompression = false; // Device enabled textureCompressionBC.
     VkDescriptorSet material(const std::shared_ptr<scene::Material> &source, VkCommandBuffer command);
     VkPipeline pipeline(const scene::Draw &draw);
   };

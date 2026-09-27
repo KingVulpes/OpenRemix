@@ -113,6 +113,32 @@ namespace remix {
       }
       mesh->updateStream = compatible ? previous->second->updateStream : std::make_shared<MeshUpdateStream>();
     }
+    // remixapi_MeshInfoRefreshGeometryEXT (fork semantics, behind "Refresh mesh
+    // geometry in place"): new vertex data for the mesh registered under this
+    // hash, same topology. Ignored when nothing is registered (a plain create).
+    // A different surface count is a different mesh, not a morph: the
+    // registered mesh stays and the call still succeeds, as in the fork.
+    // Queued draws keep the immutable previous version; the new one joins its
+    // update lineage, so the tracer refits the BLAS it already has (skinned
+    // meshes included) and temporal history treats it as the same surface.
+    if (m_refreshGeometry && previous != m_meshes.end() &&
+        extension(info.pNext, REMIXAPI_STRUCT_TYPE_MESH_INFO_REFRESH_GEOMETRY_EXT)) {
+      const auto &old = *previous->second;
+      if (old.surfaces.size() != mesh->surfaces.size()) {
+        handle = reinterpret_cast<remixapi_MeshHandle>(uintptr_t(info.hash));
+        return;
+      }
+      // Exact topology keeps the lineage; anything else starts a new one (one
+      // full build) instead of refitting a BLAS built for other triangles.
+      bool compatible = bool(old.updateStream);
+      for (size_t i = 0; compatible && i < mesh->surfaces.size(); ++i) {
+        const auto &a = *old.surfaces[i], &b = *mesh->surfaces[i];
+        compatible = a.vertices.size() == b.vertices.size() && a.indices == b.indices &&
+                     a.bonesPerVertex == b.bonesPerVertex;
+      }
+      mesh->updateStream = compatible ? old.updateStream : std::make_shared<MeshUpdateStream>();
+      mesh->motionCorrespondence = true;
+    }
     auto equal = [&](const Mesh &a, const Mesh &b) {
       if (a.updateStream != b.updateStream || a.motionCorrespondence != b.motionCorrespondence) return false;
       if (a.surfaces.size() != b.surfaces.size())
@@ -126,10 +152,22 @@ namespace remix {
       }
       return true;
     };
-    if (previous == m_meshes.end() || !equal(*previous->second, *mesh))
+    if (previous == m_meshes.end() || !equal(*previous->second, *mesh)) {
+      if (previous != m_meshes.end()) {
+        previous->second->retired = true;
+        ++m_retireGeneration;
+      }
       m_meshes[info.hash] = std::move(mesh);
+      ++m_resourceGeneration;
+    }
     handle = reinterpret_cast<remixapi_MeshHandle>(uintptr_t(info.hash));
   }
 
-  void NativeResources::destroyMesh(remixapi_MeshHandle handle) { m_meshes.erase(key(handle)); }
+  void NativeResources::destroyMesh(remixapi_MeshHandle handle) {
+    if (auto it = m_meshes.find(key(handle)); it != m_meshes.end()) {
+      it->second->retired = true;
+      ++m_retireGeneration;
+      m_meshes.erase(it);
+    }
+  }
 } // namespace remix

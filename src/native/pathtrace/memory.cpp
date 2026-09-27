@@ -113,6 +113,32 @@ namespace remix {
     check(result);
   }
 
+  void PathTracer::Gpu::write(Buffer &buffer, std::initializer_list<std::pair<const void *, size_t>> parts,
+                              size_t offset) {
+    size_t size = 0;
+    for (const auto &part : parts)
+      size += part.second;
+    if (size <= offset)
+      return;
+    ScopedMilliseconds time{performance.uploadMilliseconds};
+    performance.uploadBytes += size - offset;
+    if (!buffer.mapped)
+      check(vkMapMemory(device, buffer.memory, 0, VK_WHOLE_SIZE, 0, &buffer.mapped));
+    size_t position = 0;
+    for (const auto &[data, bytes] : parts) {
+      const size_t skip = offset > position ? std::min(offset - position, bytes) : 0;
+      if (bytes > skip)
+        std::memcpy(static_cast<char *>(buffer.mapped) + position + skip, static_cast<const char *>(data) + skip,
+                    bytes - skip);
+      position += bytes;
+    }
+    VkMappedMemoryRange flush = {
+        .sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = buffer.memory,
+        .offset = buffer.memoryOffset,
+        .size = buffer.block ? align(size, buffer.atomSize) : VK_WHOLE_SIZE};
+    check(vkFlushMappedMemoryRanges(device, 1, &flush));
+  }
+
   void PathTracer::Gpu::hostBuffer(std::unique_ptr<Buffer> &out, const void *data, size_t size,
                                    VkBufferUsageFlags usage) {
     if (!out || out->size < size)
@@ -120,14 +146,41 @@ namespace remix {
     write(*out, data, size);
   }
 
+  VkDeviceSize PathTracer::Gpu::stage(const void *data, size_t size) {
+    VkDeviceSize offset = align(staging.used, 16);
+    if (!staging.buffer || offset + size > staging.buffer->size) {
+      // Copies recorded from the full buffer keep it until this slot's fence.
+      const VkDeviceSize capacity =
+          std::max<VkDeviceSize>({VkDeviceSize(size), staging.buffer ? staging.buffer->size * 2 : 0,
+                                  VkDeviceSize(4 * 1024 * 1024)});
+      if (staging.buffer)
+        uploads.push_back(std::move(staging.buffer));
+      staging.buffer = buffer(capacity, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true);
+      offset = 0;
+    }
+    ScopedMilliseconds time{performance.uploadMilliseconds};
+    performance.uploadBytes += size;
+    auto &target = *staging.buffer;
+    if (!target.mapped)
+      check(vkMapMemory(device, target.memory, 0, VK_WHOLE_SIZE, 0, &target.mapped));
+    std::memcpy(static_cast<char *>(target.mapped) + offset, data, size);
+    const VkDeviceSize atom = std::max<VkDeviceSize>(1, properties.limits.nonCoherentAtomSize);
+    const VkDeviceSize begin = offset / atom * atom, end = align(offset + size, atom);
+    VkMappedMemoryRange flush = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
+                                 .memory = target.memory,
+                                 .offset = begin,
+                                 .size = end > target.allocationSize ? VK_WHOLE_SIZE : end - begin};
+    check(vkFlushMappedMemoryRanges(device, 1, &flush));
+    staging.used = offset + size;
+    return offset;
+  }
+
   std::unique_ptr<Buffer> PathTracer::Gpu::upload(VkCommandBuffer command, const void *data, size_t size,
                                                   VkBufferUsageFlags usage) {
-    auto staging = buffer(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true, true);
-    write(*staging, data, size);
+    const VkDeviceSize offset = stage(data, size);
     auto out = buffer(size, usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false, true);
-    VkBufferCopy copy = {.size = size};
-    vkCmdCopyBuffer(command, staging->handle, out->handle, 1, &copy);
-    uploads.push_back(std::move(staging));
+    VkBufferCopy copy = {.srcOffset = offset, .size = size};
+    vkCmdCopyBuffer(command, staging.buffer->handle, out->handle, 1, &copy);
     return out;
   }
 

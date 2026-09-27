@@ -20,6 +20,8 @@ namespace remix {
     swap(timingPending, frame.timingPending);
     swap(traceState, frame.traceState);
     swap(table, frame.table);
+    swap(tableVersion, frame.tableVersion);
+    swap(retiredStates, frame.retiredStates);
     swap(tableUpload, frame.tableUpload);
     swap(uniform, frame.uniform);
     swap(scratch, frame.scratch);
@@ -31,6 +33,8 @@ namespace remix {
     swap(emissiveNodes, frame.emissiveNodes);
     swap(emissiveEmitters, frame.emissiveEmitters);
     swap(uploads, frame.uploads);
+    swap(staging, frame.staging);
+    swap(primaryRecording, frame.primaryRecording);
     swap(retired, frame.retired);
     swap(compactPending, frame.compactPending);
     swap(retiredGeometry, frame.retiredGeometry);
@@ -44,8 +48,9 @@ namespace remix {
     swap(torchBufferGeneration, frame.torchGeneration);
     swap(emissiveBufferGeneration, frame.emissiveGeneration);
     swap(retiredPreviousVertices, frame.retiredVertices);
-    for (unsigned i = 0; i < 2; ++i)
+    for (unsigned i = 0; i < 3; ++i)
       swap(tlas[i].instances, frame.instances[i]);
+    swap(tlas[2].prefix, frame.combinedPrefix);
   }
 
   void PathTracer::Gpu::selectFrame(uint32_t slot) {
@@ -93,13 +98,28 @@ namespace remix {
   bool PathTracer::adaptiveTerminationAvailable() const { return !m_gpu->rouletteFailed; }
   void PathTracer::resetPerformance() {
     m_gpu->performance = {.structSize = sizeof(remixapi_FramePerformanceEXT)};
+    m_gpu->breakdown = {.structSize = sizeof(remixapi_FrameBreakdownEXT)};
+    m_gpu->materialTicks = m_gpu->temporalTicks = m_gpu->geometryTicks = 0;
   }
-  remixapi_FramePerformanceEXT PathTracer::performance() const { return m_gpu->performance; }
+  remixapi_FramePerformanceEXT PathTracer::performance() const {
+    auto out = m_gpu->performance;
+    out.geometryMilliseconds = tickMilliseconds(m_gpu->geometryTicks);
+    return out;
+  }
+  remixapi_FrameBreakdownEXT PathTracer::breakdown() const {
+    auto out = m_gpu->breakdown;
+    out.materialMilliseconds = tickMilliseconds(m_gpu->materialTicks);
+    out.temporalMilliseconds = tickMilliseconds(m_gpu->temporalTicks);
+    return out;
+  }
+  uint64_t PathTracer::frameDigest() const { return m_gpu->digest; }
 
   PathTracer::Gpu::~Gpu() {
     destroyTarget();
     destroySharc();
+    destroyPrimaryRecording(primaryRecording);
     for (auto &frame : frames) {
+      destroyPrimaryRecording(frame.primaryRecording);
       if (frame.timestamps)
         vkDestroyQueryPool(device, frame.timestamps, nullptr);
       if (frame.compaction)
@@ -108,8 +128,13 @@ namespace remix {
         vkDestroyQueryPool(device, frame.sharcTimestamps, nullptr);
       frame = {};
     }
+    // Kept static tables refer to the views, and history states hold buffers.
+    tables.reset();
+    statics.clear();
+    retiredStates.clear();
     retiredGeometry.clear();
     retiredBuffers.clear();
+    deformViews.clear();
     meshes.clear();
     compactPending.clear();
     retired.clear();
@@ -210,7 +235,7 @@ namespace remix {
     transmission.reset();
     extent = {};
     imagesInitialized = false;
-    lastScene.clear();
+    lastScene = {};
     stats.accumulationCount = 0;
   }
 

@@ -24,12 +24,15 @@ VkPipeline PathTracer::Gpu::selectLightingPipeline(VkPipeline pipeline, bool com
   const bool firstHit = localFirstHitActive && source.supportsGuiding && source.preferFirstHit;
   const bool reuse = pbrReuse.active;
   const bool roulette = rouletteActive && source.supportsRoulette;
-  const bool keyed = separateIndirect || angular || combinedDirect || split || reuse || rayProfile.path || firstHit || roulette || !decalMaterialsActive;
+  // rtx.native.pathtrace.shadowEarlyOut; off keeps the existing variants.
+  const bool earlyOut = shadowEarlyOutActive;
+  const bool keyed = separateIndirect || angular || combinedDirect || split || reuse || rayProfile.path || firstHit || roulette || !decalMaterialsActive || earlyOut;
   const uint32_t key = uint32_t(guided) | uint32_t(smallSet) << 1 | uint32_t(resampling) << 2 |
                        uint32_t(split) << 3 | uint32_t(combinedDirect) << 4 | uint32_t(angular) << 5 |
-                       uint32_t(localIlluminationActive) << 6 | uint32_t(reuse) << 7 | uint32_t(rayProfile.path != nullptr) << 8 | uint32_t(firstHit) << 9 | uint32_t(separateIndirect) << 10 | uint32_t(roulette) << 11 | uint32_t(decalMaterialsActive) << 12;
+                       uint32_t(localIlluminationActive) << 6 | uint32_t(reuse) << 7 | uint32_t(rayProfile.path != nullptr) << 8 | uint32_t(firstHit) << 9 | uint32_t(separateIndirect) << 10 | uint32_t(roulette) << 11 | uint32_t(decalMaterialsActive) << 12 |
+                       uint32_t(earlyOut) << 13;
   selectedLightingKey = key;
-  if (localIlluminationActive && !guided && !smallSet && !resampling && !split && !angular && !combinedDirect && !reuse && !rayProfile.path && !firstHit && !separateIndirect && !roulette && decalMaterialsActive)
+  if (localIlluminationActive && !guided && !smallSet && !resampling && !split && !angular && !combinedDirect && !reuse && !rayProfile.path && !firstHit && !separateIndirect && !roulette && decalMaterialsActive && !earlyOut)
     return pipeline;
   auto &variant = keyed ? source.specialized[key].first : resampling ? source.withResampling[guided] : smallSet ? source.smallSet[guided] : localIlluminationActive ? source.withGuiding : source.withoutLocal;
   auto &attempted = keyed ? source.specialized[key].second : resampling ? source.resamplingAttempted[guided] : smallSet ? source.smallAttempted[guided] : localIlluminationActive ? source.guidingAttempted : source.attempted;
@@ -42,7 +45,7 @@ VkPipeline PathTracer::Gpu::selectLightingPipeline(VkPipeline pipeline, bool com
     VkShaderModule module{};
     auto result = pipeline::createShaderModule(device, &ci, nullptr, &module);
     if (result == VK_SUCCESS) {
-      const VkBool32 enabled[] = {VkBool32(localIlluminationActive), VkBool32(guided), VkBool32(smallSet), VkBool32(resampling), VkBool32(split), VkBool32(angular), VkBool32(reuse), VkBool32(rayProfile.path != nullptr), VkBool32(firstHit), VkBool32(separateIndirect), VkBool32(roulette), VkBool32(decalMaterialsActive)};
+      const VkBool32 enabled[] = {VkBool32(localIlluminationActive), VkBool32(guided), VkBool32(smallSet), VkBool32(resampling), VkBool32(split), VkBool32(angular), VkBool32(reuse), VkBool32(rayProfile.path != nullptr), VkBool32(firstHit), VkBool32(separateIndirect), VkBool32(roulette), VkBool32(decalMaterialsActive), VkBool32(earlyOut)};
       const VkSpecializationMapEntry entries[] = {{0, 0, sizeof(VkBool32)}, {1, sizeof(VkBool32), sizeof(VkBool32)},
                                                  {2, 2 * sizeof(VkBool32), sizeof(VkBool32)},
                                                  {3, 3 * sizeof(VkBool32), sizeof(VkBool32)},
@@ -53,8 +56,9 @@ VkPipeline PathTracer::Gpu::selectLightingPipeline(VkPipeline pipeline, bool com
                                                  {8, 8 * sizeof(VkBool32), sizeof(VkBool32)},
                                                  {9, 9 * sizeof(VkBool32), sizeof(VkBool32)},
                                                  {10, 10 * sizeof(VkBool32), sizeof(VkBool32)},
-                                                 {11, 11 * sizeof(VkBool32), sizeof(VkBool32)}};
-      const VkSpecializationInfo specialization{12, entries, sizeof(enabled), enabled};
+                                                 {11, 11 * sizeof(VkBool32), sizeof(VkBool32)},
+                                                 {12, 12 * sizeof(VkBool32), sizeof(VkBool32)}};
+      const VkSpecializationInfo specialization{13, entries, sizeof(enabled), enabled};
       const VkComputePipelineCreateInfo create{
           .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
           .stage = {.sType =

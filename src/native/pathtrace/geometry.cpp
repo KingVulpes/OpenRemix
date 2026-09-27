@@ -1,17 +1,17 @@
 #include "pathtrace/gpu.h"
-#include <string_view>
+#include <atomic>
 
 namespace remix {
   using namespace scene;
   using namespace trace::detail;
 
   namespace {
-    uint64_t bufferFingerprint(const void *data, size_t size, uint64_t seed = 1469598103934665603ull) {
-      // These fingerprints only invalidate history inside this renderer run.
-      // Bulk hashing avoids a serial byte-at-a-time multiply over every changed
-      // vertex. Geometry cache reuse still compares the complete content string.
-      const uint64_t digest = std::hash<std::string_view>{}({static_cast<const char *>(data), size});
-      return scene::hashBytes(&digest, sizeof(digest), seed);
+    // These fingerprints only invalidate history inside this renderer run.
+    // Bulk hashing avoids a serial byte-at-a-time multiply over every changed
+    // vertex (std::hash<string_view> is byte-wise FNV-1a in MSVC's library).
+    // Geometry cache reuse still compares the complete content string.
+    uint64_t chainFingerprint(uint64_t contentHash, uint64_t seed = 1469598103934665603ull) {
+      return scene::hashBytes(&contentHash, sizeof(contentHash), seed);
     }
   } // namespace
 
@@ -22,31 +22,53 @@ namespace remix {
   }
 
   PathTracer::Gpu::MeshView &PathTracer::Gpu::mesh(VkCommandBuffer command, const Draw &draw,
-      const std::vector<std::shared_ptr<const scene::OpacityPartition>> &partitions) {
-    ScopedMilliseconds time{performance.geometryMilliseconds};
+      const std::vector<const scene::OpacityPartition *> &partitions) {
+    MeshConversion conversion;
+    bool convert = false;
+    auto &view = meshView(draw, partitions.data(), partitions.size(), conversion, convert);
+    if (convert) {
+      {
+        ScopedTicks time{geometryTicks};
+        convertMesh(conversion);
+      }
+      commitMesh(command, conversion);
+    }
+    return view;
+  }
+
+  PathTracer::Gpu::MeshView &PathTracer::Gpu::meshView(const Draw &draw,
+      const scene::OpacityPartition *const *partitions, size_t partitionCount, MeshConversion &conversion,
+      bool &convert) {
+    ScopedTicks time{geometryTicks};
+    convert = false;
     std::string opaque;
-    for (const auto &partition : partitions) opaque.append(partition->key);
+    for (size_t i = 0; i < partitionCount; ++i) opaque.append(partitions[i]->key);
     const bool skinned = draw.bones && std::any_of(draw.mesh->surfaces.begin(), draw.mesh->surfaces.end(),
                                                   [](const auto &s) { return s->bonesPerVertex != 0; });
     const bool streaming = bool(draw.mesh->updateStream);
     const bool deform = skinned || streaming;
     // Each independently animated skin owns its BLAS. Opt-in CPU replacements
-    // may transfer compatible storage only from a view unused in this frame.
+    // may transfer compatible storage only from a view unused in this frame;
+    // a skinned lineage transfers per instance.
     auto key =
         std::make_tuple(draw.mesh.get(), skinned ? draw.instanceId : 0, skinned ? draw.instanceIndex : 0, opaque);
-    auto &view = meshes[key];
+    auto [entry, inserted] = meshes.try_emplace(key);
+    auto &view = entry->second;
+    if (inserted && std::get<1>(entry->first))
+      deformViews.insert(&entry->first);
     if (streaming && view.owner.lock() != draw.mesh) {
-      auto found = updateViews.find({draw.mesh->updateStream.get(), opaque});
+      const UpdateViewKey lineage{draw.mesh->updateStream.get(), std::get<1>(key), std::get<2>(key), opaque};
+      auto found = updateViews.find(lineage);
       if (found != updateViews.end() && found->second != key) {
         auto old = meshes.find(found->second);
         if (old != meshes.end() && old->second.updateStream == draw.mesh->updateStream &&
             old->second.lastUse != sequence) {
           if (view.geometry) retiredGeometry.push_back(std::move(view.geometry));
           for (auto &vertices : view.vertices) retiredBuffers.push_back(std::move(vertices));
-          view = std::move(old->second); meshes.erase(old);
+          view = std::move(old->second); deformViews.erase(&old->first); meshes.erase(old);
         }
       }
-      updateViews[{draw.mesh->updateStream.get(), opaque}] = key;
+      updateViews[lineage] = key;
     }
     view.lastUse = sequence;
     if (view.owner.lock() == draw.mesh && (!skinned || view.bones == *draw.bones))
@@ -55,32 +77,68 @@ namespace remix {
     // A replaced CPU mesh may reuse an address. Keep its geometry alive through
     // the canonical lookup, but never mistake its view for the new mesh.
     const bool transfer = streaming && view.updateStream == draw.mesh->updateStream;
-    auto previousGeometry = !transfer && view.owner.lock() != draw.mesh ? std::move(view.geometry) : nullptr;
+    conversion.previousGeometry = !transfer && view.owner.lock() != draw.mesh ? std::move(view.geometry) : nullptr;
+    // Later draws of this view this frame see it as converted, as they did when
+    // conversion completed before the next lookup.
     view.owner = draw.mesh;
     view.updateStream = draw.mesh->updateStream;
     if (skinned)
       view.bones = *draw.bones;
-    struct TrimScratch {
-      GeometryScratch &scratch;
-      ~TrimScratch() { if (scratch.bytes() > 64*1024*1024) scratch = {}; }
-    } trim{conversion};
-    auto &content = conversion.content;
+    conversion.view = &view;
+    conversion.draw = &draw;
+    conversion.partitions = partitions;
+    conversion.opaque = std::move(opaque);
+    conversion.skinned = skinned;
+    conversion.streaming = streaming;
+    conversion.deform = deform;
+    convert = true;
+    return view;
+  }
+
+  PathTracer::Gpu::MeshView *PathTracer::Gpu::findView(const Draw &draw,
+      const scene::OpacityPartition *const *partitions, size_t partitionCount) {
+    if (draw.mesh->updateStream)
+      return nullptr;
+    std::string opaque;
+    for (size_t i = 0; i < partitionCount; ++i) opaque.append(partitions[i]->key);
+    const bool skinned = draw.bones && std::any_of(draw.mesh->surfaces.begin(), draw.mesh->surfaces.end(),
+                                                  [](const auto &s) { return s->bonesPerVertex != 0; });
+    const MeshViewKey key{draw.mesh.get(), skinned ? draw.instanceId : 0, skinned ? draw.instanceIndex : 0,
+                          std::move(opaque)};
+    const auto found = meshes.find(key);
+    if (found == meshes.end())
+      return nullptr;
+    auto &view = found->second;
+    // view.owner.lock() == draw.mesh without the reference-count traffic.
+    if (view.owner.owner_before(draw.mesh) || draw.mesh.owner_before(view.owner) || view.owner.expired() ||
+        (skinned && view.bones != *draw.bones))
+      return nullptr;
+    std::atomic_ref<uint64_t>(view.lastUse).store(sequence, std::memory_order_relaxed);
+    return &view;
+  }
+
+  void PathTracer::Gpu::convertMesh(MeshConversion &conversion) {
+    const auto &draw = *conversion.draw;
+    const auto *partitions = conversion.partitions;
+    const auto &opaque = conversion.opaque;
+    auto &data = conversion.data;
+    auto &content = data.content;
     content.clear();
     size_t contentBytes = opaque.size() + sizeof(uint32_t);
     for (const auto &surface : draw.mesh->surfaces)
       contentBytes += 12 + surface->vertices.size() * 12 + surface->indices.size() * 4;
     content.reserve(contentBytes);
     auto append = [&](const void *p, size_t size) { content.append(static_cast<const char *>(p), size); };
-    auto &shading = conversion.shading;
-    auto &vertexOffsets = conversion.vertexOffsets, &indexOffsets = conversion.indexOffsets;
-    auto &counts = conversion.counts, &vertexCounts = conversion.vertexCounts;
-    vertexOffsets.clear(); indexOffsets.clear(); counts.clear(); vertexCounts.clear();
+    auto &shading = data.shading;
+    auto &vertexOffsets = data.vertexOffsets, &indexOffsets = data.indexOffsets;
+    auto &counts = data.counts, &vertexCounts = data.vertexCounts;
+    auto &groups = data.groups;
+    vertexOffsets.clear(); indexOffsets.clear(); counts.clear(); vertexCounts.clear(); groups.clear();
     const auto surfaceCount = draw.mesh->surfaces.size();
     const auto surfaceHeader = uint32_t(surfaceCount);
     append(&surfaceHeader, sizeof(surfaceHeader));
     shading.resize(surfaceCount);
     size_t surfaceIndex = 0;
-    std::vector<GeometryGroup> groups;
     vertexOffsets.reserve(surfaceCount); indexOffsets.reserve(surfaceCount);
     counts.reserve(surfaceCount); vertexCounts.reserve(surfaceCount);
     float low[3] = {INFINITY, INFINITY, INFINITY}, high[3] = {-INFINITY, -INFINITY, -INFINITY};
@@ -91,6 +149,10 @@ namespace remix {
       vertexOffsets.push_back(content.size());
       auto &vertices = shading[surfaceIndex];
       vertices.resize(surface->vertices.size());
+      // Positions go straight into the reserved content buffer.
+      const size_t positions = content.size();
+      content.resize(positions + surface->vertices.size() * 12);
+      auto *position = content.data() + positions;
       for (size_t i = 0; i < surface->vertices.size(); ++i) {
         auto vertex = surface->vertices[i];
         if (surface->bonesPerVertex) {
@@ -115,7 +177,7 @@ namespace remix {
           else
             std::fill_n(vertex.normal, 3, 0.f);
         }
-        append(vertex.position, 12);
+        std::memcpy(position + i * 12, vertex.position, 12);
         for (int r = 0; r < 3; ++r) {
           low[r] = std::min(low[r], vertex.position[r]);
           high[r] = std::max(high[r], vertex.position[r]);
@@ -156,6 +218,21 @@ namespace remix {
     // Opacity is part of BLAS identity, including independently skinned and
     // streamed variants. Append after geometry data to preserve input alignment.
     content.append(opaque);
+    std::copy_n(low, 3, data.low);
+    std::copy_n(high, 3, data.high);
+    data.contentHash = scene::fastHash(content.data(), content.size());
+    data.shadingHashes.clear();
+    for (const auto &vertices : shading)
+      data.shadingHashes.push_back(scene::fastHash(vertices.data(), vertices.size() * sizeof(TraceVertex)));
+  }
+
+  void PathTracer::Gpu::commitMesh(VkCommandBuffer command, MeshConversion &conversion) {
+    ScopedTicks time{geometryTicks};
+    auto &view = *conversion.view;
+    const auto &data = conversion.data;
+    const auto &content = data.content;
+    const auto &low = data.low, &high = data.high;
+    const bool deform = conversion.deform, skinned = conversion.skinned, streaming = conversion.streaming;
     if (!deform) {
       auto found = geometryCache.find(content);
       if (found != geometryCache.end())
@@ -169,8 +246,9 @@ namespace remix {
       auto &g = *view.geometry;
       g.deform = deform;
       // Refit only while the build remains spatially similar, and periodically
-      // rebuild to bound degradation from many small deformations.
-      if (update && streaming) {
+      // rebuild to bound degradation from many small deformations. Skins keep
+      // refitting as without a lineage: their bones move the whole bound.
+      if (update && streaming && !skinned) {
         const float limit = std::max(g.diagonal * .25f, .001f);
         if (g.refits >= 60) update = false;
         for (unsigned c = 0; c < 3; ++c)
@@ -183,10 +261,10 @@ namespace remix {
         std::copy_n(low, 3, g.buildLow.begin()); std::copy_n(high, 3, g.buildHigh.begin());
       }
       g.pending = true;
-      g.counts = counts;
-      g.indexOffsets = indexOffsets;
-      g.groups = groups;
-      g.fingerprint = bufferFingerprint(content.data(), content.size());
+      g.counts = data.counts;
+      g.indexOffsets = data.indexOffsets;
+      g.groups = data.groups;
+      g.fingerprint = chainFingerprint(data.contentHash);
       ++g.revision;
       g.diagonal = std::hypot(high[0] - low[0], high[1] - low[1], high[2] - low[2]);
       if (g.input)
@@ -195,8 +273,8 @@ namespace remix {
           upload(command, content.data(), content.size(), inputUsage | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
       g.geometries.clear();
       g.ranges.clear();
-      if (groups.size() > asProperties.maxGeometryCount) throw VK_ERROR_TOO_MANY_OBJECTS;
-      for (const auto &group : groups) {
+      if (data.groups.size() > asProperties.maxGeometryCount) throw VK_ERROR_TOO_MANY_OBJECTS;
+      for (const auto &group : data.groups) {
         const auto i = group.surface;
         VkAccelerationStructureGeometryKHR geometry = {
             .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR,
@@ -205,9 +283,9 @@ namespace remix {
         geometry.geometry.triangles = {
             .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR,
             .vertexFormat = VK_FORMAT_R32G32B32_SFLOAT,
-            .vertexData = {.deviceAddress = g.input->address + vertexOffsets[i]},
+            .vertexData = {.deviceAddress = g.input->address + data.vertexOffsets[i]},
             .vertexStride = 12,
-            .maxVertex = vertexCounts[i] - 1,
+            .maxVertex = data.vertexCounts[i] - 1,
             .indexType = VK_INDEX_TYPE_UINT32,
             .indexData = {.deviceAddress = g.input->address + group.indices}};
         g.geometries.push_back(geometry);
@@ -219,7 +297,7 @@ namespace remix {
           .flags = flags(deform),
           .geometryCount = uint32_t(g.geometries.size()),
           .pGeometries = g.geometries.data()};
-      if (!g.accel) buildSizes(device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &build, counts.data(), &g.sizes);
+      if (!g.accel) buildSizes(device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &build, data.counts.data(), &g.sizes);
       if (!g.accel)
         g.accel =
             acceleration(g.sizes.accelerationStructureSize, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR);
@@ -230,15 +308,23 @@ namespace remix {
       retiredBuffers.push_back(std::move(vertices));
     view.vertices.clear();
     view.fingerprint = view.geometry->fingerprint;
-    for (const auto &vertices : shading) {
-      view.fingerprint =
-          bufferFingerprint(vertices.data(), vertices.size() * sizeof(TraceVertex), view.fingerprint);
+    if (digestEnabled) {
+      view.contentDigest = scene::hashBytes(content.data(), content.size());
+      for (const auto &vertices : data.shading)
+        view.contentDigest =
+            scene::hashBytes(vertices.data(), vertices.size() * sizeof(TraceVertex), view.contentDigest);
+    }
+    for (size_t i = 0; i < data.shading.size(); ++i) {
+      const auto &vertices = data.shading[i];
+      view.fingerprint = chainFingerprint(data.shadingHashes[i], view.fingerprint);
       view.vertices.push_back(upload(command, vertices.data(), vertices.size() * sizeof(TraceVertex),
                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT));
     }
-    if (previousGeometry)
-      retiredGeometry.push_back(std::move(previousGeometry));
-    return view;
+    if (conversion.previousGeometry)
+      retiredGeometry.push_back(std::move(conversion.previousGeometry));
+    // Bound the scratch a single large conversion leaves behind.
+    if (conversion.data.bytes() > 64 * 1024 * 1024)
+      conversion.data = {};
   }
 
 } // namespace remix

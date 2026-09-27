@@ -68,6 +68,8 @@ private:
     // the same conservative rectangle predicate as scanning the RGBA bytes.
     std::vector<uint32_t> prefix;
     bool solid(const Region &r) const {
+      if (prefix.empty())
+        return true; // Compressed texture without any non-opaque texel.
       const size_t stride = size_t(width) + 1;
       const size_t x0 = r[0], y0 = r[1], x1 = size_t(r[2]) + 1,
                    y1 = size_t(r[3]) + 1;
@@ -78,6 +80,9 @@ private:
   std::unordered_map<const Surface *, SurfaceEntries> surfaces;
   std::unordered_map<const Texture *, TextureEntries> textures;
   TextureEntries &coverage(const std::shared_ptr<Texture> &texture);
+  // The cache key of a draw; false for non-finite inputs (never cached).
+  bool key(const Draw &draw, const std::array<float, 4> &uv, Key &out,
+           std::array<uint32_t, 2> &dimensions) const;
   OpacityPartition::Reason opaqueTexels(const Draw &draw,
                                         const std::array<float, 4> &uv,
                                         uint32_t triangle,
@@ -89,10 +94,25 @@ public:
                         bool profile = false);
   std::shared_ptr<const OpacityPartition>
   partition(const Draw &draw, const std::array<float, 4> &uv);
+  // Read-only: the partition partition() would return without changing the
+  // cache (an owned entry validated by the same texture), otherwise null.
+  // Concurrent find() calls are safe while partition() and prune() are not running.
+  std::shared_ptr<const OpacityPartition> find(const Draw &draw, const std::array<float, 4> &uv) const;
   bool opaque(const Draw &draw, const std::array<float, 4> &uv) {
     auto result = partition(draw, uv);
     return result->reasons[OpacityPartition::Solid] == result->triangles;
   }
   void prune();
+  // rtx.native.pathtrace.hardwareFaceCulling: when set, a one-sided surface is
+  // proved like a double-sided one (Solid instead of OneSided). Traversal must
+  // then reject its back faces in hardware: the tracer clears the instance's
+  // facing-cull-disable flag (doubleSided belongs to the whole instance) and
+  // rays carry gl_RayFlagsCullBackFacingTrianglesEXT. Part of the cache key,
+  // so both variants stay cached. Set only while no lookup is running.
+  void setOneSidedOpaque(bool value) { oneSidedOpaque = value; }
+  bool oneSidedOpaqueEnabled() const { return oneSidedOpaque; }
+
+private:
+  bool oneSidedOpaque = false;
 };
 } // namespace remix::scene

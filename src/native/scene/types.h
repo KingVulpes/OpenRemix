@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <remix/remix_c.h>
@@ -12,16 +13,46 @@ namespace remix {
     Matrix identity();
     Matrix inverse(const Matrix &matrix);
     uint64_t hashBytes(const void *bytes, size_t size, uint64_t seed = 1469598103934665603ull);
+    // Bulk content hash (8 bytes per step) for change detection within a run.
+    uint64_t fastHash(const void *bytes, size_t size, uint64_t seed = 0);
     Matrix multiply(const Matrix &a, const Matrix &b);
     Matrix transform(const remixapi_Transform &value);
     const void *extension(const void *next, remixapi_StructType type);
 
+    // Block-compressed texture kept compressed on the GPU ("Keep BC textures
+    // compressed"). Pixels::mips/hdrMips stay empty; CPU consumers read only the
+    // small derived data below, never a full decoded copy.
+    struct CompressedPixels {
+      uint32_t format = 0;   // remixapi_Format as submitted (a BC format)
+      uint32_t block = 0;    // 1 BC1, 3 BC3, 4 BC4, 5 BC5, 6 BC6H UF16, 16 BC6H SF16, 7 BC7
+      bool bc1Alpha = false; // BC1 RGBA semantics; BC1 RGB samples alpha as one
+      uint32_t levels = 0;   // supplied mip levels
+      uint64_t hash = 0;     // content hash of every supplied block
+      // Supplied blocks, kept only until the one-time GPU upload releases them.
+      std::vector<uint8_t> upload;
+      // One bit per mip-0 texel (row-major) whose decoded alpha is not 255.
+      // Empty when every texel is opaque. Opacity partitions read only this.
+      std::vector<uint64_t> transparent;
+      bool transparentTexel(uint32_t x, uint32_t y, uint32_t width) const {
+        if (transparent.empty())
+          return false;
+        const size_t i = size_t(y) * width + x;
+        return (transparent[i >> 6] >> (i & 63)) & 1;
+      }
+      // Small decoded level (at most 64x64 texels) for CPU emission statistics:
+      // RGBA8 like Pixels::mips, plus linear RGBA32F for BC6H.
+      uint32_t previewWidth = 0, previewHeight = 0;
+      std::vector<uint8_t> preview;
+      std::vector<float> hdrPreview;
+    };
     struct Pixels {
       uint32_t width = 0, height = 0;
       bool srgb = true;
       std::vector<std::vector<uint8_t>> mips;
       std::vector<std::vector<float>> hdrMips; // Linear RGBA32F, retained through upload.
       bool twoChannel = false; // BC5 stores normal X/Y; reconstruct Z when used as a normal map.
+      std::shared_ptr<CompressedPixels> compressed; // Set only for GPU-compressed textures.
+      uint32_t levels() const { return compressed ? compressed->levels : uint32_t(mips.size()); }
     };
     struct Texture {
       Pixels pixels;
@@ -53,7 +84,38 @@ namespace remix {
       bool drawAlpha = false, translucent = false, transmission = false;
       uint8_t filter = 0, wrapU = 1, wrapV = 1;
       uint8_t rows = 1, columns = 1, fps = 0;
+      // remixapi_MaterialInfoOpaqueSpecGlossEXT (dxvk-remix fork semantics).
+      // roughnessEncoding: REMIXAPI_TEXTURE_ENCODING_SMOOTHNESS_IN_RED/GREEN or
+      // NONE; with a smoothness map, roughness = max(1 - smoothness, roughness).
+      // specularMetal: the fork's packed metalness parameters (0 = off): bits
+      // 0-3 spec low, 4-7 spec high, 8-11 albedo luminance max, 12-15
+      // strength (each /15), 16-31 specular tint R5 G6 B5.
+      uint32_t roughnessEncoding = 0;
+      uint32_t specularMetal = 0;
+      // remixapi_MaterialInfoOpaqueAlbedoTintEXT: gamma multiplier on the
+      // albedo texture's RGB, clamped to [0, 16] and rounded to half precision
+      // like the fork's. Set only for opaque materials with an albedo texture.
+      bool hasAlbedoTint = false;
+      float albedoTint[3] = {1, 1, 1};
+      // Set once the handle stops resolving to this object (replaced or
+      // destroyed), so retained instances know to resolve the handle again.
+      bool retired = false;
     };
+    // REMIXAPI_TEXTURE_ENCODING_SMOOTHNESS_IN_RED / _GREEN (remix_fo4_ext.h
+    // defines them for Windows only).
+    constexpr uint32_t smoothnessInRedEncoding = 2, smoothnessInGreenEncoding = 3;
+    // IEEE half-precision bits of a finite v (round to nearest even).
+    uint16_t halfBits(float v);
+    float halfFloat(uint16_t bits);
+    // What a backend's shader decodes for a material's fork extensions.
+    struct MaterialDecode {
+      static constexpr uint32_t roughnessFromSmoothness = 1, smoothnessInGreen = 2, metallicFromSpecular = 4,
+                                albedoTint = 8, albedoSrgb = 16;
+      uint32_t flags = 0;
+      uint32_t specularMetal = 0;
+      uint16_t tint[3] = {0x3c00, 0x3c00, 0x3c00}; // half bits
+    };
+    MaterialDecode materialDecode(const Material &material);
     struct Surface {
       std::vector<Vertex> vertices;
       std::vector<uint32_t> indices;
@@ -64,10 +126,19 @@ namespace remix {
       std::array<float, 3> center = {};
     };
     struct MeshUpdateStream {};
+    // Counts destroyed Mesh objects: a consumer holding weak references to
+    // meshes (the tracer's views) need not look for expired ones while it has
+    // not changed.
+    inline std::atomic<uint64_t> meshReleases{0};
     struct Mesh {
       std::shared_ptr<const MeshUpdateStream> updateStream;
       bool motionCorrespondence = false;
       std::vector<std::shared_ptr<Surface>> surfaces;
+      bool retired = false; // See Material::retired.
+      struct Release {
+        // Release: the mesh expired first, for a reader on another thread.
+        ~Release() { meshReleases.fetch_add(1, std::memory_order_release); }
+      } release;
     };
     struct Blend {
       bool enabled = false;

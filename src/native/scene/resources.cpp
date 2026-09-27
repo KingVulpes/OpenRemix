@@ -20,6 +20,16 @@ namespace remix {
     m_frameIds.clear();
     m_uiDraws.clear();
     m_overlay.clear();
+    // Handles keep counting up: one issued before a restart never names a new instance.
+    m_retained.clear();
+    m_retainedIndex.clear();
+    m_retainedWatch = 0;
+    m_retainedStats = {};
+    m_staticDrawn = false;
+    m_staticDraws = m_staticEmissive = 0;
+    m_staticPlacement.clear();
+    m_staticChanges.clear();
+    ++m_staticEpoch;
     m_materials.clear();
     m_modMaterials.clear();
     m_meshes.clear();
@@ -35,6 +45,10 @@ namespace remix {
     m_light = {};
     m_dome = {};
     m_frameLights.clear();
+    m_publishedLights.clear();
+    m_lightsPublished = false;
+    m_replica = false;
+    m_replicaChanges.clear();
     for (auto &view : m_views)
       view = identity();
     for (auto &projection : m_projections)
@@ -49,10 +63,15 @@ namespace remix {
 
   void NativeResources::finishFrame() {
     m_draws.clear();
+    m_staticDrawn = false;
+    m_staticDraws = m_staticEmissive = 0;
+    m_staticPlacement.clear();
     m_frameIds.clear();
     m_uiDraws.clear();
     m_light = {};
     m_dome = {};
     m_frameLights.clear();
+    m_publishedLights.clear();
+    m_lightsPublished = false;
   }
 } // namespace remix

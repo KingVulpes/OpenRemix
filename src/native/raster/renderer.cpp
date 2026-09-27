@@ -16,6 +16,7 @@ namespace remix {
     textures.clear();
     meshes.clear();
     uploads.clear();
+    reusableImages.clear();
     skin.reset();
     if (vertex) {
       pipeline::destroyShaderModule(device, vertex, nullptr);
@@ -59,16 +60,37 @@ namespace remix {
       g.recycle(std::move(buffer));
     next.retiredBuffers.clear();
     next.retiredMaterials.clear();
+    for (auto &image : next.retiredImages)
+      g.recycle(std::move(image));
     next.retiredImages.clear();
     g.uploads = std::move(next.uploads);
     g.skin = std::move(next.skin);
   }
 
-  void RasterRenderer::initializeGpu(VkPhysicalDevice physical, VkDevice device) {
+  RasterRenderer::MemoryStatistics RasterRenderer::memoryStatistics() const {
+    MemoryStatistics result;
+    if (!m_gpu)
+      return result;
+    for (const auto &[texture, entry] : m_gpu->textures)
+      if (entry.data) {
+        result.textureBytes += entry.data->bytes;
+        ++result.textureCount;
+        if (entry.data->format >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && entry.data->format <= VK_FORMAT_BC7_SRGB_BLOCK)
+          result.compressedTextureBytes += entry.data->bytes;
+      }
+    for (const auto &[surface, entry] : m_gpu->meshes)
+      if (entry.data)
+        result.geometryBytes += entry.data->allocationSize;
+    result.pooledBytes = m_gpu->reusableBytes;
+    return result;
+  }
+
+  void RasterRenderer::initializeGpu(VkPhysicalDevice physical, VkDevice device, bool textureCompression) {
     m_gpu = std::make_unique<Gpu>();
     auto &g = *m_gpu;
     g.device = device;
     g.physical = physical;
+    g.textureCompression = textureCompression;
     vkGetPhysicalDeviceMemoryProperties(physical, &g.memory);
     vkGetPhysicalDeviceProperties(physical, &g.properties);
     for (auto format : {VK_FORMAT_D32_SFLOAT, VK_FORMAT_D16_UNORM}) {
@@ -111,6 +133,13 @@ namespace remix {
     shader.codeSize = sizeof(fragShader);
     shader.pCode = fragShader;
     check(pipeline::createShaderModule(device, &shader, nullptr, &g.fragment));
+  }
+
+  void RasterRenderer::adoptGpu(RasterRenderer &other) {
+    if (&other == this)
+      return;
+    m_gpu = std::move(other.m_gpu);
+    m_profile = std::exchange(other.m_profile, {});
   }
 
   void RasterRenderer::configureTarget(VkRenderPass pass, VkExtent2D extent, bool encodeOutput) {

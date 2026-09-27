@@ -38,7 +38,10 @@ namespace remix {
     bool translucencyDenoiserActive() const;
     remixapi_SharcStatisticsEXT sharcStatistics() const;
     void destroyTarget();
-    scene::TraceFrame prepareScene(const RasterRenderer &resources, const TraceOptions &options) const;
+    // Traces the resources' persistent static set (staticDrawn) from the
+    // tracer's own copy of it; may expand the set into the draw list when a
+    // frame cannot (NativeResources::expandStatic).
+    scene::TraceFrame prepareScene(RasterRenderer &resources, const TraceOptions &options) const;
     void prepare(VkCommandBuffer command, RasterRenderer &resources, const TraceOptions &options,
                  scene::TraceFrame &scene);
     void record(VkCommandBuffer command);
@@ -46,6 +49,27 @@ namespace remix {
     bool adaptiveTerminationAvailable() const;
     void resetPerformance();
     remixapi_FramePerformanceEXT performance() const;
+    // Phases of prepare/record for FrameBreakdownEXT; reset with resetPerformance.
+    remixapi_FrameBreakdownEXT breakdown() const;
+    // REMIX_FRAME_DIGEST diagnostics: an address-free hash of the last
+    // prepared frame's GPU inputs (surface table, instances, primary draws).
+    uint64_t frameDigest() const;
+    // The persistent static set in the last prepared frame (Diagnostics).
+    struct StaticStatistics {
+      bool active = false;                      // traced from the kept static set
+      uint64_t units = 0, surfaces = 0;         // its traced instances and table entries
+      uint64_t reusedSurfaces = 0;              // static entries taken from kept tables
+      uint64_t rebuiltSurfaces = 0;             // static entries of units built this frame
+      uint64_t dynamicSurfaces = 0;             // entries of the frame's other instances
+      uint64_t rebuiltUnits = 0, changes = 0, temporalSurfaces = 0, relayouts = 0;
+      double syncMilliseconds = 0;              // within scene preparation
+      double tableMilliseconds = 0;             // within trace surfaces
+      uint64_t validations = 0, mismatches = 0; // "persistentStaticValidation"
+      char mismatch[128] = {};                  // the first mismatch found
+    };
+    StaticStatistics staticStatistics() const;
+    // Rebuilds the kept static tables from scratch every frame and compares.
+    void setStaticValidation(bool enabled);
 
   private:
     struct Gpu;

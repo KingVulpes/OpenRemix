@@ -63,10 +63,16 @@ namespace remix {
 
   std::unique_ptr<Buffer> RasterRenderer::Gpu::buffer(const void *data, size_t size,
                                                       VkBufferUsageFlags usage) {
+    return buffer(size, usage, [&](uint8_t *mapped) { std::memcpy(mapped, data, size); });
+  }
+
+  std::unique_ptr<Buffer> RasterRenderer::Gpu::buffer(size_t size, VkBufferUsageFlags usage,
+                                                      const std::function<void(uint8_t *)> &write) {
     auto out = allocateBuffer(size, usage, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+    uploadBytes += size;
     void *mapped;
     check(vkMapMemory(device, out->memory, 0, VK_WHOLE_SIZE, 0, &mapped));
-    std::memcpy(mapped, data, size);
+    write(static_cast<uint8_t *>(mapped));
     const VkMappedMemoryRange flush = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
                                        .memory = out->memory,
                                        .offset = 0,
@@ -75,6 +81,16 @@ namespace remix {
     vkUnmapMemory(device, out->memory);
     check(result);
     return out;
+  }
+
+  void RasterRenderer::Gpu::recycle(std::unique_ptr<Image> image) {
+    // Called after the image's last-use fence. Only large images are worth
+    // keeping; a few suffice for a per-frame overlay in flight.
+    if (!image || image->bytes < 1024 * 1024)
+      return;
+    reusableImages.push_back(std::move(image));
+    if (reusableImages.size() > 4)
+      reusableImages.erase(reusableImages.begin());
   }
 
   std::unique_ptr<Buffer> RasterRenderer::Gpu::geometryBuffer(const void *data, size_t size,
@@ -107,14 +123,32 @@ namespace remix {
   }
 
   std::unique_ptr<Image> RasterRenderer::Gpu::image(uint32_t width, uint32_t height, uint32_t levels,
-                                                    VkFormat format, bool isDepth) {
+                                                    VkFormat format, bool isDepth, VkImageCreateFlags flags,
+                                                    VkComponentMapping components) {
     if (width > properties.limits.maxImageDimension2D || height > properties.limits.maxImageDimension2D) {
       throw VK_ERROR_FORMAT_NOT_SUPPORTED;
     }
+    if (!isDepth)
+      for (auto it = reusableImages.begin(); it != reusableImages.end(); ++it) {
+        const auto &image = **it;
+        if (image.width == width && image.height == height && image.levels == levels && image.format == format &&
+            image.flags == flags && std::memcmp(&image.components, &components, sizeof(components)) == 0) {
+          auto out = std::move(*it);
+          reusableImages.erase(it);
+          return out;
+        }
+      }
     auto out = std::make_unique<Image>();
+    out->width = width;
+    out->height = height;
+    out->flags = flags;
     out->device = device;
+    out->format = format;
+    out->levels = levels;
+    out->components = components;
     const VkImageCreateInfo info = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .flags = flags,
         .imageType = VK_IMAGE_TYPE_2D,
         .format = format,
         .extent = {width, height, 1},
@@ -134,12 +168,14 @@ namespace remix {
         .allocationSize = requirements.size,
         .memoryTypeIndex = memoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)};
     check(vkAllocateMemory(device, &allocation, nullptr, &out->memory));
+    out->bytes = requirements.size;
     check(vkBindImageMemory(device, out->image, out->memory, 0));
     const VkImageViewCreateInfo view = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
         .image = out->image,
         .viewType = VK_IMAGE_VIEW_TYPE_2D,
         .format = format,
+        .components = components,
         .subresourceRange = {VkImageAspectFlags(isDepth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT), 0, levels, 0,
                              1}};
     check(vkCreateImageView(device, &view, nullptr, &out->view));

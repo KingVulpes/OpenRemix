@@ -77,7 +77,7 @@ bool localOccluder(accelerationStructureEXT scene,vec3 origin,vec3 direction,ino
   profileRay(16);
   // With no blended geometry, any hardware-opaque hit blocks the segment.
   // Scenes containing transmitting layers keep ordered closest-hit traversal.
-  uint flags=firstOpaqueHit?gl_RayFlagsTerminateOnFirstHitEXT:gl_RayFlagsNoneEXT;
+  uint flags=(firstOpaqueHit?gl_RayFlagsTerminateOnFirstHitEXT:gl_RayFlagsNoneEXT)|traceFlags();
   rayQueryInitializeEXT(query,scene,flags,255,origin,0,direction,hit.t);
   while(rayQueryProceedEXT(query)) {
     if(rayQueryGetIntersectionTypeEXT(query,false)!=gl_RayQueryCandidateIntersectionTriangleEXT)continue;
@@ -117,6 +117,16 @@ vec3 localVisibility(vec3 origin,vec3 endpoint) {
     vec3 delta=endpoint-origin;float distance=length(delta);
     if(distance<=1e-6)return transmission;
     vec3 direction=delta/distance;
+    if(shadowEarlyOut) {
+      // Same layer result as localOccluder (visibility.glsl), stopping at the
+      // first blocker; a sheet exactly at the endpoint is still ignored.
+      VisibilityHit early=earlyVisibilityHit(origin,direction,distance,16u);
+      if(early.blocked)return vec3(0);
+      if(early.t==distance)return transmission;
+      transmission*=early.transmission;
+      origin=offsetRay(early.p,-early.n);
+      continue;
+    }
     LightOccluder hit;hit.t=distance;
     if((frame.target.z&1)!=0&&localOccluder(staticScene,origin,direction,hit))return vec3(0);
     if((frame.target.z&2)!=0&&localOccluder(dynamicScene,origin,direction,hit))return vec3(0);

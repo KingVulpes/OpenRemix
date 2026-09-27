@@ -17,10 +17,15 @@ for manifest, base in [(root / 'tests/abi/headers.sha256', root),
         checksum, filename = line.split('  ', 1)
         assert hashlib.sha256((base / filename).read_bytes()).hexdigest() == checksum, filename
 required_exports = (root / 'tests/abi/exports.txt').read_text().splitlines()
-required_exports += ['remixapi_GetReconstructionDiagnosticsEXT', 'remixapi_GetBackendCapabilitiesEXT', 'remixapi_GetTracingStatisticsEXT', 'remixapi_GetFramePerformanceEXT',
+required_exports += ['remixapi_GetReconstructionDiagnosticsEXT', 'remixapi_GetBackendCapabilitiesEXT', 'remixapi_GetTracingStatisticsEXT', 'remixapi_GetFramePerformanceEXT', 'remixapi_GetFrameBreakdownEXT', 'remixapi_GetGpuPassTimingsEXT',
              'remixapi_GetLocalLightGuidingStatisticsEXT', 'remixapi_GetLocalLightStatisticsEXT',
              'remixapi_GetShadowStatisticsEXT', 'remixapi_GetSharcStatisticsEXT',
              'remixapi_GetDenoisingCapabilitiesEXT', 'remixapi_GetDenoisingStatisticsEXT']
+required_exports += ['remixapi_CreateRetainedInstance', 'remixapi_UpdateRetainedInstance', 'remixapi_UpdateRetainedInstances',
+             'remixapi_DestroyRetainedInstances', 'remixapi_DrawRetainedInstances']
+required_exports += ['remixapi_GetMemoryPressure']
+required_exports += ['remixapi_GetSpecGlossMaterialVersion', 'remixapi_GetMaterialAlbedoTintVersion',
+             'remixapi_GetInstanceMaterialOverrideVersion']
 required_exports += ['remixapi_EditorConfigureSharedFrame', 'remixapi_LoadUSDSceneEXT', 'remixapi_DrawUSDSceneEXT', 'remixapi_ReloadUSDSceneEXT', 'remixapi_DestroyUSDSceneEXT', 'remixapi_GetUSDDiagnosticsEXT', 'remixapi_ConfigureUSDModsEXT', 'remixapi_GetUSDModsDiagnosticEXT']
 cross_windows = library.suffix.lower() == '.dll' and sys.platform != 'win32'
 if cross_windows:

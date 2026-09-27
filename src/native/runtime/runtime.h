@@ -24,14 +24,18 @@
 
 #include "pathtrace/renderer.h"
 #include "platform/gpu_frames.h"
+#include "platform/gpu_timers.h"
+#include "platform/render_thread.h"
 #include "platform/window.h"
 #include "raster/renderer.h"
+#include "runtime/memory_pressure.h"
 #include "runtime/pipelines.h"
 #include "runtime/profiles.h"
 #include "runtime/screenshot.h"
 #include "ui/profiles.h"
 #include <remix/remix_c.h>
 #include <remix/remix_editor_ext.h>
+#include <atomic>
 #include <vector>
 #include <vulkan/vulkan.h>
 
@@ -48,8 +52,13 @@ public:
 
   remixapi_ErrorCode initialize(const remixapi_StartupInfo &info);
   remixapi_ErrorCode shutdown();
+  // Statistics getters. With asynchronous presentation they return the last
+  // completed frame's values: live when the render thread is idle, otherwise
+  // those published when Present handed the current frame over.
   upscale::Statistics reconstructionStatistics() const;
   postfx::Statistics postProcessingStatistics() const {
+    if (const auto *busy = busyState())
+      return busy->post;
     return m_postProcessing ? m_postProcessing->statistics() : postfx::Statistics{};
   }
   const std::string &postProcessingFailure() const { return m_postFailure; }
@@ -60,10 +69,47 @@ public:
   bool modsDisabled() const { return m_disableMods; }
   bool isHeadless() const { return m_headless; }
   bool isInitialized() const { return m_initialized; }
-  uint64_t presentationCount() const { return m_presentationCount; }
+  uint64_t presentationCount() const {
+    if (const auto *busy = busyState())
+      return busy->presentations;
+    return m_presentationCount;
+  }
   remixapi_FramePerformanceEXT framePerformance() const {
+    if (const auto *busy = busyState())
+      return busy->performance;
     return m_framePerformance;
   }
+  remixapi_FrameBreakdownEXT frameBreakdown() const {
+    if (const auto *busy = busyState())
+      return busy->breakdown;
+    return m_frameBreakdown;
+  }
+  // GPU pass timers ("rtx.native.gpuPassTimers"): the newest completed frame.
+  const gpu::FrameTimings &gpuPassTimings() const {
+    if (const auto *busy = busyState())
+      return busy->gpuTimings;
+    return m_gpuTimers.latest();
+  }
+  // Diagnostic digest of the last traced frame's GPU inputs (REMIX_FRAME_DIGEST).
+  uint64_t frameDigest() const {
+    if (const auto *busy = busyState())
+      return busy->digest;
+    return (m_pathTracer ? m_pathTracer->frameDigest() : 0) * 31 + renderer().profile().digest;
+  }
+  // Asynchronous presentation ("rtx.native.asyncPresent"), for Diagnostics.
+  struct AsyncPresentStatistics {
+    bool active = false;
+    // Caller thread, one Present: waiting for the render thread to finish
+    // the previous frame (the handoff), settings/swapchain/pipelines/UI
+    // setup, frame capture (publishFrame), the developer UI build (part of
+    // setup), and the whole call (all of the above).
+    double waitMilliseconds = 0, setupMilliseconds = 0, captureMilliseconds = 0;
+    double uiMilliseconds = 0, callMilliseconds = 0;
+    // Render thread, one frame: scene preparation through queue present.
+    double renderMilliseconds = 0;
+    uint64_t handedOff = 0; // frames handed to the render thread
+    uint64_t rendered = 0;  // of those, frames the render thread presented
+  };
   struct PreparationStatus {
     bool pending, loading;
     pipeline::Statistics pipelines;
@@ -74,8 +120,13 @@ public:
             m_pipelines ? m_pipelines->statistics() : pipeline::Statistics{},
             m_preparationFailure};
   }
-  bool hasStartedFrame() const { return m_frameStarted; }
+  bool hasStartedFrame() const {
+    if (const auto *busy = busyState())
+      return busy->frameStarted;
+    return m_frameStarted;
+  }
   bool hasFailed() const { return m_failed; }
+  // The API's scene: every resource call, DrawInstance and retained update.
   RasterRenderer &raster() { return m_raster; }
   RemixSdlWindow &window() { return m_window; }
   remixapi_FeatureAvailability getFeatureAvailability() const;
@@ -92,6 +143,11 @@ public:
   remixapi_TracingStatisticsEXT tracingStatistics() const;
   remixapi_SharcStatisticsEXT sharcStatistics() const;
   remixapi_ErrorCode configureSetting(const char *key, const char *value);
+  // GetVramStats, gated by the "Report VRAM statistics" setting.
+  remixapi_ErrorCode vramStatistics(remixapi_VramStats &stats) const;
+  // remixapi_GetMemoryPressure: lock-free, any thread. Zero while the
+  // "Report memory pressure" setting is off or VK_EXT_memory_budget is absent.
+  MemoryPressureSample memoryPressure() const { return m_memoryPressure.sample(); }
   remixapi_UIState uiState() const { return m_uiState; }
   void setUiState(remixapi_UIState state) {
     m_uiState = state;
@@ -114,6 +170,52 @@ private:
   remixapi_ErrorCode createAttachments();
   remixapi_ErrorCode recordFrame(uint32_t imageIndex,
                                  scene::TraceFrame *traceScene);
+  // Synchronous presentation: the whole frame on the calling thread.
+  remixapi_ErrorCode presentFrame(const remixapi_PresentInfo *info);
+  // Asynchronous presentation. presentAsync runs on the caller's thread with
+  // the render thread idle: setup, frame capture (publishFrame into
+  // m_frameScene), developer UI build, published statistics, handoff.
+  // renderFrame runs on the render thread without the API mutex and touches
+  // only render-owned state (see the members below).
+  remixapi_ErrorCode presentAsync(const remixapi_PresentInfo *info,
+                                  std::chrono::steady_clock::time_point start, double waited);
+  void renderFrame();
+  // Waits until the render thread has finished its frame (zero when it never
+  // ran). Returns the milliseconds waited.
+  double waitRenderThread();
+  // Render thread idle: moves the GPU state between the API's renderer and
+  // the published frame's, and restarts the static set's epoch.
+  void switchPresentation(bool async);
+  // What the statistics getters return while the render thread works: the
+  // last completed frame's values, taken at the handoff. Written and read
+  // under the API mutex only.
+  struct Published {
+    remixapi_FramePerformanceEXT performance{};
+    remixapi_FrameBreakdownEXT breakdown{};
+    uint64_t presentations = 0, digest = 0;
+    bool frameStarted = false;
+    upscale::Statistics upscaling;
+    postfx::Statistics post;
+    remixapi_TracingStatisticsEXT tracing{};
+    remixapi_SharcStatisticsEXT sharc{};
+    remixapi_ShadowStatisticsEXT shadow{};
+    remixapi_LocalLightStatisticsEXT localLight{};
+    remixapi_LocalLightGuidingStatisticsEXT guiding{};
+    remixapi_DenoisingStatisticsEXT denoising{};
+    RasterRenderer::MemoryStatistics memory;
+    gpu::FrameTimings gpuTimings;
+  };
+  void publishState();
+  // Non-null while the render thread works on a frame. Only Present hands a
+  // frame over, under the API mutex, so a caller holding the mutex that sees
+  // null keeps the render thread idle until it releases the mutex.
+  const Published *busyState() const {
+    return m_asyncActive && !m_renderThread.idle() ? &m_published : nullptr;
+  }
+  // The renderer that owns the GPU state and the frame being rendered: the
+  // API's own (synchronous presentation) or the published frame's.
+  RasterRenderer &renderer() { return m_asyncActive ? *m_frameScene : m_raster; }
+  const RasterRenderer &renderer() const { return m_asyncActive ? *m_frameScene : m_raster; }
   remixapi_ErrorCode fail(VkResult result = VK_ERROR_UNKNOWN);
   void destroySharedFrame();
   void sharedBarrier(VkCommandBuffer command, bool acquire);
@@ -133,7 +235,9 @@ private:
   void drawLightingTab(config::Settings &settings);
   void drawPostProcessingTab(config::Settings &settings);
   void drawDiagnosticsTab(config::Settings &settings);
+  void drawGpuPassTimings(bool enabled);
   void applySettings();
+  void updateMemoryPressure();
   void prepareSettings();
   void preparePostProcessing();
   void presented();
@@ -144,6 +248,32 @@ private:
 
   RemixSdlWindow m_window;
   RasterRenderer m_raster;
+  // Asynchronous presentation. Ownership while the render thread works on a
+  // frame (between Present's handoff and the next waitRenderThread):
+  // - API mutex holders (every API call): m_raster (the API's scene), the
+  //   profiles and settings, m_uiState, the window, m_published.
+  // - The render thread: m_frameScene (the published frame, the static set
+  //   replica and the GPU state), the tracer, post-processing, frame slots,
+  //   command buffers, the swapchain images, m_queue, the screenshot readback,
+  //   the last-frame snapshot, the ImGui draw data and the per-frame
+  //   statistics (m_framePerformance, m_frameBreakdown, m_staticStatistics,
+  //   m_presentationCount, m_frameStarted, m_asyncRender).
+  // - Written by Present's setup only (render thread idle) and read by the
+  //   render thread: settings derived for the frame (m_traceOptions,
+  //   m_loading, m_backend, m_clearColor, ...), the swapchain and passes.
+  // m_failed is atomic: the render thread may fail a frame while API calls
+  // check it.
+  std::unique_ptr<RasterRenderer> m_frameScene;
+  RenderThread m_renderThread;
+  bool m_asyncActive = false;
+  Published m_published;
+  AsyncPresentStatistics m_asyncCaller, m_previousAsyncCaller; // caller-owned
+  AsyncPresentStatistics m_asyncRender;                         // render-owned
+  struct Handoff {
+    double callerMilliseconds = 0; // setup and capture on the caller's thread
+    bool memoryStatistics = false; // take m_renderedMemory ("Report VRAM statistics")
+  } m_handoff;                     // caller writes before the handoff; render thread reads
+  RasterRenderer::MemoryStatistics m_renderedMemory; // render-owned: after its last frame
   std::shared_ptr<upscale::Ngx> m_ngx;
   std::unique_ptr<PathTracer> m_pathTracer;
   std::shared_ptr<postfx::State> m_exposureState;
@@ -192,6 +322,10 @@ private:
   uint32_t m_backend = 0, m_requestedBackend = 0,
            m_instanceApiVersion = VK_API_VERSION_1_1;
   bool m_traceSupported = false;
+  bool m_textureCompression = false; // textureCompressionBC enabled on m_device.
+  bool m_memoryBudget = false;       // VK_EXT_memory_budget queries available.
+  MemoryPressure m_memoryPressure;
+  uint32_t m_memoryPressureFrame = 0;
   remixapi_DenoisingCapabilitiesEXT m_denoiseCapabilities{
       .structSize = sizeof(remixapi_DenoisingCapabilitiesEXT)};
   std::string m_traceUnavailable;
@@ -205,8 +339,15 @@ private:
   double m_longestPresentationGap = 0;
   remixapi_FramePerformanceEXT m_framePerformance{
       .structSize = sizeof(remixapi_FramePerformanceEXT)};
+  remixapi_FrameBreakdownEXT m_frameBreakdown{
+      .structSize = sizeof(remixapi_FrameBreakdownEXT)};
+  // Completed values of the previous attempt, for the Diagnostics panel.
+  remixapi_FramePerformanceEXT m_previousPerformance{};
+  remixapi_FrameBreakdownEXT m_previousBreakdown{};
+  // The persistent static set of this and the previous attempt.
+  PathTracer::StaticStatistics m_staticStatistics{}, m_previousStatic{};
   bool m_frameStarted = false;
-  bool m_failed = false;
+  std::atomic<bool> m_failed{false};
   bool m_deviceLost = false;
   bool m_rebuild = false;
   bool m_recreateSurface = false;
@@ -217,6 +358,7 @@ private:
   float m_clearColor[4] = {0.025f, 0.035f, 0.055f, 1.0f};
   char m_input[256] = {};
   ImGuiContext *m_gui = nullptr;
+  bool m_uiFrameBuilt = false; // drawUi(VK_NULL_HANDLE) completed an ImGui frame
   VkPhysicalDeviceProperties m_properties = {};
   VkInstance m_instance = VK_NULL_HANDLE;
   VkSurfaceKHR m_surface = VK_NULL_HANDLE;
@@ -247,6 +389,11 @@ private:
     std::shared_ptr<FrameSnapshot> snapshot;
   } m_frames[gpuFrameCount];
   uint32_t m_frameIndex = 0, m_frameCount = gpuFrameCount;
+  // GPU pass timers: render-owned recorder; the setting is copied at Present
+  // setup (applySettings) for the render thread.
+  gpu::GpuTimers m_gpuTimers;
+  bool m_gpuTimersEnabled = false;
+  uint64_t m_recordedFrames = 0;
   // Presentation may still consume a semaphore after the submission fence
   // signals.
   std::vector<VkSemaphore> m_renderFinished;

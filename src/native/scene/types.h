@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <remix/remix_c.h>
@@ -125,11 +126,18 @@ namespace remix {
       std::array<float, 3> center = {};
     };
     struct MeshUpdateStream {};
+    // Counts destroyed Mesh objects: a consumer holding weak references to
+    // meshes (the tracer's views) need not look for expired ones while it has
+    // not changed.
+    inline std::atomic<uint64_t> meshReleases{0};
     struct Mesh {
       std::shared_ptr<const MeshUpdateStream> updateStream;
       bool motionCorrespondence = false;
       std::vector<std::shared_ptr<Surface>> surfaces;
       bool retired = false; // See Material::retired.
+      struct Release {
+        ~Release() { meshReleases.fetch_add(1, std::memory_order_relaxed); }
+      } release;
     };
     struct Blend {
       bool enabled = false;

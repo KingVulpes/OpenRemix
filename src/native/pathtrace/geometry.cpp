@@ -52,7 +52,10 @@ namespace remix {
     // a skinned lineage transfers per instance.
     auto key =
         std::make_tuple(draw.mesh.get(), skinned ? draw.instanceId : 0, skinned ? draw.instanceIndex : 0, opaque);
-    auto &view = meshes[key];
+    auto [entry, inserted] = meshes.try_emplace(key);
+    auto &view = entry->second;
+    if (inserted && std::get<1>(entry->first))
+      deformViews.insert(&entry->first);
     if (streaming && view.owner.lock() != draw.mesh) {
       const UpdateViewKey lineage{draw.mesh->updateStream.get(), std::get<1>(key), std::get<2>(key), opaque};
       auto found = updateViews.find(lineage);
@@ -62,7 +65,7 @@ namespace remix {
             old->second.lastUse != sequence) {
           if (view.geometry) retiredGeometry.push_back(std::move(view.geometry));
           for (auto &vertices : view.vertices) retiredBuffers.push_back(std::move(vertices));
-          view = std::move(old->second); meshes.erase(old);
+          view = std::move(old->second); deformViews.erase(&old->first); meshes.erase(old);
         }
       }
       updateViews[lineage] = key;

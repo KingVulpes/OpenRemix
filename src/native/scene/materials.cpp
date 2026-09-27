@@ -223,9 +223,10 @@ namespace remix {
              a.hasAlbedoTint == b.hasAlbedoTint && std::equal(a.albedoTint, a.albedoTint + 3, b.albedoTint);
     };
     if (previous == m_materials.end() || !equal(*previous->second, *material)) {
-      if (previous != m_materials.end())
+      if (previous != m_materials.end()) {
         previous->second->retired = true;
         ++m_retireGeneration;
+      }
       m_materials[info.hash] = std::move(material);
       ++m_resourceGeneration;
     }

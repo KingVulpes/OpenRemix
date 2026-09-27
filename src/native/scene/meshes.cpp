@@ -153,9 +153,10 @@ namespace remix {
       return true;
     };
     if (previous == m_meshes.end() || !equal(*previous->second, *mesh)) {
-      if (previous != m_meshes.end())
+      if (previous != m_meshes.end()) {
         previous->second->retired = true;
         ++m_retireGeneration;
+      }
       m_meshes[info.hash] = std::move(mesh);
       ++m_resourceGeneration;
     }

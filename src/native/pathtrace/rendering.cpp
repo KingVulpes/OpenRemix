@@ -177,14 +177,33 @@ namespace remix {
     breakdown.primaryDraws += tables.primaryCount();
     // Retire absent deformation instances after their last-use fence. Rigid
     // geometry remains cached for the lifetime of its shared CPU mesh.
-    for (auto it = meshes.begin(); it != meshes.end();) {
-      if (it->second.owner.expired() || (std::get<1>(it->first) && it->second.lastUse != sequence)) {
-        retiredGeometry.push_back(std::move(it->second.geometry));
-        for (auto &vertices : it->second.vertices)
-          retiredBuffers.push_back(std::move(vertices));
-        it = meshes.erase(it);
-      } else
-        ++it;
+    // A view's owner can only have expired if a CPU mesh was released since
+    // the last full scan; unused skins retire every frame.
+    auto retire = [&](decltype(meshes)::iterator it) {
+      retiredGeometry.push_back(std::move(it->second.geometry));
+      for (auto &vertices : it->second.vertices)
+        retiredBuffers.push_back(std::move(vertices));
+      deformViews.erase(&it->first);
+      return meshes.erase(it);
+    };
+    const uint64_t releases = scene::meshReleases.load(std::memory_order_relaxed);
+    if (releases != meshReleasesSeen) {
+      meshReleasesSeen = releases;
+      for (auto it = meshes.begin(); it != meshes.end();) {
+        if (it->second.owner.expired() || (std::get<1>(it->first) && it->second.lastUse != sequence))
+          it = retire(it);
+        else
+          ++it;
+      }
+    } else if (!deformViews.empty()) {
+      std::vector<const MeshViewKey *> unused;
+      for (const auto *key : deformViews) {
+        const auto found = meshes.find(*key);
+        if (found != meshes.end() && (found->second.owner.expired() || found->second.lastUse != sequence))
+          unused.push_back(key);
+      }
+      for (const auto *key : unused)
+        retire(meshes.find(*key));
     }
     for (auto it = updateViews.begin(); it != updateViews.end();) {
       auto view = meshes.find(it->second);

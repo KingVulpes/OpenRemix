@@ -511,6 +511,11 @@ namespace remix {
     // stream in place of the mesh: skinned lineages keep one view per instance.
     using UpdateViewKey = std::tuple<const scene::MeshUpdateStream *, uint64_t, uint32_t, std::string>;
     std::map<UpdateViewKey, MeshViewKey> updateViews;
+    // Views of per-instance skins (keys with an instance), which retire when
+    // unused; rigid views retire only when their CPU mesh is released, so
+    // retirement scans them only after scene::meshReleases changed.
+    std::unordered_set<const MeshViewKey *> deformViews;
+    uint64_t meshReleasesSeen = ~0ull;
     std::vector<std::shared_ptr<Geometry>> retiredGeometry;
     std::vector<std::shared_ptr<Buffer>> retiredBuffers;
     std::vector<std::shared_ptr<Geometry>> compactPending;

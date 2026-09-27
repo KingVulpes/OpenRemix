@@ -133,6 +133,7 @@ namespace remix {
     retiredStates.clear();
     retiredGeometry.clear();
     retiredBuffers.clear();
+    deformViews.clear();
     meshes.clear();
     compactPending.clear();
     retired.clear();

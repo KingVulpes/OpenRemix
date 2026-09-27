@@ -161,7 +161,9 @@ namespace remix {
                           {"Composite", b.compositeMilliseconds},
                           {"Developer UI", b.uiMilliseconds},
                           {"Snapshot", b.snapshotMilliseconds},
-                          {"Other", b.otherMilliseconds}};
+                          {"Other", b.otherMilliseconds},
+                          {"Present: setup", b.presentSetupMilliseconds},
+                          {"Present: release", b.presentReleaseMilliseconds}};
       for (const auto &row : rows)
         ImGui::Text("%-18s %7.3f ms", row.name, row.value);
       ImGui::TextWrapped("Instances %llu, surfaces %llu, primary draws %llu, raster draws %llu, textures %llu",

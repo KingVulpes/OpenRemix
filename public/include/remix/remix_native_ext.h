@@ -179,11 +179,15 @@ typedef struct remixapi_FramePerformanceEXT {
 } remixapi_FramePerformanceEXT;
 
 // CPU wall-time breakdown of the last Present attempt's command recording.
-// Every phase is nested within FramePerformanceEXT.recordMilliseconds; the
-// named sub-phases (skinning, material, temporal) are nested within their
-// parent. FramePerformanceEXT geometry time is nested within traceSurfaces and
-// its acceleration time within traceAcceleration. otherMilliseconds is the
-// part of recordMilliseconds that no phase below covers.
+// Every phase up to otherMilliseconds is nested within
+// FramePerformanceEXT.recordMilliseconds; the named sub-phases (skinning,
+// material, temporal) are nested within their parent. FramePerformanceEXT
+// geometry time is nested within traceSurfaces and its acceleration time within
+// traceAcceleration. otherMilliseconds is the part of recordMilliseconds that
+// no phase covers. presentSetup (settings, pipelines, frame slot selection) and
+// presentRelease (history commit, snapshot and draw list release) are the
+// parts of presentMilliseconds outside scene, fence, acquire, record, submit
+// and queue present.
 typedef struct remixapi_FrameBreakdownEXT {
   uint32_t structSize, reserved;
   double rasterPrepareMilliseconds, rasterSkinningMilliseconds;
@@ -194,6 +198,7 @@ typedef struct remixapi_FrameBreakdownEXT {
   double descriptorMilliseconds, primaryMilliseconds, passesMilliseconds;
   double postMilliseconds, compositeMilliseconds, uiMilliseconds;
   double snapshotMilliseconds, otherMilliseconds;
+  double presentSetupMilliseconds, presentReleaseMilliseconds;
   uint64_t traceInstances, traceSurfaces, primaryDraws, rasterDraws;
   uint64_t textureDescriptors, rasterSkinnedVertices, rasterUploadBytes, reserved2;
 } remixapi_FrameBreakdownEXT;

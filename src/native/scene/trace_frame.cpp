@@ -38,10 +38,14 @@ TraceFrame prepareTraceFrame(const std::vector<Draw> &draws, double seconds, boo
     }
     frame.instances.back().push_back({std::move(copy)});
   }
-  std::sort(frame.instances.begin(), frame.instances.end(), [](const auto &a, const auto &b) {
+  const auto order = [](const auto &a, const auto &b) {
     return std::tie(a[0].draw.classification, a[0].draw.instanceId, a[0].draw.instanceIndex) <
            std::tie(b[0].draw.classification, b[0].draw.instanceId, b[0].draw.instanceIndex);
-  });
+  };
+  // Keys are unique (checked below), so the order is the same either way;
+  // retained replay usually submits it already.
+  if (!std::is_sorted(frame.instances.begin(), frame.instances.end(), order))
+    std::sort(frame.instances.begin(), frame.instances.end(), order);
   for (size_t i = 1; i < frame.instances.size(); ++i) {
     const auto &a = frame.instances[i - 1][0].draw, &b = frame.instances[i][0].draw;
     if (a.instanceId == b.instanceId && a.instanceIndex == b.instanceIndex)

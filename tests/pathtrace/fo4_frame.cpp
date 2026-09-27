@@ -481,7 +481,7 @@ int main() {
 
   std::FILE *digest = digestPath ? std::fopen(digestPath, "w") : nullptr;
   Stats present, scene, record, fence, acquire, submitTime, queuePresent, geometry, alloc, upload, accel, calls;
-  constexpr size_t phaseCount = 21;
+  constexpr size_t phaseCount = 23;
   Stats phases[phaseCount];
   uint64_t conversions = 0, uploadBytes = 0, surfaceCount = 0, primaryCount = 0, rasterCount = 0,
            textureCount = 0, skinnedCount = 0, rasterBytes = 0, measured = 0;
@@ -520,7 +520,8 @@ int main() {
         b.tableMilliseconds,         b.lightingMilliseconds,       b.sharcMilliseconds,
         b.signatureMilliseconds,     b.descriptorMilliseconds,     b.primaryMilliseconds,
         b.passesMilliseconds,        b.postMilliseconds,           b.compositeMilliseconds,
-        b.uiMilliseconds,            b.snapshotMilliseconds,       b.otherMilliseconds};
+        b.uiMilliseconds,            b.snapshotMilliseconds,       b.otherMilliseconds,
+        b.presentSetupMilliseconds,  b.presentReleaseMilliseconds};
     for (size_t k = 0; k < phaseCount; ++k)
       phases[k].add(values[k]);
     conversions += p.geometryConversions;
@@ -553,12 +554,12 @@ int main() {
   line("submit", submitTime);
   line("queue present", queuePresent);
   line("API calls before Present", calls);
-  std::puts("FrameBreakdownEXT (within record):");
+  std::puts("FrameBreakdownEXT (within record, then the rest of present):");
   const char *names[phaseCount] = {"raster prepare", "  raster skinning", "tracer begin", "tracer setup",
                                    "trace surfaces", "  materials", "  temporal", "retire", "acceleration",
                                    "surface table", "lighting", "sharc", "scene signature", "descriptors",
                                    "primary g-buffer", "passes", "post-processing", "composite", "developer ui",
-                                   "snapshot", "other"};
+                                   "snapshot", "other", "(present) setup", "(present) release"};
   for (size_t k = 0; k < phaseCount; ++k)
     line(names[k], phases[k]);
   const double n = double(std::max<uint64_t>(measured, 1));

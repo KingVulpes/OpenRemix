@@ -14,6 +14,23 @@ namespace remix {
       total += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
     }
   };
+  // A restartable ScopedMilliseconds.
+  struct Stopwatch {
+    double &total;
+    std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
+    bool running = true;
+    void stop() {
+      if (running)
+        total += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
+      running = false;
+    }
+    void start() {
+      if (!running)
+        begin = std::chrono::steady_clock::now();
+      running = true;
+    }
+    ~Stopwatch() { stop(); }
+  };
   template<class F> auto measured(double &total, F &&call) {
     ScopedMilliseconds time{total};
     return call();

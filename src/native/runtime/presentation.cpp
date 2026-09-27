@@ -61,6 +61,8 @@ void RemixNativeRuntime::presented() {
           frame.compositeMilliseconds = breakdown.compositeMilliseconds;
           frame.uiMilliseconds = breakdown.uiMilliseconds;
           frame.snapshotMilliseconds = breakdown.snapshotMilliseconds;
+          frame.presentSetupMilliseconds = breakdown.presentSetupMilliseconds;
+          frame.presentReleaseMilliseconds = breakdown.presentReleaseMilliseconds;
         }
         const auto &r = raster.profile();
         frame.rasterPrepareMilliseconds = breakdown.rasterPrepareMilliseconds ? r.prepareMilliseconds : 0;
@@ -133,8 +135,10 @@ void RemixNativeRuntime::presented() {
     }
     struct EndFrame {
       RasterRenderer &raster;
-      ~EndFrame() { raster.finishFrame(); }
-    } endFrame{m_raster};
+      double &release;
+      ~EndFrame() { measured(release, [&] { raster.finishFrame(); }); }
+    } endFrame{m_raster, m_frameBreakdown.presentReleaseMilliseconds};
+    Stopwatch setupTime{m_frameBreakdown.presentSetupMilliseconds};
     if (!m_headless && !m_window.isVulkanSurfaceCurrent()) {
       m_recreateSurface = true;
     }
@@ -164,7 +168,25 @@ void RemixNativeRuntime::presented() {
       // Scene snapshots, emission reduction and staged light hierarchies use
       // no GPU resources. Prepare while submitted frames run; commit lighting,
       // upload and retire resources only after the reused slot's fence.
+      // The trace frame's release is timed from ReleaseStart's destruction
+      // (declared after it) to ReleaseEnd's (declared before it).
+      using Clock = std::chrono::steady_clock;
+      struct ReleaseEnd {
+        Clock::time_point &start;
+        double &release;
+        ~ReleaseEnd() {
+          if (start != Clock::time_point{})
+            release += std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+        }
+      };
+      Clock::time_point releaseStart{};
+      ReleaseEnd releaseEnd{releaseStart, m_frameBreakdown.presentReleaseMilliseconds};
       std::optional<scene::TraceFrame> traceScene;
+      struct ReleaseStart {
+        Clock::time_point &start;
+        ~ReleaseStart() { start = Clock::now(); }
+      } releaseStartStamp{releaseStart};
+      setupTime.stop();
       if (m_pathTracer && m_targetBackend && !m_loading)
         traceScene = measured(p.sceneMilliseconds,
                               [&] { return m_pathTracer->prepareScene(m_raster, m_traceOptions); });
@@ -178,6 +200,7 @@ void RemixNativeRuntime::presented() {
       if (result != VK_SUCCESS) {
         return fail(result);
       }
+      setupTime.start();
       m_frames[m_frameIndex].snapshot.reset();
       m_raster.selectFrame(m_frameIndex);
       if (m_postProcessing) m_postProcessing->selectFrame(m_frameIndex);
@@ -187,6 +210,7 @@ void RemixNativeRuntime::presented() {
       // Preserve next-presentation capture completion. Event polling stays
       // nonblocking; only a pending screenshot needs the preceding frame.
       m_screenshot.complete(m_device, true);
+      setupTime.stop();
       result = measured(p.acquireMilliseconds, [&] {
         if (m_headless)
           return VK_SUCCESS;
@@ -236,7 +260,7 @@ void RemixNativeRuntime::presented() {
       }
       m_screenshot.submitted(m_frames[m_frameIndex].fence);
       if (m_pathTracer && !m_loading)
-        m_pathTracer->submitted();
+        measured(m_frameBreakdown.presentReleaseMilliseconds, [&] { m_pathTracer->submitted(); });
       if (m_headless) {
         // Do not acknowledge until ready is actually signaled. A worker crash
         // after the response cannot leave Godot waiting for an unsubmitted frame.

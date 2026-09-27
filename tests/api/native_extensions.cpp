@@ -43,7 +43,7 @@ int main(int argc, char **argv) {
   framePerformance.structSize = sizeof(framePerformance);
   require(remixapi_GetFramePerformanceEXT(&framePerformance) == REMIXAPI_ERROR_CODE_NOT_INITIALIZED,
           "Frame performance before startup");
-  static_assert(sizeof(remixapi_FrameBreakdownEXT) == 240);
+  static_assert(sizeof(remixapi_FrameBreakdownEXT) == 256);
   remixapi_FrameBreakdownEXT frameBreakdown{};
   require(remixapi_GetFrameBreakdownEXT(&frameBreakdown) == REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS,
           "Invalid frame breakdown size accepted");

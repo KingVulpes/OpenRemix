@@ -4,12 +4,18 @@
 #include <limits>
 
 namespace remix::scene {
+  namespace {
+    // weak.lock() == shared, without the reference-count traffic of lock().
+    template <class A, class B> bool sameOwner(const std::weak_ptr<A> &weak, const std::shared_ptr<B> &shared) {
+      return shared ? !weak.owner_before(shared) && !shared.owner_before(weak) : weak.expired();
+    }
+  } // namespace
   OpacityCache::OpacityCache(uint32_t subTexelPrecisionBits, bool profile)
       : profile(profile), texelMargin(std::ldexp(2.f, -int(std::min(subTexelPrecisionBits, 24u)))) {}
 
   OpacityCache::TextureEntries &OpacityCache::coverage(const std::shared_ptr<Texture> &texture) {
     auto &cache = textures[texture.get()];
-    if (cache.owner.lock() == texture)
+    if (sameOwner(cache.owner, texture))
       return cache;
     if (profile)
       ++statistics.textures;
@@ -166,7 +172,7 @@ namespace remix::scene {
       return pixels;
     };
     auto &cache = surfaces[draw.surface.get()];
-    if (cache.owner.lock() != draw.surface) {
+    if (!sameOwner(cache.owner, draw.surface)) {
       if (profile)
         ++statistics.owners;
       cache = {draw.surface, {}};
@@ -178,13 +184,15 @@ namespace remix::scene {
       // Revalidate the exact rectangle predicates that produced this partition.
       // Weak ownership still prevents an address-reused snapshot from skipping
       // validation. Queued frames keep their immutable partition independently.
+      const bool sameTexture = sameOwner(entry.texture, texture);
       const bool same =
-          entry.regions.empty() || entry.texture.lock() == texture ||
+          entry.regions.empty() || sameTexture ||
           (getPixels() && std::all_of(entry.regions.begin(), entry.regions.end(), [&](const auto &region) {
              return pixels->solid(region.first) == region.second;
            }));
       if (same) {
-        entry.texture = texture;
+        if (!sameTexture)
+          entry.texture = texture;
         if (profile)
           ++statistics.hits;
         return entry.partition;

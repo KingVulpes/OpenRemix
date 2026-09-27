@@ -1,5 +1,6 @@
 #pragma once
 #include "raster/renderer.h"
+#include "platform/timing.h"
 #include "runtime/pipelines.h"
 
 #include <algorithm>
@@ -149,6 +150,7 @@ namespace remix {
       std::unique_ptr<Buffer> skin;
     } frames[gpuFrameCount];
     uint32_t frameIndex = 0;
+    uint64_t uploadBytes = 0; // Staged by buffer(), for RasterRenderer::profile().
     std::vector<Command> commands;
     std::chrono::steady_clock::time_point epoch = std::chrono::steady_clock::now();
 

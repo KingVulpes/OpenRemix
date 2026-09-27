@@ -9,6 +9,12 @@ material_ext_gpu_test = executable('remix-material-extensions-gpu-test', 'materi
 test('Spec/gloss and albedo tint match the fork on the GPU', material_ext_gpu_test,
   args : [meson.current_build_dir() / 'material-ext-scenes'],
   env : get_option('gpu_tests') ? ['REMIX_TEST_MATERIAL_GPU=1'] : [], timeout : 600, is_parallel : false)
+# CPU cost of Present for a Fallout 4-sized scene. A benchmark, not a test:
+# meson test --benchmark "FO4 frame CPU cost" (display + ray-tracing device).
+fo4_frame_benchmark = executable('remix-fo4-frame-benchmark', 'fo4_frame.cpp',
+  include_directories : test_includes, dependencies : [sdl3_dep, filesystem_dep] + [runtime_test_dep])
+benchmark('FO4 frame CPU cost', fo4_frame_benchmark, env : ['REMIX_BENCH_FO4=1'], timeout : 1800,
+  verbose : true)
 if get_option('gpu_tests')
   subdir('upscale')
   if system != 'windows'

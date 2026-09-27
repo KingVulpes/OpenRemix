@@ -108,6 +108,17 @@ remixapi_GetFramePerformanceEXT(remixapi_FramePerformanceEXT *out) {
 }
 
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL
+remixapi_GetFrameBreakdownEXT(remixapi_FrameBreakdownEXT *out) {
+  if (!out || out->structSize != sizeof(*out))
+    return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+  std::lock_guard lock(g_apiMutex);
+  if (!g_runtime.isInitialized())
+    return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+  *out = g_runtime.frameBreakdown();
+  return REMIXAPI_ERROR_CODE_SUCCESS;
+}
+
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL
 remixapi_GetTracingStatisticsEXT(remixapi_TracingStatisticsEXT *out) {
   if (!out || out->structSize != sizeof(*out))
     return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;

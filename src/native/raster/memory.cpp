@@ -64,6 +64,7 @@ namespace remix {
   std::unique_ptr<Buffer> RasterRenderer::Gpu::buffer(const void *data, size_t size,
                                                       VkBufferUsageFlags usage) {
     auto out = allocateBuffer(size, usage, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+    uploadBytes += size;
     void *mapped;
     check(vkMapMemory(device, out->memory, 0, VK_WHOLE_SIZE, 0, &mapped));
     std::memcpy(mapped, data, size);

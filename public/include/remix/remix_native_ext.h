@@ -178,6 +178,26 @@ typedef struct remixapi_FramePerformanceEXT {
   uint64_t memoryAllocations, memoryAllocationBytes;
 } remixapi_FramePerformanceEXT;
 
+// CPU wall-time breakdown of the last Present attempt's command recording.
+// Every phase is nested within FramePerformanceEXT.recordMilliseconds; the
+// named sub-phases (skinning, material, temporal) are nested within their
+// parent. FramePerformanceEXT geometry time is nested within traceSurfaces and
+// its acceleration time within traceAcceleration. otherMilliseconds is the
+// part of recordMilliseconds that no phase below covers.
+typedef struct remixapi_FrameBreakdownEXT {
+  uint32_t structSize, reserved;
+  double rasterPrepareMilliseconds, rasterSkinningMilliseconds;
+  double traceBeginMilliseconds, traceSetupMilliseconds;
+  double traceSurfacesMilliseconds, materialMilliseconds, temporalMilliseconds;
+  double retireMilliseconds, traceAccelerationMilliseconds, tableMilliseconds;
+  double lightingMilliseconds, sharcMilliseconds, signatureMilliseconds;
+  double descriptorMilliseconds, primaryMilliseconds, passesMilliseconds;
+  double postMilliseconds, compositeMilliseconds, uiMilliseconds;
+  double snapshotMilliseconds, otherMilliseconds;
+  uint64_t traceInstances, traceSurfaces, primaryDraws, rasterDraws;
+  uint64_t textureDescriptors, rasterSkinnedVertices, rasterUploadBytes, reserved2;
+} remixapi_FrameBreakdownEXT;
+
 // Optional CameraInfo pNext. Epochs persist in every packet, including replacement
 // submissions. Increment historyResetEpoch for cuts and floating-origin rebases.
 #define REMIXAPI_STRUCT_TYPE_CAMERA_TEMPORAL_EXT ((remixapi_StructType)0x7fff1003)
@@ -275,6 +295,8 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetBackendCapabilitiesEXT(rem
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetTracingStatisticsEXT(remixapi_TracingStatisticsEXT* statistics);
 typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_GetFramePerformanceEXT)(remixapi_FramePerformanceEXT* statistics);
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetFramePerformanceEXT(remixapi_FramePerformanceEXT* statistics);
+typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_GetFrameBreakdownEXT)(remixapi_FrameBreakdownEXT* statistics);
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetFrameBreakdownEXT(remixapi_FrameBreakdownEXT* statistics);
 typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_GetDenoisingCapabilitiesEXT)(remixapi_DenoisingCapabilitiesEXT* capabilities);
 typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_GetDenoisingStatisticsEXT)(remixapi_DenoisingStatisticsEXT* statistics);
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetDenoisingCapabilitiesEXT(remixapi_DenoisingCapabilitiesEXT* capabilities);

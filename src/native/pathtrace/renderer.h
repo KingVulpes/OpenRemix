@@ -46,6 +46,11 @@ namespace remix {
     bool adaptiveTerminationAvailable() const;
     void resetPerformance();
     remixapi_FramePerformanceEXT performance() const;
+    // Phases of prepare/record for FrameBreakdownEXT; reset with resetPerformance.
+    remixapi_FrameBreakdownEXT breakdown() const;
+    // REMIX_FRAME_DIGEST diagnostics: an address-free hash of the last
+    // prepared frame's GPU inputs (surface table, instances, primary draws).
+    uint64_t frameDigest() const;
 
   private:
     struct Gpu;

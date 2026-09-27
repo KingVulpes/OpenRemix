@@ -65,6 +65,11 @@ public:
   remixapi_FramePerformanceEXT framePerformance() const {
     return m_framePerformance;
   }
+  remixapi_FrameBreakdownEXT frameBreakdown() const { return m_frameBreakdown; }
+  // Diagnostic digest of the last traced frame's GPU inputs (REMIX_FRAME_DIGEST).
+  uint64_t frameDigest() const {
+    return (m_pathTracer ? m_pathTracer->frameDigest() : 0) * 31 + m_raster.profile().digest;
+  }
   struct PreparationStatus {
     bool pending, loading;
     pipeline::Statistics pipelines;
@@ -216,6 +221,11 @@ private:
   double m_longestPresentationGap = 0;
   remixapi_FramePerformanceEXT m_framePerformance{
       .structSize = sizeof(remixapi_FramePerformanceEXT)};
+  remixapi_FrameBreakdownEXT m_frameBreakdown{
+      .structSize = sizeof(remixapi_FrameBreakdownEXT)};
+  // Completed values of the previous attempt, for the Diagnostics panel.
+  remixapi_FramePerformanceEXT m_previousPerformance{};
+  remixapi_FrameBreakdownEXT m_previousBreakdown{};
   bool m_frameStarted = false;
   bool m_failed = false;
   bool m_deviceLost = false;

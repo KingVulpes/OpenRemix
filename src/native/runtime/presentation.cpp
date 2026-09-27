@@ -46,11 +46,37 @@ void RemixNativeRuntime::presented() {
   namespace {
     struct CompletePerformance {
       remixapi_FramePerformanceEXT &out;
+      remixapi_FrameBreakdownEXT &breakdown;
       const std::unique_ptr<PathTracer> &tracer;
+      const RasterRenderer &raster;
       const uint64_t &presentations;
       ~CompletePerformance() {
         out.presented = presentations != out.presentations;
         out.presentations = presentations;
+        // Runtime-owned phases were accumulated in breakdown during recording.
+        auto frame = breakdown;
+        if (tracer) {
+          frame = tracer->breakdown();
+          frame.traceBeginMilliseconds = breakdown.traceBeginMilliseconds;
+          frame.compositeMilliseconds = breakdown.compositeMilliseconds;
+          frame.uiMilliseconds = breakdown.uiMilliseconds;
+          frame.snapshotMilliseconds = breakdown.snapshotMilliseconds;
+        }
+        const auto &r = raster.profile();
+        frame.rasterPrepareMilliseconds = breakdown.rasterPrepareMilliseconds ? r.prepareMilliseconds : 0;
+        frame.rasterSkinningMilliseconds = breakdown.rasterPrepareMilliseconds ? r.skinningMilliseconds : 0;
+        frame.rasterDraws = r.draws;
+        frame.rasterSkinnedVertices = r.skinnedVertices;
+        frame.rasterUploadBytes = r.uploadBytes;
+        const double covered =
+            frame.rasterPrepareMilliseconds + frame.traceBeginMilliseconds + frame.traceSetupMilliseconds +
+            frame.traceSurfacesMilliseconds + frame.retireMilliseconds + frame.traceAccelerationMilliseconds +
+            frame.tableMilliseconds + frame.lightingMilliseconds + frame.sharcMilliseconds +
+            frame.signatureMilliseconds + frame.descriptorMilliseconds + frame.primaryMilliseconds +
+            frame.passesMilliseconds + frame.postMilliseconds + frame.compositeMilliseconds +
+            frame.uiMilliseconds + frame.snapshotMilliseconds;
+        frame.otherMilliseconds = std::max(0.0, out.recordMilliseconds - covered);
+        breakdown = frame;
         if (!tracer)
           return;
         const auto p = tracer->performance();
@@ -77,11 +103,15 @@ void RemixNativeRuntime::presented() {
       return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
     }
     auto &p = m_framePerformance;
+    m_previousPerformance = p;
+    m_previousBreakdown = m_frameBreakdown;
     p = {.structSize = sizeof(p), .attempts = p.attempts + 1, .presentations = m_presentationCount};
+    m_frameBreakdown = {.structSize = sizeof(m_frameBreakdown)};
+    // Destroyed after presentTime, so recordMilliseconds is final.
+    CompletePerformance completePerformance{p, m_frameBreakdown, m_pathTracer, m_raster, m_presentationCount};
     ScopedMilliseconds presentTime{p.presentMilliseconds};
     if (m_pathTracer)
       m_pathTracer->resetPerformance();
-    CompletePerformance completePerformance{p, m_pathTracer, m_presentationCount};
     remixapi_WindowState state = {};
     auto status = m_headless ? REMIXAPI_ERROR_CODE_SUCCESS : m_window.getWindowState(state);
     if (m_headless) {
@@ -293,11 +323,14 @@ void RemixNativeRuntime::presented() {
         .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT};
     vkCmdPipelineBarrier(buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1,
                          &previousFrame, 0, nullptr, 0, nullptr);
+    auto &breakdown = m_frameBreakdown;
     if (m_pathTracer && !m_loading)
-      m_pathTracer->beginFrame(m_traceOptions, m_raster);
+      measured(breakdown.traceBeginMilliseconds, [&] { m_pathTracer->beginFrame(m_traceOptions, m_raster); });
     m_raster.setSkyTarget(m_pathTracer ? m_pathTracer->skyPass() : VK_NULL_HANDLE);
-    if (!m_loading)
+    if (!m_loading) {
       m_raster.prepare(buffer, m_backend != 0);
+      breakdown.rasterPrepareMilliseconds = 1; // Replaced by the raster profile.
+    }
     if (m_pathTracer && !m_loading) {
       // A newly enabled tracer did not exist during CPU preparation.
       std::optional<scene::TraceFrame> prepared;
@@ -316,6 +349,12 @@ void RemixNativeRuntime::presented() {
         m_headless ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
     bool capture =
         !m_loading && m_snapshotSupported && !m_snapshotAllocationFailed;
+    auto lapStart = std::chrono::steady_clock::now();
+    auto lap = [&](double &phase) {
+      const auto now = std::chrono::steady_clock::now();
+      phase += std::chrono::duration<double, std::milli>(now - lapStart).count();
+      lapStart = now;
+    };
     if (capture && (!m_lastFrame || !m_lastFrame->matches(m_swapchainFormat,
                                                           m_swapchainExtent))) {
       try {
@@ -338,6 +377,7 @@ void RemixNativeRuntime::presented() {
       m_frames[m_frameIndex].snapshot = m_lastFrame;
     if (restore)
       m_lastFrame->restore(buffer, image, m_swapchainExtent, layout);
+    lap(breakdown.snapshotMilliseconds);
     VkRenderPassBeginInfo pass = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
         .renderPass = restore ? m_overlayPass : m_renderPass,
@@ -348,20 +388,24 @@ void RemixNativeRuntime::presented() {
     };
     // Font uploads are recorded by the backend before the render pass.
     drawUi(VK_NULL_HANDLE);
+    lap(breakdown.uiMilliseconds);
     vkCmdBeginRenderPass(buffer, &pass, VK_SUBPASS_CONTENTS_INLINE);
     if (!m_loading && m_pathTracer) {
       m_pathTracer->record(buffer);
       m_raster.record(buffer, false, true);
     } else if (!m_loading)
       m_raster.record(buffer);
+    lap(breakdown.compositeMilliseconds);
     if (capture) {
       vkCmdEndRenderPass(buffer);
       m_lastFrame->capture(buffer, image, layout);
       pass.renderPass = m_overlayPass;
       vkCmdBeginRenderPass(buffer, &pass, VK_SUBPASS_CONTENTS_INLINE);
     }
+    lap(breakdown.snapshotMilliseconds);
     drawUi(buffer);
     vkCmdEndRenderPass(buffer);
+    lap(breakdown.uiMilliseconds);
     if (m_screenshotSupported) {
       m_screenshot.record(m_physicalDevice, m_device, buffer, m_swapchainImages[imageIndex],
                           m_swapchainExtent, m_swapchainFormat);

@@ -128,6 +128,52 @@ namespace remix {
                             "sheets.\nDenoiser timings are reported separately.");
       }
     }
+    if (ImGui::CollapsingHeader("Present CPU breakdown")) {
+      // Previous Present; this panel is drawn while the current one records.
+      const auto &p = m_previousPerformance;
+      const auto &b = m_previousBreakdown;
+      ImGui::TextWrapped("Present %.2f ms: scene %.2f, fence %.2f, acquire %.2f, record %.2f, submit %.2f, "
+                         "queue present %.2f",
+                         p.presentMilliseconds, p.sceneMilliseconds, p.fenceMilliseconds, p.acquireMilliseconds,
+                         p.recordMilliseconds, p.submitMilliseconds, p.queuePresentMilliseconds);
+      struct Row {
+        const char *name;
+        double value;
+      };
+      const Row rows[] = {{"Raster prepare", b.rasterPrepareMilliseconds},
+                          {"  raster skinning", b.rasterSkinningMilliseconds},
+                          {"Tracer begin", b.traceBeginMilliseconds},
+                          {"Tracer setup", b.traceSetupMilliseconds},
+                          {"Trace surfaces", b.traceSurfacesMilliseconds},
+                          {"  geometry", p.geometryMilliseconds},
+                          {"  materials", b.materialMilliseconds},
+                          {"  temporal", b.temporalMilliseconds},
+                          {"Retire", b.retireMilliseconds},
+                          {"Acceleration", b.traceAccelerationMilliseconds},
+                          {"Surface table", b.tableMilliseconds},
+                          {"Lighting", b.lightingMilliseconds},
+                          {"SHARC", b.sharcMilliseconds},
+                          {"Scene signature", b.signatureMilliseconds},
+                          {"Descriptors", b.descriptorMilliseconds},
+                          {"Primary G-buffer", b.primaryMilliseconds},
+                          {"Passes", b.passesMilliseconds},
+                          {"Post-processing", b.postMilliseconds},
+                          {"Composite", b.compositeMilliseconds},
+                          {"Developer UI", b.uiMilliseconds},
+                          {"Snapshot", b.snapshotMilliseconds},
+                          {"Other", b.otherMilliseconds}};
+      for (const auto &row : rows)
+        ImGui::Text("%-18s %7.3f ms", row.name, row.value);
+      ImGui::TextWrapped("Instances %llu, surfaces %llu, primary draws %llu, raster draws %llu, textures %llu",
+                         (unsigned long long)b.traceInstances, (unsigned long long)b.traceSurfaces,
+                         (unsigned long long)b.primaryDraws, (unsigned long long)b.rasterDraws,
+                         (unsigned long long)b.textureDescriptors);
+      ImGui::TextWrapped("Geometry conversions %llu, uploads %.2f MiB (raster %.2f MiB), raster skinned "
+                         "vertices %llu",
+                         (unsigned long long)p.geometryConversions, double(p.uploadBytes) / (1024 * 1024),
+                         double(b.rasterUploadBytes) / (1024 * 1024),
+                         (unsigned long long)b.rasterSkinnedVertices);
+    }
     if (ImGui::CollapsingHeader("Input and clear color", ImGuiTreeNodeFlags_DefaultOpen)) {
       ui::ColorEdit3("Clear color", settings.clearColor.data());
       ui::InputText("Input", m_input, sizeof(m_input));

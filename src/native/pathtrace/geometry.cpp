@@ -233,6 +233,12 @@ namespace remix {
       retiredBuffers.push_back(std::move(vertices));
     view.vertices.clear();
     view.fingerprint = view.geometry->fingerprint;
+    if (digestEnabled) {
+      view.contentDigest = scene::hashBytes(content.data(), content.size());
+      for (const auto &vertices : shading)
+        view.contentDigest =
+            scene::hashBytes(vertices.data(), vertices.size() * sizeof(TraceVertex), view.contentDigest);
+    }
     for (const auto &vertices : shading) {
       view.fingerprint =
           bufferFingerprint(vertices.data(), vertices.size() * sizeof(TraceVertex), view.fingerprint);

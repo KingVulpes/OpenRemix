@@ -16,6 +16,13 @@ namespace remix {
       uint64_t geometryBytes = 0, pooledBytes = 0;
     };
     MemoryStatistics memoryStatistics() const; // Device allocations owned by this renderer.
+    // CPU cost of the last prepare() (FrameBreakdownEXT).
+    struct Profile {
+      double prepareMilliseconds = 0, skinningMilliseconds = 0;
+      uint64_t draws = 0, skinnedVertices = 0, uploadBytes = 0;
+      uint64_t digest = 0; // REMIX_FRAME_DIGEST only: commands and skinned vertices.
+    };
+    const Profile &profile() const { return m_profile; }
     void configureTarget(VkRenderPass pass, VkExtent2D extent, bool encodeOutput = false);
     void setSkyTarget(VkRenderPass pass);
     void destroyTarget(); // Caller has completed all submitted work.
@@ -41,5 +48,6 @@ namespace remix {
   private:
     struct Gpu;
     std::unique_ptr<Gpu> m_gpu;
+    Profile m_profile;
   };
 } // namespace remix

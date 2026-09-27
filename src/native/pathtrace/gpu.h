@@ -139,6 +139,11 @@ namespace remix::trace::detail {
 namespace remix {
   struct PathTracer::Gpu {
     remixapi_FramePerformanceEXT performance{.structSize = sizeof(remixapi_FramePerformanceEXT)};
+    remixapi_FrameBreakdownEXT breakdown{.structSize = sizeof(remixapi_FrameBreakdownEXT)};
+    uint64_t materialTicks = 0, temporalTicks = 0;
+    // REMIX_FRAME_DIGEST: address-free hash of the prepared GPU inputs.
+    const bool digestEnabled = std::getenv("REMIX_FRAME_DIGEST") != nullptr;
+    uint64_t digest = 0;
     std::vector<std::shared_ptr<trace::detail::BufferMemory>> bufferMemory;
     using Buffer = trace::detail::Buffer;
     using Image = trace::detail::Image;
@@ -405,6 +410,7 @@ namespace remix {
       std::vector<std::shared_ptr<Buffer>> vertices;
       std::vector<scene::Matrix> bones;
       uint64_t fingerprint = 0, lastUse = 0;
+      uint64_t contentDigest = 0; // REMIX_FRAME_DIGEST only: hash of the uploaded data.
     };
     struct Tlas {
       std::shared_ptr<Accel> accel;

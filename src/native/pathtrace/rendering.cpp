@@ -12,6 +12,18 @@ namespace remix {
 
   void PathTracer::Gpu::prepare(VkCommandBuffer command, RasterRenderer &resources,
                                 const TraceOptions &requestedOptions, scene::TraceFrame &prepared) {
+    // FrameBreakdownEXT phases: each lap charges the time since the previous one.
+    auto lapStart = std::chrono::steady_clock::now();
+    auto lap = [&](double &phase) {
+      const auto now = std::chrono::steady_clock::now();
+      phase += std::chrono::duration<double, std::milli>(now - lapStart).count();
+      lapStart = now;
+    };
+    struct FinalLap {
+      decltype(lap) &charge;
+      double &phase;
+      ~FinalLap() { charge(phase); }
+    } finalLap{lap, breakdown.passesMilliseconds};
     const auto options = effectiveOptions(requestedOptions);
     debugView = options.debugView;
     const bool falseColor = debugView != 0 && debugView != 6 && debugView != 7;
@@ -80,6 +92,9 @@ namespace remix {
     uint64_t reuseSignature = 1469598103934665603ull;
     bool hasCacheReceivers = false, hasBlendedGeometry = false;
     decalMaterialsActive = false;
+    uint64_t geometryDigest = 1469598103934665603ull;
+    lap(breakdown.traceSetupMilliseconds);
+    breakdown.traceInstances += prepared.instances.size();
     for (const auto &instance : prepared.instances) {
       const auto &draw = instance[0].draw;
       std::vector<std::shared_ptr<const scene::OpacityPartition>> partitions(draw.mesh->surfaces.size());
@@ -94,6 +109,8 @@ namespace remix {
       }
       auto &view = mesh(command, draw, partitions);
       const auto &geometry = *view.geometry;
+      if (digestEnabled)
+        geometryDigest = hashBytes(&view.contentDigest, sizeof(view.contentDigest), geometryDigest);
       auto model = draw.model;
       if (draw.classification == 1) {
         auto appendDynamic = [&](const void *data, size_t size) {
@@ -132,6 +149,7 @@ namespace remix {
       for (const auto &preparedSurface : instance) {
         const auto &surface = preparedSurface.draw;
         const auto &material = *surface.material;
+        const uint64_t materialStart = ticks();
         auto [entry, inserted] = textureIndices.emplace(surface.material.get(), uint32_t(textures.size()));
         if (inserted) {
           if (textures.size() >= PathTracer::textureLimit)
@@ -187,6 +205,8 @@ namespace remix {
           }
           value.textureState[2] = emitter->second + 1;
         }
+        const uint64_t temporalStart = ticks();
+        materialTicks += temporalStart - materialStart;
         value.vertices = view.vertices.at(surface.surfaceIndex)->address;
         const uint64_t debugKey[] = {surface.instanceId, surface.instanceIndex, surface.surfaceIndex};
         value.debugIdentity = hashBytes(debugKey, sizeof(debugKey));
@@ -211,6 +231,7 @@ namespace remix {
           pendingVertices[temporalKey] = view.vertices.at(surface.surfaceIndex);
         std::copy_n(material.tint, 4, value.tint);
         history.stage(temporalDraw, preparedSurface.animationFrame);
+        temporalTicks += ticks() - temporalStart;
         if (options.pbrLocalReuse) {
           const uint64_t values[] = {view.fingerprint, value.debugIdentity,
                                      scene::TemporalHistory::materialSignature(surface),
@@ -251,6 +272,9 @@ namespace remix {
                  geometry.groups[groupIndex].surface == surface.surfaceIndex);
       }
     }
+    lap(breakdown.traceSurfacesMilliseconds);
+    breakdown.traceSurfaces += surfaces.size();
+    breakdown.primaryDraws += primaryDraws.size();
     // Retire absent deformation instances after their last-use fence. Rigid
     // geometry remains cached for the lifetime of its shared CPU mesh.
     for (auto it = meshes.begin(); it != meshes.end();) {
@@ -269,6 +293,7 @@ namespace remix {
       else
         ++it;
     }
+    lap(breakdown.retireMilliseconds);
     // Geometry uploads feed both AS construction and BDA reads in the compute shader.
     barrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
             buildStage | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
@@ -281,10 +306,36 @@ namespace remix {
     barrier(command, buildStage, asWrite, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, asRead);
     if (timestamps)
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, timestamps, 1);
+    lap(breakdown.traceAccelerationMilliseconds);
     if (surfaces.empty())
       surfaces.emplace_back();
     for (const auto &surface : surfaces)
       append(&surface, offsetof(TraceSurface, previousVertices));
+    if (digestEnabled) {
+      // Device addresses depend on allocation order; hash everything else.
+      digest = geometryDigest;
+      for (const auto &surface : surfaces) {
+        auto copy = surface;
+        const bool history = copy.previousVertices != 0;
+        copy.vertices = copy.indices = copy.triangleMap = copy.traceIndices = 0;
+        copy.previousVertices = history;
+        digest = hashBytes(&copy, sizeof(copy), digest);
+      }
+      for (unsigned i = 0; i < 2; ++i)
+        for (const auto &input : inputs[i]) {
+          // boundsRevision counts rebuilds since startup: frame-count dependent.
+          const uint64_t values[] = {i, input.id, input.sub, input.customIndex};
+          digest = hashBytes(values, sizeof(values), digest);
+          digest = hashBytes(input.model.data(), sizeof(input.model), digest);
+          digest = hashBytes(&input.diagonal, sizeof(input.diagonal), digest);
+        }
+      for (const auto &draw : primaryDraws) {
+        const uint32_t values[] = {draw.surfaceIndex, draw.count, draw.blended};
+        digest = hashBytes(draw.model.data(), sizeof(draw.model), digest);
+        digest = hashBytes(values, sizeof(values), digest);
+      }
+    }
+    lap(breakdown.signatureMilliseconds);
     const auto tableBytes = surfaces.size() * sizeof(surfaces[0]);
     // A diagnostic placement switch replaces only this completed slot's table.
     if (table && table->host == deviceLocalScene)
@@ -298,6 +349,7 @@ namespace remix {
     } else {
       hostBuffer(table, surfaces.data(), tableBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     }
+    lap(breakdown.tableMilliseconds);
     // Emission constants, UVs and texture fingerprints already participate in
     // the scene signature above. Do not duplicate every triangle's reduction.
     auto &lighting = prepared.lighting;
@@ -441,8 +493,10 @@ namespace remix {
     append(cacheSettings, sizeof(cacheSettings));
     const auto temporalEpoch = resources.temporalEpoch();
     append(&temporalEpoch, sizeof(temporalEpoch));
+    lap(breakdown.lightingMilliseconds);
     configureSharc(frame, options, temporalEpoch, std::move(staticGeometry), std::move(dynamicGeometry),
                    hasCacheReceivers);
+    lap(breakdown.sharcMilliseconds);
     const bool sceneChanged = scene != lastScene;
     if (sceneChanged || history.reset())
       reconstructionWarmFrames = 0;
@@ -457,6 +511,7 @@ namespace remix {
       stats.accumulationCount = 0;
       lastScene = std::move(scene);
     }
+    lap(breakdown.signatureMilliseconds);
     if (options.accumulate != bool(stats.accumulationEnabled))
       stats.accumulationCount = 0;
     if (!options.accumulate || stats.accumulationCount >= 1048576)
@@ -619,8 +674,10 @@ namespace remix {
     stats.redrawRequested =
         options.accumulate || debugView ||
         (sharc.stats.active && sharc.hasReceivers && sharc.warmFrames < 2 * options.sharcAccumulationFrames);
+    lap(breakdown.traceSetupMilliseconds);
     if (textures.empty())
       textures.push_back(resources.sampledMaterial(resources.defaultMaterial(), command));
+    breakdown.textureDescriptors += textures.size();
     textures.resize(PathTracer::textureLimit, textures.front());
     VkDescriptorBufferInfo buffers[] = {{table->handle, 0, surfaces.size() * sizeof(surfaces[0])},
                                         {uniform->handle, 0, sizeof(frame)}};
@@ -679,6 +736,7 @@ namespace remix {
       barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
               VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
               VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+    lap(breakdown.descriptorMilliseconds);
     VkClearValue clear[2] = {};
     clear[0].color.float32[0] = .025f;
     clear[0].color.float32[1] = .035f;
@@ -701,7 +759,9 @@ namespace remix {
       if (timestamps)
         vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, timestamps, query);
     };
+    lap(breakdown.passesMilliseconds);
     recordPrimary(command, options.rasterPrimary);
+    lap(breakdown.primaryMilliseconds);
     stageTime(4);
     recordSharc(command, options);
     if (denoiser)
@@ -966,8 +1026,9 @@ namespace remix {
   void PathTracer::prepare(VkCommandBuffer command, RasterRenderer &resources, const TraceOptions &options,
                            scene::TraceFrame &scene) {
     auto &g = *m_gpu;
-    g.postProcessing->begin(command);
+    measured(g.breakdown.postMilliseconds, [&] { g.postProcessing->begin(command); });
     g.prepare(command, resources, options, scene);
+    ScopedMilliseconds post{g.breakdown.postMilliseconds};
     const auto hdr = g.upscaler && !g.debugView ? g.upscaler->output() : upscale::Input{g.world->handle, g.world->view};
     g.postProcessing->record(command, hdr, options, resources.temporalEpoch(), g.rendered,
       (g.postProcessing == g.postFallback.get() && !g.retainPostExposure) || options.debugView || options.shadowDebug || options.sharcDebug || options.validation, -1, g.stats.sceneGeneration);

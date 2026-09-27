@@ -27,6 +27,10 @@ and meshes. Each frame, submit cameras, lights, instances and game UI, then call
 
 Raster is the default; select path tracing with
 `SetConfigVariable("rtx.native.backend", "pathtrace")`.
+Optional, off by default: `rtx.native.textures.keepCompressed = 1` keeps BC1-BC7
+textures compressed on the GPU (for textures created afterwards), and
+`rtx.native.vramStatistics = 1` makes `GetVramStats` report allocations and the
+driver budget. Both are also in the ImGui Rendering tab under Memory.
 See the [native sample](samples/remix-native).
 
 ## Building

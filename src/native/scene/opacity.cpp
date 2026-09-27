@@ -15,12 +15,19 @@ namespace remix::scene {
       ++statistics.textures;
     const auto &p = texture->pixels;
     TextureEntries next{texture, p.width, {}};
+    // Compressed textures carry only a mip-0 bitmask of non-opaque texels. A
+    // fully opaque one needs no summed-area table (empty prefix = all solid).
+    if (p.compressed && p.compressed->transparent.empty()) {
+      cache = std::move(next);
+      return cache;
+    }
     const size_t stride = size_t(p.width) + 1;
     next.prefix.resize(stride * (size_t(p.height) + 1));
     for (uint32_t y = 0; y < p.height; ++y) {
       uint32_t row = 0;
       for (uint32_t x = 0; x < p.width; ++x) {
-        row += p.mips[0][4 * (size_t(y) * p.width + x) + 3] != 255;
+        row += p.compressed ? p.compressed->transparentTexel(x, y, p.width)
+                            : p.mips[0][4 * (size_t(y) * p.width + x) + 3] != 255;
         next.prefix[(size_t(y) + 1) * stride + x + 1] = next.prefix[size_t(y) * stride + x + 1] + row;
       }
     }
@@ -135,8 +142,10 @@ namespace remix::scene {
       const auto &p = texture->pixels;
       // Resource decoding bounds dimensions to 16384; reject malformed CPU
       // snapshots too, keeping prefix counts and allocation arithmetic bounded.
-      if (p.width && p.height && p.width <= 16384 && p.height <= 16384 && !p.mips.empty() &&
-          p.mips[0].size() == size_t(p.width) * p.height * 4)
+      if (p.width && p.height && p.width <= 16384 && p.height <= 16384 &&
+          (p.compressed ? p.compressed->transparent.empty() ||
+                              p.compressed->transparent.size() == (size_t(p.width) * p.height + 63) / 64
+                        : !p.mips.empty() && p.mips[0].size() == size_t(p.width) * p.height * 4))
         dimensions = {p.width, p.height};
     }
     const Key key{dimensions,

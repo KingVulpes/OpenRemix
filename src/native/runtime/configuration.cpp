@@ -50,6 +50,8 @@ namespace remix {
     auto next = m_profiles.current();
     if (config::set(next, key, value) != config::SetResult::Success || !m_profiles.edit(next))
       return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+    // Texture creation needs no frame boundary: later CreateTexture calls see it.
+    m_raster.setKeepCompressedTextures(m_profiles.current().compressedTextures);
     return REMIXAPI_ERROR_CODE_SUCCESS;
   }
 
@@ -128,6 +130,7 @@ namespace remix {
   void RemixNativeRuntime::applySettings() {
     const auto &settings = m_profiles.current();
     m_requestedBackend = settings.backend;
+    m_raster.setKeepCompressedTextures(settings.compressedTextures);
     // Startup needs the requested presenter settings before there is a target.
     // Tracing settings activate in prepareSettings only after preflight
     // succeeds.
@@ -414,6 +417,43 @@ namespace remix {
                    sizeof(result.unavailableReason) - 1);
     return result;
   }
+  remixapi_ErrorCode RemixNativeRuntime::vramStatistics(remixapi_VramStats &stats) const {
+    stats = {};
+    if (!m_initialized)
+      return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+    if (!m_profiles.current().vramStatistics)
+      return REMIXAPI_ERROR_CODE_FEATURE_UNAVAILABLE;
+    // OpenRemix has no central allocator: report the resources that own
+    // device memory directly. Pipeline, descriptor, swapchain and upscaler
+    // allocations are not itemized; the driver figures below include them.
+    const auto raster = m_raster.memoryStatistics();
+    stats.usedMaterialTextureBytes = raster.textureBytes;
+    stats.forkTextureCacheCount = raster.textureCount;
+    stats.usedBufferBytes = raster.geometryBytes;
+    stats.poolRetainedBytes = raster.pooledBytes;
+    if (m_pathTracer) {
+      stats.usedAccelerationStructureBytes = m_pathTracer->statistics().accelerationBytes;
+      stats.usedRenderTargetBytes = m_pathTracer->denoisingStatistics().memoryBytes;
+    }
+    stats.totalUsedBytes = stats.usedMaterialTextureBytes + stats.usedBufferBytes +
+                           stats.usedAccelerationStructureBytes + stats.usedRenderTargetBytes;
+    stats.totalAllocatedBytes = stats.totalUsedBytes + stats.poolRetainedBytes;
+    if (m_memoryBudget) {
+      // Process-wide usage and budget of device-local heaps.
+      VkPhysicalDeviceMemoryBudgetPropertiesEXT budget = {
+          .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
+      VkPhysicalDeviceMemoryProperties2 memory = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2,
+                                                  .pNext = &budget};
+      vkGetPhysicalDeviceMemoryProperties2(m_physicalDevice, &memory);
+      for (uint32_t i = 0; i < memory.memoryProperties.memoryHeapCount; ++i)
+        if (memory.memoryProperties.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
+          stats.driverAllocatedBytes += budget.heapUsage[i];
+          stats.driverBudgetBytes += budget.heapBudget[i];
+        }
+    }
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  }
+
   remixapi_FeatureAvailability RemixNativeRuntime::getFeatureAvailability() const {
     remixapi_FeatureAvailability result{};
 #ifdef REMIX_HAS_NRD

@@ -25,6 +25,8 @@
 #include "usd/mods.h"
 #endif
 #include "api/entrypoints.h"
+#include "scene/images.h"
+#include <optional>
 
 namespace remix::api {
   remixapi_ErrorCode REMIXAPI_CALL createMaterial(const remixapi_MaterialInfo *info,
@@ -119,7 +121,29 @@ namespace remix::api {
     if (!info || !outHandle || info->sType != REMIXAPI_STRUCT_TYPE_TEXTURE_INFO) {
       return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
     }
-    return resourceCall([&](auto &raster) { raster.createTexture(*info, *outHandle); });
+    // "Keep BC textures compressed": copying, hashing and scanning the blocks
+    // is a pure function of the caller's data, so it runs before the API
+    // mutex and never stalls a Present. Errors surface after the usual
+    // initialization checks, as they would inside the lock.
+    std::optional<scene::Pixels> prepared;
+    auto prepareError = REMIXAPI_ERROR_CODE_SUCCESS;
+    if (info->hash && g_runtime.raster().keepCompressedTextures() && scene::isBlockCompressed(info->format)) {
+      try {
+        prepared = scene::compressTexture(*info);
+      } catch (remixapi_ErrorCode code) {
+        prepareError = code;
+      } catch (...) {
+        prepareError = REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+      }
+    }
+    return resourceCall([&](auto &raster) {
+      if (prepareError != REMIXAPI_ERROR_CODE_SUCCESS)
+        throw prepareError;
+      if (prepared)
+        raster.createTexture(*info, std::move(*prepared), *outHandle);
+      else
+        raster.createTexture(*info, *outHandle);
+    });
   }
 
   remixapi_ErrorCode REMIXAPI_CALL destroyTexture(remixapi_TextureHandle handle) {

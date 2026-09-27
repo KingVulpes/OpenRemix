@@ -30,6 +30,12 @@ namespace remix::config {
     // Diagnostic: rebuild the kept static tables every frame and compare;
     // the first difference is logged and shown in Diagnostics.
     bool persistentStaticValidation = false;
+    // Asynchronous presentation: Present captures the frame and returns; a
+    // dedicated render thread prepares, records, submits and presents it while
+    // the host continues. Changes timing and threading, so it is off by
+    // default; toggling drains the render thread and applies at the next
+    // Present.
+    bool asyncPresent = false;
     bool operator==(const Settings &) const = default;
   };
   using UnknownSettings = std::map<std::string, std::string>;

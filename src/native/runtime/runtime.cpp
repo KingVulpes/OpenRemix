@@ -31,6 +31,11 @@
 
 namespace remix {
   RemixNativeRuntime::~RemixNativeRuntime() {
+    // Without a Shutdown: the render thread's frame completes first.
+    waitRenderThread();
+    if (m_asyncActive)
+      switchPresentation(false);
+    m_renderThread.stop();
     if (m_device && !m_deviceLost) {
       vkDeviceWaitIdle(m_device);
     }
@@ -141,6 +146,16 @@ namespace remix {
         return status;
       }
     }
+    // Asynchronous presentation: the render thread finishes its frame, its GPU
+    // state returns to the API's renderer and the thread is joined before
+    // anything it uses is released.
+    waitRenderThread();
+    if (m_asyncActive)
+      switchPresentation(false);
+    m_renderThread.stop();
+    m_frameScene.reset();
+    m_asyncCaller = m_previousAsyncCaller = m_asyncRender = {};
+    m_renderedMemory = {};
     if (m_device && !m_deviceLost) {
       vkDeviceWaitIdle(m_device);
     }

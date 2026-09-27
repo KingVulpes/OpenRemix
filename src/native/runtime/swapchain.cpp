@@ -210,7 +210,7 @@ namespace remix {
                                       : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
         },
         {
-            .format = m_raster.depthFormat(),
+            .format = renderer().depthFormat(),
             .samples = VK_SAMPLE_COUNT_1_BIT,
             .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
             .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
@@ -266,7 +266,7 @@ namespace remix {
     if (pipeline::createRenderPass(m_device, &pass, nullptr, &m_overlayPass) !=
         VK_SUCCESS)
       return fail();
-    m_raster.configureTarget(m_renderPass, m_swapchainExtent,
+    renderer().configureTarget(m_renderPass, m_swapchainExtent,
                              m_srgb && m_swapchainFormat != VK_FORMAT_R8G8B8A8_SRGB &&
                                  m_swapchainFormat != VK_FORMAT_B8G8R8A8_SRGB);
     const uint32_t count = static_cast<uint32_t>(m_swapchainImages.size());
@@ -295,7 +295,7 @@ namespace remix {
       if (vkCreateImageView(m_device, &view, nullptr, &m_imageViews[i]) != VK_SUCCESS) {
         return fail();
       }
-      const VkImageView views[] = {m_imageViews[i], m_raster.depthView()};
+      const VkImageView views[] = {m_imageViews[i], renderer().depthView()};
       const VkFramebufferCreateInfo framebuffer = {
           .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
           .renderPass = m_renderPass,
@@ -346,14 +346,14 @@ namespace remix {
     m_imageViews.clear();
     m_renderFinished.clear();
     if (m_pathTracer)
-      retireTracer(std::move(m_pathTracer), m_raster.depthLifetime());
+      retireTracer(std::move(m_pathTracer), renderer().depthLifetime());
     m_activePreparationKey.clear();
     m_backend = m_targetBackend = 0;
     if (m_preparation && m_pipelines) {
       m_pipelines->cancel(m_preparation->job);
       m_obsoletePreparations.push_back(std::move(m_preparation));
     }
-    m_raster.destroyTarget();
+    renderer().destroyTarget();
     if (m_renderPass) {
       pipeline::destroyRenderPass(m_device, m_renderPass, nullptr);
     }

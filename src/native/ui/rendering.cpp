@@ -17,6 +17,15 @@ namespace remix {
     if (!m_traceUnavailable.empty())
       ImGui::TextWrapped("Path tracing unavailable: %s", m_traceUnavailable.c_str());
     ui::Checkbox("VSync", &settings.vsync);
+    ui::Checkbox("Asynchronous present", &settings.asyncPresent);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Present captures the frame and returns; OpenRemix's render thread prepares, records,\n"
+                        "submits and presents it while the game starts its next frame. At most one frame is\n"
+                        "in flight: the next Present waits only for that handoff. Statistics describe the last\n"
+                        "completed frame. Off: the whole frame runs inside Present, as before.\n"
+                        "Applies at the next Present (the render thread is drained first).");
+    if (settings.asyncPresent && m_headless)
+      ImGui::TextDisabled("%s", "The headless editor always presents synchronously.");
     if (ImGui::CollapsingHeader("Sampling and visibility", ImGuiTreeNodeFlags_DefaultOpen)) {
       int primary = options.rasterPrimary ? 0 : 1;
       if (ui::Combo("Primary visibility", &primary, "Rasterized G-buffer\0Ray traced\0"))
@@ -120,7 +129,7 @@ namespace remix {
                             pressure.bytesToRelease / 1048576.0,
                             pressure.requestHostRelease ? " | host asked to release" : "");
       }
-      const auto memory = m_raster.memoryStatistics();
+      const auto memory = renderer().memoryStatistics();
       ImGui::TextDisabled("Textures: %llu, %.1f MiB (%.1f MiB BC) | geometry %.1f MiB",
                           (unsigned long long)memory.textureCount, memory.textureBytes / 1048576.0,
                           memory.compressedTextureBytes / 1048576.0, memory.geometryBytes / 1048576.0);

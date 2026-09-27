@@ -11,6 +11,12 @@ namespace remix {
     if (!m_gui)
       return;
     ui::UiScope scope(m_gui);
+    // Asynchronous presentation: Present built this frame's UI on its thread
+    // (commandBuffer null); the render thread records it only if it did.
+    if (commandBuffer && m_asyncActive && !m_uiFrameBuilt)
+      return;
+    if (!commandBuffer)
+      m_uiFrameBuilt = false;
     // The bootstrap UI pipeline is prepared by the same worker. Surface
     // presentation and SDL input remain available while its first job runs.
     if (!ui::prepareVulkanPipeline(commandBuffer == VK_NULL_HANDLE))
@@ -85,5 +91,6 @@ namespace remix {
       if (texture->Status != ImTextureStatus_OK)
         ImGui_ImplVulkan_UpdateTexture(texture);
     }
+    m_uiFrameBuilt = true;
   }
 } // namespace remix

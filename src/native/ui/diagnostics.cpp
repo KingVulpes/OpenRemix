@@ -108,7 +108,7 @@ namespace remix {
       const auto &io = ImGui::GetIO();
       ImGui::TextWrapped("Presentation: %.2f ms / %.1f FPS", io.Framerate > 0 ? 1000.0f / io.Framerate : 0.0f,
                          io.Framerate);
-      ImGui::TextWrapped("Scene: %zu surface draws", m_raster.pendingDrawCount());
+      ImGui::TextWrapped("Scene: %zu surface draws", renderer().pendingDrawCount());
       auto s = tracingStatistics();
       ImGui::TextWrapped("Accumulated frames: %llu", (unsigned long long)s.accumulationCount);
       ImGui::TextWrapped("BLAS builds / refits / compactions: %llu / %llu / %llu",
@@ -136,6 +136,25 @@ namespace remix {
                          "queue present %.2f",
                          p.presentMilliseconds, p.sceneMilliseconds, p.fenceMilliseconds, p.acquireMilliseconds,
                          p.recordMilliseconds, p.submitMilliseconds, p.queuePresentMilliseconds);
+      if (m_asyncActive) {
+        // Asynchronous presentation: the frame above ran on the render thread;
+        // its Present on the caller's thread is split out here. Present, setup
+        // and the rows below include the caller's setup and capture, not its
+        // wait for the handoff.
+        const auto &c = m_previousAsyncCaller;
+        ImGui::TextWrapped("Caller Present %.2f ms: handoff wait %.2f, setup %.2f (developer UI %.2f), capture "
+                           "%.2f | render thread %.2f ms",
+                           c.callMilliseconds, c.waitMilliseconds, c.setupMilliseconds, c.uiMilliseconds,
+                           c.captureMilliseconds, m_asyncRender.renderMilliseconds);
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Handoff wait: time Present waited for the render thread to finish the previous\n"
+                            "frame (the render thread is the bottleneck when it is large). Capture: publishing\n"
+                            "the frame's draw lists, lights and static-set changes to the render thread.\n"
+                            "Render thread: scene preparation through queue present, excluding the caller.");
+        ImGui::TextWrapped("This Present waited %.2f ms for that frame; handed off %llu, presented %llu",
+                           m_asyncCaller.waitMilliseconds, (unsigned long long)m_asyncCaller.handedOff,
+                           (unsigned long long)m_asyncRender.rendered);
+      }
       struct Row {
         const char *name;
         double value;
@@ -159,7 +178,7 @@ namespace remix {
                           {"Passes", b.passesMilliseconds},
                           {"Post-processing", b.postMilliseconds},
                           {"Composite", b.compositeMilliseconds},
-                          {"Developer UI", b.uiMilliseconds},
+                          {m_asyncActive ? "Developer UI draw" : "Developer UI", b.uiMilliseconds},
                           {"Snapshot", b.snapshotMilliseconds},
                           {"Other", b.otherMilliseconds},
                           {"Present: setup", b.presentSetupMilliseconds},

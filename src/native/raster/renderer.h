@@ -11,6 +11,11 @@ namespace remix {
     // textureCompression: the device was created with textureCompressionBC, so
     // compressed textures upload as BC images instead of a decoded fallback.
     void initializeGpu(VkPhysicalDevice physical, VkDevice device, bool textureCompression = false);
+    // Takes other's GPU state (caches, pipelines, target and raster profile),
+    // leaving other without one. Asynchronous presentation renders from a
+    // published frame (NativeResources::publishFrame) held by a second
+    // renderer; the caller has completed the render thread's work.
+    void adoptGpu(RasterRenderer &other);
     struct MemoryStatistics {
       uint64_t textureBytes = 0, textureCount = 0, compressedTextureBytes = 0;
       uint64_t geometryBytes = 0, pooledBytes = 0;

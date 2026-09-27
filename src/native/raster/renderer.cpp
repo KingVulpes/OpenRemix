@@ -135,6 +135,13 @@ namespace remix {
     check(pipeline::createShaderModule(device, &shader, nullptr, &g.fragment));
   }
 
+  void RasterRenderer::adoptGpu(RasterRenderer &other) {
+    if (&other == this)
+      return;
+    m_gpu = std::move(other.m_gpu);
+    m_profile = std::exchange(other.m_profile, {});
+  }
+
   void RasterRenderer::configureTarget(VkRenderPass pass, VkExtent2D extent, bool encodeOutput) {
     auto &g = *m_gpu;
     g.destroyTarget();

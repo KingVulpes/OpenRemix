@@ -11,6 +11,7 @@ namespace remix {
     completeRayProfile();
     uploads.clear();
     staging.used = 0;
+    primaryRecording.reset = false; // This slot's secondaries have completed.
     retiredGeometry.clear();
     retiredBuffers.clear();
     retired.clear();

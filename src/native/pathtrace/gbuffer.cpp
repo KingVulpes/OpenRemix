@@ -197,6 +197,12 @@ namespace remix {
     }
   }
 
+  void PathTracer::Gpu::destroyPrimaryRecording(PrimaryRecording &recording) {
+    for (auto pool : recording.pools)
+      vkDestroyCommandPool(device, pool, nullptr);
+    recording = {};
+  }
+
   void PathTracer::Gpu::recordPrimary(VkCommandBuffer command, bool rasterPrimary) {
     if (!rasterPrimary) {
       // The reference shader statically declares these descriptors even when it
@@ -233,26 +239,76 @@ namespace remix {
                                   .renderArea = {{0, 0}, size},
                                   .clearValueCount = colors + 1,
                                   .pClearValues = clear};
-      vkCmdBeginRenderPass(command, &begin, VK_SUBPASS_CONTENTS_INLINE);
       VkViewport viewport{0, 0, float(size.width), float(size.height), 0, 1};
       VkRect2D scissor{{0, 0}, size};
-      vkCmdSetViewport(command, 0, 1, &viewport);
-      vkCmdSetScissor(command, 0, 1, &scissor);
-      vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, primaryPipeline[pass]);
-      vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, primaryLayout, 0, 1, &set, 0,
-                              nullptr);
-      for (const auto &draw : primaryDraws) {
-        if (pass && draw.blended)
-          continue;
-        PrimaryPush push{draw.model,
-                         {pass ? 0.f : temporalFrame.jitter[0], pass ? 0.f : temporalFrame.jitter[1]},
-                         draw.surfaceIndex,
-                         pass,
-                         primaryReverseDepth};
-        vkCmdPushConstants(command, primaryLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                           0, sizeof(push), &push);
-        vkCmdDraw(command, draw.count, 1, 0, 0);
-      }
+      auto record = [&](VkCommandBuffer target, size_t first, size_t last) {
+        vkCmdSetViewport(target, 0, 1, &viewport);
+        vkCmdSetScissor(target, 0, 1, &scissor);
+        vkCmdBindPipeline(target, VK_PIPELINE_BIND_POINT_GRAPHICS, primaryPipeline[pass]);
+        vkCmdBindDescriptorSets(target, VK_PIPELINE_BIND_POINT_GRAPHICS, primaryLayout, 0, 1, &set, 0,
+                                nullptr);
+        for (size_t i = first; i < last; ++i) {
+          const auto &draw = primaryDraws[i];
+          if (pass && draw.blended)
+            continue;
+          PrimaryPush push{draw.model,
+                           {pass ? 0.f : temporalFrame.jitter[0], pass ? 0.f : temporalFrame.jitter[1]},
+                           draw.surfaceIndex,
+                           pass,
+                           primaryReverseDepth};
+          vkCmdPushConstants(target, primaryLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                             0, sizeof(push), &push);
+          vkCmdDraw(target, draw.count, 1, 0, 0);
+        }
+      };
+      // The same commands in the same order; thousands of draws are split
+      // into contiguous ranges recorded concurrently as secondary buffers.
+      const size_t count = primaryDraws.size();
+      const size_t tasks =
+          workers && count >= 4096 ? std::min<size_t>(workers->threads(), (count + 2047) / 2048) : 0;
+      vkCmdBeginRenderPass(command, &begin,
+                           tasks ? VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS : VK_SUBPASS_CONTENTS_INLINE);
+      if (tasks) {
+        auto &recording = primaryRecording;
+        if (!recording.reset) {
+          for (auto pool : recording.pools)
+            check(vkResetCommandPool(device, pool, 0));
+          recording.reset = true;
+        }
+        while (recording.pools.size() < tasks) {
+          const VkCommandPoolCreateInfo info{.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                                             .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
+                                             .queueFamilyIndex = queueFamily};
+          VkCommandPool pool = VK_NULL_HANDLE;
+          check(vkCreateCommandPool(device, &info, nullptr, &pool));
+          recording.pools.push_back(pool);
+          const VkCommandBufferAllocateInfo allocate{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                                                     .commandPool = pool,
+                                                     .level = VK_COMMAND_BUFFER_LEVEL_SECONDARY,
+                                                     .commandBufferCount = 2};
+          VkCommandBuffer buffers[2] = {};
+          check(vkAllocateCommandBuffers(device, &allocate, buffers));
+          recording.buffers.insert(recording.buffers.end(), buffers, buffers + 2);
+        }
+        std::vector<VkCommandBuffer> secondaries(tasks);
+        workers->run(tasks, [&](size_t task) {
+          const auto target = recording.buffers[task * 2 + pass];
+          const VkCommandBufferInheritanceInfo inheritance{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO,
+                                                           .renderPass = primaryPass[pass],
+                                                           .subpass = 0,
+                                                           .framebuffer = primaryFramebuffer[pass]};
+          const VkCommandBufferBeginInfo info{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                              .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT |
+                                                       VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT,
+                                              .pInheritanceInfo = &inheritance};
+          check(vkBeginCommandBuffer(target, &info));
+          record(target, count * task / tasks, count * (task + 1) / tasks);
+          check(vkEndCommandBuffer(target));
+          secondaries[task] = target;
+        });
+        vkCmdExecuteCommands(command, uint32_t(tasks), secondaries.data());
+      } else
+        record(command, 0, count);
       vkCmdEndRenderPass(command);
     }
     primaryInitialized = true;

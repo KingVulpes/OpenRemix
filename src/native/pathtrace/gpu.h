@@ -321,6 +321,14 @@ namespace remix {
     void createPrimary(VkFormat depthFormat, VkImageView depthView);
     void destroyPrimary();
     void recordPrimary(VkCommandBuffer command, bool rasterPrimary);
+    // Large primary passes record secondary command buffers on the workers:
+    // one transient pool per task and frame slot, reset after the slot's fence.
+    struct PrimaryRecording {
+      std::vector<VkCommandPool> pools;
+      std::vector<VkCommandBuffer> buffers; // two per pool: primary passes 0 and 1
+      bool reset = false;                   // pools reset for this frame
+    } primaryRecording;
+    void destroyPrimaryRecording(PrimaryRecording &recording);
     VkRenderPass skyPass{};
     VkFramebuffer skyFramebuffer{};
     uint32_t queueFamily{};
@@ -543,6 +551,7 @@ namespace remix {
       uint64_t lightGeneration = 0, torchGeneration = 0, emissiveGeneration = 0;
       std::vector<std::unique_ptr<Buffer>> uploads;
       Staging staging;
+      PrimaryRecording primaryRecording;
       std::vector<std::shared_ptr<Accel>> retired;
       std::vector<std::shared_ptr<Geometry>> compactPending, retiredGeometry;
       std::vector<std::shared_ptr<Buffer>> retiredBuffers;

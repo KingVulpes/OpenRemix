@@ -32,6 +32,7 @@ namespace remix {
     swap(emissiveEmitters, frame.emissiveEmitters);
     swap(uploads, frame.uploads);
     swap(staging, frame.staging);
+    swap(primaryRecording, frame.primaryRecording);
     swap(retired, frame.retired);
     swap(compactPending, frame.compactPending);
     swap(retiredGeometry, frame.retiredGeometry);
@@ -113,7 +114,9 @@ namespace remix {
   PathTracer::Gpu::~Gpu() {
     destroyTarget();
     destroySharc();
+    destroyPrimaryRecording(primaryRecording);
     for (auto &frame : frames) {
+      destroyPrimaryRecording(frame.primaryRecording);
       if (frame.timestamps)
         vkDestroyQueryPool(device, frame.timestamps, nullptr);
       if (frame.compaction)

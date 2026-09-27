@@ -50,6 +50,11 @@ namespace remix {
     float lightDirection[3] = {-0.4f, -0.8f, -0.3f};
     float lightColor[3] = {1, 1, 1};
     float lightIntensity = 3.14159265f;
+    // GPU optimizations, each off by default and output-identical when on
+    // (docs in ui/rendering.cpp). All apply at runtime without a restart.
+    // One-sided surfaces become hardware-opaque in their BLAS and one-sided
+    // instances reject back faces in traversal instead of in the shader.
+    bool hardwareFaceCulling = false;
     bool operator==(const TraceOptions &) const = default;
   };
 } // namespace remix

@@ -103,5 +103,16 @@ public:
     return result->reasons[OpacityPartition::Solid] == result->triangles;
   }
   void prune();
+  // rtx.native.pathtrace.hardwareFaceCulling: when set, a one-sided surface is
+  // proved like a double-sided one (Solid instead of OneSided). Traversal must
+  // then reject its back faces in hardware: the tracer clears the instance's
+  // facing-cull-disable flag (doubleSided belongs to the whole instance) and
+  // rays carry gl_RayFlagsCullBackFacingTrianglesEXT. Part of the cache key,
+  // so both variants stay cached. Set only while no lookup is running.
+  void setOneSidedOpaque(bool value) { oneSidedOpaque = value; }
+  bool oneSidedOpaqueEnabled() const { return oneSidedOpaque; }
+
+private:
+  bool oneSidedOpaque = false;
 };
 } // namespace remix::scene

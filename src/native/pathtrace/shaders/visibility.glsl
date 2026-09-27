@@ -5,7 +5,7 @@ struct VisibilityHit { float t; bool blocked; vec3 p; vec3 n; vec3 transmission;
 void queryVisibility(accelerationStructureEXT scene,vec3 origin,vec3 direction,inout VisibilityHit hit,bool anyOpaque) {
   rayQueryEXT query;
   profileRay(8);
-  rayQueryInitializeEXT(query,scene,gl_RayFlagsNoneEXT,255,origin,0,direction,hit.t);
+  rayQueryInitializeEXT(query,scene,traceFlags(),255,origin,0,direction,hit.t);
   while(rayQueryProceedEXT(query)) {
     if(rayQueryGetIntersectionTypeEXT(query,false)!=gl_RayQueryCandidateIntersectionTriangleEXT)continue;
     profileRay(9);

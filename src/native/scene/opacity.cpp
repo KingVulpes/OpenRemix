@@ -132,8 +132,10 @@ namespace remix::scene {
     // NaNs cannot be keys in an ordered map.
     if (!finite)
       return false;
-    const uint32_t flags =
-        uint32_t(draw.doubleSided) | uint32_t(b.enabled) << 1 | uint32_t(m.transmission) << 2;
+    // Double-sided coverage does not depend on oneSidedOpaque: those entries
+    // stay shared between both settings.
+    const uint32_t flags = uint32_t(draw.doubleSided) | uint32_t(b.enabled) << 1 | uint32_t(m.transmission) << 2 |
+                           uint32_t(oneSidedOpaque && !draw.doubleSided) << 3;
     const auto &texture = m.texture;
     dimensions = {};
     if (texture) {
@@ -232,7 +234,9 @@ namespace remix::scene {
       ++statistics.proofs;
     auto result = std::make_shared<P>();
     result->triangles = uint32_t(draw.surface->indices.size() / 3);
-    P::Reason uniform = !draw.doubleSided ? P::OneSided
+    // With oneSidedOpaque, facing is rejected by traversal (see opacity.h), so
+    // a one-sided surface needs the same coverage proof as a double-sided one.
+    P::Reason uniform = !draw.doubleSided && !oneSidedOpaque ? P::OneSided
                         : b.enabled       ? P::Blended
                         : m.transmission  ? P::Transmission
                                           : P::Solid;

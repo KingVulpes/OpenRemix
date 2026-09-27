@@ -4,11 +4,35 @@ namespace remix {
   using namespace scene;
   using namespace trace::detail;
 
+  static_assert(trace::instanceFacingCullDisable == VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR &&
+                trace::instanceFrontCounterClockwise == VK_GEOMETRY_INSTANCE_TRIANGLE_FRONT_COUNTERCLOCKWISE_BIT_KHR);
+
+  namespace {
+    VkAccelerationStructureInstanceKHR instanceData(const trace::InstanceInput &input, bool faceCulling) {
+      VkAccelerationStructureInstanceKHR instance = {};
+      for (int r = 0; r < 3; ++r)
+        for (int c = 0; c < 4; ++c)
+          instance.transform.matrix[r][c] = input.model[c * 4 + r];
+      instance.instanceCustomIndex = input.customIndex;
+      instance.mask = 255;
+      instance.flags = trace::instanceFlags(input, faceCulling);
+      instance.accelerationStructureReference = input.geometry;
+      return instance;
+    }
+  } // namespace
+
   void PathTracer::Gpu::buildTop(VkCommandBuffer command, const std::vector<trace::InstanceInput> &staticInputs,
                                  const std::vector<trace::InstanceInput> &dynamicInputs, bool force,
-                                 uint64_t staticGeneration) {
+                                 uint64_t staticGeneration, bool faceCulling) {
     const std::vector<trace::InstanceInput> *inputs[2] = {&staticInputs, &dynamicInputs};
     ScopedMilliseconds time{performance.accelerationMilliseconds};
+    // Instance flags depend on the setting: rebuild both TLASes when it changes.
+    if (faceCulling != topFaceCulling) {
+      for (auto &top : tlas)
+        top.policy = {};
+      tlasStaticGeneration = 0;
+      topFaceCulling = faceCulling;
+    }
     VkAccelerationStructureGeometryKHR geometry[2] = {};
     VkAccelerationStructureBuildGeometryInfoKHR builds[2] = {};
     VkAccelerationStructureBuildSizesInfoKHR sizes[2] = {};
@@ -32,21 +56,9 @@ namespace remix {
       if (count[i] > asProperties.maxInstanceCount)
         throw VK_ERROR_TOO_MANY_OBJECTS;
       std::vector<VkAccelerationStructureInstanceKHR> data;
-      for (const auto &input : *inputs[i]) {
-        VkAccelerationStructureInstanceKHR instance = {};
-        for (int r = 0; r < 3; ++r)
-          for (int c = 0; c < 4; ++c)
-            instance.transform.matrix[r][c] = input.model[c * 4 + r];
-        instance.instanceCustomIndex = input.customIndex;
-        instance.mask = 255;
-        const auto &m = input.model;
-        const float det = m[0] * (m[5] * m[10] - m[9] * m[6]) - m[4] * (m[1] * m[10] - m[9] * m[2]) +
-                          m[8] * (m[1] * m[6] - m[5] * m[2]);
-        instance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR |
-                         (det > 0 ? VK_GEOMETRY_INSTANCE_TRIANGLE_FRONT_COUNTERCLOCKWISE_BIT_KHR : 0u);
-        instance.accelerationStructureReference = input.geometry;
-        data.push_back(instance);
-      }
+      data.reserve(inputs[i]->size());
+      for (const auto &input : *inputs[i])
+        data.push_back(instanceData(input, faceCulling));
       hostBuffer(top.instances, data.data(), data.size() * sizeof(data[0]), inputUsage);
       geometry[i] = {.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR,
                      .geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR};

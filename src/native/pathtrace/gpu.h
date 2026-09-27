@@ -614,9 +614,12 @@ namespace remix {
     // staticGeneration: nonzero when staticInputs are the frame tables' static
     // prefix of that generation; one the static TLAS was built from (or found
     // equal to) is not compared again.
+    // faceCulling: rtx.native.pathtrace.hardwareFaceCulling (trace::instanceFlags).
     void buildTop(VkCommandBuffer command, const std::vector<trace::InstanceInput> &staticInputs,
-                  const std::vector<trace::InstanceInput> &dynamicInputs, bool force, uint64_t staticGeneration);
+                  const std::vector<trace::InstanceInput> &dynamicInputs, bool force, uint64_t staticGeneration,
+                  bool faceCulling);
     uint64_t tlasStaticGeneration = 0;
+    bool topFaceCulling = false; // the setting the TLAS instance flags were built with
     std::unique_ptr<Image> image(bool colorAttachment = false,
                                  VkFormat format = VK_FORMAT_R32G32B32A32_SFLOAT, VkExtent2D size = {});
     void destroyPost();

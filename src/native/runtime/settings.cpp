@@ -161,6 +161,7 @@ namespace remix::config {
                                 10, 0, true));
         TRACE(overrideLight, 0, 1);
         TRACE(lightIntensity, 0, 20);
+        TRACE(hardwareFaceCulling, 0, 1);
         for (size_t i = 0; i < 3; ++i) {
           result.push_back(scalar(
               "rtx.native.pathtrace.lightDirection." + std::string(1, "xyz"[i]),

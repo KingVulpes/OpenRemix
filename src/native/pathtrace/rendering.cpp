@@ -25,6 +25,10 @@ namespace remix {
       ~FinalLap() { charge(phase); }
     } finalLap{lap, breakdown.passesMilliseconds};
     const auto options = effectiveOptions(requestedOptions);
+    // rtx.native.pathtrace.hardwareFaceCulling as this frame's partitions were
+    // proved with it (prepareScene): BLAS opacity, instance flags and ray flags
+    // must agree.
+    const bool faceCulling = opacityCache.oneSidedOpaqueEnabled();
     debugView = options.debugView;
     const bool falseColor = debugView != 0 && debugView != 6 && debugView != 7;
     prism = options.prism && !falseColor;
@@ -230,7 +234,7 @@ namespace remix {
     {
       gpu::GpuScope scope(command, "TLAS builds");
       buildTop(command, tables.staticInputs(), tables.dynamicInputs(), options.forceRebuild,
-               tables.staticGeneration());
+               tables.staticGeneration(), faceCulling);
       barrier(command, buildStage, asWrite, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, asRead);
     }
     if (timestamps)
@@ -417,7 +421,10 @@ namespace remix {
     frame.config[1] = options.bounces;
     frame.target[0] = extent.width;
     frame.target[1] = extent.height;
-    frame.target[2] = uint32_t(!tables.staticInputs().empty()) | uint32_t(!tables.dynamicInputs().empty()) << 1;
+    // Bits 0/1: static/dynamic TLAS non-empty; bit 2: cull back faces (only
+    // one-sided instances enable it, see trace::instanceFlags).
+    frame.target[2] = uint32_t(!tables.staticInputs().empty()) | uint32_t(!tables.dynamicInputs().empty()) << 1 |
+                      uint32_t(faceCulling) << 2;
     frame.target[3] = options.rasterPrimary;
     // Reserved private word; included in scene-change detection. Raw/reference
     // and multi-sample rendering retain one estimator at every surface pixel.
@@ -946,6 +953,12 @@ namespace remix {
     // order. The opacity profile's lookup and hit counters need every lookup
     // in partition(): it traces the static set as draws.
     g.statics.resetStatistics();
+    // Hardware face culling changes one-sided coverage: the kept static set
+    // proves its partitions again (prepare() reads the flag set here).
+    if (options.hardwareFaceCulling != g.opacityCache.oneSidedOpaqueEnabled()) {
+      g.opacityCache.setOneSidedOpaque(options.hardwareFaceCulling);
+      g.statics.invalidate();
+    }
     Clock::time_point prepared{};
     scene::TraceFrame frame;
     if (profile) {

@@ -156,5 +156,15 @@ namespace remix {
                           "breakdown. Costs about what the setting saves.");
       ImGui::EndDisabled();
     }
+    // Path tracing GPU cost; each is off by default and renders the same image.
+    if (ImGui::CollapsingHeader("GPU optimizations")) {
+      ui::Checkbox("Hardware face culling", &options.hardwareFaceCulling);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("One-sided surfaces without alpha test or blending become hardware-opaque in their\n"
+                          "acceleration structures, and ray traversal rejects the back faces of one-sided\n"
+                          "instances instead of the shader. Same image. Applies at the next frame: changed\n"
+                          "meshes rebuild their BLAS (both variants stay in memory until a mesh is released).\n"
+                          "rtx.native.pathtrace.hardwareFaceCulling");
+    }
   }
 } // namespace remix

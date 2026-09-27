@@ -15,7 +15,8 @@ namespace remix::trace {
     for (size_t i = 0; i < inputs.size(); ++i) {
       if (inputs[i].id != previous[i].id || inputs[i].sub != previous[i].sub)
         return REMIXAPI_REBUILD_MEMBERSHIP_EXT;
-      if (inputs[i].geometry != previous[i].geometry)
+      // A facing change can change the instance flags: never refit those.
+      if (inputs[i].geometry != previous[i].geometry || inputs[i].oneSided != previous[i].oneSided)
         return REMIXAPI_REBUILD_GEOMETRY_EXT;
     }
     if (!changed(inputs))

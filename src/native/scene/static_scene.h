@@ -87,6 +87,9 @@ namespace remix::scene {
     size_t livePbrSurfaces() const { return m_livePbr; }
     // Forget everything (tracer reset); the next sync rebuilds all units.
     void clear();
+    // The next sync rebuilds every unit, as for a new set, keeping history:
+    // their opacity partitions depend on a changed OpacityCache setting.
+    void invalidate() { m_epoch = ~0ull; }
     const Statistics &statistics() const { return m_statistics; }
     void resetStatistics() { m_statistics = {}; }
 

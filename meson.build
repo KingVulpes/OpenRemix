@@ -12,7 +12,7 @@ if cpp.get_id() not in ['clang', 'clang-cl']
   error('Use Clang (clang-cl with the Visual Studio toolchain on Windows).')
 endif
 if system == 'windows'
-  add_project_arguments('-DNOMINMAX', '-D_CRT_SECURE_NO_WARNINGS', language : ['c', 'cpp'])
+  add_project_arguments('-DNOMINMAX', '-D_CRT_SECURE_NO_WARNINGS', '-D_SILENCE_ALL_CXX20_DEPRECATION_WARNINGS', language : ['c', 'cpp'])
   if cpp.get_id() == 'clang'
     add_project_arguments('-include', meson.project_source_root() / 'src/native/platform/mingw_compat.h', language : 'cpp')
   endif
@@ -60,7 +60,7 @@ install_subdir('public/include/remix', install_dir : get_option('includedir'))
 if get_option('sharc')
   install_data('third_party/sharc/License.md', rename : 'SHARC.md', install_dir : get_option('datadir') / 'remix/licenses')
 endif
-install_data('LICENSE', 'LICENSE-MIT', 'ThirdPartyLicenses.txt', install_dir : get_option('datadir') / 'remix/licenses')
+install_data('LICENSE', 'ThirdPartyLicenses.txt', install_dir : get_option('datadir') / 'remix/licenses')
 install_data('third_party/image/LICENSES.txt', rename : 'ImageDecoders.txt',
   install_dir : get_option('datadir') / 'remix/licenses')
 

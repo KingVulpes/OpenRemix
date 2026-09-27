@@ -124,6 +124,8 @@ void RemixNativeRuntime::presented() {
       if (!m_swapchain && !m_sharedImage) {
         return REMIXAPI_ERROR_CODE_SUCCESS;
       }
+      updateFreeCamera();
+      m_raster.applyFreeCamera(m_freeCamera);
       prepareSettings();
       m_raster.setSkyTarget(m_pathTracer ? m_pathTracer->skyPass()
                                          : VK_NULL_HANDLE);

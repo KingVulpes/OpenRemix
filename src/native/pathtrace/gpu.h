@@ -343,8 +343,8 @@ namespace remix {
     std::string postFailure;
     remixapi_DenoisingCapabilitiesEXT postCapabilities{};
     scene::TemporalHistory history;
-    std::map<scene::TemporalHistory::Key, std::shared_ptr<Buffer>> previousVertices, pendingVertices,
-        retiredPreviousVertices;
+    using VertexHistory = scene::TemporalTable<std::shared_ptr<Buffer>>;
+    VertexHistory previousVertices, pendingVertices, retiredPreviousVertices;
     scene::Matrix previousCamera{}, pendingCamera{}, previousView{}, previousProjection{},
         pendingProjection{};
     float previousJitter[2] = {};
@@ -475,7 +475,7 @@ namespace remix {
       std::vector<std::shared_ptr<Accel>> retired;
       std::vector<std::shared_ptr<Geometry>> compactPending, retiredGeometry;
       std::vector<std::shared_ptr<Buffer>> retiredBuffers;
-      std::map<scene::TemporalHistory::Key, std::shared_ptr<Buffer>> retiredVertices;
+      scene::TemporalTable<std::shared_ptr<Buffer>> retiredVertices;
     } frames[gpuFrameCount];
     uint32_t frameIndex = 0;
     void swapFrame(FrameResources &frame);

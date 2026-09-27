@@ -56,6 +56,7 @@ namespace remix {
         uint64_t(rouletteFailed) << 27;
     history.begin(resources.temporalEpoch(), integrator, extent.width, extent.height);
     pendingVertices.clear();
+    pendingVertices.reserve(previousVertices.size());
     std::vector<trace::InstanceInput> inputs[2];
     std::vector<TraceSurface> surfaces;
     const auto emissionMode = options.freezeEmissiveRadiance      ? 2u
@@ -95,8 +96,11 @@ namespace remix {
     uint64_t geometryDigest = 1469598103934665603ull;
     lap(breakdown.traceSetupMilliseconds);
     breakdown.traceInstances += prepared.instances.size();
-    for (const auto &instance : prepared.instances) {
+    // Consumes the prepared draws: each surface moves into the temporal history.
+    for (auto &instance : prepared.instances) {
       const auto &draw = instance[0].draw;
+      // Frame-local identities never gain history (all surfaces share the id).
+      const uint64_t temporalId = prepared.persistentIds.count(draw.instanceId) ? draw.instanceId : 0;
       std::vector<std::shared_ptr<const scene::OpacityPartition>> partitions(draw.mesh->surfaces.size());
       for (const auto &surface : instance) {
         partitions[surface.draw.surfaceIndex] = surface.opacity;
@@ -211,26 +215,20 @@ namespace remix {
         const uint64_t debugKey[] = {surface.instanceId, surface.instanceIndex, surface.surfaceIndex};
         value.debugIdentity = hashBytes(debugKey, sizeof(debugKey));
         value.indices = geometry.input->address + geometry.indexOffsets.at(surface.surfaceIndex);
-        auto temporalDraw = surface;
-        if (!prepared.persistentIds.count(surface.instanceId))
-          temporalDraw.instanceId = 0;
-        const scene::TemporalHistory::Key temporalKey{temporalDraw.instanceId, temporalDraw.instanceIndex,
-                                                      temporalDraw.surfaceIndex};
+        const scene::TemporalHistory::Key temporalKey{temporalId, surface.instanceIndex, surface.surfaceIndex};
         // A texture upload (including an unrelated animated tile in a shared
         // terrain atlas) does not change vertex correspondence. Keep motion and
         // let per-pixel depth/normal rejection, lighting confidence and TAA color
         // clipping respond to the shading that actually changed on screen.
-        if (const auto *previous = history.previousGeometry(temporalDraw)) {
-          const auto old = previousVertices.find(temporalKey);
-          if (old != previousVertices.end()) {
-            value.previousVertices = old->second->address;
+        if (const auto *previous = history.previousGeometry(surface, temporalId)) {
+          if (const auto *old = previousVertices.find(temporalKey)) {
+            value.previousVertices = (*old)->address;
             value.previousModel = previous->draw.model;
           }
         }
-        if (temporalDraw.instanceId)
+        if (temporalId)
           pendingVertices[temporalKey] = view.vertices.at(surface.surfaceIndex);
         std::copy_n(material.tint, 4, value.tint);
-        history.stage(temporalDraw, preparedSurface.animationFrame);
         temporalTicks += ticks() - temporalStart;
         if (options.pbrLocalReuse) {
           const uint64_t values[] = {view.fingerprint, value.debugIdentity,
@@ -271,6 +269,11 @@ namespace remix {
         } while (groupIndex < geometry.groups.size() &&
                  geometry.groups[groupIndex].surface == surface.surfaceIndex);
       }
+      // Stage last: draw (instance[0]) is read until the instance is complete.
+      const uint64_t stageStart = ticks();
+      for (auto &preparedSurface : instance)
+        history.stage(std::move(preparedSurface.draw), temporalId, preparedSurface.animationFrame);
+      temporalTicks += ticks() - stageStart;
     }
     lap(breakdown.traceSurfacesMilliseconds);
     breakdown.traceSurfaces += surfaces.size();

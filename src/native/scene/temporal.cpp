@@ -63,16 +63,19 @@ namespace remix::scene {
     return hash;
   }
   const TemporalHistory::SurfaceHistory *TemporalHistory::previous(const Draw &draw) const {
+    // Materials and textures are immutable once shared, so the stored draw's
+    // signature equals the one it had when it was staged.
     const auto *p = previousGeometry(draw);
-    return p && p->material == materialSignature(draw) ? p : nullptr;
+    return p && materialSignature(p->draw) == materialSignature(draw) ? p : nullptr;
   }
-  const TemporalHistory::SurfaceHistory *TemporalHistory::previousGeometry(const Draw &draw) const {
-    if (m_reset || !draw.instanceId)
+  const TemporalHistory::SurfaceHistory *TemporalHistory::previousGeometry(const Draw &draw,
+                                                                           uint64_t instanceId) const {
+    if (m_reset || !instanceId)
       return nullptr;
-    auto it = m_previous.find({draw.instanceId, draw.instanceIndex, draw.surfaceIndex});
-    if (it == m_previous.end())
+    const auto *found = m_previous.find({instanceId, draw.instanceIndex, draw.surfaceIndex});
+    if (!found)
       return nullptr;
-    const auto &p = it->second;
+    const auto &p = *found;
     // Retained meshes preserve vertex identity, including changed bones. Streamed
     // replacements need both an explicit correspondence guarantee and exact
     // topology lineage; an update/storage hint alone is insufficient.
@@ -84,13 +87,23 @@ namespace remix::scene {
       return nullptr;
     return &p;
   }
-  void TemporalHistory::stage(const Draw &draw, uint32_t textureFrame) {
-    if (draw.instanceId)
-      m_pending[{draw.instanceId, draw.instanceIndex, draw.surfaceIndex}] = {draw, materialSignature(draw),
-                                                                             textureFrame};
+  void TemporalHistory::stage(Draw &&draw, uint32_t textureFrame) {
+    const uint64_t instanceId = draw.instanceId;
+    stage(std::move(draw), instanceId, textureFrame);
+  }
+  void TemporalHistory::stage(Draw &&draw, uint64_t instanceId, uint32_t textureFrame) {
+    if (!instanceId)
+      return;
+    auto &entry = m_pending[{instanceId, draw.instanceIndex, draw.surfaceIndex}];
+    entry.draw = std::move(draw);
+    entry.draw.instanceId = instanceId;
+    entry.textureFrame = textureFrame;
   }
   void TemporalHistory::commit() {
-    m_previous = std::move(m_pending);
+    // Keep both tables' storage: the old history is released here and the
+    // emptied table is refilled by the next frame's stage() calls.
+    std::swap(m_previous, m_pending);
+    m_pending.clear();
     m_epoch = m_nextEpoch;
     m_integrator = m_nextIntegrator;
     m_width = m_nextWidth;

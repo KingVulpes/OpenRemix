@@ -60,7 +60,7 @@ install_subdir('public/include/remix', install_dir : get_option('includedir'))
 if get_option('sharc')
   install_data('third_party/sharc/License.md', rename : 'SHARC.md', install_dir : get_option('datadir') / 'remix/licenses')
 endif
-install_data('LICENSE', 'LICENSE-MIT', 'ThirdPartyLicenses.txt', install_dir : get_option('datadir') / 'remix/licenses')
+install_data('LICENSE', 'ThirdPartyLicenses.txt', install_dir : get_option('datadir') / 'remix/licenses')
 install_data('third_party/image/LICENSES.txt', rename : 'ImageDecoders.txt',
   install_dir : get_option('datadir') / 'remix/licenses')
 

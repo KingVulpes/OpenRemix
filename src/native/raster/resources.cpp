@@ -96,23 +96,30 @@ namespace remix {
                                                       : VK_FORMAT_R8G8B8A8_UNORM,
                                    false, flags)};
     value.view = value.data->view;
-    std::vector<uint8_t> data;
+    // Level bytes go straight into the staging buffer.
+    auto level = [&](uint32_t i) -> std::pair<const uint8_t *, size_t> {
+      if (p.hdrMips.empty())
+        return {p.mips[i].data(), p.mips[i].size()};
+      return {reinterpret_cast<const uint8_t *>(p.hdrMips[i].data()), p.hdrMips[i].size() * sizeof(float)};
+    };
     std::vector<VkBufferImageCopy> copies;
+    size_t total = 0;
     uint32_t width = p.width, height = p.height;
     for (uint32_t i = 0; i < levels; ++i) {
-      copies.push_back({.bufferOffset = data.size(),
+      copies.push_back({.bufferOffset = total,
                         .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i, 0, 1},
                         .imageExtent = {width, height, 1}});
-      if (p.hdrMips.empty())
-        data.insert(data.end(), p.mips[i].begin(), p.mips[i].end());
-      else {
-        const auto *begin = reinterpret_cast<const uint8_t *>(p.hdrMips[i].data());
-        data.insert(data.end(), begin, begin + p.hdrMips[i].size() * sizeof(float));
-      }
+      total += level(i).second;
       width = std::max(1u, width / 2);
       height = std::max(1u, height / 2);
     }
-    uploads.push_back(buffer(data.data(), data.size(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT));
+    uploads.push_back(buffer(total, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, [&](uint8_t *mapped) {
+      for (uint32_t i = 0; i < levels; ++i) {
+        const auto [bytes, size] = level(i);
+        if (size)
+          std::memcpy(mapped + copies[i].bufferOffset, bytes, size);
+      }
+    }));
     copyLevels(command, value.data->image, levels, copies);
     return value;
   }

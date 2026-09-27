@@ -14,7 +14,8 @@
 //   REMIX_BENCH_WIDTH/HEIGHT [1920x1080] window size
 //   REMIX_BENCH_STATIC [12000] retained instances, REMIX_BENCH_MESHES [4000]
 //   REMIX_BENCH_MATERIALS [1500], REMIX_BENCH_ACTORS [40], REMIX_BENCH_LIGHTS [64]
-//   REMIX_BENCH_OVERLAY [1] full-screen DrawScreenOverlay every frame
+//   REMIX_BENCH_OVERLAY [1] full-screen DrawScreenOverlay every frame; 2 also
+//     redraws a compass strip each frame (a changing HUD), 0 none
 //   REMIX_BENCH_STABLE_IDS [1] InstanceIdentityEXT on per-frame draws
 //   REMIX_BENCH_CONFIG "key=value;key=value" extra SetConfigVariable calls
 //   REMIX_BENCH_DIGEST <file> write an address-free digest of every measured
@@ -184,7 +185,8 @@ int main() {
   const uint32_t staticCount = env("REMIX_BENCH_STATIC", 12000), meshCount = env("REMIX_BENCH_MESHES", 4000);
   const uint32_t materialCount = env("REMIX_BENCH_MATERIALS", 1500), actorCount = env("REMIX_BENCH_ACTORS", 40);
   const uint32_t lightCount = env("REMIX_BENCH_LIGHTS", 64);
-  const bool overlay = env("REMIX_BENCH_OVERLAY", 1) != 0, stableIds = env("REMIX_BENCH_STABLE_IDS", 1) != 0;
+  const uint32_t overlayMode = env("REMIX_BENCH_OVERLAY", 1);
+  const bool overlay = overlayMode != 0, stableIds = env("REMIX_BENCH_STABLE_IDS", 1) != 0;
   const char *digestPath = std::getenv("REMIX_BENCH_DIGEST");
   if (digestPath) {
 #if defined(_WIN32)
@@ -402,6 +404,16 @@ int main() {
   std::vector<remixapi_Transform> bones;
   double submitMilliseconds = 0;
   auto submit = [&](uint32_t frame) {
+    if (overlayMode == 2) {
+      // Compass strip: a marker that moves every frame.
+      for (uint32_t y = height / 40; y < height / 20; ++y)
+        for (uint32_t x = width / 3; x < 2 * width / 3; ++x) {
+          auto *p = &hud[(size_t(y) * width + x) * 4];
+          const bool marker = (x + frame * 3) % 97 < 4;
+          p[0] = p[1] = p[2] = marker ? 255 : 30;
+          p[3] = marker ? 255 : 90;
+        }
+    }
     const auto begin = std::chrono::steady_clock::now();
     ok(api.PumpEvents(), "PumpEvents");
     remixapi_CameraInfoParameterizedEXT parameters{};
@@ -468,7 +480,8 @@ int main() {
   std::printf("scene: %u retained over %u meshes (%llu vertices), %u materials, %u actors (%llu skinned "
               "vertices), %u lights, overlay %s, stable ids %s, %ux%u\n",
               staticCount, meshCount, (unsigned long long)staticVertices, materialCount, actorCount,
-              (unsigned long long)actorVertices, lightCount, overlay ? "on" : "off", stableIds ? "on" : "off",
+              (unsigned long long)actorVertices, lightCount,
+              overlayMode == 2 ? "changing" : overlay ? "static" : "off", stableIds ? "on" : "off",
               width, height);
   std::fflush(stdout);
   // Pipeline preparation repeats frame 0; afterwards the scene animates by

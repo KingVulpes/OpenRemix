@@ -16,6 +16,7 @@ namespace remix {
     textures.clear();
     meshes.clear();
     uploads.clear();
+    reusableImages.clear();
     skin.reset();
     if (vertex) {
       pipeline::destroyShaderModule(device, vertex, nullptr);
@@ -59,6 +60,8 @@ namespace remix {
       g.recycle(std::move(buffer));
     next.retiredBuffers.clear();
     next.retiredMaterials.clear();
+    for (auto &image : next.retiredImages)
+      g.recycle(std::move(image));
     next.retiredImages.clear();
     g.uploads = std::move(next.uploads);
     g.skin = std::move(next.skin);

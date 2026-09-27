@@ -63,11 +63,16 @@ namespace remix {
 
   std::unique_ptr<Buffer> RasterRenderer::Gpu::buffer(const void *data, size_t size,
                                                       VkBufferUsageFlags usage) {
+    return buffer(size, usage, [&](uint8_t *mapped) { std::memcpy(mapped, data, size); });
+  }
+
+  std::unique_ptr<Buffer> RasterRenderer::Gpu::buffer(size_t size, VkBufferUsageFlags usage,
+                                                      const std::function<void(uint8_t *)> &write) {
     auto out = allocateBuffer(size, usage, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
     uploadBytes += size;
     void *mapped;
     check(vkMapMemory(device, out->memory, 0, VK_WHOLE_SIZE, 0, &mapped));
-    std::memcpy(mapped, data, size);
+    write(static_cast<uint8_t *>(mapped));
     const VkMappedMemoryRange flush = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
                                        .memory = out->memory,
                                        .offset = 0,
@@ -76,6 +81,16 @@ namespace remix {
     vkUnmapMemory(device, out->memory);
     check(result);
     return out;
+  }
+
+  void RasterRenderer::Gpu::recycle(std::unique_ptr<Image> image) {
+    // Called after the image's last-use fence. Only large images are worth
+    // keeping; a few suffice for a per-frame overlay in flight.
+    if (!image || image->bytes < 1024 * 1024)
+      return;
+    reusableImages.push_back(std::move(image));
+    if (reusableImages.size() > 4)
+      reusableImages.erase(reusableImages.begin());
   }
 
   std::unique_ptr<Buffer> RasterRenderer::Gpu::geometryBuffer(const void *data, size_t size,
@@ -113,7 +128,20 @@ namespace remix {
     if (width > properties.limits.maxImageDimension2D || height > properties.limits.maxImageDimension2D) {
       throw VK_ERROR_FORMAT_NOT_SUPPORTED;
     }
+    if (!isDepth)
+      for (auto it = reusableImages.begin(); it != reusableImages.end(); ++it) {
+        const auto &image = **it;
+        if (image.width == width && image.height == height && image.levels == levels && image.format == format &&
+            image.flags == flags && std::memcmp(&image.components, &components, sizeof(components)) == 0) {
+          auto out = std::move(*it);
+          reusableImages.erase(it);
+          return out;
+        }
+      }
     auto out = std::make_unique<Image>();
+    out->width = width;
+    out->height = height;
+    out->flags = flags;
     out->device = device;
     out->format = format;
     out->levels = levels;

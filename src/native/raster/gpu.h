@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <functional>
 #include <utility>
 
 namespace remix::raster::detail {
@@ -43,6 +44,8 @@ namespace remix::raster::detail {
     uint32_t levels = 0;
     VkComponentMapping components = {};
     VkDeviceSize bytes = 0; // Device allocation size, for VRAM statistics.
+    uint32_t width = 0, height = 0;
+    VkImageCreateFlags flags = 0;
     // UNORM view of an sRGB (mutable-format) image: data maps alias it.
     VkImageView linearView = VK_NULL_HANDLE;
     ~Image() {
@@ -160,6 +163,13 @@ namespace remix {
     std::unique_ptr<Buffer> allocateBuffer(size_t size, VkBufferUsageFlags usage,
                                            VkMemoryPropertyFlags flags);
     std::unique_ptr<Buffer> buffer(const void *data, size_t size, VkBufferUsageFlags usage);
+    // Host-visible buffer whose contents write(mapped) fills directly.
+    std::unique_ptr<Buffer> buffer(size_t size, VkBufferUsageFlags usage,
+                                   const std::function<void(uint8_t *)> &write);
+    // Large sampled images whose last use has completed, reused by image() for
+    // an identical description (a per-frame screen overlay of the same size).
+    std::vector<std::unique_ptr<Image>> reusableImages;
+    void recycle(std::unique_ptr<Image> image);
     std::unique_ptr<Buffer> geometryBuffer(const void *data, size_t size, VkBufferUsageFlags usage,
                                            VkCommandBuffer command);
     std::unique_ptr<Image> image(uint32_t width, uint32_t height, uint32_t levels, VkFormat format,

@@ -340,7 +340,7 @@ int main(int argc, char **argv) {
   };
   for (unsigned i = 0; i < options.churn && status == REMIXAPI_ERROR_CODE_SUCCESS && !materials.empty(); ++i)
     churnMesh(i, 0);
-  std::vector<double> uploadPass, gpuFrame;
+  std::vector<double> uploadPass, assemblyPass, gpuFrame;
   uint64_t lastPassFrame = 0;
   // Fixed layout: static cubes on a grid with foliage clumps between them.
   struct Placement {
@@ -485,11 +485,15 @@ int main(int argc, char **argv) {
           passes.frame != lastPassFrame) {
         lastPassFrame = passes.frame;
         gpuFrame.push_back(passes.frameMilliseconds);
-        double upload = 0;
-        for (uint32_t i = 0; i < passes.passCount && i < REMIXAPI_GPU_PASS_TIMING_CAPACITY_EXT; ++i)
+        double upload = 0, assembly = 0;
+        for (uint32_t i = 0; i < passes.passCount && i < REMIXAPI_GPU_PASS_TIMING_CAPACITY_EXT; ++i) {
           if (std::strcmp(passes.passes[i].name, "Scene uploads (geometry, textures)") == 0)
             upload += passes.passes[i].selfMilliseconds;
+          if (std::strcmp(passes.passes[i].name, "Delta vertex assembly") == 0)
+            assembly += passes.passes[i].selfMilliseconds;
+        }
         uploadPass.push_back(upload);
+        assemblyPass.push_back(assembly);
       }
       if (options.stats && tracing && trace.gpuTimingsAvailable) {
         gpuTrace.push_back(trace.gpuTraceMilliseconds);
@@ -518,7 +522,8 @@ int main(int argc, char **argv) {
   if (tracing)
     std::printf("gpu_ms trace=%.3f build=%.3f\n", summarize(gpuTrace).mean, summarize(gpuBuild).mean);
   if (!gpuFrame.empty())
-    std::printf("gpu_pass_ms frame=%.3f uploads=%.3f (churn=%u x %zu triangles)\n", summarize(gpuFrame).mean,
-                summarize(uploadPass).mean, options.churn, churnIndices.size() / 3);
+    std::printf("gpu_pass_ms frame=%.3f uploads=%.3f assembly=%.3f (churn=%u x %zu triangles)\n",
+                summarize(gpuFrame).mean, summarize(uploadPass).mean, summarize(assemblyPass).mean, options.churn,
+                churnIndices.size() / 3);
   return 0;
 }

@@ -443,14 +443,22 @@ namespace remix {
         normals[v * 3 + 1] = vertices[v].uv[2];
         normals[v * 3 + 2] = vertices[v].uv[3];
       }
-      const VkDeviceSize offset = stage(normals.data(), normals.size() * sizeof(float));
+      // Copied into device memory like the positions: the assembly shader then
+      // reads them locally instead of across the host link.
+      const VkDeviceSize bytes = normals.size() * sizeof(float);
+      const VkDeviceSize offset = stage(normals.data(), size_t(bytes));
+      std::shared_ptr<Buffer> uploaded =
+          buffer(bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false, true);
+      const VkBufferCopy copy = {.srcOffset = offset, .size = bytes};
+      vkCmdCopyBuffer(command, staging.buffer->handle, uploaded->handle, 1, &copy);
       auto target = buffer(vertices.size() * sizeof(TraceVertex), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false, true);
       assembleJobs.push_back({.positions = view.geometry->input->address + data.vertexOffsets[i],
-                              .normals = staging.buffer->address + offset,
+                              .normals = uploaded->address,
                               .previous = previousVertices[i]->address,
                               .target = target->address,
                               .count = uint32_t(vertices.size())});
       view.vertices.push_back(std::move(target));
+      retiredBuffers.push_back(std::move(uploaded)); // Read by this frame's assembly.
     }
     for (auto &vertices : previousVertices)
       retiredBuffers.push_back(std::move(vertices));

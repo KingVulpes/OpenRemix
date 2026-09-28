@@ -1,5 +1,5 @@
 // Repeatable renderer benchmark built only on the public SDK.
-//   remix-bench LIBRARY FRAMES BACKEND [grid=N] [foliage=N] [textures=N] [size=N] [format=bc|rgba] [stats=0|1] [work=MS] [async=0|1]
+//   remix-bench LIBRARY FRAMES BACKEND [grid=N] [foliage=N] [textures=N] [size=N] [format=bc|rgba] [stats=0|1] [work=MS] [async=0|1] [churn=N] [churnTris=N]
 // Draws a grid of one-sided textured cubes and double-sided alpha-tested
 // foliage cards, then reports texture creation, first frame and steady Present
 // timings. Measurement starts once the requested backend reports GPU timings
@@ -32,6 +32,9 @@ namespace {
     unsigned work = 0;
     // rtx.native.asyncPresent: render on a separate thread while the next frame is built.
     bool async = false;
+    // Meshes re-created every frame under their hash with new vertices (MESH_UPDATE_EXT
+    // with motion, as a capture host updates animated geometry), churnTris triangles each.
+    unsigned churn = 0, churnTris = 5000;
   };
 
   uint16_t rgb565(unsigned r, unsigned g, unsigned b) { return uint16_t((r >> 3) << 11 | (g >> 2) << 5 | b >> 3); }
@@ -153,7 +156,7 @@ namespace {
 
 int main(int argc, char **argv) {
   if (argc < 4) {
-    std::fprintf(stderr, "usage: %s LIBRARY FRAMES BACKEND [grid=N] [foliage=N] [textures=N] [size=N] [format=bc|rgba] [stats=0|1] [work=MS] [async=0|1]\n", argv[0]);
+    std::fprintf(stderr, "usage: %s LIBRARY FRAMES BACKEND [grid=N] [foliage=N] [textures=N] [size=N] [format=bc|rgba] [stats=0|1] [work=MS] [async=0|1] [churn=N] [churnTris=N]\n", argv[0]);
     return 2;
   }
   Options options;
@@ -170,6 +173,8 @@ int main(int argc, char **argv) {
     else if (key == "stats") options.stats = value != "0";
     else if (key == "work") options.work = number;
     else if (key == "async") options.async = value != "0";
+    else if (key == "churn") options.churn = number;
+    else if (key == "churnTris") options.churnTris = std::max(2u, number);
     else {
       std::fprintf(stderr, "unknown option %s\n", arg.c_str());
       return 2;
@@ -203,6 +208,10 @@ int main(int argc, char **argv) {
   using Performance = remixapi_ErrorCode(REMIXAPI_CALL *)(remixapi_FramePerformanceEXT *);
   const auto tracingStatistics = reinterpret_cast<Tracing>(dlsym(library, "remixapi_GetTracingStatisticsEXT"));
   const auto framePerformance = reinterpret_cast<Performance>(dlsym(library, "remixapi_GetFramePerformanceEXT"));
+  using PassTimings = remixapi_ErrorCode(REMIXAPI_CALL *)(remixapi_GpuPassTimingsEXT *);
+  const auto passTimings = reinterpret_cast<PassTimings>(dlsym(library, "remixapi_GetGpuPassTimingsEXT"));
+  if (passTimings)
+    check(api.SetConfigVariable("rtx.native.gpuPassTimers", "1"), "gpuPassTimers");
   if (!tracingStatistics || !framePerformance)
     check(REMIXAPI_ERROR_CODE_GENERAL_FAILURE, "statistics exports");
 
@@ -285,6 +294,54 @@ int main(int argc, char **argv) {
     check(api.CreateLight(&light, &sun), "CreateLight");
   }
 
+  // Churn: a grid sheet per mesh, re-created each frame with displaced vertices.
+  const unsigned churnSide = unsigned(std::ceil(std::sqrt(options.churnTris / 2.0)));
+  std::vector<uint32_t> churnIndices;
+  for (unsigned y = 0; y < churnSide; ++y)
+    for (unsigned x = 0; x < churnSide; ++x) {
+      const uint32_t a = y * (churnSide + 1) + x, b = a + 1, c = a + churnSide + 1, d = c + 1;
+      churnIndices.insert(churnIndices.end(), {a, c, b, b, c, d});
+    }
+  std::vector<remixapi_HardcodedVertex> churnVertices((churnSide + 1) * (churnSide + 1));
+  std::vector<remixapi_MeshHandle> churnMeshes(options.churn);
+  auto churnMesh = [&](unsigned index, unsigned frame) {
+    for (unsigned y = 0; y <= churnSide; ++y)
+      for (unsigned x = 0; x <= churnSide; ++x) {
+        auto &v = churnVertices[y * (churnSide + 1) + x];
+        v = {};
+        v.position[0] = float(x) / churnSide * 2 - 1;
+        v.position[2] = float(y) / churnSide * 2 - 1;
+        v.position[1] = .1f * std::sin(frame * .1f + x * .3f + y * .2f + index);
+        v.normal[1] = 1;
+        v.texcoord[0] = float(x) / churnSide;
+        v.texcoord[1] = float(y) / churnSide;
+        v.color = 0xffffffffu;
+      }
+    remixapi_MeshInfoSurfaceTriangles surface = {};
+    surface.vertices_values = churnVertices.data();
+    surface.vertices_count = churnVertices.size();
+    surface.indices_values = churnIndices.data();
+    surface.indices_count = churnIndices.size();
+    surface.material = materials.front();
+    remixapi_MeshInfoMotionEXT motion = {};
+    motion.sType = REMIXAPI_STRUCT_TYPE_MESH_MOTION_EXT;
+    motion.enabled = 1;
+    remixapi_MeshInfoUpdateEXT update = {};
+    update.sType = REMIXAPI_STRUCT_TYPE_MESH_UPDATE_EXT;
+    update.enabled = 1;
+    update.pNext = &motion;
+    remixapi_MeshInfo mesh = {};
+    mesh.sType = REMIXAPI_STRUCT_TYPE_MESH_INFO;
+    mesh.pNext = &update;
+    mesh.hash = 0x5000 + index;
+    mesh.surfaces_count = 1;
+    mesh.surfaces_values = &surface;
+    return check(api.CreateMesh(&mesh, &churnMeshes[index]), "CreateMesh churn");
+  };
+  for (unsigned i = 0; i < options.churn && status == REMIXAPI_ERROR_CODE_SUCCESS && !materials.empty(); ++i)
+    churnMesh(i, 0);
+  std::vector<double> uploadPass, gpuFrame;
+  uint64_t lastPassFrame = 0;
   // Fixed layout: static cubes on a grid with foliage clumps between them.
   struct Placement {
     remixapi_MeshHandle mesh;
@@ -371,6 +428,25 @@ int main(int argc, char **argv) {
       instance.doubleSided = placements[i].doubleSided;
       check(api.DrawInstance(&instance), "DrawInstance");
     }
+    for (unsigned i = 0; i < options.churn && status == REMIXAPI_ERROR_CODE_SUCCESS; ++i) {
+      churnMesh(i, frame);
+      remixapi_InstanceIdentityEXT identity = {};
+      identity.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_IDENTITY_EXT;
+      identity.instanceId = 0x100000 + i;
+      identity.classification = REMIXAPI_INSTANCE_DYNAMIC_EXT;
+      identity.rasterVisible = true;
+      remixapi_InstanceInfo instance = {};
+      instance.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO;
+      instance.pNext = &identity;
+      instance.mesh = churnMeshes[i];
+      for (int axis = 0; axis < 3; ++axis)
+        instance.transform.matrix[axis][axis] = 1;
+      instance.transform.matrix[0][3] = float(i % 16) * 2.5f - 20;
+      instance.transform.matrix[1][3] = 1;
+      instance.transform.matrix[2][3] = 6 + float(i / 16) * 2.5f;
+      instance.doubleSided = 1;
+      check(api.DrawInstance(&instance), "DrawInstance churn");
+    }
     const auto presentStart = Clock::now();
     check(api.Present(nullptr), "Present");
     const auto now = Clock::now();
@@ -402,6 +478,19 @@ int main(int argc, char **argv) {
                                perf.acquireMilliseconds, perf.submitMilliseconds, perf.queuePresentMilliseconds};
       for (unsigned i = 0; i < 9; ++i)
         phases[i].push_back(values[i]);
+      static remixapi_GpuPassTimingsEXT passes;
+      passes = {};
+      passes.structSize = sizeof(passes);
+      if (passTimings && passTimings(&passes) == REMIXAPI_ERROR_CODE_SUCCESS && passes.available &&
+          passes.frame != lastPassFrame) {
+        lastPassFrame = passes.frame;
+        gpuFrame.push_back(passes.frameMilliseconds);
+        double upload = 0;
+        for (uint32_t i = 0; i < passes.passCount && i < REMIXAPI_GPU_PASS_TIMING_CAPACITY_EXT; ++i)
+          if (std::strcmp(passes.passes[i].name, "Scene uploads (geometry, textures)") == 0)
+            upload += passes.passes[i].selfMilliseconds;
+        uploadPass.push_back(upload);
+      }
       if (options.stats && tracing && trace.gpuTimingsAvailable) {
         gpuTrace.push_back(trace.gpuTraceMilliseconds);
         gpuBuild.push_back(trace.gpuBuildMilliseconds);
@@ -428,5 +517,8 @@ int main(int argc, char **argv) {
   std::printf("\n");
   if (tracing)
     std::printf("gpu_ms trace=%.3f build=%.3f\n", summarize(gpuTrace).mean, summarize(gpuBuild).mean);
+  if (!gpuFrame.empty())
+    std::printf("gpu_pass_ms frame=%.3f uploads=%.3f (churn=%u x %zu triangles)\n", summarize(gpuFrame).mean,
+                summarize(uploadPass).mean, options.churn, churnIndices.size() / 3);
   return 0;
 }

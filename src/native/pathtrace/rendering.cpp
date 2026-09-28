@@ -105,6 +105,7 @@ namespace remix {
     history.setFallback(&statics);
     // Geometry and texture uploads are recorded while the tables are built.
     gpu::GpuScope uploadTime(command, "Scene uploads (geometry, textures)");
+    assembleJobs.clear(); // Only this command buffer's copies feed its jobs.
     TableViews views{this, command};
     const trace::FrameTables<TableViews>::Inputs tableInputs{prepared,
                                                              &statics,
@@ -221,8 +222,14 @@ namespace remix {
         ++it;
     }
     lap(breakdown.retireMilliseconds);
-    // Geometry uploads feed both AS construction and BDA reads in the compute shader.
-    barrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+    {
+      gpu::GpuScope scope(command, "Delta vertex assembly");
+      recordAssemble(command);
+    }
+    // Geometry uploads (and delta-assembled shading vertices) feed both AS
+    // construction and BDA reads in the compute shader.
+    barrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT,
             buildStage | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
             asRead | VK_ACCESS_SHADER_READ_BIT);

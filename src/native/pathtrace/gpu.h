@@ -389,6 +389,7 @@ namespace remix {
       std::vector<GeometryGroup> groups;
       std::shared_ptr<Accel> accel;
       uint64_t fingerprint = 0, revision = 0;
+      uint64_t topologyHash = 0; // GeometryScratch::topologyHash of input
       float diagonal = 0;
       std::array<float, 3> buildLow{}, buildHigh{};
       uint32_t refits = 0;
@@ -402,6 +403,7 @@ namespace remix {
       std::shared_ptr<Geometry> geometry;
       std::vector<std::shared_ptr<Buffer>> vertices;
       std::vector<scene::Matrix> bones;
+      std::vector<uint64_t> attributeHashes; // GeometryScratch::attributeHashes of vertices
       uint64_t fingerprint = 0, lastUse = 0;
       uint64_t contentDigest = 0; // REMIX_FRAME_DIGEST only: hash of the uploaded data.
     };
@@ -414,13 +416,18 @@ namespace remix {
       std::vector<uint32_t> counts, vertexCounts;
       std::vector<GeometryGroup> groups;
       std::vector<uint64_t> shadingHashes; // scene::fastHash of each shading buffer
+      // Per surface: texture coordinates and colors. With topologyHash (every
+      // content byte except positions), they decide a delta upload.
+      std::vector<uint64_t> attributeHashes;
       uint64_t contentHash = 0;            // scene::fastHash of content
+      uint64_t topologyHash = 0;
       float low[3] = {}, high[3] = {};
       size_t bytes() const {
         size_t size = content.capacity() + shading.capacity() * sizeof(std::vector<TraceVertex>) +
                       (vertexOffsets.capacity() + indexOffsets.capacity()) * sizeof(VkDeviceSize) +
                       (counts.capacity() + vertexCounts.capacity()) * sizeof(uint32_t) +
-                      groups.capacity() * sizeof(GeometryGroup) + shadingHashes.capacity() * sizeof(uint64_t);
+                      groups.capacity() * sizeof(GeometryGroup) +
+                      (shadingHashes.capacity() + attributeHashes.capacity()) * sizeof(uint64_t);
         for (const auto &vertices : shading)
           size += vertices.capacity() * sizeof(TraceVertex);
         return size;
@@ -596,6 +603,20 @@ namespace remix {
     void recordSharc(VkCommandBuffer command, const TraceOptions &options);
     void finishSharc(VkCommandBuffer command);
     void sharcPipeline(trace::Stage stage, VkPipelineLayout pipelineLayout, VkPipeline &out);
+    // Delta uploads (commitMesh): shading vertices assembled on the GPU from new
+    // positions and normals and the previous version's texture coordinates and
+    // colors. Jobs run after this frame's copies, before the BLAS builds.
+    struct AssembleJob {
+      VkDeviceAddress positions = 0, normals = 0, previous = 0, target = 0;
+      uint32_t count = 0, reserved = 0;
+    };
+    static_assert(sizeof(AssembleJob) == 40);
+    VkPipelineLayout assembleLayout = VK_NULL_HANDLE;
+    VkPipeline assemble = VK_NULL_HANDLE;
+    bool assembleFailed = false; // Creation failed: always upload in full.
+    std::vector<AssembleJob> assembleJobs;
+    void createAssemblePipeline();
+    void recordAssemble(VkCommandBuffer command);
     // A lighting pipeline compiled with guidance off (its variants are lazy).
     struct LightingRequest {
       trace::Stage stage;

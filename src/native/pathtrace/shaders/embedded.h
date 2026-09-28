@@ -40,6 +40,7 @@ enum class Stage : uint32_t {
   splitLocalDirect,
   indirectTemporal,
   sharcIndirectTemporal,
+  vertexAssemble,
   Count
 };
 struct EmbeddedShader {
@@ -81,5 +82,6 @@ inline constexpr EmbeddedShader embeddedShaders[] = {
   {10165244u, 289468u, 1597040u}, // splitLocalDirect
   {10454712u, 241208u, 1339564u}, // indirectTemporal
   {10695920u, 244000u, 1352372u}, // sharcIndirectTemporal
+  {10939920u, 928u, 2984u}, // vertexAssemble
 };
 }

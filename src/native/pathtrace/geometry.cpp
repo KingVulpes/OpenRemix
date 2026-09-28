@@ -238,14 +238,21 @@ namespace remix {
     }
     data.topologyHash = chainFingerprint(scene::fastHash(content.data() + at, content.size() - at), topology);
     data.attributeHashes.clear();
-    std::vector<float> attributes;
+    data.normalHashes.clear();
+    std::vector<float> attributes, normals;
     for (const auto &vertices : shading) {
       attributes.resize(vertices.size() * 6);
+      normals.resize(vertices.size() * 3);
       for (size_t i = 0; i < vertices.size(); ++i) {
         std::copy_n(vertices[i].uv, 2, attributes.data() + i * 6);
         std::copy_n(vertices[i].color, 4, attributes.data() + i * 6 + 2);
+        // Normals live in the shading vertex padding (above).
+        normals[i * 3] = vertices[i].position[3];
+        normals[i * 3 + 1] = vertices[i].uv[2];
+        normals[i * 3 + 2] = vertices[i].uv[3];
       }
       data.attributeHashes.push_back(scene::fastHash(attributes.data(), attributes.size() * sizeof(float)));
+      data.normalHashes.push_back(scene::fastHash(normals.data(), normals.size() * sizeof(float)));
     }
   }
 
@@ -436,6 +443,17 @@ namespace remix {
                                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT));
         continue;
       }
+      auto target = buffer(vertices.size() * sizeof(TraceVertex), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false, true);
+      // Deformations that keep their normals (e.g. CPU wind displacement) send
+      // positions only; assembly keeps the previous version's normals.
+      if (i < view.normalHashes.size() && view.normalHashes[i] == data.normalHashes[i]) {
+        assembleJobs.push_back({.positions = view.geometry->input->address + data.vertexOffsets[i],
+                                .previous = previousVertices[i]->address,
+                                .target = target->address,
+                                .count = uint32_t(vertices.size())});
+        view.vertices.push_back(std::move(target));
+        continue;
+      }
       // Normals live in the shading vertex padding (convertMesh).
       normals.resize(vertices.size() * 3);
       for (size_t v = 0; v < vertices.size(); ++v) {
@@ -451,7 +469,6 @@ namespace remix {
           buffer(bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false, true);
       const VkBufferCopy copy = {.srcOffset = offset, .size = bytes};
       vkCmdCopyBuffer(command, staging.buffer->handle, uploaded->handle, 1, &copy);
-      auto target = buffer(vertices.size() * sizeof(TraceVertex), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false, true);
       assembleJobs.push_back({.positions = view.geometry->input->address + data.vertexOffsets[i],
                               .normals = uploaded->address,
                               .previous = previousVertices[i]->address,
@@ -463,6 +480,7 @@ namespace remix {
     for (auto &vertices : previousVertices)
       retiredBuffers.push_back(std::move(vertices));
     view.attributeHashes = data.attributeHashes;
+    view.normalHashes = data.normalHashes;
     if (conversion.previousGeometry)
       retiredGeometry.push_back(std::move(conversion.previousGeometry));
     // Bound the scratch a single large conversion leaves behind.

@@ -1,5 +1,5 @@
 #include "pathtrace/gpu.h"
-#include "pathtrace/shaders/embedded.h"
+#include "pathtrace/shader_code.h"
 #include "runtime/pipelines.h"
 
 namespace remix {
@@ -116,15 +116,13 @@ namespace remix {
       check(vkCreateFramebuffer(device, &fb, nullptr, &primaryFramebuffer[pass]));
 
       VkShaderModule modules[2] = {};
-      const uint32_t *code[] = {trace::gbufferVertShader,
-                                pass ? trace::depthFragShader : trace::gbufferFragShader};
-      const size_t sizes[] = {sizeof(trace::gbufferVertShader),
-                              pass ? sizeof(trace::depthFragShader) : sizeof(trace::gbufferFragShader)};
+      const trace::ShaderCode code[] = {trace::shader(trace::Stage::gbufferVert),
+                                        trace::shader(pass ? trace::Stage::depthFrag : trace::Stage::gbufferFrag)};
       try {
         VkPipelineShaderStageCreateInfo stages[2] = {};
         for (unsigned i = 0; i < 2; ++i) {
           VkShaderModuleCreateInfo info{
-              .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = sizes[i], .pCode = code[i]};
+              .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = code[i].bytes, .pCode = code[i].code};
           check(pipeline::createShaderModule(device, &info, nullptr,
                                              &modules[i]));
           stages[i] = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,

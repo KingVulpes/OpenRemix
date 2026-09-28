@@ -1,5 +1,5 @@
 #include "pathtrace/gpu.h"
-#include "pathtrace/shaders/embedded.h"
+#include "pathtrace/shader_code.h"
 #include "runtime/pipelines.h"
 #include "upscale/ngx.h"
 
@@ -327,11 +327,11 @@ namespace remix {
                                          .pushConstantRangeCount = 1,
                                          .pPushConstantRanges = &push};
     check(pipeline::createPipelineLayout(device, &layout, nullptr, &g.layout));
-    const uint32_t *codes[] = {trace::compShader, trace::vertShader, trace::fragShader};
-    size_t sizes[] = {sizeof(trace::compShader), sizeof(trace::vertShader), sizeof(trace::fragShader)};
+    const trace::ShaderCode codes[] = {trace::shader(trace::Stage::comp), trace::shader(trace::Stage::vert),
+                                       trace::shader(trace::Stage::frag)};
     for (unsigned i = 0; i < 3; ++i) {
       VkShaderModuleCreateInfo info = {
-          .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = sizes[i], .pCode = codes[i]};
+          .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = codes[i].bytes, .pCode = codes[i].code};
       check(
           pipeline::createShaderModule(device, &info, nullptr, &g.shaders[i]));
     }
@@ -354,9 +354,9 @@ namespace remix {
       return;
     // One batch: the raw lighting passes compile concurrently.
     createLightingPipelines({
-        {trace::compShader, sizeof(trace::compShader), layout, &compute},
-        {trace::transparencyShader, sizeof(trace::transparencyShader), layout, &transparencyCompute, false},
-        {trace::singleTransparencyShader, sizeof(trace::singleTransparencyShader), layout,
+        {trace::Stage::comp, layout, &compute},
+        {trace::Stage::transparency, layout, &transparencyCompute, false},
+        {trace::Stage::singleTransparency, layout,
          &singleTransparencyCompute, false},
     });
   }

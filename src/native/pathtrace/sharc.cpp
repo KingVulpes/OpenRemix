@@ -1,15 +1,15 @@
 #include "pathtrace/gpu.h"
-#include "pathtrace/shaders/embedded.h"
+#include "pathtrace/shader_code.h"
 #include "pathtrace/sharc_policy.h"
 #include "runtime/pipelines.h"
+#include <future>
 #include <utility>
 
 namespace remix {
   using namespace trace::detail;
 
-  void PathTracer::Gpu::sharcPipeline(const uint32_t *code, size_t size, VkPipelineLayout pipelineLayout,
-                                      VkPipeline &out) {
-    createLightingPipelines({{code, size, pipelineLayout, &out, &out == &sharc.query || &out == &sharc.temporal,
+  void PathTracer::Gpu::sharcPipeline(trace::Stage stage, VkPipelineLayout pipelineLayout, VkPipeline &out) {
+    createLightingPipelines({{stage, pipelineLayout, &out, &out == &sharc.query || &out == &sharc.temporal,
                               &out != &sharc.update}});
   }
 
@@ -25,6 +25,13 @@ namespace remix {
     const VkBool32 guidance = VK_FALSE;
     const VkSpecializationMapEntry guideEntry{1, 0, sizeof(guidance)};
     const VkSpecializationInfo noGuiding{1, &guideEntry, sizeof(guidance), &guidance};
+    // Embedded stages decompress on first use; decode the batch concurrently.
+    std::vector<std::future<trace::ShaderCode>> decoding;
+    for (const auto &request : requests)
+      decoding.push_back(std::async(std::launch::async, trace::shader, request.stage));
+    std::vector<trace::ShaderCode> codes;
+    for (auto &code : decoding)
+      codes.push_back(code.get());
     std::vector<VkShaderModule> modules(requests.size());
     std::vector<VkComputePipelineCreateInfo> infos(requests.size());
     std::vector<VkPipeline> pipelines(requests.size());
@@ -39,7 +46,7 @@ namespace remix {
     } release{device, modules};
     for (size_t i = 0; i < requests.size(); ++i) {
       VkShaderModuleCreateInfo ci{
-          .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = requests[i].size, .pCode = requests[i].code};
+          .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = codes[i].bytes, .pCode = codes[i].code};
       check(pipeline::createShaderModule(device, &ci, nullptr, &modules[i]));
       infos[i] = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
                   .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -61,7 +68,7 @@ namespace remix {
       if (!pipelines[i])
         continue;
       auto &entry = lightingPipelines[pipelines[i]];
-      entry = {request.code, request.size, request.layout};
+      entry = {codes[i].code, codes[i].bytes, request.layout};
       entry.supportsGuiding = request.supportsGuiding;
       entry.supportsRoulette = request.supportsRoulette;
     }
@@ -189,37 +196,37 @@ namespace remix {
       }
       // One batch: the SHARC passes compile concurrently.
       std::vector<LightingRequest> requests;
-      auto add = [&](const uint32_t *code, size_t size, VkPipelineLayout pipelineLayout, VkPipeline &out) {
-        requests.push_back({code, size, pipelineLayout, &out, &out == &sharc.query || &out == &sharc.temporal,
+      auto add = [&](trace::Stage stage, VkPipelineLayout pipelineLayout, VkPipeline &out) {
+        requests.push_back({stage, pipelineLayout, &out, &out == &sharc.query || &out == &sharc.temporal,
                             &out != &sharc.update});
       };
-      add(trace::sharcUpdateShader, sizeof(trace::sharcUpdateShader), layout, sharc.update);
-      add(trace::sharcResolveShader, sizeof(trace::sharcResolveShader), layout, sharc.resolve);
+      add(trace::Stage::sharcUpdate, layout, sharc.update);
+      add(trace::Stage::sharcResolve, layout, sharc.resolve);
       if (!denoiser)
-        add(trace::sharcQueryShader, sizeof(trace::sharcQueryShader), layout, sharc.query);
+        add(trace::Stage::sharcQuery, layout, sharc.query);
       if (!denoiser)
-        add(trace::sharcTransparencyShader, sizeof(trace::sharcTransparencyShader), layout, sharc.transparency);
-      add(trace::sharcSingleTransparencyShader, sizeof(trace::sharcSingleTransparencyShader), layout,
+        add(trace::Stage::sharcTransparency, layout, sharc.transparency);
+      add(trace::Stage::sharcSingleTransparency, layout,
           sharc.singleTransparency);
       if (denoiser) {
         if (postSplit && postSigma)
-          add(trace::sharcSplitLocalSigmaTemporalShader, sizeof(trace::sharcSplitLocalSigmaTemporalShader), temporalLayout, sharc.temporal);
+          add(trace::Stage::sharcSplitLocalSigmaTemporal, temporalLayout, sharc.temporal);
         else if (postSplit)
-          add(trace::sharcSplitLocalTemporalShader, sizeof(trace::sharcSplitLocalTemporalShader), temporalLayout, sharc.temporal);
+          add(trace::Stage::sharcSplitLocalTemporal, temporalLayout, sharc.temporal);
         else if (postLocal && postSigma)
-          add(trace::sharcLocalSigmaTemporalShader, sizeof(trace::sharcLocalSigmaTemporalShader), temporalLayout, sharc.temporal);
+          add(trace::Stage::sharcLocalSigmaTemporal, temporalLayout, sharc.temporal);
         else if (postLocal)
-          add(trace::sharcLocalTemporalShader, sizeof(trace::sharcLocalTemporalShader), temporalLayout, sharc.temporal);
+          add(trace::Stage::sharcLocalTemporal, temporalLayout, sharc.temporal);
         else if (postSigma)
-          add(trace::sharcSigmaTemporalShader, sizeof(trace::sharcSigmaTemporalShader), temporalLayout, sharc.temporal);
+          add(trace::Stage::sharcSigmaTemporal, temporalLayout, sharc.temporal);
         else
-          add(trace::sharcTemporalShader, sizeof(trace::sharcTemporalShader), temporalLayout, sharc.temporal);
-        add(trace::sharcTemporalTransparencyShader, sizeof(trace::sharcTemporalTransparencyShader), temporalLayout,
+          add(trace::Stage::sharcTemporal, temporalLayout, sharc.temporal);
+        add(trace::Stage::sharcTemporalTransparency, temporalLayout,
             sharc.temporalTransparency);
-        add(trace::sharcSingleTemporalTransparencyShader, sizeof(trace::sharcSingleTemporalTransparencyShader),
+        add(trace::Stage::sharcSingleTemporalTransparency,
             temporalLayout, sharc.singleTemporalTransparency);
         if (postReblur)
-          add(trace::sharcConfidenceShader, sizeof(trace::sharcConfidenceShader), temporalLayout, sharc.confidence);
+          add(trace::Stage::sharcConfidence, temporalLayout, sharc.confidence);
       }
       createLightingPipelines(requests);
       if (!sharc.timestamps && timestamps) {

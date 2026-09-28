@@ -2,6 +2,7 @@
 #include "pathtrace/buffer_cache.h"
 #include "pathtrace/frame_tables.h"
 #include "pathtrace/renderer.h"
+#include "pathtrace/shader_code.h"
 #include "pathtrace/tlas_policy.h"
 #include "platform/gpu_timers.h"
 #include "platform/timing.h"
@@ -594,17 +595,16 @@ namespace remix {
                         const std::vector<uint8_t> &dynamicGeometry, bool hasReceivers);
     void recordSharc(VkCommandBuffer command, const TraceOptions &options);
     void finishSharc(VkCommandBuffer command);
-    void sharcPipeline(const uint32_t *code, size_t size, VkPipelineLayout pipelineLayout, VkPipeline &out);
+    void sharcPipeline(trace::Stage stage, VkPipelineLayout pipelineLayout, VkPipeline &out);
     // A lighting pipeline compiled with guidance off (its variants are lazy).
     struct LightingRequest {
-      const uint32_t *code = nullptr;
-      size_t size = 0;
+      trace::Stage stage;
       VkPipelineLayout layout = VK_NULL_HANDLE;
       VkPipeline *out = nullptr;
       bool supportsGuiding = true, supportsRoulette = true;
     };
-    // Compiles the requests whose pipeline does not exist yet as one batch,
-    // concurrently on the compiler workers, and registers each as a lighting
+    // Decompresses and compiles the requests whose pipeline does not exist yet
+    // as one batch, concurrently on the compiler workers, and registers each as a lighting
     // pipeline. Throws a failure after every request has completed. While
     // deferLighting is set (configuration preparation) it only schedules the
     // batch; finishLightingPipelines() then awaits every scheduled batch, so

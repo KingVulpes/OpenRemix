@@ -28,6 +28,10 @@ source/cache under `subprojects`; `SDL3.wrap` is tracked.
 Readable shaders and generated SPIR-V are co-located in each renderer's `shaders` folder.
 Normal builds need no shader compiler. Use `python3 scripts/shaders/generate.py all --check`
 and `--validate` to check source/binary agreement and SPIR-V validity.
+Path-tracing SPIR-V is optimized with `spirv-opt -O` (inlined modules compile about twice as
+fast on NVIDIA) and stored as XZ streams in `pathtrace/shaders/embedded.bin`; `embedded.h`
+indexes them and `trace::shader()` decompresses a stage on first use (vendored XZ Embedded).
+Regeneration needs glslang and SPIRV-Tools and compiles every stage concurrently.
 Standalone driver probes in `tools/vulkan-probes` require `-Dvulkan_probes=true` and shader tools.
 Experimental MoltenVK tooling in `tools/moltenvk` remains separate from SDK-based platform builds.
 

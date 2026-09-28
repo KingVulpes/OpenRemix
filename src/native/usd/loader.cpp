@@ -1,5 +1,6 @@
 #include "usd/loader.h"
 #include "scene/images.h"
+#include "platform/utf8_path.h"
 #include <charconv>
 #include <cmath>
 #include <filesystem>
@@ -251,7 +252,7 @@ namespace remix::usd {
             return;
           try {
             auto texture = std::make_shared<scene::Texture>();
-            texture->pixels = scene::loadTexture(std::filesystem::u8path(path));
+            texture->pixels = scene::loadTexture(utf8Path(path));
             texture->fingerprint();
             result.textures.emplace(path, std::move(texture));
           } catch (...) {

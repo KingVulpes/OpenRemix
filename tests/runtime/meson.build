@@ -48,7 +48,7 @@ test('Memory pressure levels and host release', memory_pressure_test)
 
 pipeline_test = executable('remix-pipeline-test', 'pipelines.cpp',
   include_directories : native_include, link_with : pipeline_library,
-  dependencies : [vulkan_dep, threads_dep, filesystem_dep])
+  dependencies : [vulkan_dep, threads_dep, filesystem_dep], cpp_args : test_cpp_args)
 test('Pipeline preparation, persistence and shutdown', pipeline_test, args : ['@CONFIG_DIR@'], timeout : 30)
 
 if get_option('gpu_tests') and system == 'linux'

@@ -13,6 +13,7 @@ void require(bool value, const char *message) {
 }
 int main(int argc, char **argv) {
   try {
+    require(argc == 2, "supply the fixture directory");
     std::filesystem::path fixture = argv[1];
     auto capture = usd::load({(fixture / "capture.usda").string()});
     require(!capture.scene["meshes"].empty(), "capture geometry");

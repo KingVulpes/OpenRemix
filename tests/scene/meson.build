@@ -12,16 +12,16 @@ refresh_test = executable('remix-mesh-refresh-test', 'refresh.cpp',
   include_directories : test_includes, link_with : scene_library)
 test('Mesh refresh lineage, retained replay and correspondence', refresh_test)
 temporal_test = executable('remix-temporal-test', 'temporal.cpp',
-  include_directories : test_includes, link_with : scene_library)
+  include_directories : test_includes, link_with : scene_library, cpp_args : test_cpp_args)
 test('Temporal submitted-frame ownership and correspondence', temporal_test)
 light_bvh_test = executable('remix-light-bvh-test', 'light_bvh.cpp',
   include_directories : test_includes, link_with : scene_library)
 test('Analytic lights and importance hierarchy', light_bvh_test)
 emission_test = executable('remix-emission-test', 'emission.cpp',
-  include_directories : test_includes, link_with : scene_library)
+  include_directories : test_includes, link_with : scene_library, cpp_args : test_cpp_args)
 test('Emission reduction and area light ownership', emission_test)
 trace_frame_test = executable('remix-trace-frame-test', 'trace_frame.cpp',
-  include_directories : test_includes, link_with : scene_library)
+  include_directories : test_includes, link_with : scene_library, cpp_args : test_cpp_args)
 test('CPU tracing preparation and snapshot ownership', trace_frame_test)
 pbr_test = executable('remix-pbr-resource-test', 'pbr.cpp',
   include_directories : test_includes, link_with : scene_library)
@@ -30,7 +30,7 @@ materials_ext_test = executable('remix-material-extensions-test', 'materials_ext
   include_directories : test_includes, link_with : scene_library)
 test('Spec/gloss, albedo tint and material override', materials_ext_test)
 opacity_test = executable('remix-opacity-test', 'opacity.cpp',
-  include_directories : test_includes, link_with : scene_library)
+  include_directories : test_includes, link_with : scene_library, cpp_args : test_cpp_args)
 test('Opaque traversal atlas coverage and snapshot ownership', opacity_test)
 compressed_test = executable('remix-compressed-texture-test', 'compressed.cpp',
   include_directories : test_includes, link_with : scene_library)

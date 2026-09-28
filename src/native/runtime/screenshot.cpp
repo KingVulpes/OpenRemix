@@ -1,4 +1,5 @@
 #include "runtime/screenshot.h"
+#include "platform/utf8_path.h"
 #include <SDL3/SDL.h>
 #include <filesystem>
 #include <fstream>
@@ -11,11 +12,7 @@
 
 namespace remix {
   namespace {
-    // u8path also works with the GCC 8 standard library used by the glibc 2.28 build.
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-    std::filesystem::path nativePath(const char *path) { return std::filesystem::u8path(path); }
-#pragma clang diagnostic pop
+    std::filesystem::path nativePath(const char *path) { return utf8Path(path); }
     void check(VkResult result) {
       if (result != VK_SUCCESS)
         throw result;

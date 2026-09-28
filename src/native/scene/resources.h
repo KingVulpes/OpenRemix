@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "scene/free_camera.h"
+#include "platform/utf8_path.h"
 
 namespace remix {
 
@@ -44,7 +45,7 @@ namespace remix {
     }
     void invalidateTexturePaths() { m_paths.clear(); }
     void cacheTexturePath(const std::string &path, const std::shared_ptr<scene::Texture> &texture) {
-      m_paths[std::filesystem::absolute(std::filesystem::u8path(path)).lexically_normal()] = texture;
+      m_paths[std::filesystem::absolute(utf8Path(path)).lexically_normal()] = texture;
     }
     void createMaterial(const remixapi_MaterialInfo &info, remixapi_MaterialHandle &handle);
     void setMaterialSourceHash(remixapi_MaterialHandle handle, uint64_t hash) {

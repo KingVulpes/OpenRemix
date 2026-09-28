@@ -1,5 +1,6 @@
 #include "runtime/pipelines.h"
 #include "runtime/pipeline_cache.h"
+#include "platform/utf8_path.h"
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
@@ -338,7 +339,7 @@ Service::Service(VkDevice device, const VkPhysicalDeviceProperties &p,
   const char *directory = std::getenv("REMIX_CONFIG_DIR");
   const auto configDirectory =
       directory && *directory
-          ? std::filesystem::u8path(directory)
+          ? utf8Path(directory)
           : (directoryError ? std::filesystem::path(".") : workingDirectory) /
                 "openremix";
   g.path = configDirectory / "cache" / "vulkan" /

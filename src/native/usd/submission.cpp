@@ -2,6 +2,7 @@
 #include "usd/alpha_state.h"
 #include "usd/mods.h"
 #include "usd/render_categories.h"
+#include "platform/utf8_path.h"
 #include <algorithm>
 #include <cmath>
 namespace remix::usd {
@@ -66,7 +67,7 @@ namespace remix::usd {
     }
 #ifdef _WIN32
     using NativePath = std::wstring;
-    NativePath native_path(const std::string &value) { return std::filesystem::u8path(value).wstring(); }
+    NativePath native_path(const std::string &value) { return utf8Path(value).wstring(); }
 #else
     using NativePath = std::string;
     NativePath native_path(const std::string &value) { return value; }

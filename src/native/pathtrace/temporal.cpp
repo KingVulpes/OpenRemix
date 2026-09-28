@@ -191,27 +191,10 @@ namespace remix {
                                       .pSetLayouts = layouts};
         check(pipeline::createPipelineLayout(device, &li, nullptr,
                                              &temporalLayout));
+        // One batch: the temporal lighting passes compile concurrently.
+        std::vector<LightingRequest> requests;
         auto make = [&](const uint32_t *code, size_t size, VkPipeline &out) {
-          VkShaderModuleCreateInfo ci{
-              .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = size, .pCode = code};
-          VkShaderModule shader{};
-          check(pipeline::createShaderModule(device, &ci, nullptr, &shader));
-          // Compile ordinary local lighting first; guidance is a lazy variant.
-          const VkBool32 guidance = VK_FALSE;
-          const VkSpecializationMapEntry guideEntry{1, 0, sizeof(guidance)};
-          const VkSpecializationInfo noGuiding{1, &guideEntry, sizeof(guidance), &guidance};
-          VkComputePipelineCreateInfo pi{.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-                                         .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                                   .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-                                                   .module = shader,
-                                                   .pName = "main", .pSpecializationInfo = &noGuiding},
-                                         .layout = temporalLayout};
-          auto result = pipeline::createComputePipelines(device, VK_NULL_HANDLE,
-                                                         1, &pi, nullptr, &out);
-          pipeline::destroyShaderModule(device, shader, nullptr);
-          check(result);
-          lightingPipelines[out] = {code, size, temporalLayout};
-          lightingPipelines[out].supportsGuiding = &out == &temporalCompute || &out == &splitDirectCompute;
+          requests.push_back({code, size, temporalLayout, &out, &out == &temporalCompute || &out == &splitDirectCompute});
         };
         if (postSplit && postSigma)
           make(trace::splitLocalSigmaTemporalShader, sizeof(trace::splitLocalSigmaTemporalShader), temporalCompute);
@@ -234,6 +217,7 @@ namespace remix {
           make(trace::splitLocalDirectShader, sizeof(trace::splitLocalDirectShader), splitDirectCompute);
         if (reblur)
           make(trace::confidenceShader, sizeof(trace::confidenceShader), confidenceCompute);
+        createLightingPipelines(requests);
         denoiser = std::move(next);
         return;
       } catch (VkResult r) {
@@ -305,7 +289,14 @@ namespace remix {
     g.rrRequested = options.dlssRayReconstruction;
     g.failedBackends = failedBackends;
     g.fsrFailure = failure;
+    // Schedule every pass's lighting pipelines before awaiting any of them.
+    g.deferLighting = true;
+    struct Defer {
+      Gpu &g;
+      ~Defer() { g.deferLighting = false; }
+    } defer{g};
     g.configureFrame(options, perspective, local);
+    g.finishLightingPipelines();
   }
   bool PathTracer::finishPreparation(VkQueue queue) {
     auto &g = *m_gpu;

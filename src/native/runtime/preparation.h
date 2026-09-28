@@ -29,11 +29,18 @@ private:
 };
 // Also used by CPU tests: the compiler is an injected callback. No Vulkan or
 // API lock is involved in scheduling, polling or running a job.
+//
+// The first worker runs every job in request order. Additional workers only
+// take Parallel jobs (independent pipeline compiles), so Serial jobs such as
+// configuration preparation never run concurrently with each other, and a
+// Serial job starts only after every job requested before it has finished.
 class PreparationQueue {
 public:
   enum class State { Queued, Running, Complete, Failed, Cancelled };
+  enum class Kind { Serial, Parallel };
   struct Job {
     std::atomic<State> state{State::Queued};
+    Kind kind = Kind::Serial;
     std::atomic<bool> cancelRequested{false};
     std::exception_ptr failure;
     std::function<void()> work;
@@ -41,27 +48,30 @@ public:
     void check() const;
   };
   using Ticket = std::shared_ptr<Job>;
-  PreparationQueue();
+  explicit PreparationQueue(unsigned workers = 1);
   ~PreparationQueue();
-  Ticket request(const std::string &key, std::function<void()> work);
+  Ticket request(const std::string &key, std::function<void()> work, Kind kind = Kind::Serial);
   void cancel(const Ticket &job);
   void stop();
   bool onWorker() const;
   // A preparation job can need a pipeline already queued behind it. Claim
-  // that job inline on the same worker, rather than waiting on ourselves.
+  // that job inline on the same worker, rather than waiting on ourselves; a
+  // job another worker already runs is awaited.
   void finishOnWorker(const Ticket &job);
   void checkCancelled();
 
 private:
   void execute(const Ticket &job);
-  void run();
+  void run(bool primary);
   std::mutex mutex;
-  std::condition_variable wake;
+  std::condition_variable wake, finished;
   std::deque<Ticket> pending;
   std::vector<Ticket> active;
   std::unordered_map<std::string, Ticket> jobs;
   bool stopping = false;
-  std::thread worker;
+  std::vector<std::thread> workers;
   static thread_local PreparationQueue *current;
+  // Jobs executing on this thread, innermost last (inline dependencies nest).
+  static thread_local std::vector<Job *> running;
 };
 } // namespace remix::pipeline

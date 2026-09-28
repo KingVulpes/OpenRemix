@@ -595,6 +595,25 @@ namespace remix {
     void recordSharc(VkCommandBuffer command, const TraceOptions &options);
     void finishSharc(VkCommandBuffer command);
     void sharcPipeline(const uint32_t *code, size_t size, VkPipelineLayout pipelineLayout, VkPipeline &out);
+    // A lighting pipeline compiled with guidance off (its variants are lazy).
+    struct LightingRequest {
+      const uint32_t *code = nullptr;
+      size_t size = 0;
+      VkPipelineLayout layout = VK_NULL_HANDLE;
+      VkPipeline *out = nullptr;
+      bool supportsGuiding = true, supportsRoulette = true;
+    };
+    // Compiles the requests whose pipeline does not exist yet as one batch,
+    // concurrently on the compiler workers, and registers each as a lighting
+    // pipeline. Throws a failure after every request has completed. While
+    // deferLighting is set (configuration preparation) it only schedules the
+    // batch; finishLightingPipelines() then awaits every scheduled batch, so
+    // separate passes' pipelines compile together. No pass reads its pipeline
+    // handles before recording.
+    void createLightingPipelines(const std::vector<LightingRequest> &requests);
+    void finishLightingPipelines();
+    bool deferLighting = false;
+    std::vector<LightingRequest> deferredLighting;
     trace::SceneSignature lastScene;
     uint64_t sequence = 0;
     float previousDirectClamp = 0, previousIndirectClamp = 0;

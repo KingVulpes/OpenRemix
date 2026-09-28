@@ -416,13 +416,16 @@ namespace remix {
       std::vector<VkDeviceSize> vertexOffsets, indexOffsets;
       std::vector<uint32_t> counts, vertexCounts;
       std::vector<GeometryGroup> groups;
-      std::vector<uint64_t> shadingHashes; // scene::fastHash of each shading buffer
+      // Hashes combine per-part hashes; each input byte is hashed once.
+      std::vector<uint64_t> shadingHashes;  // Per surface: positions, attributes and normals
+      std::vector<uint64_t> positionHashes; // Per surface: scene::fastHash of BLAS positions
       // Per surface: texture coordinates and colors. With topologyHash (every
       // content byte except positions), they decide a delta upload.
       std::vector<uint64_t> attributeHashes;
       // Per surface: normals. Unchanged normals are not uploaded by a delta.
       std::vector<uint64_t> normalHashes;
-      uint64_t contentHash = 0;            // scene::fastHash of content
+      uint64_t contentHash = 0;            // topologyHash and positionHashes
+      std::vector<float> attributeScratch, normalScratch; // Per-surface gathers, reused
       uint64_t topologyHash = 0;
       float low[3] = {}, high[3] = {};
       size_t bytes() const {
@@ -430,7 +433,9 @@ namespace remix {
                       (vertexOffsets.capacity() + indexOffsets.capacity()) * sizeof(VkDeviceSize) +
                       (counts.capacity() + vertexCounts.capacity()) * sizeof(uint32_t) +
                       groups.capacity() * sizeof(GeometryGroup) +
-                      (shadingHashes.capacity() + attributeHashes.capacity() + normalHashes.capacity()) * sizeof(uint64_t);
+                      (shadingHashes.capacity() + positionHashes.capacity() + attributeHashes.capacity() +
+                       normalHashes.capacity()) * sizeof(uint64_t) +
+                      (attributeScratch.capacity() + normalScratch.capacity()) * sizeof(float);
         for (const auto &vertices : shading)
           size += vertices.capacity() * sizeof(TraceVertex);
         return size;

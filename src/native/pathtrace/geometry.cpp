@@ -145,6 +145,12 @@ namespace remix {
     vertexOffsets.reserve(surfaceCount); indexOffsets.reserve(surfaceCount);
     counts.reserve(surfaceCount); vertexCounts.reserve(surfaceCount);
     float low[3] = {INFINITY, INFINITY, INFINITY}, high[3] = {-INFINITY, -INFINITY, -INFINITY};
+    // Every byte is hashed once: per-surface positions, attributes (texture
+    // coordinates and colors) and normals here, and the remaining content
+    // (counts, indices, partitions, opacity) as the topology below. The
+    // content and shading hashes combine those parts.
+    data.positionHashes.clear(); data.attributeHashes.clear(); data.normalHashes.clear();
+    auto &attributes = data.attributeScratch, &normals = data.normalScratch;
     for (const auto &surface : draw.mesh->surfaces) {
       uint32_t count[3] = {uint32_t(surface->vertices.size()), uint32_t(surface->indices.size()),
                            partitions[surfaceIndex]->key[0] == 2 ? 2u : 1u};
@@ -156,6 +162,8 @@ namespace remix {
       const size_t positions = content.size();
       content.resize(positions + surface->vertices.size() * 12);
       auto *position = content.data() + positions;
+      attributes.resize(surface->vertices.size() * 6);
+      normals.resize(surface->vertices.size() * 3);
       for (size_t i = 0; i < surface->vertices.size(); ++i) {
         auto vertex = surface->vertices[i];
         if (surface->bonesPerVertex) {
@@ -174,7 +182,9 @@ namespace remix {
                   (matrix[r] * original.normal[0] + matrix[4 + r] * original.normal[1] +
                    matrix[8 + r] * original.normal[2]);
           }
-          const float length = std::hypot(vertex.normal[0], vertex.normal[1], vertex.normal[2]);
+          // Unit-scale normals: no overflow guard needed (std::hypot is far slower).
+          const float length = std::sqrt(vertex.normal[0] * vertex.normal[0] + vertex.normal[1] * vertex.normal[1] +
+                                         vertex.normal[2] * vertex.normal[2]);
           if (std::isfinite(length) && length > 1e-12f)
             for (float &component : vertex.normal) component /= length;
           else
@@ -193,7 +203,13 @@ namespace remix {
         // stride and the position-only BLAS input size.
         out.position[3] = vertex.normal[0];
         out.uv[2] = vertex.normal[1]; out.uv[3] = vertex.normal[2];
+        std::copy_n(vertex.uv, 2, attributes.data() + i * 6);
+        std::copy_n(vertex.color, 4, attributes.data() + i * 6 + 2);
+        std::copy_n(vertex.normal, 3, normals.data() + i * 3);
       }
+      data.positionHashes.push_back(scene::fastHash(position, surface->vertices.size() * 12));
+      data.attributeHashes.push_back(scene::fastHash(attributes.data(), attributes.size() * sizeof(float)));
+      data.normalHashes.push_back(scene::fastHash(normals.data(), normals.size() * sizeof(float)));
       indexOffsets.push_back(content.size());
       append(surface->indices.data(), surface->indices.size() * 4);
       const auto &partition = *partitions[surfaceIndex];
@@ -223,12 +239,8 @@ namespace remix {
     content.append(opaque);
     std::copy_n(low, 3, data.low);
     std::copy_n(high, 3, data.high);
-    data.contentHash = scene::fastHash(content.data(), content.size());
-    data.shadingHashes.clear();
-    for (const auto &vertices : shading)
-      data.shadingHashes.push_back(scene::fastHash(vertices.data(), vertices.size() * sizeof(TraceVertex)));
     // Delta-upload keys: every content byte except positions (counts, indices,
-    // partition order, opacity), and each surface's texture coordinates and colors.
+    // partition order, opacity), and each surface's attributes and normals.
     uint64_t topology = 0;
     size_t at = 0;
     for (size_t i = 0; i < vertexOffsets.size(); ++i) {
@@ -237,22 +249,13 @@ namespace remix {
       at = end;
     }
     data.topologyHash = chainFingerprint(scene::fastHash(content.data() + at, content.size() - at), topology);
-    data.attributeHashes.clear();
-    data.normalHashes.clear();
-    std::vector<float> attributes, normals;
-    for (const auto &vertices : shading) {
-      attributes.resize(vertices.size() * 6);
-      normals.resize(vertices.size() * 3);
-      for (size_t i = 0; i < vertices.size(); ++i) {
-        std::copy_n(vertices[i].uv, 2, attributes.data() + i * 6);
-        std::copy_n(vertices[i].color, 4, attributes.data() + i * 6 + 2);
-        // Normals live in the shading vertex padding (above).
-        normals[i * 3] = vertices[i].position[3];
-        normals[i * 3 + 1] = vertices[i].uv[2];
-        normals[i * 3 + 2] = vertices[i].uv[3];
-      }
-      data.attributeHashes.push_back(scene::fastHash(attributes.data(), attributes.size() * sizeof(float)));
-      data.normalHashes.push_back(scene::fastHash(normals.data(), normals.size() * sizeof(float)));
+    data.contentHash = data.topologyHash;
+    data.shadingHashes.clear();
+    for (size_t i = 0; i < shading.size(); ++i) {
+      data.contentHash = chainFingerprint(data.positionHashes[i], data.contentHash);
+      // TraceVertex holds exactly position, normal, texture coordinates and color.
+      data.shadingHashes.push_back(chainFingerprint(
+          data.normalHashes[i], chainFingerprint(data.attributeHashes[i], data.positionHashes[i])));
     }
   }
 

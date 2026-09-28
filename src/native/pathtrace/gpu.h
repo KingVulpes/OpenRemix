@@ -404,6 +404,7 @@ namespace remix {
       std::vector<std::shared_ptr<Buffer>> vertices;
       std::vector<scene::Matrix> bones;
       std::vector<uint64_t> attributeHashes; // GeometryScratch::attributeHashes of vertices
+      std::vector<uint64_t> normalHashes;    // GeometryScratch::normalHashes of vertices
       uint64_t fingerprint = 0, lastUse = 0;
       uint64_t contentDigest = 0; // REMIX_FRAME_DIGEST only: hash of the uploaded data.
     };
@@ -419,6 +420,8 @@ namespace remix {
       // Per surface: texture coordinates and colors. With topologyHash (every
       // content byte except positions), they decide a delta upload.
       std::vector<uint64_t> attributeHashes;
+      // Per surface: normals. Unchanged normals are not uploaded by a delta.
+      std::vector<uint64_t> normalHashes;
       uint64_t contentHash = 0;            // scene::fastHash of content
       uint64_t topologyHash = 0;
       float low[3] = {}, high[3] = {};
@@ -427,7 +430,7 @@ namespace remix {
                       (vertexOffsets.capacity() + indexOffsets.capacity()) * sizeof(VkDeviceSize) +
                       (counts.capacity() + vertexCounts.capacity()) * sizeof(uint32_t) +
                       groups.capacity() * sizeof(GeometryGroup) +
-                      (shadingHashes.capacity() + attributeHashes.capacity()) * sizeof(uint64_t);
+                      (shadingHashes.capacity() + attributeHashes.capacity() + normalHashes.capacity()) * sizeof(uint64_t);
         for (const auto &vertices : shading)
           size += vertices.capacity() * sizeof(TraceVertex);
         return size;
@@ -604,8 +607,8 @@ namespace remix {
     void finishSharc(VkCommandBuffer command);
     void sharcPipeline(trace::Stage stage, VkPipelineLayout pipelineLayout, VkPipeline &out);
     // Delta uploads (commitMesh): shading vertices assembled on the GPU from new
-    // positions and normals and the previous version's texture coordinates and
-    // colors. Jobs run after this frame's copies, before the BLAS builds.
+    // positions and normals (0: the previous version's, unchanged) and the
+    // previous version's texture coordinates and colors. Jobs run after this frame's copies, before the BLAS builds.
     struct AssembleJob {
       VkDeviceAddress positions = 0, normals = 0, previous = 0, target = 0;
       uint32_t count = 0, reserved = 0;

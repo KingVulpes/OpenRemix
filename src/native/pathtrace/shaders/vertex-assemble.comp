@@ -1,9 +1,10 @@
 #version 460
 // Delta geometry upload (PathTracer::Gpu::commitMesh): a mesh update with the
 // same topology, texture coordinates and colors sends only positions and
-// normals. Positions are already in the new BLAS input; this assembles the new
-// shading vertices from them, the uploaded normals, and the previous version's
-// texture coordinates and colors, in the Vertex layout of scene.glsl.
+// normals, or only positions when the normals are unchanged (normals == 0).
+// Positions are already in the new BLAS input; this assembles the new shading
+// vertices from them, the uploaded (or previous) normals, and the previous
+// version's texture coordinates and colors, in the Vertex layout of scene.glsl.
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
 layout(local_size_x=64) in;
@@ -18,11 +19,16 @@ layout(push_constant) uniform Job {
 void main() {
   const uint i = gl_GlobalInvocationID.x;
   if (i >= job.count) return;
-  Floats position = Floats(job.positions), normal = Floats(job.normals);
+  Floats position = Floats(job.positions);
   const Vertex previous = Source(job.previous).v[i];
+  vec3 n = vec3(previous.position.w, previous.uv.zw);
+  if (job.normals != 0) {
+    Floats normal = Floats(job.normals);
+    n = vec3(normal.f[3*i], normal.f[3*i+1], normal.f[3*i+2]);
+  }
   Vertex vertex;
-  vertex.position = vec4(position.f[3*i], position.f[3*i+1], position.f[3*i+2], normal.f[3*i]);
-  vertex.uv = vec4(previous.uv.xy, normal.f[3*i+1], normal.f[3*i+2]);
+  vertex.position = vec4(position.f[3*i], position.f[3*i+1], position.f[3*i+2], n.x);
+  vertex.uv = vec4(previous.uv.xy, n.yz);
   vertex.color = previous.color;
   Target(job.target).v[i] = vertex;
 }

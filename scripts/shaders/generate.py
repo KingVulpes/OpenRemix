@@ -21,7 +21,7 @@ BACKENDS = {
     'postfx': ('postfx', 'vulkan1.2', ('meter', 'resolve', 'down', 'up')),
     'upscale': ('upscale', 'vulkan1.2', ('comp', 'vert', 'frag')),
     'raster': ('raster', 'vulkan1.1', ('vert', 'frag')),
-    'pathtrace': ('trace', 'vulkan1.2', ('vert', 'frag', 'comp', 'temporal', 'transparency', 'temporalTransparency', 'frontGuides', 'singleTransparency', 'singleTemporalTransparency', 'sharcSingleTransparency', 'sharcSingleTemporalTransparency', 'confidence', 'gbufferVert', 'gbufferFrag', 'depthFrag', 'sharcUpdate', 'sharcResolve', 'sharcQuery', 'sharcTransparency', 'sharcTemporal', 'sharcTemporalTransparency', 'sharcConfidence', 'sigmaTemporal', 'sharcSigmaTemporal', 'localTemporal', 'localSigmaTemporal', 'sharcLocalTemporal', 'sharcLocalSigmaTemporal', 'splitLocalTemporal', 'splitLocalSigmaTemporal', 'sharcSplitLocalTemporal', 'sharcSplitLocalSigmaTemporal', 'splitLocalDirect', 'indirectTemporal', 'sharcIndirectTemporal')),
+    'pathtrace': ('trace', 'vulkan1.2', ('vert', 'frag', 'comp', 'temporal', 'transparency', 'temporalTransparency', 'frontGuides', 'singleTransparency', 'singleTemporalTransparency', 'sharcSingleTransparency', 'sharcSingleTemporalTransparency', 'confidence', 'gbufferVert', 'gbufferFrag', 'depthFrag', 'sharcUpdate', 'sharcResolve', 'sharcQuery', 'sharcTransparency', 'sharcTemporal', 'sharcTemporalTransparency', 'sharcConfidence', 'sigmaTemporal', 'sharcSigmaTemporal', 'localTemporal', 'localSigmaTemporal', 'sharcLocalTemporal', 'sharcLocalSigmaTemporal', 'splitLocalTemporal', 'splitLocalSigmaTemporal', 'sharcSplitLocalTemporal', 'sharcSplitLocalSigmaTemporal', 'splitLocalDirect', 'indirectTemporal', 'sharcIndirectTemporal', 'vertexAssemble')),
     'denoise': ('denoise', 'vulkan1.2', ('comp', 'sigma', 'local', 'localSigma', 'splitLocal', 'splitLocalSigma')),
 }
 
@@ -61,6 +61,7 @@ def defines_for(backend, stage, stages):
         source = directory / ('gbuffer.vert' if stage == 'gbufferVert' else 'gbuffer.frag')
         if stage == 'depthFrag': defines += ['-DSTABLE_DEPTH=1']
     if stage == 'sharcResolve': source = directory / 'sharc-resolve.comp'
+    if stage == 'vertexAssemble': source = directory / 'vertex-assemble.comp'
     return defines, source
 
 

@@ -335,6 +335,11 @@ int main(int argc, char **argv) {
               "Mesh-update image has no shaded geometry");
       return result;
     };
+    // These settings prepare a replacement tracer with its own geometry: its
+    // first frame builds the mesh, then refit that up to the limit again.
+    frame();
+    for (unsigned i = 0; i < 60; ++i) { vertices[0].position[0] -= .001f; edit(); }
+    refitted = statistics();
     const auto refitImage = pixels("refitted.png");
     // UV-only replacement preserves this white-texture image while the refit
     // limit forces a fresh build from precisely the same positions and indices.

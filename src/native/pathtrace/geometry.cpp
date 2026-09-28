@@ -1,5 +1,8 @@
 #include "pathtrace/gpu.h"
+#include "runtime/pipelines.h"
 #include <atomic>
+#include <cstdlib>
+#include <cstring>
 
 namespace remix {
   using namespace scene;
@@ -224,6 +227,73 @@ namespace remix {
     data.shadingHashes.clear();
     for (const auto &vertices : shading)
       data.shadingHashes.push_back(scene::fastHash(vertices.data(), vertices.size() * sizeof(TraceVertex)));
+    // Delta-upload keys: every content byte except positions (counts, indices,
+    // partition order, opacity), and each surface's texture coordinates and colors.
+    uint64_t topology = 0;
+    size_t at = 0;
+    for (size_t i = 0; i < vertexOffsets.size(); ++i) {
+      const size_t begin = size_t(vertexOffsets[i]), end = begin + size_t(vertexCounts[i]) * 12;
+      topology = chainFingerprint(scene::fastHash(content.data() + at, begin - at), topology);
+      at = end;
+    }
+    data.topologyHash = chainFingerprint(scene::fastHash(content.data() + at, content.size() - at), topology);
+    data.attributeHashes.clear();
+    std::vector<float> attributes;
+    for (const auto &vertices : shading) {
+      attributes.resize(vertices.size() * 6);
+      for (size_t i = 0; i < vertices.size(); ++i) {
+        std::copy_n(vertices[i].uv, 2, attributes.data() + i * 6);
+        std::copy_n(vertices[i].color, 4, attributes.data() + i * 6 + 2);
+      }
+      data.attributeHashes.push_back(scene::fastHash(attributes.data(), attributes.size() * sizeof(float)));
+    }
+  }
+
+  void PathTracer::Gpu::createAssemblePipeline() {
+    if (!assembleLayout) {
+      const VkPushConstantRange range = {VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(AssembleJob)};
+      const VkPipelineLayoutCreateInfo info = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                                               .pushConstantRangeCount = 1,
+                                               .pPushConstantRanges = &range};
+      if (pipeline::createPipelineLayout(device, &info, nullptr, &assembleLayout) != VK_SUCCESS) {
+        assembleFailed = true;
+        return;
+      }
+    }
+    const auto code = trace::shader(trace::Stage::vertexAssemble);
+    const VkShaderModuleCreateInfo moduleInfo = {
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = code.bytes, .pCode = code.code};
+    VkShaderModule module{};
+    if (pipeline::createShaderModule(device, &moduleInfo, nullptr, &module) != VK_SUCCESS) {
+      assembleFailed = true;
+      return;
+    }
+    const VkComputePipelineCreateInfo info = {
+        .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+        .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                  .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = module, .pName = "main"},
+        .layout = assembleLayout};
+    const auto result = pipeline::createComputePipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, &assemble);
+    pipeline::destroyShaderModule(device, module, nullptr);
+    // Off the compiler worker a new pipeline is not ready yet: full uploads until it is.
+    if (result != VK_SUCCESS) {
+      assemble = VK_NULL_HANDLE;
+      assembleFailed = result != VK_NOT_READY;
+    }
+  }
+
+  void PathTracer::Gpu::recordAssemble(VkCommandBuffer command) {
+    if (assembleJobs.empty())
+      return;
+    // Positions were copied into the new BLAS inputs this frame.
+    barrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, assemble);
+    for (const auto &job : assembleJobs) {
+      vkCmdPushConstants(command, assembleLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(job), &job);
+      vkCmdDispatch(command, (job.count + 63) / 64, 1, 1);
+    }
+    assembleJobs.clear();
   }
 
   void PathTracer::Gpu::commitMesh(VkCommandBuffer command, MeshConversion &conversion) {
@@ -233,6 +303,19 @@ namespace remix {
     const auto &content = data.content;
     const auto &low = data.low, &high = data.high;
     const bool deform = conversion.deform, skinned = conversion.skinned, streaming = conversion.streaming;
+    // Delta upload: an update of a deforming view that keeps every content byte
+    // except positions, and each surface's texture coordinates and colors, sends
+    // only positions and normals. Its buffers are still new (previous versions
+    // feed motion vectors); the rest is copied on the GPU.
+    constexpr uint32_t assembleLimit = 65535u * 64u; // One dispatch per surface.
+    // REMIX_DELTA_UPLOADS=0 always uploads in full (comparison and diagnosis).
+    static const bool deltaUploads = [] {
+      const char *value = std::getenv("REMIX_DELTA_UPLOADS");
+      return !value || std::strcmp(value, "0") != 0;
+    }();
+    if (deform && !assemble && !assembleFailed)
+      createAssemblePipeline();
+    bool delta = false;
     if (!deform) {
       auto found = geometryCache.find(content);
       if (found != geometryCache.end())
@@ -267,10 +350,40 @@ namespace remix {
       g.fingerprint = chainFingerprint(data.contentHash);
       ++g.revision;
       g.diagonal = std::hypot(high[0] - low[0], high[1] - low[1], high[2] - low[2]);
-      if (g.input)
-        retiredBuffers.push_back(std::move(g.input));
-      g.input =
-          upload(command, content.data(), content.size(), inputUsage | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+      constexpr VkBufferUsageFlags meshInput =
+          inputUsage | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+      delta = deltaUploads && assemble && deform && g.input && g.topologyHash == data.topologyHash &&
+              view.attributeHashes == data.attributeHashes && view.vertices.size() == data.shading.size() &&
+              std::all_of(data.vertexCounts.begin(), data.vertexCounts.end(),
+                          [](uint32_t count) { return count <= assembleLimit; });
+      std::shared_ptr<Buffer> previousInput = std::move(g.input);
+      if (delta) {
+        g.input = buffer(content.size(), meshInput | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false, true);
+        std::vector<VkBufferCopy> kept;
+        VkDeviceSize at = 0;
+        for (size_t i = 0; i < data.vertexOffsets.size(); ++i) {
+          const VkDeviceSize begin = data.vertexOffsets[i];
+          if (begin > at)
+            kept.push_back({at, at, begin - at});
+          at = begin + VkDeviceSize(data.vertexCounts[i]) * 12;
+        }
+        if (content.size() > at)
+          kept.push_back({at, at, content.size() - at});
+        if (!kept.empty())
+          vkCmdCopyBuffer(command, previousInput->handle, g.input->handle, uint32_t(kept.size()), kept.data());
+        for (size_t i = 0; i < data.vertexOffsets.size(); ++i) {
+          const VkDeviceSize bytes = VkDeviceSize(data.vertexCounts[i]) * 12;
+          if (!bytes)
+            continue;
+          const VkDeviceSize offset = stage(content.data() + data.vertexOffsets[i], size_t(bytes));
+          const VkBufferCopy positions = {.srcOffset = offset, .dstOffset = data.vertexOffsets[i], .size = bytes};
+          vkCmdCopyBuffer(command, staging.buffer->handle, g.input->handle, 1, &positions);
+        }
+      } else
+        g.input = upload(command, content.data(), content.size(), meshInput);
+      if (previousInput)
+        retiredBuffers.push_back(std::move(previousInput));
+      g.topologyHash = data.topologyHash;
       g.geometries.clear();
       g.ranges.clear();
       if (data.groups.size() > asProperties.maxGeometryCount) throw VK_ERROR_TOO_MANY_OBJECTS;
@@ -304,8 +417,8 @@ namespace remix {
       if (!deform)
         geometryCache[content] = view.geometry;
     }
-    for (auto &vertices : view.vertices)
-      retiredBuffers.push_back(std::move(vertices));
+    // Previous shading buffers stay alive until this slot's fence: delta jobs read them.
+    auto previousVertices = std::move(view.vertices);
     view.vertices.clear();
     view.fingerprint = view.geometry->fingerprint;
     if (digestEnabled) {
@@ -314,12 +427,42 @@ namespace remix {
         view.contentDigest =
             scene::hashBytes(vertices.data(), vertices.size() * sizeof(TraceVertex), view.contentDigest);
     }
+    std::vector<float> normals;
     for (size_t i = 0; i < data.shading.size(); ++i) {
       const auto &vertices = data.shading[i];
       view.fingerprint = chainFingerprint(data.shadingHashes[i], view.fingerprint);
-      view.vertices.push_back(upload(command, vertices.data(), vertices.size() * sizeof(TraceVertex),
-                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT));
+      if (!delta || vertices.empty()) {
+        view.vertices.push_back(upload(command, vertices.data(), vertices.size() * sizeof(TraceVertex),
+                                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT));
+        continue;
+      }
+      // Normals live in the shading vertex padding (convertMesh).
+      normals.resize(vertices.size() * 3);
+      for (size_t v = 0; v < vertices.size(); ++v) {
+        normals[v * 3] = vertices[v].position[3];
+        normals[v * 3 + 1] = vertices[v].uv[2];
+        normals[v * 3 + 2] = vertices[v].uv[3];
+      }
+      // Copied into device memory like the positions: the assembly shader then
+      // reads them locally instead of across the host link.
+      const VkDeviceSize bytes = normals.size() * sizeof(float);
+      const VkDeviceSize offset = stage(normals.data(), size_t(bytes));
+      std::shared_ptr<Buffer> uploaded =
+          buffer(bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false, true);
+      const VkBufferCopy copy = {.srcOffset = offset, .size = bytes};
+      vkCmdCopyBuffer(command, staging.buffer->handle, uploaded->handle, 1, &copy);
+      auto target = buffer(vertices.size() * sizeof(TraceVertex), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false, true);
+      assembleJobs.push_back({.positions = view.geometry->input->address + data.vertexOffsets[i],
+                              .normals = uploaded->address,
+                              .previous = previousVertices[i]->address,
+                              .target = target->address,
+                              .count = uint32_t(vertices.size())});
+      view.vertices.push_back(std::move(target));
+      retiredBuffers.push_back(std::move(uploaded)); // Read by this frame's assembly.
     }
+    for (auto &vertices : previousVertices)
+      retiredBuffers.push_back(std::move(vertices));
+    view.attributeHashes = data.attributeHashes;
     if (conversion.previousGeometry)
       retiredGeometry.push_back(std::move(conversion.previousGeometry));
     // Bound the scratch a single large conversion leaves behind.

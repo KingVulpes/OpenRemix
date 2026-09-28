@@ -335,6 +335,8 @@ namespace remix {
       check(
           pipeline::createShaderModule(device, &info, nullptr, &g.shaders[i]));
     }
+    // Small, and needed by the first deforming update (else full uploads until ready).
+    g.createAssemblePipeline();
     uint32_t count = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(physical, &count, nullptr);
     std::vector<VkQueueFamilyProperties> families(count);

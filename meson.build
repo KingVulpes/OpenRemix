@@ -48,6 +48,7 @@ subdir('third_party/imgui')
 subdir('third_party/nrd')
 subdir('third_party/fsr31')
 subdir('third_party/dlss')
+subdir('third_party/xz-embedded')
 subdir('src/native')
 subdir('samples/remix-native')
 # The benchmark uses narrow SDK paths and a desktop window.

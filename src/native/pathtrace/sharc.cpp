@@ -1,35 +1,83 @@
 #include "pathtrace/gpu.h"
-#include "pathtrace/shaders/embedded.h"
+#include "pathtrace/shader_code.h"
 #include "pathtrace/sharc_policy.h"
 #include "runtime/pipelines.h"
+#include <future>
+#include <utility>
 
 namespace remix {
   using namespace trace::detail;
 
-  void PathTracer::Gpu::sharcPipeline(const uint32_t *code, size_t size, VkPipelineLayout pipelineLayout,
-                                     VkPipeline &out) {
-    if (out)
+  void PathTracer::Gpu::sharcPipeline(trace::Stage stage, VkPipelineLayout pipelineLayout, VkPipeline &out) {
+    createLightingPipelines({{stage, pipelineLayout, &out, &out == &sharc.query || &out == &sharc.temporal,
+                              &out != &sharc.update}});
+  }
+
+  void PathTracer::Gpu::createLightingPipelines(const std::vector<LightingRequest> &batch) {
+    // Pipelines that already exist are kept.
+    std::vector<LightingRequest> requests;
+    for (const auto &request : batch)
+      if (!*request.out)
+        requests.push_back(request);
+    if (requests.empty())
       return;
-    VkShaderModuleCreateInfo ci{
-        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = size, .pCode = code};
-    VkShaderModule shader{};
-    check(pipeline::createShaderModule(device, &ci, nullptr, &shader));
     // Compile ordinary local lighting first; guidance is a lazy variant.
     const VkBool32 guidance = VK_FALSE;
     const VkSpecializationMapEntry guideEntry{1, 0, sizeof(guidance)};
     const VkSpecializationInfo noGuiding{1, &guideEntry, sizeof(guidance), &guidance};
-    VkComputePipelineCreateInfo pi{
-        .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-        .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                  .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = shader, .pName = "main", .pSpecializationInfo = &noGuiding},
-        .layout = pipelineLayout};
-    const auto result = pipeline::createComputePipelines(device, VK_NULL_HANDLE,
-                                                         1, &pi, nullptr, &out);
-    pipeline::destroyShaderModule(device, shader, nullptr);
+    // Embedded stages decompress on first use; decode the batch concurrently.
+    std::vector<std::future<trace::ShaderCode>> decoding;
+    for (const auto &request : requests)
+      decoding.push_back(std::async(std::launch::async, trace::shader, request.stage));
+    std::vector<trace::ShaderCode> codes;
+    for (auto &code : decoding)
+      codes.push_back(code.get());
+    std::vector<VkShaderModule> modules(requests.size());
+    std::vector<VkComputePipelineCreateInfo> infos(requests.size());
+    std::vector<VkPipeline> pipelines(requests.size());
+    struct Release {
+      VkDevice device;
+      std::vector<VkShaderModule> &modules;
+      ~Release() {
+        for (auto module : modules)
+          if (module)
+            pipeline::destroyShaderModule(device, module, nullptr);
+      }
+    } release{device, modules};
+    for (size_t i = 0; i < requests.size(); ++i) {
+      VkShaderModuleCreateInfo ci{
+          .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = codes[i].bytes, .pCode = codes[i].code};
+      check(pipeline::createShaderModule(device, &ci, nullptr, &modules[i]));
+      infos[i] = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+                  .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                            .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = modules[i], .pName = "main",
+                            .pSpecializationInfo = &noGuiding},
+                  .layout = requests[i].layout};
+    }
+    if (deferLighting) {
+      pipeline::prefetchComputePipelines(device, uint32_t(infos.size()), infos.data());
+      deferredLighting.insert(deferredLighting.end(), requests.begin(), requests.end());
+      return;
+    }
+    const auto result = pipeline::createComputePipelines(device, VK_NULL_HANDLE, uint32_t(infos.size()),
+                                                         infos.data(), nullptr, pipelines.data());
+    // Publish every pipeline that compiled, so failure cleanup releases it.
+    for (size_t i = 0; i < requests.size(); ++i) {
+      const auto &request = requests[i];
+      *request.out = pipelines[i];
+      if (!pipelines[i])
+        continue;
+      auto &entry = lightingPipelines[pipelines[i]];
+      entry = {codes[i].code, codes[i].bytes, request.layout};
+      entry.supportsGuiding = request.supportsGuiding;
+      entry.supportsRoulette = request.supportsRoulette;
+    }
     check(result);
-    lightingPipelines[out] = {code, size, pipelineLayout};
-    lightingPipelines[out].supportsGuiding = &out == &sharc.query || &out == &sharc.temporal;
-    lightingPipelines[out].supportsRoulette = &out != &sharc.update;
+  }
+
+  void PathTracer::Gpu::finishLightingPipelines() {
+    deferLighting = false;
+    createLightingPipelines(std::exchange(deferredLighting, {}));
   }
 
   void PathTracer::Gpu::destroySharc(bool temporalOnly) {
@@ -146,37 +194,41 @@ namespace remix {
         s.memoryBytes = sharc.hash->size + sharc.accumulation->size + sharc.resolved->size +
                         sharc.counters->size + sharc.readback->size;
       }
-      sharcPipeline(trace::sharcUpdateShader, sizeof(trace::sharcUpdateShader), layout, sharc.update);
-      sharcPipeline(trace::sharcResolveShader, sizeof(trace::sharcResolveShader), layout, sharc.resolve);
+      // One batch: the SHARC passes compile concurrently.
+      std::vector<LightingRequest> requests;
+      auto add = [&](trace::Stage stage, VkPipelineLayout pipelineLayout, VkPipeline &out) {
+        requests.push_back({stage, pipelineLayout, &out, &out == &sharc.query || &out == &sharc.temporal,
+                            &out != &sharc.update});
+      };
+      add(trace::Stage::sharcUpdate, layout, sharc.update);
+      add(trace::Stage::sharcResolve, layout, sharc.resolve);
       if (!denoiser)
-        sharcPipeline(trace::sharcQueryShader, sizeof(trace::sharcQueryShader),
-                      layout, sharc.query);
+        add(trace::Stage::sharcQuery, layout, sharc.query);
       if (!denoiser)
-        sharcPipeline(trace::sharcTransparencyShader,
-                      sizeof(trace::sharcTransparencyShader), layout,
-                      sharc.transparency);
-      sharcPipeline(trace::sharcSingleTransparencyShader, sizeof(trace::sharcSingleTransparencyShader), layout,
-                    sharc.singleTransparency);
+        add(trace::Stage::sharcTransparency, layout, sharc.transparency);
+      add(trace::Stage::sharcSingleTransparency, layout,
+          sharc.singleTransparency);
       if (denoiser) {
         if (postSplit && postSigma)
-          sharcPipeline(trace::sharcSplitLocalSigmaTemporalShader, sizeof(trace::sharcSplitLocalSigmaTemporalShader), temporalLayout, sharc.temporal);
+          add(trace::Stage::sharcSplitLocalSigmaTemporal, temporalLayout, sharc.temporal);
         else if (postSplit)
-          sharcPipeline(trace::sharcSplitLocalTemporalShader, sizeof(trace::sharcSplitLocalTemporalShader), temporalLayout, sharc.temporal);
+          add(trace::Stage::sharcSplitLocalTemporal, temporalLayout, sharc.temporal);
         else if (postLocal && postSigma)
-          sharcPipeline(trace::sharcLocalSigmaTemporalShader, sizeof(trace::sharcLocalSigmaTemporalShader), temporalLayout, sharc.temporal);
+          add(trace::Stage::sharcLocalSigmaTemporal, temporalLayout, sharc.temporal);
         else if (postLocal)
-          sharcPipeline(trace::sharcLocalTemporalShader, sizeof(trace::sharcLocalTemporalShader), temporalLayout, sharc.temporal);
+          add(trace::Stage::sharcLocalTemporal, temporalLayout, sharc.temporal);
         else if (postSigma)
-          sharcPipeline(trace::sharcSigmaTemporalShader, sizeof(trace::sharcSigmaTemporalShader), temporalLayout, sharc.temporal);
+          add(trace::Stage::sharcSigmaTemporal, temporalLayout, sharc.temporal);
         else
-          sharcPipeline(trace::sharcTemporalShader, sizeof(trace::sharcTemporalShader), temporalLayout, sharc.temporal);
-        sharcPipeline(trace::sharcTemporalTransparencyShader, sizeof(trace::sharcTemporalTransparencyShader), temporalLayout,
-                      sharc.temporalTransparency);
-        sharcPipeline(trace::sharcSingleTemporalTransparencyShader, sizeof(trace::sharcSingleTemporalTransparencyShader), temporalLayout,
-                      sharc.singleTemporalTransparency);
+          add(trace::Stage::sharcTemporal, temporalLayout, sharc.temporal);
+        add(trace::Stage::sharcTemporalTransparency, temporalLayout,
+            sharc.temporalTransparency);
+        add(trace::Stage::sharcSingleTemporalTransparency,
+            temporalLayout, sharc.singleTemporalTransparency);
         if (postReblur)
-          sharcPipeline(trace::sharcConfidenceShader, sizeof(trace::sharcConfidenceShader), temporalLayout, sharc.confidence);
+          add(trace::Stage::sharcConfidence, temporalLayout, sharc.confidence);
       }
+      createLightingPipelines(requests);
       if (!sharc.timestamps && timestamps) {
         VkQueryPoolCreateInfo qi{.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
                                  .queryType = VK_QUERY_TYPE_TIMESTAMP, .queryCount = 4};

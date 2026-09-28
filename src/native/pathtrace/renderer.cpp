@@ -1,5 +1,5 @@
 #include "pathtrace/gpu.h"
-#include "pathtrace/shaders/embedded.h"
+#include "pathtrace/shader_code.h"
 #include "runtime/pipelines.h"
 #include "upscale/ngx.h"
 
@@ -327,11 +327,11 @@ namespace remix {
                                          .pushConstantRangeCount = 1,
                                          .pPushConstantRanges = &push};
     check(pipeline::createPipelineLayout(device, &layout, nullptr, &g.layout));
-    const uint32_t *codes[] = {trace::compShader, trace::vertShader, trace::fragShader};
-    size_t sizes[] = {sizeof(trace::compShader), sizeof(trace::vertShader), sizeof(trace::fragShader)};
+    const trace::ShaderCode codes[] = {trace::shader(trace::Stage::comp), trace::shader(trace::Stage::vert),
+                                       trace::shader(trace::Stage::frag)};
     for (unsigned i = 0; i < 3; ++i) {
       VkShaderModuleCreateInfo info = {
-          .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = sizes[i], .pCode = codes[i]};
+          .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = codes[i].bytes, .pCode = codes[i].code};
       check(
           pipeline::createShaderModule(device, &info, nullptr, &g.shaders[i]));
     }
@@ -352,37 +352,13 @@ namespace remix {
   void PathTracer::Gpu::createRawPipelines() {
     if (compute && transparencyCompute && singleTransparencyCompute)
       return;
-    auto &g = *this;
-    // Compile ordinary local lighting first; guidance is a lazy variant.
-    const VkBool32 guidance = VK_FALSE;
-    const VkSpecializationMapEntry guideEntry{1, 0, sizeof(guidance)};
-    const VkSpecializationInfo noGuiding{1, &guideEntry, sizeof(guidance), &guidance};
-    VkComputePipelineCreateInfo pipeline = {
-        .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-        .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                  .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-                  .module = g.shaders[0],
-                  .pName = "main", .pSpecializationInfo = &noGuiding},
-        .layout = g.layout};
-    check(pipeline::createComputePipelines(device, VK_NULL_HANDLE, 1, &pipeline,
-                                           nullptr, &g.compute));
-    g.lightingPipelines[g.compute] = {trace::compShader, sizeof(trace::compShader), g.layout};
-    VkShaderModuleCreateInfo transparencyInfo{
-        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        .codeSize = sizeof(trace::transparencyShader),
-        .pCode = trace::transparencyShader};
-    VkShaderModule transparencyShader{};
-    check(pipeline::createShaderModule(device, &transparencyInfo, nullptr,
-                                       &transparencyShader));
-    pipeline.stage.module = transparencyShader;
-    auto transparencyResult = pipeline::createComputePipelines(
-        device, VK_NULL_HANDLE, 1, &pipeline, nullptr, &g.transparencyCompute);
-    pipeline::destroyShaderModule(device, transparencyShader, nullptr);
-    check(transparencyResult);
-    g.lightingPipelines[g.transparencyCompute] = {trace::transparencyShader, sizeof(trace::transparencyShader), g.layout};
-    g.lightingPipelines[g.transparencyCompute].supportsGuiding = false;
-    sharcPipeline(trace::singleTransparencyShader, sizeof(trace::singleTransparencyShader),
-                  g.layout, g.singleTransparencyCompute);
+    // One batch: the raw lighting passes compile concurrently.
+    createLightingPipelines({
+        {trace::Stage::comp, layout, &compute},
+        {trace::Stage::transparency, layout, &transparencyCompute, false},
+        {trace::Stage::singleTransparency, layout,
+         &singleTransparencyCompute, false},
+    });
   }
 
   void PathTracer::configureTarget(VkRenderPass pass, VkExtent2D extent, bool encodeOutput,

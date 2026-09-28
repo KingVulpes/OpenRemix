@@ -1,5 +1,5 @@
 #include "pathtrace/gpu.h"
-#include "pathtrace/shaders/embedded.h"
+#include "pathtrace/shader_code.h"
 #include "runtime/pipelines.h"
 #include "upscale/ngx.h"
 
@@ -43,10 +43,9 @@ namespace remix {
     try {
       auto &pipeline = indirectPass.pipeline[querySharc];
       if (!pipeline) {
-        const auto *code = querySharc ? trace::sharcIndirectTemporalShader : trace::indirectTemporalShader;
-        const size_t bytes = querySharc ? sizeof(trace::sharcIndirectTemporalShader) : sizeof(trace::indirectTemporalShader);
+        const auto source = trace::shader(querySharc ? trace::Stage::sharcIndirectTemporal : trace::Stage::indirectTemporal);
         VkShaderModuleCreateInfo info{.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-                                       .codeSize = bytes, .pCode = code};
+                                       .codeSize = source.bytes, .pCode = source.code};
         VkShaderModule module{};
         check(pipeline::createShaderModule(device, &info, nullptr, &module));
         const VkBool32 guidance = VK_FALSE;
@@ -63,7 +62,7 @@ namespace remix {
         if (result == VK_NOT_READY)
           return;
         check(result);
-        lightingPipelines[pipeline] = {code, bytes, temporalLayout};
+        lightingPipelines[pipeline] = {source.code, source.bytes, temporalLayout};
         // On the measured Turing driver, first-hit termination raises the
         // uncached producer from 128 to 168 registers. Local visibility only
         // returns a boolean, so closest-blocker traversal preserves transport.
@@ -191,49 +190,33 @@ namespace remix {
                                       .pSetLayouts = layouts};
         check(pipeline::createPipelineLayout(device, &li, nullptr,
                                              &temporalLayout));
-        auto make = [&](const uint32_t *code, size_t size, VkPipeline &out) {
-          VkShaderModuleCreateInfo ci{
-              .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = size, .pCode = code};
-          VkShaderModule shader{};
-          check(pipeline::createShaderModule(device, &ci, nullptr, &shader));
-          // Compile ordinary local lighting first; guidance is a lazy variant.
-          const VkBool32 guidance = VK_FALSE;
-          const VkSpecializationMapEntry guideEntry{1, 0, sizeof(guidance)};
-          const VkSpecializationInfo noGuiding{1, &guideEntry, sizeof(guidance), &guidance};
-          VkComputePipelineCreateInfo pi{.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-                                         .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                                   .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-                                                   .module = shader,
-                                                   .pName = "main", .pSpecializationInfo = &noGuiding},
-                                         .layout = temporalLayout};
-          auto result = pipeline::createComputePipelines(device, VK_NULL_HANDLE,
-                                                         1, &pi, nullptr, &out);
-          pipeline::destroyShaderModule(device, shader, nullptr);
-          check(result);
-          lightingPipelines[out] = {code, size, temporalLayout};
-          lightingPipelines[out].supportsGuiding = &out == &temporalCompute || &out == &splitDirectCompute;
+        // One batch: the temporal lighting passes compile concurrently.
+        std::vector<LightingRequest> requests;
+        auto make = [&](trace::Stage stage, VkPipeline &out) {
+          requests.push_back({stage, temporalLayout, &out, &out == &temporalCompute || &out == &splitDirectCompute});
         };
         if (postSplit && postSigma)
-          make(trace::splitLocalSigmaTemporalShader, sizeof(trace::splitLocalSigmaTemporalShader), temporalCompute);
+          make(trace::Stage::splitLocalSigmaTemporal, temporalCompute);
         else if (postSplit)
-          make(trace::splitLocalTemporalShader, sizeof(trace::splitLocalTemporalShader), temporalCompute);
+          make(trace::Stage::splitLocalTemporal, temporalCompute);
         else if (postLocal && postSigma)
-          make(trace::localSigmaTemporalShader, sizeof(trace::localSigmaTemporalShader), temporalCompute);
+          make(trace::Stage::localSigmaTemporal, temporalCompute);
         else if (postLocal)
-          make(trace::localTemporalShader, sizeof(trace::localTemporalShader), temporalCompute);
+          make(trace::Stage::localTemporal, temporalCompute);
         else if (postSigma)
-          make(trace::sigmaTemporalShader, sizeof(trace::sigmaTemporalShader), temporalCompute);
+          make(trace::Stage::sigmaTemporal, temporalCompute);
         else
-          make(trace::temporalShader, sizeof(trace::temporalShader), temporalCompute);
-        make(trace::temporalTransparencyShader, sizeof(trace::temporalTransparencyShader),
+          make(trace::Stage::temporal, temporalCompute);
+        make(trace::Stage::temporalTransparency,
              temporalTransparencyCompute);
-        make(trace::frontGuidesShader, sizeof(trace::frontGuidesShader), frontGuidesCompute);
-        make(trace::singleTemporalTransparencyShader, sizeof(trace::singleTemporalTransparencyShader),
+        make(trace::Stage::frontGuides, frontGuidesCompute);
+        make(trace::Stage::singleTemporalTransparency,
              singleTemporalTransparencyCompute);
         if (postSplit)
-          make(trace::splitLocalDirectShader, sizeof(trace::splitLocalDirectShader), splitDirectCompute);
+          make(trace::Stage::splitLocalDirect, splitDirectCompute);
         if (reblur)
-          make(trace::confidenceShader, sizeof(trace::confidenceShader), confidenceCompute);
+          make(trace::Stage::confidence, confidenceCompute);
+        createLightingPipelines(requests);
         denoiser = std::move(next);
         return;
       } catch (VkResult r) {
@@ -305,7 +288,14 @@ namespace remix {
     g.rrRequested = options.dlssRayReconstruction;
     g.failedBackends = failedBackends;
     g.fsrFailure = failure;
+    // Schedule every pass's lighting pipelines before awaiting any of them.
+    g.deferLighting = true;
+    struct Defer {
+      Gpu &g;
+      ~Defer() { g.deferLighting = false; }
+    } defer{g};
     g.configureFrame(options, perspective, local);
+    g.finishLightingPipelines();
   }
   bool PathTracer::finishPreparation(VkQueue queue) {
     auto &g = *m_gpu;

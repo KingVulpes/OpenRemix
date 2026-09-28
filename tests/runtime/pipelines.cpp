@@ -2,6 +2,9 @@
 #include "runtime/pipeline_cache.h"
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -174,6 +177,48 @@ int main(int argc, char **argv) {
       });
       await(nested);
       require(count == 3, "inline dependency must not deadlock or run twice");
+    }
+    {
+      // Additional workers run Parallel jobs concurrently. A Serial job still
+      // starts after every earlier job, and a worker awaits a job another
+      // worker runs rather than failing it.
+      PreparationQueue queue(3);
+      std::mutex mutex;
+      std::condition_variable changed;
+      int started = 0;
+      bool overlapped = true;
+      auto both = [&] {
+        std::unique_lock lock(mutex);
+        ++started;
+        changed.notify_all();
+        overlapped &= changed.wait_for(lock, 5s, [&] { return started >= 2; });
+      };
+      auto a = queue.request("parallel-a", both, PreparationQueue::Kind::Parallel);
+      auto b = queue.request("parallel-b", both, PreparationQueue::Kind::Parallel);
+      bool followed = false;
+      auto barrier = queue.request("serial-barrier", [&] { followed = a->ready() && b->ready(); });
+      await(barrier);
+      require(overlapped && followed, "parallel jobs overlap and a serial job follows them");
+      std::promise<void> release, slowStarted;
+      auto gate = release.get_future().share();
+      std::promise<PreparationQueue::Ticket> requested;
+      bool awaited = false;
+      auto parent = queue.request("waiter", [&] {
+        auto slow = queue.request("slow", [&] {
+          slowStarted.set_value();
+          gate.wait();
+        }, PreparationQueue::Kind::Parallel);
+        requested.set_value(slow);
+        slowStarted.get_future().wait(); // A helper runs it.
+        queue.finishOnWorker(slow);
+        awaited = slow->ready();
+      });
+      auto slow = requested.get_future().get();
+      std::this_thread::sleep_for(20ms);
+      require(!parent->ready() && !slow->ready(), "worker waits for a job running elsewhere");
+      release.set_value();
+      await(parent);
+      require(awaited, "awaited job completed before the waiter continued");
     }
     {
       const auto path = std::filesystem::path(argv[1]) / "cache-test.bin";

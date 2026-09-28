@@ -45,6 +45,11 @@ REMIX_PIPELINE_OBJECT(RenderPass, VkRenderPass)
 VKAPI_ATTR VkResult VKAPI_CALL createComputePipelines(
     VkDevice, VkPipelineCache, uint32_t, const VkComputePipelineCreateInfo *,
     const VkAllocationCallbacks *, VkPipeline *);
+// Schedules the compiles createComputePipelines would perform and returns
+// without waiting; a later createComputePipelines of the same pipelines
+// awaits them. Lets a worker queue independent batches before blocking.
+VKAPI_ATTR void VKAPI_CALL prefetchComputePipelines(
+    VkDevice, uint32_t, const VkComputePipelineCreateInfo *);
 VKAPI_ATTR VkResult VKAPI_CALL createGraphicsPipelines(
     VkDevice, VkPipelineCache, uint32_t, const VkGraphicsPipelineCreateInfo *,
     const VkAllocationCallbacks *, VkPipeline *);

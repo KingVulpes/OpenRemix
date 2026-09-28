@@ -2,10 +2,12 @@
 #include "runtime/pipeline_cache.h"
 #include "platform/utf8_path.h"
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include <map>
 #include <stdexcept>
+#include <thread>
 
 namespace remix::pipeline {
 namespace {
@@ -185,8 +187,19 @@ struct Service::Impl {
     PreparationQueue::Ticket job;
   };
   std::map<std::string, std::shared_ptr<Pipeline>> pipelines;
+  // Cache writes are coalesced: a save covers every compile finished before it.
+  std::mutex saveMutex;
+  std::atomic<uint64_t> saveRequests{0};
+  uint64_t savedRequest = 0; // guarded by saveMutex
   PreparationQueue queue;
-  explicit Impl(VkDevice value) : device(value) {}
+  explicit Impl(VkDevice value) : device(value), queue(compilerThreads()) {}
+  // Independent pipelines compile concurrently; drivers compile each one on
+  // the calling thread. REMIX_PIPELINE_THREADS overrides the worker count.
+  static unsigned compilerThreads() {
+    if (const char *value = std::getenv("REMIX_PIPELINE_THREADS"); value && *value)
+      return std::clamp(unsigned(std::strtoul(value, nullptr, 10)), 1u, 64u);
+    return std::clamp(std::thread::hardware_concurrency() / 2, 1u, 8u);
+  }
   std::string definition(uint32_t type, uint64_t handle) {
     return definitions.at({type, handle}); // caller holds mutex
   }
@@ -234,12 +247,13 @@ struct Service::Impl {
       key.blob(stage.data.data() + entry.offset, entry.size);
     }
   }
-  VkResult
-  request(std::string key,
+  // Schedules a compile (or finds the existing one) without waiting, so a
+  // batch of pipelines is queued before any of it is awaited.
+  std::shared_ptr<Pipeline>
+  enqueue(std::string key,
           std::function<VkResult(VkPipeline *,
                                  VkPipelineCreationFeedbackCreateInfo *)>
-              compile,
-          VkPipeline *out) {
+              compile) {
     queue.checkCancelled();
     std::shared_ptr<Pipeline> result;
     {
@@ -286,12 +300,16 @@ struct Service::Impl {
             result->handle = {};
             throw status;
           }
-          // Serial compiler owns the VkPipelineCache, including serialization.
           save();
-        });
+        }, PreparationQueue::Kind::Parallel);
         pipelines.emplace(std::move(key), result);
       }
     }
+    return result;
+  }
+  // Workers compile a missing pipeline inline or wait for another worker's
+  // compile of it; other threads get VK_NOT_READY until it is ready.
+  VkResult resolve(const std::shared_ptr<Pipeline> &result, VkPipeline *out) {
     *out = {};
     if (queue.onWorker())
       queue.finishOnWorker(result->job);
@@ -308,6 +326,11 @@ struct Service::Impl {
   void save() noexcept {
     if (!cache)
       return;
+    const uint64_t request = ++saveRequests;
+    std::lock_guard saving(saveMutex);
+    if (savedRequest >= request)
+      return; // A later save already included this compile.
+    savedRequest = saveRequests.load();
     try {
       size_t size = 0;
       if (vkGetPipelineCacheData(device, cache, &size, nullptr) != VK_SUCCESS ||
@@ -584,6 +607,43 @@ RETAIN(PipelineLayout, VkPipelineLayout)
 RETAIN(RenderPass, VkRenderPass)
 RETAIN(Pipeline, VkPipeline)
 #undef RETAIN
+namespace {
+// Every pipeline of a call is queued before any is awaited: workers compile
+// the rest of the batch while the caller compiles or waits for one of them.
+VkResult resolveBatch(Service::Impl &g,
+                      const std::vector<std::shared_ptr<Service::Impl::Pipeline>> &batch,
+                      VkPipeline *out) {
+  VkResult result = VK_SUCCESS;
+  for (size_t n = 0; n < batch.size(); ++n)
+    if (const auto r = g.resolve(batch[n], out + n); r != VK_SUCCESS)
+      result = r;
+  return result;
+}
+} // namespace
+namespace {
+std::shared_ptr<Service::Impl::Pipeline>
+enqueueCompute(Service::Impl &g, const VkComputePipelineCreateInfo &info) {
+  auto recipe = std::make_shared<Compute>(info);
+  Key k;
+  k.add(uint32_t(VK_PIPELINE_BIND_POINT_COMPUTE));
+  k.add(recipe->info.flags);
+  {
+    std::lock_guard lock(g.mutex);
+    g.stageKey(k, recipe->stage);
+    k.add(g.definition(VK_OBJECT_TYPE_PIPELINE_LAYOUT,
+                       uint64_t(recipe->info.layout)));
+  }
+  return g.enqueue(
+      std::move(k.bytes),
+      [recipe, &g](VkPipeline *p,
+                   VkPipelineCreationFeedbackCreateInfo *feedback) {
+        recipe->info.stage = recipe->stage.bind();
+        recipe->info.pNext = feedback;
+        return vkCreateComputePipelines(g.device, g.cache, 1, &recipe->info,
+                                        nullptr, p);
+      });
+}
+} // namespace
 VKAPI_ATTR VkResult VKAPI_CALL
 createComputePipelines(VkDevice d, VkPipelineCache, uint32_t count,
                        const VkComputePipelineCreateInfo *infos,
@@ -591,32 +651,18 @@ createComputePipelines(VkDevice d, VkPipelineCache, uint32_t count,
   require(!a);
   std::fill_n(out, count, VK_NULL_HANDLE);
   auto &g = service(d);
-  VkResult result = VK_SUCCESS;
-  for (uint32_t n = 0; n < count; ++n) {
-    auto recipe = std::make_shared<Compute>(infos[n]);
-    Key k;
-    k.add(uint32_t(VK_PIPELINE_BIND_POINT_COMPUTE));
-    k.add(recipe->info.flags);
-    {
-      std::lock_guard lock(g.mutex);
-      g.stageKey(k, recipe->stage);
-      k.add(g.definition(VK_OBJECT_TYPE_PIPELINE_LAYOUT,
-                         uint64_t(recipe->info.layout)));
-    }
-    const auto r = g.request(
-        std::move(k.bytes),
-        [recipe, &g](VkPipeline *p,
-                     VkPipelineCreationFeedbackCreateInfo *feedback) {
-          recipe->info.stage = recipe->stage.bind();
-          recipe->info.pNext = feedback;
-          return vkCreateComputePipelines(g.device, g.cache, 1, &recipe->info,
-                                          nullptr, p);
-        },
-        out + n);
-    if (r != VK_SUCCESS)
-      result = r;
-  }
-  return result;
+  std::vector<std::shared_ptr<Service::Impl::Pipeline>> batch;
+  batch.reserve(count);
+  for (uint32_t n = 0; n < count; ++n)
+    batch.push_back(enqueueCompute(g, infos[n]));
+  return resolveBatch(g, batch, out);
+}
+VKAPI_ATTR void VKAPI_CALL
+prefetchComputePipelines(VkDevice d, uint32_t count,
+                         const VkComputePipelineCreateInfo *infos) {
+  auto &g = service(d);
+  for (uint32_t n = 0; n < count; ++n)
+    enqueueCompute(g, infos[n]);
 }
 VKAPI_ATTR VkResult VKAPI_CALL
 createGraphicsPipelines(VkDevice d, VkPipelineCache, uint32_t count,
@@ -625,7 +671,8 @@ createGraphicsPipelines(VkDevice d, VkPipelineCache, uint32_t count,
   require(!a);
   std::fill_n(out, count, VK_NULL_HANDLE);
   auto &g = service(d);
-  VkResult result = VK_SUCCESS;
+  std::vector<std::shared_ptr<Service::Impl::Pipeline>> batch;
+  batch.reserve(count);
   for (uint32_t n = 0; n < count; ++n) {
     auto r = std::make_shared<Graphics>(infos[n]);
     Key k;
@@ -723,18 +770,15 @@ createGraphicsPipelines(VkDevice d, VkPipelineCache, uint32_t count,
       k.add(b.alphaBlendOp);
       k.add(b.colorWriteMask);
     }
-    const auto status = g.request(
+    batch.push_back(g.enqueue(
         std::move(k.bytes),
         [r, &g](VkPipeline *p, VkPipelineCreationFeedbackCreateInfo *feedback) {
           r->bind();
           r->info.pNext = feedback;
           return vkCreateGraphicsPipelines(g.device, g.cache, 1, &r->info,
                                            nullptr, p);
-        },
-        out + n);
-    if (status != VK_SUCCESS)
-      result = status;
+        }));
   }
-  return result;
+  return resolveBatch(g, batch, out);
 }
 } // namespace remix::pipeline

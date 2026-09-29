@@ -18,6 +18,12 @@ namespace remix::usd {
       std::optional<std::string> error;
       bool loadError = false;
     };
+    using Stamps = std::map<std::string, std::pair<std::filesystem::file_time_type, uintmax_t>>;
+    struct Scan {
+      Stamps stamps;
+      std::optional<std::string> error; // in-band, like Set::error
+      uint64_t epoch = 0;
+    };
     struct State {
       bool enabled = false, watch = true;
       Options options;
@@ -28,7 +34,12 @@ namespace remix::usd {
       std::set<remixapi_LightHandle> overriddenLights;
       uint64_t generation = 0;
       std::vector<std::unique_ptr<Submission>> submissions;
-      std::map<std::string, std::pair<std::filesystem::file_time_type, uintmax_t>> stamps;
+      Stamps stamps;
+      // Watch scans run off the Present thread: walking a large mod tree takes
+      // far longer than a frame (notably under Wine). A scan started before
+      // the baseline was last reset is discarded.
+      std::future<Scan> scan;
+      uint64_t scanEpoch = 0;
       Clock::time_point next{}, changed{};
     } state;
     std::vector<std::string> paths(const std::string &directory) {
@@ -70,11 +81,14 @@ namespace remix::usd {
       }
       return result;
     }
-    auto stamps() {
-      std::map<std::string, std::pair<std::filesystem::file_time_type, uintmax_t>> result;
+    std::set<std::string> watchedDependencies() {
       auto deps = state.active.dependencies;
       deps.insert(state.failedDependencies.begin(), state.failedDependencies.end());
-      for (const auto &path : paths(state.directory))
+      return deps;
+    }
+    Stamps scanStamps(const std::string &directory, std::set<std::string> deps) {
+      Stamps result;
+      for (const auto &path : paths(directory))
         deps.insert(path);
       for (const auto &path : deps) {
         std::error_code ec;
@@ -83,6 +97,10 @@ namespace remix::usd {
         result[path] = {time, ec ? 0 : size};
       }
       return result;
+    }
+    Stamps stamps() {
+      ++state.scanEpoch;
+      return scanStamps(state.directory, watchedDependencies());
     }
     void refreshDependencies() {
       auto current = stamps();
@@ -194,19 +212,34 @@ namespace remix::usd {
     auto now = Clock::now();
     if (!state.watch || state.pending.valid() || now < state.next)
       return;
+    if (!state.scan.valid()) {
+      state.scan = std::async(std::launch::async, [directory = state.directory, deps = watchedDependencies(),
+                                                   epoch = state.scanEpoch] {
+        Scan scan{.epoch = epoch};
+        try {
+          scan.stamps = scanStamps(directory, std::move(deps));
+        } catch (const std::exception &e) {
+          scan.error = e.what();
+        }
+        return scan;
+      });
+      return;
+    }
+    if (state.scan.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+      return;
+    auto scan = state.scan.get();
     state.next = now + std::chrono::milliseconds(100);
-    try {
-      auto current = stamps();
-      if (current != state.stamps) {
-        state.stamps = std::move(current);
-        state.changed = now;
-      }
-      if (state.changed != Clock::time_point{} && now - state.changed >= std::chrono::milliseconds(250)) {
-        state.changed = {};
-        launch();
-      }
-    } catch (const std::exception &e) {
-      state.diagnostic = e.what();
+    if (scan.error) {
+      state.diagnostic = *scan.error;
+      return;
+    }
+    if (scan.epoch == state.scanEpoch && scan.stamps != state.stamps) {
+      state.stamps = std::move(scan.stamps);
+      state.changed = now;
+    }
+    if (state.changed != Clock::time_point{} && now - state.changed >= std::chrono::milliseconds(250)) {
+      state.changed = {};
+      launch();
     }
   }
   bool modInstance(NativeResources &resources, const remixapi_InstanceInfo &info, uint64_t originalHash) {

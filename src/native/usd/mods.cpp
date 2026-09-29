@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <future>
+#include <optional>
 
 namespace remix::usd {
   namespace {
@@ -12,6 +13,10 @@ namespace remix::usd {
       std::vector<Snapshot> snapshots;
       std::map<uint64_t, std::pair<size_t, Json>> meshes, lights, materials;
       std::set<std::string> dependencies;
+      // Parse failures travel in-band: an exception_ptr crossing threads is
+      // destroyed early under mixed MSVC runtimes (Proton's builtin vcruntime).
+      std::optional<std::string> error;
+      bool loadError = false;
     };
     struct State {
       bool enabled = false, watch = true;
@@ -89,7 +94,19 @@ namespace remix::usd {
     }
     void launch() {
       state.pending = std::async(std::launch::async, [directory = state.directory, options = state.options] {
-        return parse(directory, options);
+        try {
+          return parse(directory, options);
+        } catch (const LoadError &e) {
+          Set failed;
+          failed.error = e.what();
+          failed.loadError = true;
+          failed.dependencies = e.dependencies;
+          return failed;
+        } catch (const std::exception &e) {
+          Set failed;
+          failed.error = e.what();
+          return failed;
+        }
       });
     }
   } // namespace
@@ -140,6 +157,10 @@ namespace remix::usd {
         state.pending.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
       try {
         auto next = state.pending.get();
+        if (next.error && next.loadError)
+          throw LoadError(*next.error, std::move(next.dependencies));
+        if (next.error)
+          throw std::runtime_error(*next.error);
         std::vector<std::unique_ptr<Submission>> submissions;
         state.failedDependencies = next.dependencies;
         resources.invalidateTexturePaths();

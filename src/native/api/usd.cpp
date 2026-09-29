@@ -7,18 +7,23 @@
 #include <cstring>
 #include <future>
 #include <map>
+#include <optional>
 namespace {
   struct Document {
     remix::usd::Options options;
     remix::usd::Snapshot snapshot;
     std::unique_ptr<remix::usd::Submission> submission;
-    std::future<remix::usd::Snapshot> pending;
+    // Failures are returned in-band (see usd/mods.cpp) rather than through
+    // the future's exception_ptr.
+    std::future<std::pair<remix::usd::Snapshot, std::optional<std::string>>> pending;
     uint64_t generation = 1;
     std::string diagnostic;
   };
   void publish(Document &d, remix::NativeResources &resources, uint64_t handle) {
     try {
-      auto snapshot = d.pending.get();
+      auto [snapshot, error] = d.pending.get();
+      if (error)
+        throw std::runtime_error(*error);
       resources.invalidateTexturePaths();
       auto submission =
           std::make_unique<remix::usd::Submission>(resources, snapshot, (handle << 32) + (d.generation + 1));
@@ -104,7 +109,13 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_ReloadUSDSceneEXT(remixapi_US
   if (d->pending.valid())
     return REMIXAPI_ERROR_CODE_ALREADY_EXISTS;
   try {
-    d->pending = std::async(std::launch::async, [options = d->options] { return remix::usd::load(options); });
+    d->pending = std::async(std::launch::async, [options = d->options] {
+      try {
+        return std::pair{remix::usd::load(options), std::optional<std::string>{}};
+      } catch (const std::exception &e) {
+        return std::pair{remix::usd::Snapshot{}, std::optional<std::string>{e.what()}};
+      }
+    });
     return REMIXAPI_ERROR_CODE_SUCCESS;
   } catch (...) {
     return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;

@@ -13,8 +13,13 @@ namespace remix {
   using namespace scene;
   using namespace scene::detail;
 
+  // A sanity bound only: surfaces are indexed with 32 bits throughout, the
+  // byte budget below bounds memory, and BLAS builds check the device's
+  // maxGeometryCount (2^24 on current drivers).
+  constexpr uint32_t maxMeshSurfaces = 65536;
+
   void NativeResources::createMesh(const remixapi_MeshInfo &info, remixapi_MeshHandle &handle) {
-    if (!info.hash || !info.surfaces_count || info.surfaces_count > 4096 || !info.surfaces_values) {
+    if (!info.hash || !info.surfaces_count || info.surfaces_count > maxMeshSurfaces || !info.surfaces_values) {
       throw invalid;
     }
     const auto *update = static_cast<const remixapi_MeshInfoUpdateEXT *>(

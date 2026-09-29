@@ -26,6 +26,7 @@
 #endif
 #include "api/entrypoints.h"
 #include "scene/images.h"
+#include <remix/remix_native_ext.h>
 #include <optional>
 
 namespace remix::api {
@@ -77,7 +78,9 @@ namespace remix::api {
     }
     return resourceCall([&](auto &raster) {
 #if REMIX_HAS_USD
-      if (remix::usd::modInstance(raster, *info))
+      const auto *replacement = static_cast<const remixapi_InstanceInfoReplacementHashEXT *>(
+          remix::scene::extension(info->pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_REPLACEMENT_HASH_EXT));
+      if (remix::usd::modInstance(raster, *info, replacement ? replacement->meshHash : 0))
         return;
 #endif
       raster.drawInstance(*info);

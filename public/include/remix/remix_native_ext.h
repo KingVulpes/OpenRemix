@@ -48,6 +48,17 @@ typedef struct remixapi_MeshInfoMotionEXT {
   remixapi_Bool enabled;
 } remixapi_MeshInfoMotionEXT;
 
+// Optional InstanceInfo pNext. The hash a USD mod keys this draw's mesh
+// replacement by (mesh_<hash>) when it is not the mesh handle, e.g. for a
+// translation layer reproducing the capture runtime's geometry hashes.
+// Zero keeps the mesh handle as the key.
+#define REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_REPLACEMENT_HASH_EXT ((remixapi_StructType)0x7fff1012)
+typedef struct remixapi_InstanceInfoReplacementHashEXT {
+  remixapi_StructType sType;
+  const void* pNext;
+  uint64_t meshHash;
+} remixapi_InstanceInfoReplacementHashEXT;
+
 // Raw BC1 uploads with one-bit alpha. The retained BC1_RGB formats remain opaque.
 #define REMIXAPI_FORMAT_BC1_RGBA_UNORM_EXT ((remixapi_Format)133)
 #define REMIXAPI_FORMAT_BC1_RGBA_SRGB_EXT ((remixapi_Format)134)

@@ -2,6 +2,10 @@
 #include "scene/images.h"
 #include "platform/utf8_path.h"
 #include <charconv>
+#include <algorithm>
+#include <set>
+#include <thread>
+#include <atomic>
 #include <cmath>
 #include <filesystem>
 #include <functional>
@@ -247,26 +251,49 @@ namespace remix::usd {
         if (warning.get<std::string>().starts_with("Unresolved texture "))
           throw std::runtime_error(warning.get<std::string>());
       if (options.preloadTextures) {
-        auto prepare = [&](const std::string &path) {
-          if (path.empty() || result.textures.contains(path))
-            return;
-          try {
-            auto texture = std::make_shared<scene::Texture>();
-            texture->pixels = scene::loadTexture(utf8Path(path));
-            texture->fingerprint();
-            result.textures.emplace(path, std::move(texture));
-          } catch (...) {
-            throw std::runtime_error("Could not decode texture: " + path);
-          }
+        // Decode each distinct texture once, in parallel: large mods reference
+        // thousands, and decoding dominated their load time. Half the cores
+        // leave room for the host still rendering while mods load.
+        std::vector<std::string> paths;
+        std::set<std::string> seen;
+        auto want = [&](const std::string &path) {
+          if (!path.empty() && !result.textures.contains(path) && seen.insert(path).second)
+            paths.push_back(path);
         };
         for (const auto &material : result.scene["materials"])
           for (const char *key : {"albedo_texture", "normal_texture", "roughness_texture", "metallic_texture",
                                   "emissive_texture"})
-            prepare(material.value(key, std::string()));
+            want(material.value(key, std::string()));
         for (const auto &light : result.scene["lights"])
-          prepare(light.value("texture", std::string()));
+          want(light.value("texture", std::string()));
         for (const auto &light : result.scene["replacements"]["lights"])
-          prepare(light["overrides"].value("texture", std::string()));
+          want(light["overrides"].value("texture", std::string()));
+        std::vector<std::shared_ptr<scene::Texture>> decoded(paths.size());
+        std::atomic<size_t> next{0};
+        auto work = [&] {
+          for (size_t i; (i = next++) < paths.size();) {
+            try {
+              auto texture = std::make_shared<scene::Texture>();
+              texture->pixels = scene::loadTexture(utf8Path(paths[i]));
+              texture->fingerprint();
+              decoded[i] = std::move(texture);
+            } catch (...) {
+              // Left null; reported below. Exceptions stay on their thread.
+            }
+          }
+        };
+        const unsigned threads = std::clamp(std::thread::hardware_concurrency() / 2, 1u, 8u);
+        std::vector<std::thread> pool;
+        for (unsigned t = 1; t < threads && t < paths.size(); ++t)
+          pool.emplace_back(work);
+        work();
+        for (auto &thread : pool)
+          thread.join();
+        for (size_t i = 0; i < paths.size(); ++i) {
+          if (!decoded[i])
+            throw std::runtime_error("Could not decode texture: " + paths[i]);
+          result.textures.emplace(paths[i], std::move(decoded[i]));
+        }
       }
       result.scene["meters_per_unit"] = options.meters > 0 ? options.meters : sourceMeters;
       result.scene["up_axis"] = axis.GetString();

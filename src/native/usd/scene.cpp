@@ -291,10 +291,17 @@ namespace remix::usd {
     result["warnings"] = warnings;
     return result;
   }
+  // Remix mods author replacements as `over "mesh_<hash>"` with defined
+  // children (lights, meshes). The default predicate requires every ancestor
+  // to be defined and would prune those subtrees; typeless overs compose as
+  // plain transforms.
+  Usd_PrimFlagsPredicate traversal() {
+    return UsdTraverseInstanceProxies(UsdPrimIsActive && UsdPrimIsLoaded && !UsdPrimIsAbstract);
+  }
   Json compose_lights(const UsdStageRefPtr &stage, uint64_t revision) {
     Json result{{"revision", revision}, {"lights", Json::array()}, {"warnings", Json::array()}};
     UsdGeomXformCache transforms(UsdTimeCode::EarliestTime());
-    for (auto prim : UsdPrimRange::Stage(stage, UsdTraverseInstanceProxies())) {
+    for (auto prim : UsdPrimRange::Stage(stage, traversal())) {
       // Mesh emitters take the geometry branch in compose_scene as well.
       if (!UsdLuxLightAPI(prim) || prim.IsA<UsdGeomMesh>() ||
           UsdGeomImageable(prim).ComputeVisibility() == UsdGeomTokens->invisible)
@@ -319,7 +326,7 @@ namespace remix::usd {
     CaptureCategories categories(stage, result["warnings"]);
     result["category_sources"] = categories.sources();
     std::set<std::string> materials;
-    for (auto prim : UsdPrimRange::Stage(stage, UsdTraverseInstanceProxies())) {
+    for (auto prim : UsdPrimRange::Stage(stage, traversal())) {
       auto imageable = UsdGeomImageable(prim);
       if (imageable && imageable.ComputeVisibility() == UsdGeomTokens->invisible)
         continue;

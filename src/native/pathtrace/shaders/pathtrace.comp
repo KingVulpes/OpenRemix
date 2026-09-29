@@ -83,7 +83,7 @@ bool acceptCandidate(Surface s,uint triangle,vec2 bary) {
   float vertex=(uses&2u)==0?1:s.vertices.v[i.x].color.a*w.x+s.vertices.v[i.y].color.a*w.y+s.vertices.v[i.z].color.a*w.z;
   return visibleAlpha(s,materialAlpha(s,uv,vertex,(uses&1u)!=0));
 }
-struct Hit { float t; vec3 p; vec3 n; vec4 color; bool blended; bool blendedDraw; bool decal; bool tinted; bool cacheable; vec3 previousPosition; bool historyValid; vec3 emission; float identity; vec3 ng; vec3 wo; vec2 rm; bool pbr; };
+struct Hit { float t; vec3 p; vec3 n; vec4 color; bool blended; bool blendedDraw; bool decal; uint decalMode; bool tinted; bool cacheable; vec3 previousPosition; bool historyValid; vec3 emission; float identity; vec3 ng; vec3 wo; vec2 rm; bool pbr; };
 // Every query rejects back faces of one-sided surfaces ((state.w&4)==0 below).
 // With hardware face culling (target.z bit 2) one-sided instances enable
 // facing culling in the TLAS and this flag culls exactly those back faces in
@@ -134,7 +134,7 @@ void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, ino
     normal=shadingNormal(transpose(mat3(rayQueryGetIntersectionWorldToObjectEXT(query,true)))*normal,hit.ng,hit.wo);
     hit.n=materialNormal(s,uv,materialBasis(normal,model*vec4(b-a,0),model*vec4(c-a,0),ub-ua,uc-ua),hit.wo);
   }
-  hit.decal=enableDecals&&decalSurface(s);hit.blendedDraw=(s.state.w&2)!=0;hit.blended=blendedAtAlpha(s,hit.color.a);hit.cacheable=(s.state.w&16)!=0;
+  hit.decal=enableDecals&&decalSurface(s);hit.decalMode=(s.state.w>>7)&3u;hit.blendedDraw=(s.state.w&2)!=0;hit.blended=blendedAtAlpha(s,hit.color.a);hit.cacheable=(s.state.w&16)!=0;
   hit.tinted=(s.state.w&32)!=0;
   hit.previousPosition=hit.p;hit.historyValid=false;
 // The visibility pass captures foreground and background motion before shading.
@@ -150,7 +150,7 @@ void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, ino
 #endif
 }
 Hit closestGeometry(vec3 origin,vec3 direction,float maximum,bool motion,float minimum) {
-  Hit hit; hit.t=maximum; hit.p=vec3(0);hit.n=vec3(0);hit.color=vec4(0);hit.blended=false;hit.blendedDraw=false;hit.decal=false;hit.cacheable=false;hit.previousPosition=vec3(0);hit.historyValid=false;
+  Hit hit; hit.t=maximum; hit.p=vec3(0);hit.n=vec3(0);hit.color=vec4(0);hit.blended=false;hit.blendedDraw=false;hit.decal=false;hit.decalMode=0u;hit.cacheable=false;hit.previousPosition=vec3(0);hit.historyValid=false;
   hit.emission=vec3(0);hit.tinted=false;
   hit.identity=0;hit.ng=vec3(0);hit.wo=-direction;hit.rm=vec2(1,0);hit.pbr=false;
   if ((frame.target.z&1)!=0) queryScene(staticScene,origin,direction,hit,motion,minimum);
@@ -169,12 +169,20 @@ Hit resolveDecals(Hit first,vec3 origin,vec3 direction,float maximum,bool motion
   Hit hit=first;
   vec3 color=vec3(0),normal=vec3(0),emission=vec3(0);
   vec2 parameters=vec2(0);
-  float remaining=1;
+  // `through` carries color into the layers below: alpha paint covers them,
+  // multiplicative paint (D3D DESTCOLOR*SRCCOLOR, mod2x) tints them and keeps
+  // the receiver's normal and roughness.
+  float remaining=1;vec3 through=vec3(1);
   for(uint layer=0;layer<32&&hit.decal;++layer) {
-    float weight=remaining*hit.color.a;
-    color+=weight*hit.color.rgb;normal+=weight*hit.n;emission+=weight*hit.emission;
-    parameters+=weight*vec2(hit.rm.x*hit.rm.x,hit.rm.y);
-    remaining*=1-hit.color.a;
+    if(hit.decalMode!=0u) {
+      // mod2x is authored in sRGB (128 is neutral): scale so linear(128/255) maps to one.
+      through*=hit.color.rgb*(hit.decalMode==2u?4.634:1.);
+    } else {
+      float weight=remaining*hit.color.a;
+      color+=through*hit.color.a*hit.color.rgb;normal+=weight*hit.n;emission+=through*hit.color.a*hit.emission;
+      parameters+=weight*vec2(hit.rm.x*hit.rm.x,hit.rm.y);
+      remaining*=1-hit.color.a;through*=1-hit.color.a;
+    }
     // Keep the ray origin fixed. The normal-offset used for lighting rays can
     // jump through a decal's close receiver at large world coordinates.
     float minimum=uintBitsToFloat(floatBitsToUint(hit.t)+1u);
@@ -183,8 +191,8 @@ Hit resolveDecals(Hit first,vec3 origin,vec3 direction,float maximum,bool motion
   // Unattached decals and layers above translucent receivers retain ordinary
   // source-over transport. Do not project paint onto the sky or change glass.
   if(hit.t==1e30||hit.decal||hit.blended) {first.decal=false;return first;}
-  hit.color.rgb=color+remaining*hit.color.rgb;
-  hit.emission=emission+remaining*hit.emission;
+  hit.color.rgb=min(color+through*hit.color.rgb,vec3(1));
+  hit.emission=emission+through*hit.emission;
   normal+=remaining*hit.n;
   hit.n=dot(normal,normal)>1e-12?shadingNormal(normal,hit.ng,hit.wo):hit.n;
   parameters+=remaining*vec2(hit.rm.x*hit.rm.x,hit.rm.y);
@@ -203,7 +211,7 @@ Hit rasterPrimary(ivec2 pixel, vec3 origin) {
   Hit hit;
   hit.t=normal.w==0?1e30:length(position.xyz-origin);
   hit.p=position.xyz;hit.n=normal.w==0?vec3(0):normalize(normal.xyz);
-  hit.color=imageLoad(primaryAlbedo,pixel);hit.blended=normal.w>=2;hit.blendedDraw=hit.blended;hit.decal=normal.w==4;hit.tinted=normal.w==3;hit.cacheable=false;
+  hit.color=imageLoad(primaryAlbedo,pixel);hit.blended=normal.w>=2;hit.blendedDraw=hit.blended;hit.decal=normal.w==4;hit.decalMode=0u;hit.tinted=normal.w==3;hit.cacheable=false;
   hit.previousPosition=previous.xyz;hit.historyValid=previous.w!=0;
   hit.emission=imageLoad(primaryEmission,pixel).rgb;
   hit.identity=imageLoad(primaryEmission,pixel).a;

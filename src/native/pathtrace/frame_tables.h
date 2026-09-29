@@ -54,6 +54,18 @@ namespace remix::trace::detail {
   };
   static_assert(sizeof(TraceSurface) == 256);
   inline float linear(float c) { return c <= .04045f ? c / 12.92f : std::pow((c + .055f) / 1.055f, 2.4f); }
+  // Decal paint mode (TraceSurface state bits 7-8): 0 alpha-over, 1 multiply
+  // (DST_COLOR*ZERO or ZERO*SRC_COLOR), 2 double multiply (DST_COLOR*SRC_COLOR, mod2x).
+  inline uint32_t decalMode(const scene::Blend &b) {
+    constexpr uint32_t zero = 0, srcColor = 2, dstColor = 4;
+    if (b.op != 0)
+      return 0;
+    if (b.src == dstColor && b.dst == srcColor)
+      return 2;
+    if ((b.src == dstColor && b.dst == zero) || (b.src == zero && b.dst == srcColor))
+      return 1;
+    return 0;
+  }
 } // namespace remix::trace::detail
 
 namespace remix::trace {
@@ -710,7 +722,8 @@ namespace remix::trace {
         value.state[3] = uint32_t(surface.ignoreAlpha) | uint32_t(b.enabled) << 1 |
                          uint32_t(surface.doubleSided) << 2 | uint32_t(material.transmission) << 3 |
                          uint32_t(draw.classification == 0) << 4 |
-                         uint32_t(material.translucent && !surface.decal) << 5 | uint32_t(surface.decal) << 6;
+                         uint32_t(material.translucent && !surface.decal) << 5 | uint32_t(surface.decal) << 6 |
+                         (surface.decal ? detail::decalMode(b) : 0u) << 7;
         if (draw.classification == 0) {
           write(staticCursor, value.tint, sizeof(value.tint));
           write(staticCursor, value.factor, sizeof(value.factor));

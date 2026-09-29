@@ -2,12 +2,63 @@
 #include "runtime/pipelines.h"
 #include "scene/images.h"
 #include <remix/remix_native_ext.h>
+#include <algorithm>
 
 namespace remix {
   using namespace scene;
   using namespace raster::detail;
 
   namespace {
+    // The CPU side accepts textures up to maxTextureDimension; past the
+    // device's image limit a reduced copy is uploaded instead of failing the
+    // frame: the first mip level that fits, the compressed preview, or a
+    // single mean texel.
+    Pixels oversizedFallback(const Pixels &p, uint32_t limit) {
+      Pixels out{0, 0, p.srgb};
+      out.twoChannel = p.twoChannel;
+      if (p.compressed) {
+        const auto &c = *p.compressed;
+        out.width = c.previewWidth;
+        out.height = c.previewHeight;
+        out.mips = {c.preview};
+        if (!c.hdrPreview.empty())
+          out.hdrMips = {c.hdrPreview};
+        return out;
+      }
+      uint32_t width = p.width, height = p.height;
+      size_t first = 0;
+      while ((width > limit || height > limit) && first + 1 < p.mips.size()) {
+        width = std::max(1u, width / 2);
+        height = std::max(1u, height / 2);
+        ++first;
+      }
+      if (width <= limit && height <= limit) {
+        out.width = width;
+        out.height = height;
+        out.mips.assign(p.mips.begin() + first, p.mips.end());
+        if (first < p.hdrMips.size())
+          out.hdrMips.assign(p.hdrMips.begin() + first, p.hdrMips.end());
+        return out;
+      }
+      out.width = out.height = 1;
+      const size_t texels = size_t(p.width) * p.height;
+      double sum[4] = {};
+      for (size_t i = 0; i < texels; ++i)
+        for (int k = 0; k < 4; ++k)
+          sum[k] += p.mips[0][4 * i + k];
+      out.mips = {std::vector<uint8_t>(4)};
+      for (int k = 0; k < 4; ++k)
+        out.mips[0][k] = uint8_t(sum[k] / double(texels) + .5);
+      if (!p.hdrMips.empty()) {
+        std::vector<float> mean(4);
+        for (size_t i = 0; i < texels; ++i)
+          for (int k = 0; k < 4; ++k)
+            mean[k] += p.hdrMips[0][4 * i + k] / float(texels);
+        out.hdrMips = {std::move(mean)};
+      }
+      return out;
+    }
+
     VkFormat blockFormat(uint32_t format) {
       switch (format) {
       case REMIXAPI_FORMAT_BC1_RGB_SRGB:
@@ -81,6 +132,10 @@ namespace remix {
     if (it != textures.end()) {
       return it->second;
     }
+    const uint32_t limit = properties.limits.maxImageDimension2D;
+    if (source->pixels.width > limit || source->pixels.height > limit)
+      return textures.emplace(source.get(), uploadPixels(source, oversizedFallback(source->pixels, limit), command, 0))
+          .first->second;
     if (source->pixels.compressed)
       return compressedTexture(source, command);
     return textures.emplace(source.get(), uploadPixels(source, source->pixels, command, 0)).first->second;

@@ -3,6 +3,9 @@
 #include <filesystem>
 
 namespace remix::scene {
+  // Largest texture edge accepted on the CPU side. Image creation still checks
+  // the device's maxImageDimension2D (16384 on some GPUs).
+  inline constexpr uint32_t maxTextureDimension = 32768;
   Pixels decodeTexture(const remixapi_TextureInfo &info);
   Pixels loadTexture(const std::filesystem::path &path);
   // BC1/BC3/BC4/BC5/BC6H/BC7 formats that compressTexture accepts.

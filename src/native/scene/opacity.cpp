@@ -1,4 +1,5 @@
 #include "scene/opacity.h"
+#include "scene/images.h"
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -140,9 +141,9 @@ namespace remix::scene {
     dimensions = {};
     if (texture) {
       const auto &p = texture->pixels;
-      // Resource decoding bounds dimensions to 16384; reject malformed CPU
+      // Resource decoding bounds dimensions to maxTextureDimension; reject malformed CPU
       // snapshots too, keeping prefix counts and allocation arithmetic bounded.
-      if (p.width && p.height && p.width <= 16384 && p.height <= 16384 &&
+      if (p.width && p.height && p.width <= maxTextureDimension && p.height <= maxTextureDimension &&
           (p.compressed ? p.compressed->transparent.empty() ||
                               p.compressed->transparent.size() == (size_t(p.width) * p.height + 63) / 64
                         : !p.mips.empty() && p.mips[0].size() == size_t(p.width) * p.height * 4))

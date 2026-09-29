@@ -14,7 +14,7 @@
 #define STBI_ONLY_BMP
 #define STBI_ONLY_HDR
 #define STBI_NO_STDIO
-#define STBI_MAX_DIMENSIONS 16384
+#define STBI_MAX_DIMENSIONS 32768 // scene::maxTextureDimension
 #define STB_IMAGE_STATIC
 #define STB_IMAGE_IMPLEMENTATION
 #include <image/stb_image.h>
@@ -35,7 +35,7 @@ namespace remix::scene {
     }
     Pixels decodeFloat(uint32_t width, uint32_t height, uint32_t mips, unsigned channels, bool half,
                        const uint8_t *data, size_t size) {
-      if (!width || !height || width > 16384 || height > 16384 || !data || channels < 1 || channels > 4)
+      if (!width || !height || width > maxTextureDimension || height > maxTextureDimension || !data || channels < 1 || channels > 4)
         throw invalid;
       unsigned levels = 0;
       for (auto n = std::max(width, height); n; n >>= 1)
@@ -81,7 +81,7 @@ namespace remix::scene {
     }
     Pixels decode(uint32_t width, uint32_t height, uint32_t mips, bool srgb, uint32_t block, bool bgra,
                   const uint8_t *data, size_t size) {
-      if (!width || !height || width > 16384 || height > 16384 || !data) {
+      if (!width || !height || width > maxTextureDimension || height > maxTextureDimension || !data) {
         throw invalid;
       }
       uint32_t levels = 0;
@@ -449,7 +449,7 @@ namespace remix::scene {
     const uint32_t width = info.width, height = info.height;
     const auto *data = static_cast<const uint8_t *>(info.data);
     const size_t size = size_t(info.dataSize);
-    if (!width || !height || width > 16384 || height > 16384 || !data)
+    if (!width || !height || width > maxTextureDimension || height > maxTextureDimension || !data)
       throw invalid;
     uint32_t available = 0;
     for (auto dimension = std::max(width, height); dimension; dimension >>= 1)

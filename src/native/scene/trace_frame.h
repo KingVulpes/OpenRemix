@@ -1,6 +1,7 @@
 #pragma once
 #include "scene/types.h"
 #include "scene/light_bvh.h"
+#include "scene/light_visibility.h"
 #include "scene/emission.h"
 #include "scene/id_set.h"
 #include "scene/opacity.h"
@@ -91,6 +92,7 @@ struct TraceFrame {
   // Staged copies leave the last submitted lighting intact if presentation is skipped.
   struct Lighting {
     LightBvh combined, torch, emissive;
+    LightVisibility visibility; // for combined
     EmissionHistory history;
     bool hasEmissive = false;
   } lighting;

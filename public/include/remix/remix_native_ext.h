@@ -332,6 +332,25 @@ typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_GetLocalLightStatisticsEX
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetLocalLightStatisticsEXT(remixapi_LocalLightStatisticsEXT* statistics);
 typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_GetLocalLightGuidingStatisticsEXT)(remixapi_LocalLightGuidingStatisticsEXT* statistics);
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetLocalLightGuidingStatisticsEXT(remixapi_LocalLightGuidingStatisticsEXT* statistics);
+// A potentially-visible-set partition of the host's world (a BSP with
+// cluster-to-cluster visibility, as in id Tech and Source maps), in world
+// space. Local lights in clusters not potentially visible from a shading
+// point's cluster are excluded from light selection; lights without a
+// cluster, or that move, remain visible from everywhere. Points in leaves
+// without a cluster are unrestricted. nullptr (or nodeCount 0) clears it.
+typedef struct remixapi_VisibilityPartitionEXT {
+  uint32_t structSize;
+  uint32_t nodeCount;
+  const float* planes;          // nodeCount * 4: normal xyz, distance; front when dot(n, p) - d >= 0
+  const int32_t* children;      // nodeCount * 2: front, back; >= 0 node, < 0 leaf (-1 - leaf index)
+  uint32_t leafCount;
+  const int32_t* leafClusters;  // leafCount; -1: no cluster
+  uint32_t clusterCount;
+  uint32_t rowBytes;            // >= (clusterCount + 7) / 8
+  const uint8_t* visibility;    // clusterCount rows; bit c of row s: cluster c potentially visible from s
+} remixapi_VisibilityPartitionEXT;
+typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_SetVisibilityPartitionEXT)(const remixapi_VisibilityPartitionEXT* partition);
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_SetVisibilityPartitionEXT(const remixapi_VisibilityPartitionEXT* partition);
 typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_GetShadowStatisticsEXT)(remixapi_ShadowStatisticsEXT* statistics);
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetShadowStatisticsEXT(remixapi_ShadowStatisticsEXT* statistics);
 

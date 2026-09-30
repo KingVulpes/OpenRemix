@@ -107,8 +107,11 @@ namespace remix::trace::detail {
     float firefly[4] = {};       // outgoing local direct / indirect luminance limits; reserved
     uint32_t pathConfig[4] = {}; // adaptive termination, minimum completed bounces, reserved
     float domeTransform[3][4] = {};
+    uint64_t visibilityNodes = 0, visibilityLeaves = 0, visibilityTable = 0, visibilityReserved = 0;
+    uint32_t visibilityConfig[4] = {}; // table row words, reserved
+    float visibilityProbe[4] = {};     // probe offset above the surface (world units), reserved
   };
-  static_assert(sizeof(Frame) == 592 && offsetof(Frame, pathConfig) == 528 &&
+  static_assert(sizeof(Frame) == 656 && offsetof(Frame, visibilityNodes) == 592 && offsetof(Frame, pathConfig) == 528 &&
                 offsetof(Frame, firefly) == 512 && offsetof(Frame, indirectResults) == 496 &&
                 offsetof(Frame, lightGuideRead) == 384 && offsetof(Frame, lightGuideConfig) == 400 &&
                 offsetof(Frame, lightNodes) == 336 && offsetof(Frame, localConfig) == 352 &&
@@ -345,6 +348,9 @@ namespace remix {
     std::vector<std::shared_ptr<Arena>> arenas;
     std::unique_ptr<Buffer> scratch, table, uniform;
     scene::LightBvh lightBvh;
+    scene::LightVisibility lightVisibility;
+    std::unique_ptr<Buffer> visibilityNodes, visibilityLeaves, visibilityTable;
+    uint64_t visibilityPartitionVersion = 0, visibilityTableVersion = 0;
     scene::EmissionHistory emissionHistory;
     scene::LightBvh torchBvh, emissiveBvh;
     std::unique_ptr<Buffer> torchNodes, torchEmitters, emissiveNodes, emissiveEmitters;

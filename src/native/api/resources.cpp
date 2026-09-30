@@ -27,6 +27,7 @@
 #include "api/entrypoints.h"
 #include "scene/images.h"
 #include <remix/remix_native_ext.h>
+#include <algorithm>
 #include <optional>
 
 namespace remix::api {
@@ -173,5 +174,37 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_UpdateLightDefinition(remixap
     return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
   }
   return resourceCall([&](auto &resources) { resources.updateLight(handle, *info); });
+}
+
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL
+remixapi_SetVisibilityPartitionEXT(const remixapi_VisibilityPartitionEXT *info) {
+  std::shared_ptr<remix::scene::VisibilityPartition> partition;
+  if (info && info->nodeCount) {
+    if (info->structSize != sizeof(*info) || !info->planes || !info->children || !info->leafClusters ||
+        (info->clusterCount && !info->visibility) || info->rowBytes < (info->clusterCount + 7) / 8)
+      return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+    static uint64_t version = 0;
+    partition = std::make_shared<remix::scene::VisibilityPartition>();
+    partition->nodes.resize(info->nodeCount);
+    for (uint32_t i = 0; i < info->nodeCount; ++i) {
+      auto &node = partition->nodes[i];
+      std::copy_n(info->planes + size_t(i) * 4, 4, node.plane);
+      node.children[0] = info->children[size_t(i) * 2];
+      node.children[1] = info->children[size_t(i) * 2 + 1];
+      node.reserved[0] = node.reserved[1] = 0;
+    }
+    partition->leafClusters.assign(info->leafClusters, info->leafClusters + info->leafCount);
+    partition->clusterCount = info->clusterCount;
+    partition->rowBytes = info->rowBytes;
+    partition->visibility.assign(info->visibility, info->visibility + size_t(info->clusterCount) * info->rowBytes);
+    partition->version = ++version;
+  } else if (info && info->structSize != sizeof(*info)) {
+    return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+  }
+  std::lock_guard lock(g_apiMutex);
+  if (!g_runtime.isInitialized())
+    return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+  g_runtime.raster().setVisibilityPartition(std::move(partition));
+  return REMIXAPI_ERROR_CODE_SUCCESS;
 }
 }

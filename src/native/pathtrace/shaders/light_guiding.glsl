@@ -68,7 +68,7 @@ float lightGuideProposal(LightNodes nodes,Hit hit,uint state,out uint preferred,
   if(mixWeight<.05)return 0;
   preferred=(previous.y&0xfffffu)-1u;
   if(preferred>=frame.lightGuideConfig.y||nodes.data[preferred].links.w!=1||
-     lightWeight(nodes.data[preferred],hit.p,hit.n)<=0)return 0;
+     nodeWeight(nodes,preferred,hit.p,hit.n)<=0)return 0;
   return mixWeight;
 }
 float lightBasePdf(LightNodes nodes,Hit hit,uint preferred) {
@@ -77,7 +77,7 @@ float lightBasePdf(LightNodes nodes,Hit hit,uint preferred) {
   uint index=0;float pdf=1;
   while(nodes.data[index].links.w>1) {
     uvec4 links=nodes.data[index].links;
-    float a=lightWeight(nodes.data[links.x],hit.p,hit.n),b=lightWeight(nodes.data[links.y],hit.p,hit.n);
+    float a=nodeWeight(nodes,links.x,hit.p,hit.n),b=nodeWeight(nodes,links.y,hit.p,hit.n);
     if(a==0&&b==0)return 0;
     float split=lightSplit(a,b);
     bool right=lightRank(nodes,preferred)>=lightRank(nodes,links.y);

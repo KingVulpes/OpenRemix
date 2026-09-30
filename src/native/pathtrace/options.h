@@ -40,6 +40,9 @@ namespace remix {
     bool localGuiding = true;
     // Visibility-guiding cell size in meters (see sceneScale).
     float localGuideCellSize = 2;
+    // Exclude local lights outside the shading point's potentially visible
+    // clusters (remixapi_SetVisibilityPartitionEXT), when a partition is set.
+    bool lightVisibilityCulling = false; // opt-in: ~3 ms on L4D2 c1m1, no gain where the PVS is broad
     // Meters per world unit. Scales meter-based defaults: denoiser hit
     // distances and guiding cells (Source engine inches: 0.0254).
     float sceneScale = 1;

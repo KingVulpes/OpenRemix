@@ -23,6 +23,7 @@ namespace remix {
     frame.m_skyRadiance = m_skyRadiance;
     frame.m_light = m_light;
     frame.m_dome = m_dome;
+    frame.m_visibilityPartition = m_visibilityPartition; // shared, immutable
     // Lights resolve now, as the tracer would have at this Present: a light
     // destroyed afterwards still lights this frame, one created does not.
     frame.m_frameLights = m_frameLights;

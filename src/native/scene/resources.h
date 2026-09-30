@@ -1,5 +1,6 @@
 #pragma once
 #include "scene/id_set.h"
+#include "scene/light_visibility.h"
 #include "scene/retained.h"
 #include "scene/temporal.h"
 #include "scene/types.h"
@@ -32,6 +33,13 @@ namespace remix {
     NativeResources(const NativeResources &) = delete;
     NativeResources &operator=(const NativeResources &) = delete;
     void reset();
+    // remixapi_SetVisibilityPartitionEXT (null: none).
+    void setVisibilityPartition(std::shared_ptr<const scene::VisibilityPartition> partition) {
+      m_visibilityPartition = std::move(partition);
+    }
+    const std::shared_ptr<const scene::VisibilityPartition> &visibilityPartition() const {
+      return m_visibilityPartition;
+    }
     void clearModMaterials() {
       m_modMaterials.clear();
       m_modCandidates.clear();
@@ -203,6 +211,7 @@ namespace remix {
     bool m_refreshGeometry = false;
     std::shared_ptr<scene::Texture> m_white;
     std::shared_ptr<scene::Material> m_default;
+    std::shared_ptr<const scene::VisibilityPartition> m_visibilityPartition;
     std::unordered_map<uint64_t, std::shared_ptr<scene::Material>> m_materials, m_modMaterials;
     std::unordered_set<uint64_t> m_modCandidates, m_modRequested;
     std::vector<uint64_t> m_modRequests;

@@ -84,6 +84,10 @@ namespace remix {
       ui::SliderFloat("Light reach (0 = unlimited)", &options.localRange, 0.f, 64.f, "%.1f");
       if (options.localRange > 0 && options.localRange < .01f)
         options.localRange = .01f;
+      ui::Checkbox("Cull lights by visibility sets", &options.lightVisibilityCulling);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("When the host supplies its map's potentially visible sets, lights in rooms that\n"
+                          "cannot be seen from a surface are never sampled for it.");
       ui::Checkbox("Guide by recent visibility", &options.localGuiding);
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip(

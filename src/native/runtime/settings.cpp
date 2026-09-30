@@ -137,6 +137,7 @@ namespace remix::config {
         TRACE(localGuiding, 0, 1);
         TRACE(localGuideCellSize, .05, 100);
         TRACE(sceneScale, .0001, 1000);
+        TRACE(lightVisibilityCulling, 0, 1);
         TRACE(localSamples, 1, 16);
         TRACE(shadowDebug, 0, 2);
         TRACE(debugView, 0, 11);

@@ -320,6 +320,38 @@ namespace remix {
     emissiveSeen |= hasEmissiveLights;
     emissionHistory = std::move(lighting.history);
     lightBvh = std::move(lighting.combined);
+    lightVisibility = std::move(lighting.visibility);
+    // Potentially visible light table and the partition it indexes: replaced
+    // only when they change (rare), like the light tree's buffers.
+    if (!lightVisibility.table()) {
+      visibilityTable.reset();
+      visibilityNodes.reset();
+      visibilityLeaves.reset();
+      visibilityTableVersion = visibilityPartitionVersion = 0;
+    } else {
+      const auto &partition = *lightVisibility.partition();
+      auto place = [&](std::unique_ptr<Buffer> &out, const void *data, size_t size) {
+        if (deviceLocalScene)
+          out = upload(command, data, size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        else {
+          // As for the light tree (uploadLights): replace GPU-only allocations.
+          if (out && !out->host)
+            out.reset();
+          hostBuffer(out, data, size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        }
+      };
+      if (visibilityPartitionVersion != partition.version) {
+        visibilityPartitionVersion = partition.version;
+        place(visibilityNodes, partition.nodes.data(), partition.nodes.size() * sizeof(partition.nodes[0]));
+        place(visibilityLeaves, partition.leafClusters.data(),
+              std::max<size_t>(1, partition.leafClusters.size()) * sizeof(int32_t));
+      }
+      if (visibilityTableVersion != lightVisibility.version()) {
+        visibilityTableVersion = lightVisibility.version();
+        const auto &table = *lightVisibility.table();
+        place(visibilityTable, table.data(), std::max<size_t>(1, table.size()) * sizeof(uint32_t));
+      }
+    }
     localAngularActive = hasEmissiveLights && options.emissiveSolidAngleSampling;
     // A denoiser built for split local lighting filters only the split pass's
     // signal: run that pass whenever it is, even with API (torch) lights only,
@@ -624,6 +656,13 @@ namespace remix {
     temporalFrame.shadow[1] = uint32_t(frame.sun[2]);
     frame.lightNodes = lightNodes ? lightNodes->address : 0;
     frame.lightEmitters = lightEmitters ? lightEmitters->address : 0;
+    const bool visibilityActive = localIlluminationActive && visibilityTable && visibilityNodes && visibilityLeaves;
+    frame.visibilityNodes = visibilityActive ? visibilityNodes->address : 0;
+    frame.visibilityLeaves = visibilityActive ? visibilityLeaves->address : 0;
+    frame.visibilityTable = visibilityActive ? visibilityTable->address : 0;
+    frame.visibilityConfig[0] = lightVisibility.rowWords();
+    // Classify the empty space just above a shading point (2 cm).
+    frame.visibilityProbe[0] = .02f / options.sceneScale;
     frame.torchNodes = torchNodes ? torchNodes->address : 0;
     frame.torchEmitters = torchEmitters ? torchEmitters->address : 0;
     frame.emissiveNodes = emissiveNodes ? emissiveNodes->address : 0;
@@ -1044,6 +1083,9 @@ namespace remix {
       staged.emissive.update({lights.begin() + sphereCount, lights.end()});
     }
     staged.combined.update(std::move(lights));
+    staged.visibility = m_gpu->lightVisibility;
+    staged.visibility.update(resources.visibilityPartition(), staged.combined,
+                             options.lightVisibilityCulling && options.localLights, .1f / options.sceneScale);
     if (profile) {
       const auto end = Clock::now();
       const auto count = m_gpu->opacityCache.takeStatistics();

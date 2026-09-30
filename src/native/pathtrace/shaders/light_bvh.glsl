@@ -29,6 +29,43 @@ float lightWeight(LightNode node,vec3 p,vec3 n) {
   float distance2=max(dot(nearest,nearest),.01*radius2);
   return localFalloff(dot(nearest,nearest))*node.minimumPower.w*cosine/max(max(distance2,node.maximum.w),1e-12);
 }
+// Potentially visible lights (remixapi_SetVisibilityPartitionEXT): the
+// shading point's cluster comes from the host's BSP; a table row per cluster
+// marks the combined light-tree nodes holding a potentially visible light.
+// Excluded subtrees get zero selection weight everywhere the tree is
+// traversed, so every PDF stays consistent. Lights outside the PVS cannot
+// reach the point, so no energy is lost.
+struct VisibilityNode { vec4 plane; ivec4 children; };
+layout(buffer_reference,std430,buffer_reference_align=16) readonly buffer VisibilityNodes { VisibilityNode data[]; };
+layout(buffer_reference,std430,buffer_reference_align=4) readonly buffer VisibilityInts { int data[]; };
+layout(buffer_reference,std430,buffer_reference_align=4) readonly buffer VisibilityWords { uint data[]; };
+int visibilityCluster(vec3 p) {
+  VisibilityNodes nodes=VisibilityNodes(frame.visibilityNodes);
+  int index=0;
+  for(uint guard=0;guard<256u&&index>=0;++guard) {
+    VisibilityNode node=nodes.data[index];
+    index=dot(node.plane.xyz,p)-node.plane.w>=0?node.children.x:node.children.y;
+  }
+  return index<0?VisibilityInts(frame.visibilityLeaves).data[-1-index]:-1;
+}
+// The shading point's cluster, evaluated once per point. Only primary
+// (opaque, guided) light sampling culls: the lookup at every bounce vertex
+// cost more than its variance reduction there. Each estimator call uses one
+// consistent set of weights either way (localLighting sets the flag).
+vec3 visibilityPoint=vec3(3.4e38);int visibilityRow=-1;bool visibilityCulling=false;
+bool lightNodeVisible(LightNodes nodes,uint index,vec3 p,vec3 n) {
+  if(!visibilityCulling||frame.visibilityTable==0||uint64_t(nodes)!=frame.lightNodes)return true;
+  if(p!=visibilityPoint) {
+    visibilityPoint=p;
+    visibilityRow=visibilityCluster(p+n*frame.visibilityProbe.x);
+  }
+  if(visibilityRow<0)return true;
+  uint word=uint(visibilityRow)*frame.visibilityConfig.x+(index>>5);
+  return (VisibilityWords(frame.visibilityTable).data[word]>>(index&31u)&1u)!=0;
+}
+float nodeWeight(LightNodes nodes,uint index,vec3 p,vec3 n) {
+  return lightNodeVisible(nodes,index,p,n)?lightWeight(nodes.data[index],p,n):0;
+}
 // A fixed topological cut keeps all nearby clusters in the budget estimate.
 // Following only the largest-weight child can abruptly choose an unrelated
 // leaf when animated emission or receiver motion changes a nearly tied split.
@@ -45,7 +82,7 @@ float localImportance(LightNodes nodes,Hit hit) {
     LightNode node=nodes.data[pending[count]];
     uint level=levels[count];
     if(node.links.w<=1||level==4) {
-      importance+=lightWeight(node,hit.p,hit.n)*max(frame.localScale.x,.25);
+      importance+=nodeWeight(nodes,pending[count],hit.p,hit.n)*max(frame.localScale.x,.25);
       if(importance>=.06)return .06;
     } else {
       pending[count]=node.links.y;levels[count]=level+1;
@@ -225,6 +262,7 @@ vec3 smallLocalLighting(LightNodes nodes,LightEmitters emitters,Hit hit,uint sta
     uint nodeCount=2*nodes.data[0].links.w-1;
     for(uint index=0;index<nodeCount;++index) {
       if(nodes.data[index].links.w!=1)continue;
+      if(!lightNodeVisible(nodes,index,hit.p,hit.n))continue;
       LocalCandidate candidate=localCandidate(emitters.data[nodes.data[index].links.z],hit,state,angular,blue,noiseBase+sampleIndex*8u+index);
       float weight=localLuminance(candidate.physical);total+=weight;
       if(weight>0&&lightRandom(state)*total<weight) {selected=candidate;selectedIndex=index;}
@@ -273,7 +311,7 @@ vec3 resampledLocalLighting(LightNodes nodes,LightEmitters emitters,Hit hit,uint
       uint limit=32u;
       while(nodes.data[guideRoot].links.w>limit) {
         uvec4 links=nodes.data[guideRoot].links;
-        float a=lightWeight(nodes.data[links.x],hit.p,hit.n),b=lightWeight(nodes.data[links.y],hit.p,hit.n);
+        float a=nodeWeight(nodes,links.x,hit.p,hit.n),b=nodeWeight(nodes,links.y,hit.p,hit.n);
         if(a==0&&b==0) {rootPdf=0;break;}
         float split=lightSplit(a,b);bool right=lightRank(nodes,preferred)>=lightRank(nodes,links.y);
         rootPdf*=right?1-split:split;guideRoot=right?links.y:links.x;
@@ -291,7 +329,7 @@ vec3 resampledLocalLighting(LightNodes nodes,LightEmitters emitters,Hit hit,uint
       float u=(float(candidateIndex)+lightRandom(state))/float(count);
       while(nodes.data[index].links.w>1) {
         uvec4 links=nodes.data[index].links;
-        float a=lightWeight(nodes.data[links.x],hit.p,hit.n),b=lightWeight(nodes.data[links.y],hit.p,hit.n);
+        float a=nodeWeight(nodes,links.x,hit.p,hit.n),b=nodeWeight(nodes,links.y,hit.p,hit.n);
         if(a==0&&b==0) {pdf=0;break;}
         float probability=lightSplit(a,b);
         if(u<probability) {index=links.x;pdf*=probability;u/=probability;}
@@ -325,6 +363,7 @@ vec3 resampledLocalLighting(LightNodes nodes,LightEmitters emitters,Hit hit,uint
 }
 vec3 familyLocalLighting(LightNodes nodes,LightEmitters emitters,Hit hit,uint state,
                          out float distance,bool guide,uint noiseBase,out vec3 specular,float threshold) {
+  visibilityCulling=guide;
   vec2 blue=localEmitterNoise(true);
   uint candidates=max(uint(frame.localScale.z),1u);
   if(nodes.data[0].links.w<=4)
@@ -394,10 +433,11 @@ void splitLocalLighting(Hit hit,uint state,uint samples,out vec3 torch,out vec3 
 // Returns material-demodulated total radiance and its specular component.
 vec3 localLighting(Hit hit,uint state,uint samples,out float lightDistance,bool useGuiding,out vec3 specular,float threshold) {
   specular=vec3(0);lightDistance=0;
+  visibilityCulling=useGuiding;
   if(!enableLocalLights||frame.localConfig.x==0||samples==0)return vec3(0);
   LightNodes nodes=LightNodes(frame.lightNodes);
   LightEmitters emitters=LightEmitters(frame.lightEmitters);
-  if(lightWeight(nodes.data[0],hit.p,hit.n)<=0)return vec3(0);
+  if(nodeWeight(nodes,0,hit.p,hit.n)<=0)return vec3(0);
   vec2 blue=localEmitterNoise(useGuiding);
   uint adaptiveSamples=samples,adaptiveCandidates=uint(frame.localScale.z);
   if(useGuiding)
@@ -426,7 +466,7 @@ vec3 localLighting(Hit hit,uint state,uint samples,out float lightDistance,bool 
     }
     else while(nodes.data[index].links.w>1) {
       uvec4 links=nodes.data[index].links;
-      float a=lightWeight(nodes.data[links.x],hit.p,hit.n),b=lightWeight(nodes.data[links.y],hit.p,hit.n);
+      float a=nodeWeight(nodes,links.x,hit.p,hit.n),b=nodeWeight(nodes,links.y,hit.p,hit.n);
       if(a==0&&b==0){selectionPdf=0;break;}
       float probability=lightSplit(a,b);
       if(u<probability) {index=links.x;selectionPdf*=probability;u/=probability;}

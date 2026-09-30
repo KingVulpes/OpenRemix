@@ -412,6 +412,14 @@ namespace remix {
     result.memoryBytes = (g.lightNodes ? g.lightNodes->size : 0) + (g.lightEmitters ? g.lightEmitters->size : 0);
     for (auto *buffer : {g.torchNodes.get(), g.torchEmitters.get(), g.emissiveNodes.get(), g.emissiveEmitters.get()})
       result.memoryBytes += buffer ? buffer->size : 0;
+    // Visibility culling: lights with a cluster (low 16 bits) and lights
+    // unrestricted by it (high 16 bits); 0 when no partition is active.
+    if (g.lightVisibility.table())
+      result.reserved = std::min(g.lightVisibility.clustered, 0xffffu) |
+                        std::min(g.lightVisibility.unrestricted, 0xffffu) << 16;
+    result.memoryBytes += (g.visibilityNodes ? g.visibilityNodes->size : 0) +
+                          (g.visibilityLeaves ? g.visibilityLeaves->size : 0) +
+                          (g.visibilityTable ? g.visibilityTable->size : 0);
     result.cpuUpdateMilliseconds = g.lightBvh.updateMilliseconds;
     if (g.splitLightingActive)
       result.cpuUpdateMilliseconds += g.torchBvh.updateMilliseconds + g.emissiveBvh.updateMilliseconds;

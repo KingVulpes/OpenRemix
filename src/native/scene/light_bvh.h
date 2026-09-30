@@ -38,6 +38,7 @@ namespace remix::scene {
 
   private:
     uint32_t build(std::vector<uint32_t> &order, uint32_t begin, uint32_t end, uint32_t level);
+    void buildInto(uint32_t index, std::vector<uint32_t> &order, uint32_t begin, uint32_t end, uint32_t level);
     void bounds(uint32_t index, bool geometry = true);
     // Input identity order and triangle areas survive radiance animation.
     std::vector<std::pair<uint64_t, uint32_t>> m_sourceKeys;

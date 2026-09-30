@@ -153,10 +153,19 @@ namespace remix::scene {
     return true;
   }
 
+  // Nodes are laid out with both children of a node adjacent: the descent in
+  // light_bvh.glsl reads both at every level, so one memory neighborhood per
+  // level instead of a far jump to every right subtree.
   uint32_t LightBvh::build(std::vector<uint32_t> &order, uint32_t begin, uint32_t end, uint32_t level) {
     const uint32_t index = uint32_t(m_nodes.size());
     m_nodes.emplace_back();
     m_parents.push_back(0);
+    buildInto(index, order, begin, end, level);
+    return index;
+  }
+
+  void LightBvh::buildInto(uint32_t index, std::vector<uint32_t> &order, uint32_t begin, uint32_t end,
+                           uint32_t level) {
     depth = std::max(depth, level);
     m_nodes[index].links[3] = end - begin;
     if (end - begin == 1) {
@@ -182,14 +191,17 @@ namespace remix::scene {
                                     ? m_lights[a].position[axis] < m_lights[b].position[axis]
                                     : a < b;
                        });
-      const auto left = build(order, begin, middle, level + 1);
-      const auto right = build(order, middle, end, level + 1);
+      const uint32_t left = uint32_t(m_nodes.size()), right = left + 1;
+      m_nodes.emplace_back();
+      m_nodes.emplace_back();
+      m_parents.push_back(index);
+      m_parents.push_back(index);
       m_nodes[index].links[0] = left;
       m_nodes[index].links[1] = right;
-      m_parents[left] = m_parents[right] = index;
+      buildInto(left, order, begin, middle, level + 1);
+      buildInto(right, order, middle, end, level + 1);
     }
     bounds(index);
-    return index;
   }
 
   void LightBvh::bounds(uint32_t index, bool geometry) {

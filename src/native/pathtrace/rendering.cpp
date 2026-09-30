@@ -317,11 +317,15 @@ namespace remix {
     // the scene signature above. Do not duplicate every triangle's reduction.
     auto &lighting = prepared.lighting;
     const bool hasEmissiveLights = lighting.hasEmissive;
+    emissiveSeen |= hasEmissiveLights;
     emissionHistory = std::move(lighting.history);
     lightBvh = std::move(lighting.combined);
     localAngularActive = hasEmissiveLights && options.emissiveSolidAngleSampling;
-    splitLightingActive =
-        hasEmissiveLights && options.separateLocalLighting != 0 && (!denoiser || postSplit || rrActive());
+    // A denoiser built for split local lighting filters only the split pass's
+    // signal: run that pass whenever it is, even with API (torch) lights only,
+    // or their radiance reaches the image unfiltered through the opaque pass.
+    splitLightingActive = options.separateLocalLighting != 0 &&
+                          (postSplit || (hasEmissiveLights && (!denoiser || rrActive())));
     auto uploadLights = [&](scene::LightBvh &bvh, uint64_t &uploadedGeneration,
                             std::unique_ptr<Buffer> &nodes, std::unique_ptr<Buffer> &emitters) {
       if ((!nodes || nodes->host == deviceLocalScene || uploadedGeneration != bvh.generation) &&
@@ -1027,7 +1031,8 @@ namespace remix {
     }
     staged.history.end();
     staged.hasEmissive = lights.size() > sphereCount;
-    if (staged.hasEmissive && options.separateLocalLighting && options.separateLocalLighting != 3) {
+    // Per-family trees also for torch-only scenes: a split denoiser needs them.
+    if (options.separateLocalLighting && options.separateLocalLighting != 3) {
       staged.torch = m_gpu->torchBvh;
       staged.emissive = m_gpu->emissiveBvh;
       staged.torch.update({lights.begin(), lights.begin() + sphereCount});

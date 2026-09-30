@@ -316,6 +316,10 @@ namespace remix {
     bool sigmaCapable = false, localCapable[2] = {};
     bool postSigma = false, postSigmaRequested = false;
     bool localSeen = false, postLocal = false, postLocalRequested = false;
+    // Emissive (surface) lights were present: only then is local lighting
+    // split by family or into a separate pass (API "torch" lights alone use
+    // the combined local signal).
+    bool emissiveSeen = false;
     bool postLocalDenoise = false, postLocalDenoiseRequested = false;
     uint64_t previousLocalGeneration = 0;
     float previousLocalIntensity = 0, previousLocalRange = 0;

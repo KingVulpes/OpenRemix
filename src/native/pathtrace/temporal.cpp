@@ -140,7 +140,8 @@ namespace remix {
       local = localCapable[0];
     }
     const bool localDenoise = local && options.localDenoiser && reblur;
-    const bool split = local && options.separateLocalLighting != 0 && denoise::localSupported(physical, sigma, true);
+    const bool split = local && options.separateLocalLighting != 0 && emissiveSeen &&
+                       denoise::localSupported(physical, sigma, true);
     const bool combinedDirect = split && options.separateLocalLighting == 3;
     if (reblur != postReblur || taa != postTaa || sigma != postSigmaRequested ||
         local != postLocalRequested || localDenoise != postLocalDenoiseRequested || split != postSplitRequested ||
@@ -162,7 +163,7 @@ namespace remix {
       postFailure.clear();
     if (localLimited)
       postFailure = "Insufficient descriptors for separate local and sun signals; SIGMA is disabled";
-    if (local && options.separateLocalLighting && !split)
+    if (local && options.separateLocalLighting && emissiveSeen && !split)
       postFailure = options.separateLocalLighting == 3
           ? "Insufficient descriptors for a separate combined-light pass; inline combined lighting active"
           : "Insufficient descriptors for separate torch/emissive histories; combined local lighting active";

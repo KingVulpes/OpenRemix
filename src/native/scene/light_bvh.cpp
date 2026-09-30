@@ -69,9 +69,12 @@ namespace remix::scene {
     // Tiny animated-emission fluctuations still update the GPU light data, but
     // must not keep every local-light filter/cache permanently in fast response.
     // Compare against the last significant snapshot, not the preceding frame,
-    // so gradual ramps eventually cross the threshold too.
-    bool significant = geometryChanged || lights.size() != m_temporalLights.size();
-    double totalDifference = 0, totalOldEnergy = 0, totalNewEnergy = 0;
+    // so gradual ramps eventually cross the threshold too. A light that moved,
+    // reshaped or switched on/off counts with its whole power: one animated or
+    // carried light among many (a blinking siren, a bot's flashlight) must not
+    // reset the local denoiser every frame, while a dominant one still does.
+    bool significant = rebuild || lights.size() != m_temporalLights.size();
+    double changed = 0, totalOldEnergy = 0, totalNewEnergy = 0;
     for (size_t i = 0; !significant && i < lights.size(); ++i) {
       const auto &a = lights[i], &b = m_temporalLights[i];
       double difference = 0, oldEnergy = 0, newEnergy = 0;
@@ -80,16 +83,21 @@ namespace remix::scene {
         oldEnergy += b.radiance[c];
         newEnergy += a.radiance[c];
       }
-      significant |= (oldEnergy == 0) != (newEnergy == 0);
+      bool moved = a.coneCos != b.coneCos || a.softness != b.softness || a.focus != b.focus ||
+                   !std::equal(a.direction, a.direction + 3, b.direction) || a.radius != b.radius ||
+                   !std::equal(a.position, a.position + 3, b.position);
+      for (unsigned v = 0; v < 3; ++v)
+        moved |= !std::equal(a.corners[v], a.corners[v] + 3, b.corners[v]);
+      moved |= (oldEnergy == 0) != (newEnergy == 0);
       const double scale = m_powerScale[i];
-      totalDifference += difference * scale;
+      changed += (moved ? std::max(oldEnergy, newEnergy) : difference) * scale;
       totalOldEnergy += oldEnergy * scale;
       totalNewEnergy += newEnergy * scale;
     }
     // This is a scene-wide fast-response switch, not a per-emitter filter.
-    // Small/local color changes use NRD's ordinary history and anti-lag, rather
+    // Small/local changes use NRD's ordinary history and anti-lag, rather
     // than forcing unrelated torches back to two accumulated frames.
-    significant |= totalDifference > .25 * std::max(totalOldEnergy, totalNewEnergy);
+    significant |= changed > .25 * std::max(totalOldEnergy, totalNewEnergy);
     if (significant) {
       ++lightingGeneration;
       m_temporalLights = lights;

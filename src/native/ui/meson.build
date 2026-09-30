@@ -5,6 +5,7 @@ ui_sources = files(
   'lighting.cpp',
   'post_processing.cpp',
   'diagnostics.cpp',
+  'mods.cpp',
   'profile_actions.cpp',
   'profiles.cpp',
   'style.cpp',

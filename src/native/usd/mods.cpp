@@ -13,6 +13,8 @@ namespace remix::usd {
     using Clock = std::chrono::steady_clock;
     struct Set {
       std::vector<Snapshot> snapshots;
+      std::vector<ModInfo> mods; // per snapshot
+      // Replacements of the enabled mods (the first mod in path order wins).
       std::map<uint64_t, std::pair<size_t, Json>> meshes, lights, materials;
       std::set<std::string> dependencies;
       // Parse failures travel in-band: an exception_ptr crossing threads is
@@ -35,6 +37,9 @@ namespace remix::usd {
     };
     struct State {
       bool enabled = false, watch = true;
+      // Developer panel toggles, applied at the next frame boundary.
+      bool modsEnabled = true, reindex = false, reload = false;
+      std::set<std::string> disabledMods;
       Options options;
       std::string directory, diagnostic;
       std::future<Set> pending;
@@ -67,6 +72,36 @@ namespace remix::usd {
       std::sort(result.begin(), result.end());
       return result;
     }
+    std::string modName(const std::string &directory, const std::string &path) {
+      const auto parent = std::filesystem::path(path).parent_path();
+      auto name = parent.lexically_relative(directory).generic_string();
+      return name.empty() || name == "." ? std::filesystem::path(path).filename().generic_string() : name;
+    }
+    // Rebuilds the replacement tables from the enabled mods' snapshots.
+    void index(Set &set) {
+      set.meshes.clear();
+      set.lights.clear();
+      set.materials.clear();
+      for (size_t i = 0; i < set.snapshots.size(); ++i) {
+        set.mods[i].enabled = !state.disabledMods.contains(set.mods[i].name);
+        if (!state.modsEnabled || !set.mods[i].enabled)
+          continue;
+        for (const char *group : {"meshes", "lights", "materials"}) {
+          auto &table = std::string(group) == "meshes"   ? set.meshes
+                        : std::string(group) == "lights" ? set.lights
+                                                         : set.materials;
+          for (const auto &entry : set.snapshots[i].scene["replacements"][group])
+            table.try_emplace(entry["hash"].get<uint64_t>(), i, entry);
+        }
+      }
+    }
+    void offerMaterials(NativeResources &resources) {
+      std::unordered_set<uint64_t> candidates;
+      for (const auto &[hash, entry] : state.active.materials)
+        candidates.insert(hash);
+      resources.setModMaterialCandidates(std::move(candidates));
+      state.materialQueue.clear();
+    }
     Set parse(std::string directory, Options options) {
       Set result;
       options.preloadTextures = true;
@@ -79,14 +114,17 @@ namespace remix::usd {
           result.dependencies.insert(error.dependencies.begin(), error.dependencies.end());
           throw LoadError(error.what(), std::move(result.dependencies));
         }
-        const auto index = result.snapshots.size();
-        for (const char *group : {"meshes", "lights", "materials"})
-          for (const auto &entry : snapshot.scene["replacements"][group]) {
-            auto &table = std::string(group) == "meshes"   ? result.meshes
-                          : std::string(group) == "lights" ? result.lights
-                                                           : result.materials;
-            table.try_emplace(entry["hash"].get<uint64_t>(), index, entry);
-          }
+        const auto &replacements = snapshot.scene["replacements"];
+        auto count = [&](const char *group) { return replacements.contains(group) ? replacements[group].size() : 0; };
+        // Authored lights (most hang off mesh replacements) plus game light
+        // overrides, once each.
+        std::set<std::string> lights;
+        for (const auto &light : snapshot.scene["lights"])
+          lights.insert(light.value("id", std::string()));
+        if (replacements.contains("lights"))
+          for (const auto &entry : replacements["lights"])
+            lights.insert(entry.value("path", std::string()));
+        result.mods.push_back({modName(directory, path), count("meshes"), lights.size(), count("materials")});
         result.dependencies.insert(snapshot.dependencies.begin(), snapshot.dependencies.end());
         result.snapshots.push_back(std::move(snapshot));
       }
@@ -242,18 +280,16 @@ namespace remix::usd {
         for (size_t i = 0; i < next.snapshots.size(); ++i)
           submissions.push_back(std::make_unique<Submission>(
               resources, next.snapshots[i], 0x4d4f440000000000ull + (generation << 20) + i, false));
-        // Material replacements are created as draws first use them.
-        std::unordered_set<uint64_t> candidates;
-        for (const auto &[hash, entry] : next.materials)
-          candidates.insert(hash);
-        resources.setModMaterialCandidates(std::move(candidates));
-        state.materialQueue.clear();
+        index(next);
         for (auto light : state.overriddenLights)
           resources.destroyLight(light);
         state.overriddenLights.clear();
         state.submissions = std::move(submissions);
         state.active = std::move(next);
         state.generation = generation;
+        state.reindex = false;
+        // Material replacements are created as draws first use them.
+        offerMaterials(resources);
         state.diagnostic.clear();
         state.failedDependencies.clear();
         refreshDependencies();
@@ -266,6 +302,16 @@ namespace remix::usd {
       } catch (...) {
         state.diagnostic = "Mod resources could not be created; retaining previous replacements";
       }
+    }
+    if (state.reindex) {
+      state.reindex = false;
+      index(state.active);
+      offerMaterials(resources);
+    }
+    if (state.reload && !state.pending.valid()) {
+      state.reload = false;
+      state.stamps = stamps();
+      launch();
     }
     serviceMaterials(resources);
     auto now = Clock::now();
@@ -375,4 +421,31 @@ namespace remix::usd {
     return true;
   }
   const char *modDiagnostic() { return state.diagnostic.c_str(); }
+  ModStatus modStatus() {
+    ModStatus status;
+    status.active = state.enabled;
+    status.enabled = state.modsEnabled;
+    status.loading = state.pending.valid();
+    status.directory = state.directory;
+    status.diagnostic = state.diagnostic;
+    status.mods = state.active.mods;
+    // Pending toggles show at once.
+    for (auto &mod : status.mods)
+      mod.enabled = !state.disabledMods.contains(mod.name);
+    return status;
+  }
+  void setModsEnabled(bool enabled) {
+    if (state.modsEnabled == enabled)
+      return;
+    state.modsEnabled = enabled;
+    state.reindex = true;
+  }
+  void setModEnabled(const std::string &name, bool enabled) {
+    if (enabled ? state.disabledMods.erase(name) != 0 : state.disabledMods.insert(name).second)
+      state.reindex = true;
+  }
+  void reloadMods() {
+    if (state.enabled)
+      state.reload = true;
+  }
 } // namespace remix::usd

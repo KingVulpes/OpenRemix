@@ -23,6 +23,7 @@ namespace remix::ui {
   };
   void drawProfiles(config::Profiles &profiles, ProfileUi &ui);
   void drawProfileFooter(config::Profiles &profiles, ProfileUi &ui);
+  void drawMods();
   void drawProfileDialogs(config::Profiles &profiles, ProfileUi &ui);
   using DrawSettingsTab = void (*)(void *, int, config::Settings &);
   bool drawPanel(config::Profiles &profiles, ProfileUi &ui, void *user, DrawSettingsTab drawTab);

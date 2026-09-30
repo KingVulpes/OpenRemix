@@ -35,8 +35,10 @@ namespace remix::ui {
         ImGui::SetTooltip("Close developer panel (F12)");
     }
     const bool hasPlugin = remixapi_imgui_HasDrawCallback() != 0;
-    const int tabCount = hasPlugin ? 6 : 5;
-    static const char *tabs[] = {"Rendering", "Lighting", "Post-processing", "Diagnostics", "Profiles", "Plugin"};
+    // Tabs before kMods edit the profile's settings.
+    enum { kMods = 4, kProfiles, kPlugin };
+    const int tabCount = hasPlugin ? 7 : 6;
+    static const char *tabs[] = {"Rendering", "Lighting", "Post-processing", "Diagnostics", "Mods", "Profiles", "Plugin"};
     const float footerHeight = ImGui::GetFrameHeightWithSpacing() * 2 + ImGui::GetStyle().ItemSpacing.y * 2;
     auto draft = profiles.current();
     if (panel.tab >= tabCount)
@@ -62,9 +64,11 @@ namespace remix::ui {
                             ImVec2(0, std::max(1.f, ImGui::GetContentRegionAvail().y - footerHeight)),
                             ImGuiChildFlags_None, ImGuiWindowFlags_AlwaysVerticalScrollbar);
           ImGui::PushItemWidth(std::max(80.f * scale, ImGui::GetContentRegionAvail().x * .46f));
-          if (i == 4)
+          if (i == kMods)
+            drawMods();
+          else if (i == kProfiles)
             drawProfiles(profiles, profileUi);
-          else if (i == 5)
+          else if (i == kPlugin)
             remixapi_imgui_InvokeDrawCallback();
           else
             drawTab(user, i, draft);
@@ -76,7 +80,7 @@ namespace remix::ui {
       ImGui::EndTabBar();
       profileUi.restoreTab = false;
     }
-    if (panel.tab != 4 && panel.tab != 5 && draft != profiles.current())
+    if (panel.tab < kMods && draft != profiles.current())
       profiles.edit(draft);
     ImGui::BeginChild("Profile footer", ImVec2(0, std::max(1.f, ImGui::GetContentRegionAvail().y)),
                       ImGuiChildFlags_None,

@@ -115,7 +115,7 @@ namespace remix::usd {
     used_attachments_.clear();
   }
   void Submission::draw(bool camera, float aspect, const remixapi_InstanceInfo *parent,
-                        const std::string &root) {
+                        const std::string &root, bool meshes, bool lights) {
     if (parent) {
       auto *batch = static_cast<const remixapi_InstanceInfoGpuInstancingEXT *>(
           scene::extension(parent->pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_GPU_INSTANCING_EXT));
@@ -134,7 +134,7 @@ namespace remix::usd {
                                     ? hash64(std::to_string(source->instanceId) + ":" + std::to_string(i))
                                     : 0;
           instance.pNext = &identity;
-          draw(false, aspect, &instance, root);
+          draw(false, aspect, &instance, root, meshes, lights);
         }
         return;
       }
@@ -178,7 +178,7 @@ namespace remix::usd {
         parentId = identity->instanceId;
     if (parent && !parentId)
       parentId = scene::hashBytes(&parent->transform, sizeof(parent->transform));
-    for (size_t i = 0; i < instances_.size(); ++i) {
+    for (size_t i = 0; meshes && i < instances_.size(); ++i) {
       if (!root.empty() && instance_origins_[i].first != root &&
           !instance_origins_[i].first.starts_with(root + "/"))
         continue;
@@ -197,7 +197,7 @@ namespace remix::usd {
       if (!applyMods_ || !modInstance(resources_, instance, instance_hashes_[i]))
         resources_.drawInstance(instance);
     }
-    for (size_t i = 0; i < lights_.size(); ++i) {
+    for (size_t i = 0; lights && i < lights_.size(); ++i) {
       const auto id = light_origins_[i]["id"].get<std::string>();
       if (!root.empty() && id != root && !id.starts_with(root + "/"))
         continue;

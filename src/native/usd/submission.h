@@ -12,8 +12,9 @@ namespace remix::usd {
                         bool applyMods = true);
     ~Submission();
     void retireAttachments();
+    // `meshes`/`lights` select what of the subtree draws (mod part toggles).
     void draw(bool camera, float aspect, const remixapi_InstanceInfo *parent = nullptr,
-              const std::string &root = "");
+              const std::string &root = "", bool meshes = true, bool lights = true);
     // Materials are created on first use; their textures load then unless
     // already cached (NativeResources::cacheTexturePath).
     remixapi_MaterialHandle materialHandle(const std::string &id);

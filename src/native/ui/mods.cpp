@@ -1,4 +1,5 @@
 #include "ui/profiles.h"
+#include <cstdio>
 #include <imgui.h>
 
 #if REMIX_HAS_USD
@@ -6,6 +7,19 @@
 #endif
 
 namespace remix::ui {
+#if REMIX_HAS_USD
+  namespace {
+    bool part(const char *label, bool *value, size_t count, const char *tooltip) {
+      char text[96];
+      std::snprintf(text, sizeof text, count == size_t(-1) ? "%s" : "%s (%zu)", label, count);
+      const bool changed = ImGui::Checkbox(text, value);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", tooltip);
+      return changed;
+    }
+  } // namespace
+#endif
+
   void drawMods() {
 #if REMIX_HAS_USD
     const auto status = usd::modStatus();
@@ -37,7 +51,7 @@ namespace remix::ui {
     }
     size_t on = 0;
     for (const auto &mod : status.mods)
-      on += mod.enabled;
+      on += mod.parts.enabled;
     ImGui::Text("%zu of %zu mods enabled", on, status.mods.size());
     ImGui::SameLine();
     if (ImGui::SmallButton("All"))
@@ -47,33 +61,42 @@ namespace remix::ui {
     if (ImGui::SmallButton("None"))
       for (const auto &mod : status.mods)
         usd::setModEnabled(mod.name, false);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Reset parts"))
+      for (const auto &mod : status.mods)
+        usd::setModParts(mod.name, {.enabled = mod.parts.enabled});
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Apply every part of each enabled mod");
     ImGui::BeginDisabled(!status.enabled);
-    if (ImGui::BeginTable("Mods", 4,
-                          ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingFixedFit)) {
-      ImGui::TableSetupColumn("Mod", ImGuiTableColumnFlags_WidthStretch);
-      ImGui::TableSetupColumn("Meshes");
-      ImGui::TableSetupColumn("Lights");
-      ImGui::TableSetupColumn("Materials");
-      ImGui::TableHeadersRow();
-      for (const auto &mod : status.mods) {
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        bool modEnabled = mod.enabled;
-        ImGui::PushID(mod.name.c_str());
-        if (ImGui::Checkbox(mod.name.c_str(), &modEnabled))
-          usd::setModEnabled(mod.name, modEnabled);
-        ImGui::PopID();
-        ImGui::TableNextColumn();
-        ImGui::Text("%zu", mod.meshes);
-        ImGui::TableNextColumn();
-        ImGui::Text("%zu", mod.lights);
-        ImGui::TableNextColumn();
-        ImGui::Text("%zu", mod.materials);
+    for (const auto &mod : status.mods) {
+      auto parts = mod.parts;
+      ImGui::PushID(mod.name.c_str());
+      bool changed = ImGui::Checkbox("##enabled", &parts.enabled);
+      ImGui::SameLine();
+      const bool open = ImGui::TreeNodeEx(mod.name.c_str(), ImGuiTreeNodeFlags_SpanAvailWidth);
+      if (!(parts == usd::ModParts{.enabled = parts.enabled})) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(partial)");
       }
-      ImGui::EndTable();
+      if (open) {
+        ImGui::BeginDisabled(!parts.enabled);
+        changed |= part("Meshes", &parts.meshes, mod.meshes,
+                        "Replacement geometry. Off: the game's mesh draws instead (attached lights can stay).");
+        changed |= part("Attached lights", &parts.lights, mod.lights, "Lights authored under mesh replacements");
+        changed |= part("Light overrides", &parts.lightOverrides, mod.lightOverrides,
+                        "Replacements and removals of the game's own lights");
+        changed |= part("Materials", &parts.materials, mod.materials, "Material (texture) replacements");
+        changed |= part("Keep original draws", &parts.keepOriginal, size_t(-1),
+                        "Draw the game's mesh beside its replacement instead of hiding it");
+        ImGui::EndDisabled();
+        ImGui::TreePop();
+      }
+      if (changed)
+        usd::setModParts(mod.name, parts);
+      ImGui::PopID();
     }
     ImGui::EndDisabled();
-    ImGui::TextDisabled("Where mods replace the same asset, the first enabled one in this list wins.");
+    ImGui::TextDisabled("Where mods replace the same asset, the first one in this list that applies it wins.");
 #else
     ImGui::TextWrapped("This runtime was built without USD support.");
 #endif

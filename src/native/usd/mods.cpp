@@ -39,7 +39,7 @@ namespace remix::usd {
       bool enabled = false, watch = true;
       // Developer panel toggles, applied at the next frame boundary.
       bool modsEnabled = true, reindex = false, reload = false;
-      std::set<std::string> disabledMods;
+      std::map<std::string, ModParts> modParts; // by mod name; absent: defaults
       Options options;
       std::string directory, diagnostic;
       std::future<Set> pending;
@@ -83,16 +83,24 @@ namespace remix::usd {
       set.lights.clear();
       set.materials.clear();
       for (size_t i = 0; i < set.snapshots.size(); ++i) {
-        set.mods[i].enabled = !state.disabledMods.contains(set.mods[i].name);
-        if (!state.modsEnabled || !set.mods[i].enabled)
+        auto &parts = set.mods[i].parts;
+        auto it = state.modParts.find(set.mods[i].name);
+        parts = it == state.modParts.end() ? ModParts{} : it->second;
+        if (!state.modsEnabled || !parts.enabled)
           continue;
-        for (const char *group : {"meshes", "lights", "materials"}) {
-          auto &table = std::string(group) == "meshes"   ? set.meshes
-                        : std::string(group) == "lights" ? set.lights
-                                                         : set.materials;
-          for (const auto &entry : set.snapshots[i].scene["replacements"][group])
-            table.try_emplace(entry["hash"].get<uint64_t>(), i, entry);
-        }
+        // A mod leaves out what it does not apply, so the next mod replacing
+        // the same asset takes over.
+        auto &replacements = set.snapshots[i].scene["replacements"];
+        for (const auto &entry : replacements["meshes"])
+          if (parts.meshes || parts.lights ||
+              (parts.materials && entry.value("preserve", false) && entry.contains("material")))
+            set.meshes.try_emplace(entry["hash"].get<uint64_t>(), i, entry);
+        if (parts.lightOverrides)
+          for (const auto &entry : replacements["lights"])
+            set.lights.try_emplace(entry["hash"].get<uint64_t>(), i, entry);
+        if (parts.materials)
+          for (const auto &entry : replacements["materials"])
+            set.materials.try_emplace(entry["hash"].get<uint64_t>(), i, entry);
       }
     }
     void offerMaterials(NativeResources &resources) {
@@ -116,15 +124,13 @@ namespace remix::usd {
         }
         const auto &replacements = snapshot.scene["replacements"];
         auto count = [&](const char *group) { return replacements.contains(group) ? replacements[group].size() : 0; };
-        // Authored lights (most hang off mesh replacements) plus game light
-        // overrides, once each.
-        std::set<std::string> lights;
+        // Lights authored under mesh replacements (game light overrides are
+        // counted on their own).
+        size_t attached = 0;
         for (const auto &light : snapshot.scene["lights"])
-          lights.insert(light.value("id", std::string()));
-        if (replacements.contains("lights"))
-          for (const auto &entry : replacements["lights"])
-            lights.insert(entry.value("path", std::string()));
-        result.mods.push_back({modName(directory, path), count("meshes"), lights.size(), count("materials")});
+          attached += light.value("id", std::string()).starts_with("/RootNode/meshes/");
+        result.mods.push_back(
+            {modName(directory, path), count("meshes"), attached, count("lights"), count("materials")});
         result.dependencies.insert(snapshot.dependencies.begin(), snapshot.dependencies.end());
         result.snapshots.push_back(std::move(snapshot));
       }
@@ -353,12 +359,17 @@ namespace remix::usd {
     if (it == state.active.meshes.end())
       return false;
     auto &[index, entry] = it->second;
-    state.submissions[index]->draw(false, 1, &info, entry["path"]);
-    if (entry.value("preserve", false) && entry.contains("material")) {
+    const auto &parts = state.active.mods[index].parts;
+    if (parts.meshes || parts.lights)
+      state.submissions[index]->draw(false, 1, &info, entry["path"], parts.meshes, parts.lights);
+    if (entry.value("preserve", false)) {
+      if (!parts.materials || !entry.contains("material"))
+        return false;
       resources.drawInstance(info, state.submissions[index]->materialHandle(entry["material"]));
       return true;
     }
-    return !entry.value("preserve", false);
+    // Without replacement geometry the original stays.
+    return parts.meshes && !parts.keepOriginal;
   }
   bool modLight(NativeResources &resources, remixapi_LightHandle handle, uint64_t originalHash) {
     auto original = uint64_t(reinterpret_cast<uintptr_t>(handle));
@@ -430,8 +441,10 @@ namespace remix::usd {
     status.diagnostic = state.diagnostic;
     status.mods = state.active.mods;
     // Pending toggles show at once.
-    for (auto &mod : status.mods)
-      mod.enabled = !state.disabledMods.contains(mod.name);
+    for (auto &mod : status.mods) {
+      auto it = state.modParts.find(mod.name);
+      mod.parts = it == state.modParts.end() ? ModParts{} : it->second;
+    }
     return status;
   }
   void setModsEnabled(bool enabled) {
@@ -440,9 +453,21 @@ namespace remix::usd {
     state.modsEnabled = enabled;
     state.reindex = true;
   }
+  void setModParts(const std::string &name, const ModParts &parts) {
+    auto it = state.modParts.find(name);
+    if (it == state.modParts.end() ? parts == ModParts{} : it->second == parts)
+      return;
+    if (parts == ModParts{})
+      state.modParts.erase(name);
+    else
+      state.modParts[name] = parts;
+    state.reindex = true;
+  }
   void setModEnabled(const std::string &name, bool enabled) {
-    if (enabled ? state.disabledMods.erase(name) != 0 : state.disabledMods.insert(name).second)
-      state.reindex = true;
+    auto it = state.modParts.find(name);
+    auto parts = it == state.modParts.end() ? ModParts{} : it->second;
+    parts.enabled = enabled;
+    setModParts(name, parts);
   }
   void reloadMods() {
     if (state.enabled)

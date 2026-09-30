@@ -16,10 +16,20 @@ namespace remix::usd {
 
   // Developer panel view of the loaded mods. Toggles keep every mod loaded:
   // they change which replacements apply from the next frame on.
+  // What of a mod applies.
+  struct ModParts {
+    bool enabled = true;
+    bool meshes = true;         // replacement geometry
+    bool lights = true;         // lights authored under mesh replacements
+    bool lightOverrides = true; // game light replacements
+    bool materials = true;
+    bool keepOriginal = false;  // draw the game's mesh beside its replacement
+    bool operator==(const ModParts &) const = default;
+  };
   struct ModInfo {
     std::string name; // mod directory relative to the mods directory
-    size_t meshes = 0, lights = 0, materials = 0;
-    bool enabled = true;
+    size_t meshes = 0, lights = 0, lightOverrides = 0, materials = 0;
+    ModParts parts;
   };
   struct ModStatus {
     bool active = false;  // mod loading started
@@ -31,5 +41,6 @@ namespace remix::usd {
   ModStatus modStatus();
   void setModsEnabled(bool enabled);
   void setModEnabled(const std::string &name, bool enabled);
+  void setModParts(const std::string &name, const ModParts &parts);
   void reloadMods();
 } // namespace remix::usd

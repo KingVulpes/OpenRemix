@@ -1,0 +1,101 @@
+#include "pathtrace/gpu.h"
+
+#include <unordered_map>
+
+namespace remix {
+using namespace trace::detail;
+
+namespace {
+  // Must match struct Reservoir in restir.glsl.
+  constexpr VkDeviceSize kReservoirBytes = 48;
+  struct PairHash {
+    size_t operator()(const std::pair<uint64_t, uint32_t> &key) const {
+      return std::hash<uint64_t>()(key.first * 0x9e3779b97f4a7c15ull ^ key.second);
+    }
+  };
+} // namespace
+
+// Per-frame ReSTIR DI state: reservoir buffers (this frame's initial and
+// temporal result; the kept history ping-pong), the previous-to-current
+// emitter index remap when the light set changed, and the frame constants.
+void PathTracer::Gpu::configureRestir(Frame &frame, const TraceOptions &options, VkExtent2D extent) {
+  auto &r = restir;
+  const bool active = options.restir && r.initial && r.spatial && splitLightingActive && denoiser && postSplit &&
+                      localIlluminationActive;
+  frame.restirCurrent = frame.restirHistoryRead = frame.restirHistoryWrite = frame.restirRemap = 0;
+  if (!active) {
+    r.active = r.historyValid = false;
+    r.keys.clear();
+    return;
+  }
+  const VkDeviceSize bytes = VkDeviceSize(extent.width) * extent.height * kReservoirBytes;
+  if (!r.current || r.width != extent.width || r.height != extent.height) {
+    for (auto *b : {&r.current, &r.history[0], &r.history[1]}) {
+      if (*b)
+        retiredBuffers.push_back(std::move(*b));
+      *b = buffer(bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false);
+    }
+    r.width = extent.width;
+    r.height = extent.height;
+    r.historyValid = false;
+  }
+  if (history.reset())
+    r.historyValid = false;
+  // Emitter indices follow the sorted light list; when it changes, map the
+  // history's indices to this frame's (none: the light is gone).
+  const auto &lights = lightBvh.lights();
+  bool same = r.keys.size() == lights.size();
+  for (size_t i = 0; same && i < lights.size(); ++i)
+    same = r.keys[i] == std::pair{lights[i].id, lights[i].triangle};
+  if (!same) {
+    if (r.historyValid && !r.keys.empty()) {
+      std::unordered_map<std::pair<uint64_t, uint32_t>, uint32_t, PairHash> current;
+      current.reserve(lights.size());
+      for (size_t i = 0; i < lights.size(); ++i)
+        current.emplace(std::pair{lights[i].id, lights[i].triangle}, uint32_t(i));
+      std::vector<uint32_t> remap(r.keys.size(), 0xffffffffu);
+      for (size_t i = 0; i < r.keys.size(); ++i)
+        if (auto it = current.find(r.keys[i]); it != current.end())
+          remap[i] = it->second;
+      if (r.remap)
+        retiredBuffers.push_back(std::move(r.remap));
+      hostBuffer(r.remap, remap.data(), remap.size() * sizeof(uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+      frame.restirRemap = r.remap->address;
+    }
+    r.keys.clear();
+    r.keys.reserve(lights.size());
+    for (const auto &light : lights)
+      r.keys.emplace_back(light.id, light.triangle);
+  }
+  r.writeIndex ^= 1;
+  frame.restirCurrent = r.current->address;
+  frame.restirHistoryWrite = r.history[r.writeIndex]->address;
+  frame.restirHistoryRead = r.historyValid ? r.history[r.writeIndex ^ 1]->address : 0;
+  frame.restirConfig[0] = options.restirCandidates;
+  frame.restirConfig[1] = options.restirSpatialSamples;
+  frame.restirConfig[2] = options.restirTemporalHistory;
+  frame.restirConfig[3] = options.restirInitialVisibility ? 1u : 0u;
+  frame.restirParams[0] = options.restirSpatialRadius;
+  frame.restirParams[1] = float(lights.size());
+  r.active = true;
+  r.historyValid = true; // this frame writes it
+}
+
+// Replaces the split local-lighting dispatch: initial and temporal
+// resampling, then spatial resampling and shading into the local signal.
+void PathTracer::Gpu::recordRestir(VkCommandBuffer command, VkExtent2D extent) {
+  const uint32_t x = (extent.width + 7) / 8, y = (extent.height + 7) / 8;
+  {
+    gpu::GpuScope scope(command, "ReSTIR DI: initial and temporal resampling", extent);
+    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, restir.initial);
+    vkCmdDispatch(command, x, y, 1);
+  }
+  barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+  {
+    gpu::GpuScope scope(command, "ReSTIR DI: spatial resampling and shading", extent);
+    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, restir.spatial);
+    vkCmdDispatch(command, x, y, 1);
+  }
+}
+} // namespace remix

@@ -357,7 +357,7 @@ namespace remix {
     // signal: run that pass whenever it is, even with API (torch) lights only,
     // or their radiance reaches the image unfiltered through the opaque pass.
     splitLightingActive = options.separateLocalLighting != 0 &&
-                          (postSplit || (hasEmissiveLights && (!denoiser || rrActive())));
+                          (postSplit || ((hasEmissiveLights || options.restir) && (!denoiser || rrActive())));
     auto uploadLights = [&](scene::LightBvh &bvh, uint64_t &uploadedGeneration,
                             std::unique_ptr<Buffer> &nodes, std::unique_ptr<Buffer> &emitters) {
       if ((!nodes || nodes->host == deviceLocalScene || uploadedGeneration != bvh.generation) &&
@@ -668,6 +668,7 @@ namespace remix {
     frame.emissiveNodes = emissiveNodes ? emissiveNodes->address : 0;
     frame.emissiveEmitters = emissiveEmitters ? emissiveEmitters->address : 0;
     configureLightGuiding(frame, options);
+    configureRestir(frame, options, extent);
     if (options.pbrLocalReuse) {
       const uint32_t settings[] = {options.localSamples,
                                    options.emissiveCandidates,
@@ -866,7 +867,11 @@ namespace remix {
     // Publish opaque lighting, RNG and sheet count to transparent composition.
     barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
-    if (splitLightingActive && denoiser && postSplit) {
+    if (restir.active) {
+      recordRestir(command, extent);
+      barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+    } else if (splitLightingActive && denoiser && postSplit) {
       gpu::GpuScope scope(command, "Trace split local/emissive direct", extent);
       vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE,
                         selectLightingPipeline(splitDirectCompute, options.separateLocalLighting == 3));

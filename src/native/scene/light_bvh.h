@@ -25,6 +25,8 @@ namespace remix::scene {
     bool update(std::vector<SphereLight> lights);
     const std::vector<LightEmitter> &emitters() const { return m_emitters; }
     const std::vector<LightNode> &nodes() const { return m_nodes; }
+    // The lights in emitter order (sorted by type and identity).
+    const std::vector<SphereLight> &lights() const { return m_lights; }
     uint64_t generation = 0, builds = 0, refits = 0;
     // Separate transport updates, scene-wide temporal response and the spatial
     // correspondence used by visibility guidance. Color animation changes only

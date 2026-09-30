@@ -110,8 +110,11 @@ namespace remix::trace::detail {
     uint64_t visibilityNodes = 0, visibilityLeaves = 0, visibilityTable = 0, visibilityReserved = 0;
     uint32_t visibilityConfig[4] = {}; // table row words, reserved
     float visibilityProbe[4] = {};     // probe offset above the surface (world units), reserved
+    uint64_t restirCurrent = 0, restirHistoryRead = 0, restirHistoryWrite = 0, restirRemap = 0;
+    uint32_t restirConfig[4] = {}; // candidates, spatial samples, temporal M cap, flags (1 initial visibility)
+    float restirParams[4] = {};    // spatial radius (pixels), emitter count, reserved
   };
-  static_assert(sizeof(Frame) == 656 && offsetof(Frame, visibilityNodes) == 592 && offsetof(Frame, pathConfig) == 528 &&
+  static_assert(sizeof(Frame) == 720 && offsetof(Frame, restirCurrent) == 656 && offsetof(Frame, visibilityNodes) == 592 && offsetof(Frame, pathConfig) == 528 &&
                 offsetof(Frame, firefly) == 512 && offsetof(Frame, indirectResults) == 496 &&
                 offsetof(Frame, lightGuideRead) == 384 && offsetof(Frame, lightGuideConfig) == 400 &&
                 offsetof(Frame, lightNodes) == 336 && offsetof(Frame, localConfig) == 352 &&
@@ -373,6 +376,17 @@ namespace remix {
                                                         sizeof(remixapi_LocalLightGuidingStatisticsEXT)};
     } lightGuiding;
     void configureLightGuiding(Frame &frame, const TraceOptions &options);
+    // ReSTIR DI (restir.cpp, restir.glsl).
+    struct Restir {
+      VkPipeline initial = VK_NULL_HANDLE, spatial = VK_NULL_HANDLE;
+      std::unique_ptr<Buffer> current, history[2], remap;
+      uint32_t writeIndex = 0, width = 0, height = 0;
+      bool historyValid = false, active = false;
+      // Emitter identities of the previous frame, for the index remap.
+      std::vector<std::pair<uint64_t, uint32_t>> keys;
+    } restir;
+    void configureRestir(Frame &frame, const TraceOptions &options, VkExtent2D extent);
+    void recordRestir(VkCommandBuffer command, VkExtent2D extent);
     void beginLightGuiding(VkCommandBuffer command);
     void finishLightGuiding(VkCommandBuffer command);
     void completeLightGuiding();

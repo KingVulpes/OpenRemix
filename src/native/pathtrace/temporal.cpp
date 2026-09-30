@@ -107,6 +107,13 @@ namespace remix {
     forgetLightingPipeline(temporalCompute);
     forgetLightingPipeline(confidenceCompute);
     forgetLightingPipeline(splitDirectCompute);
+    for (auto *pipeline : {&restir.initial, &restir.spatial}) {
+      forgetLightingPipeline(*pipeline);
+      if (*pipeline)
+        pipeline::destroyPipeline(device, *pipeline, nullptr);
+      *pipeline = VK_NULL_HANDLE;
+    }
+    restir.active = restir.historyValid = false;
     if (splitDirectCompute)
       pipeline::destroyPipeline(device, splitDirectCompute, nullptr);
     splitDirectCompute = VK_NULL_HANDLE;
@@ -140,7 +147,7 @@ namespace remix {
       local = localCapable[0];
     }
     const bool localDenoise = local && options.localDenoiser && reblur;
-    const bool split = local && options.separateLocalLighting != 0 && emissiveSeen &&
+    const bool split = local && options.separateLocalLighting != 0 && (emissiveSeen || options.restir) &&
                        denoise::localSupported(physical, sigma, true);
     const bool combinedDirect = split && options.separateLocalLighting == 3;
     if (reblur != postReblur || taa != postTaa || sigma != postSigmaRequested ||
@@ -163,7 +170,7 @@ namespace remix {
       postFailure.clear();
     if (localLimited)
       postFailure = "Insufficient descriptors for separate local and sun signals; SIGMA is disabled";
-    if (local && options.separateLocalLighting && emissiveSeen && !split)
+    if (local && options.separateLocalLighting && (emissiveSeen || options.restir) && !split)
       postFailure = options.separateLocalLighting == 3
           ? "Insufficient descriptors for a separate combined-light pass; inline combined lighting active"
           : "Insufficient descriptors for separate torch/emissive histories; combined local lighting active";
@@ -215,6 +222,10 @@ namespace remix {
              singleTemporalTransparencyCompute);
         if (postSplit)
           make(trace::Stage::splitLocalDirect, splitDirectCompute);
+        if (postSplit && options.restir) {
+          requests.push_back({trace::Stage::splitRestirInitial, temporalLayout, &restir.initial, false});
+          requests.push_back({trace::Stage::splitRestirSpatial, temporalLayout, &restir.spatial, false});
+        }
         if (reblur)
           make(trace::Stage::confidence, confidenceCompute);
         createLightingPipelines(requests);

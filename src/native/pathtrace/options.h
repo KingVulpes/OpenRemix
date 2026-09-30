@@ -42,6 +42,15 @@ namespace remix {
     float localGuideCellSize = 2;
     // Exclude local lights outside the shading point's potentially visible
     // clusters (remixapi_SetVisibilityPartitionEXT), when a partition is set.
+    // ReSTIR DI for primary local lighting (implies separateLocalLighting 3):
+    // per-pixel reservoirs of light samples, resampled from the light tree,
+    // reused across frames and neighbors, occluded samples discarded.
+    bool restir = false;
+    uint32_t restirCandidates = 8;     // initial light-tree candidates per pixel
+    uint32_t restirSpatialSamples = 2; // neighbor reservoirs per pixel
+    float restirSpatialRadius = 30;    // pixels
+    uint32_t restirTemporalHistory = 20; // temporal M cap, in multiples of the current M
+    bool restirInitialVisibility = true; // shadow-test the initial winner before reuse
     bool lightVisibilityCulling = false; // opt-in: ~3 ms on L4D2 c1m1, no gain where the PVS is broad
     // Meters per world unit. Scales meter-based defaults: denoiser hit
     // distances and guiding cells (Source engine inches: 0.0254).
@@ -73,4 +82,11 @@ namespace remix {
     bool shadowEarlyOut = false;
     bool operator==(const TraceOptions &) const = default;
   };
+  // Options as the tracer applies them: ReSTIR DI runs in the combined
+  // separate local-lighting pass.
+  inline TraceOptions normalized(TraceOptions options) {
+    if (options.restir)
+      options.separateLocalLighting = 3;
+    return options;
+  }
 } // namespace remix

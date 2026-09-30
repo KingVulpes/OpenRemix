@@ -84,6 +84,23 @@ namespace remix {
       ui::SliderFloat("Light reach (0 = unlimited)", &options.localRange, 0.f, 64.f, "%.1f");
       if (options.localRange > 0 && options.localRange < .01f)
         options.localRange = .01f;
+      ui::Checkbox("ReSTIR DI (local lights)", &options.restir);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Reservoir resampling of primary local lighting: light samples are reused across\n"
+                          "frames and neighboring pixels, and occluded ones discarded. Needs the NRD denoiser\n"
+                          "(not used with DLSS Ray Reconstruction). Uses the separate local-lighting pass.");
+      if (options.restir) {
+        int candidates = int(options.restirCandidates), spatial = int(options.restirSpatialSamples),
+            history = int(options.restirTemporalHistory);
+        if (ui::SliderInt("ReSTIR candidates", &candidates, 1, 32))
+          options.restirCandidates = uint32_t(candidates);
+        if (ui::SliderInt("ReSTIR spatial samples", &spatial, 0, 8))
+          options.restirSpatialSamples = uint32_t(spatial);
+        ui::SliderFloat("ReSTIR spatial radius", &options.restirSpatialRadius, 1, 100, "%.0f px");
+        if (ui::SliderInt("ReSTIR temporal history", &history, 0, 64))
+          options.restirTemporalHistory = uint32_t(history);
+        ui::Checkbox("ReSTIR initial visibility", &options.restirInitialVisibility);
+      }
       ui::Checkbox("Cull lights by visibility sets", &options.lightVisibilityCulling);
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("When the host supplies its map's potentially visible sets, lights in rooms that\n"

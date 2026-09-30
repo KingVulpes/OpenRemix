@@ -308,6 +308,9 @@ vec3 sunVisibility(Hit receiver,ivec2 pixel,out float blockerDistance) {
   blockerDistance=min(distance,65000);return vec3(0);
 }
 #include "light_bvh.glsl"
+#if defined(RESTIR_INITIAL) || defined(RESTIR_SPATIAL)
+#include "restir.glsl"
+#endif
 #include "pbr_reuse.glsl"
 #if defined(TEMPORAL) && defined(SINGLE_SHEET_PASS)
 vec3 direct(Hit hit,bool primary,out vec3 specular,out float distance) {
@@ -650,6 +653,22 @@ void main() {
   // The opaque pass preserves the exact hit position and normal in scratch
   // images. Avoid another geometry query or depth reconstruction at edges.
   vec4 normal=imageLoad(emissiveInput,pixel);
+#ifdef RESTIR_INITIAL
+  Reservoir initial=restirEmpty();
+  if(normal.a>0) {
+    vec3 origin,direction;
+    ray((vec2(pixel)+.5+frame.jitter.xy)/vec2(frame.target.xy)*2-1,frame.inverseCamera,origin,direction);
+    Hit hit=frame.target.w!=0?rasterPrimary(pixel,origin):closest(origin,direction);
+    for(uint layer=0;layer<32&&hit.blended;++layer)hit=closest(offsetRay(hit.p,-hit.ng),direction);
+    uint state=hash(uint(pixel.x)+uint(pixel.y)*frame.target.x+hash(frame.config.z^0x52455354u));
+    initial=restirInitial(hit,state,imageLoad(guideDepth,pixel).x,pixel);
+  }
+  Reservoirs(frame.restirCurrent).data[uint(pixel.x)+uint(pixel.y)*frame.target.x]=initial;
+  return;
+#endif
+#ifdef RESTIR_SPATIAL
+  if(normal.a<=0)Reservoirs(frame.restirHistoryWrite).data[uint(pixel.x)+uint(pixel.y)*frame.target.x]=restirEmpty();
+#endif
   vec3 torch=vec3(0),emissive=vec3(0),torchSpecular=vec3(0),emissiveSpecular=vec3(0);float torchDistance=0,emissiveDistance=0;
   if(normal.a>0) {
     vec3 origin,direction;
@@ -659,10 +678,14 @@ void main() {
     uint state=hash(uint(pixel.x)+uint(pixel.y)*frame.target.x+hash(frame.config.z));
     // The runtime check also keeps the unspecialized fallback correct if the
     // dedicated combined pipeline cannot be created.
+#ifdef RESTIR_SPATIAL
+    torch=restirShade(hit,pixel,hash(state^0x53504154u),imageLoad(guideDepth,pixel).x,torchDistance,torchSpecular);
+#else
     if(!enableSplitLighting||frame.splitLocal.x==3)
       torch=localLighting(hit,state,frame.localConfig.y,torchDistance,true,torchSpecular);
     else
       splitLocalLighting(hit,state,frame.localConfig.y,torch,emissive,torchDistance,emissiveDistance,torchSpecular,emissiveSpecular);
+#endif
     storeReuse(pixel,hit,materialFactor(hit)*(torch+emissive));
     // Capture the unfiltered signal before PBR routing clears or remodulates
     // the local buffers. The opaque pass already wrote black for empty pixels.

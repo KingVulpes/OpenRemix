@@ -84,7 +84,8 @@ namespace remix {
     out.taa = in.taa;
     out.sigma = in.sigma;
     out.localDenoiser = in.localDenoiser;
-    out.separateLocalLighting = in.separateLocalLighting;
+    out.separateLocalLighting = normalized(in).separateLocalLighting;
+    out.restir = in.restir;
     out.upscaler = in.upscaler;
     out.dlssQuality = in.dlssQuality;
     out.fsrQuality = in.fsrQuality;
@@ -253,7 +254,7 @@ namespace remix {
         const bool srgb = m_swapchainFormat == VK_FORMAT_R8G8B8A8_SRGB ||
                           m_swapchainFormat == VK_FORMAT_B8G8R8A8_SRGB;
         const bool encode = m_srgb && !srgb;
-        const auto options = settings.trace;
+        const auto options = normalized(settings.trace);
         const auto ngx = m_ngx;
         const auto exposureState = m_exposureState;
         const auto failedBackends = m_reconstructionFailureMask;
@@ -342,7 +343,7 @@ namespace remix {
         m_preparationFailure.clear();
       }
     }
-    m_traceOptions = m_appliedSettings.trace;
+    m_traceOptions = normalized(m_appliedSettings.trace);
     m_traceOptions.sharcReset = m_sharcReset;
     preparePostProcessing();
     std::copy(m_appliedSettings.clearColor.begin(),

@@ -65,6 +65,9 @@ layout(set=0,binding=3,std140) uniform Frame {
   uint64_t visibilityNodes, visibilityLeaves, visibilityTable, visibilityReserved;
   uvec4 visibilityConfig; // table row words, reserved
   vec4 visibilityProbe; // probe offset above the surface (world units), reserved
+  uint64_t restirCurrent, restirHistoryRead, restirHistoryWrite, restirRemap;
+  uvec4 restirConfig; // candidates, spatial samples, temporal M cap, flags (1 initial visibility)
+  vec4 restirParams; // spatial radius (pixels), emitter count, reserved
 } frame;
 layout(set=0,binding=6) uniform sampler2D textures[4096];
 vec3 environmentRadiance(vec3 direction) {

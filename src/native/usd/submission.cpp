@@ -83,7 +83,7 @@ namespace remix::usd {
         resources_.cacheTexturePath(path, texture);
       material({{"id", "default"}, {"albedo", {.7, .7, .7}}});
       for (const auto &m : snapshot.scene["materials"])
-        material(m);
+        material_defs_.emplace(m.at("id").get<std::string>(), m);
       for (const auto &m : snapshot.scene["meshes"])
         mesh(m);
       for (const auto &l : snapshot.scene["lights"])
@@ -213,6 +213,24 @@ namespace remix::usd {
         resources_.drawLight(lights_[i]);
     }
   }
+  remixapi_MaterialHandle Submission::materialHandle(const std::string &id) {
+    if (auto it = materials_.find(id); it != materials_.end())
+      return it->second;
+    auto def = material_defs_.find(id);
+    if (def == material_defs_.end())
+      return nullptr;
+    material(def->second);
+    return materials_.at(id);
+  }
+  std::vector<std::string> Submission::materialTextures(const std::string &id) const {
+    std::vector<std::string> paths;
+    if (auto def = material_defs_.find(id); def != material_defs_.end())
+      for (const char *key : {"albedo_texture", "normal_texture", "roughness_texture", "metallic_texture",
+                              "emissive_texture"})
+        if (auto path = def->second.value(key, std::string()); !path.empty())
+          paths.push_back(path);
+    return paths;
+  }
   void Submission::material(const Json &data) {
     remixapi_MaterialInfo info{};
     info.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO;
@@ -335,7 +353,9 @@ namespace remix::usd {
       info.vertices_count = vertices.back().size();
       info.indices_values = indices.back().data();
       info.indices_count = indices.back().size();
-      info.material = materials_.at(surface.at("material").get<std::string>());
+      info.material = materialHandle(surface.at("material").get<std::string>());
+      if (!info.material)
+        throw std::runtime_error("Unknown material " + surface.at("material").get<std::string>());
       surfaces.push_back(info);
     }
     if (surfaces.empty())

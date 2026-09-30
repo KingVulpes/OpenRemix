@@ -85,12 +85,14 @@ namespace remix {
     return result;
   }
 
-  void RasterRenderer::initializeGpu(VkPhysicalDevice physical, VkDevice device, bool textureCompression) {
+  void RasterRenderer::initializeGpu(VkPhysicalDevice physical, VkDevice device, bool textureCompression,
+                                     bool memoryBudget) {
     m_gpu = std::make_unique<Gpu>();
     auto &g = *m_gpu;
     g.device = device;
     g.physical = physical;
     g.textureCompression = textureCompression;
+    g.memoryBudget = memoryBudget;
     vkGetPhysicalDeviceMemoryProperties(physical, &g.memory);
     vkGetPhysicalDeviceProperties(physical, &g.properties);
     for (auto format : {VK_FORMAT_D32_SFLOAT, VK_FORMAT_D16_UNORM}) {

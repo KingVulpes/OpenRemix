@@ -9,11 +9,12 @@
 #include <cstdint>
 #include <filesystem>
 #include <map>
+#include <unordered_set>
+#include <utility>
 #include <memory>
 #include <remix/remix_c.h>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 #include "scene/free_camera.h"
@@ -33,8 +34,25 @@ namespace remix {
     void reset();
     void clearModMaterials() {
       m_modMaterials.clear();
+      m_modCandidates.clear();
+      m_modRequested.clear();
+      m_modRequests.clear();
       ++m_modGeneration;
     }
+    // Lazily created mod materials: draws whose material hash is a candidate
+    // are recorded (once) for the mod loader, which adds the replacement when
+    // its textures are ready. Until then the original material is drawn.
+    void setModMaterialCandidates(std::unordered_set<uint64_t> candidates) {
+      clearModMaterials();
+      m_modCandidates = std::move(candidates);
+    }
+    void addModMaterial(uint64_t hash, remixapi_MaterialHandle handle) {
+      if (!handle)
+        return;
+      m_modMaterials[hash] = m_materials.at(uint64_t(reinterpret_cast<uintptr_t>(handle)));
+      ++m_modGeneration;
+    }
+    std::vector<uint64_t> takeModMaterialRequests() { return std::exchange(m_modRequests, {}); }
     void replaceModMaterials(const std::map<uint64_t, remixapi_MaterialHandle> &handles) {
       std::unordered_map<uint64_t, std::shared_ptr<scene::Material>> next;
       for (auto [hash, handle] : handles)
@@ -186,6 +204,8 @@ namespace remix {
     std::shared_ptr<scene::Texture> m_white;
     std::shared_ptr<scene::Material> m_default;
     std::unordered_map<uint64_t, std::shared_ptr<scene::Material>> m_materials, m_modMaterials;
+    std::unordered_set<uint64_t> m_modCandidates, m_modRequested;
+    std::vector<uint64_t> m_modRequests;
     std::unordered_map<uint64_t, std::shared_ptr<scene::Mesh>> m_meshes;
     std::unordered_map<uint64_t, std::shared_ptr<scene::Texture>> m_textures, m_uiTextures;
     std::unordered_map<std::filesystem::path, std::weak_ptr<scene::Texture>> m_paths;

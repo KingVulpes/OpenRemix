@@ -5,6 +5,8 @@
 #include <filesystem>
 #include <future>
 #include <optional>
+#include <utility>
+#include <unordered_set>
 
 namespace remix::usd {
   namespace {
@@ -24,6 +26,13 @@ namespace remix::usd {
       std::optional<std::string> error; // in-band, like Set::error
       uint64_t epoch = 0;
     };
+    // Replacement materials decoded off the Present thread once first drawn.
+    struct MaterialBatch {
+      uint64_t generation = 0;
+      std::vector<uint64_t> hashes;
+      std::vector<std::string> paths;
+      std::vector<std::shared_ptr<scene::Texture>> textures;
+    };
     struct State {
       bool enabled = false, watch = true;
       Options options;
@@ -34,6 +43,8 @@ namespace remix::usd {
       std::set<remixapi_LightHandle> overriddenLights;
       uint64_t generation = 0;
       std::vector<std::unique_ptr<Submission>> submissions;
+      std::future<MaterialBatch> materialBatch;
+      std::vector<uint64_t> materialQueue;
       Stamps stamps;
       // Watch scans run off the Present thread: walking a large mod tree takes
       // far longer than a frame (notably under Wine). A scan started before
@@ -127,6 +138,51 @@ namespace remix::usd {
         }
       });
     }
+    // Requested replacement materials: their textures decode in a background
+    // batch; the materials are created (from the cached textures) when it
+    // lands. The original materials draw meanwhile.
+    void serviceMaterials(NativeResources &resources) {
+      for (auto hash : resources.takeModMaterialRequests())
+        state.materialQueue.push_back(hash);
+      if (state.materialBatch.valid()) {
+        if (state.materialBatch.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+          return;
+        auto batch = state.materialBatch.get();
+        if (batch.generation == state.generation) {
+          for (size_t i = 0; i < batch.paths.size(); ++i)
+            if (batch.textures[i])
+              resources.cacheTexturePath(batch.paths[i], batch.textures[i]);
+          for (auto hash : batch.hashes) {
+            auto it = state.active.materials.find(hash);
+            if (it == state.active.materials.end())
+              continue;
+            const auto &[index, entry] = it->second;
+            try {
+              resources.addModMaterial(hash, state.submissions[index]->materialHandle(entry["path"]));
+            } catch (const std::exception &e) {
+              state.diagnostic = e.what();
+            } catch (...) {
+              state.diagnostic = "Could not create mod material " + entry["path"].get<std::string>();
+            }
+          }
+        }
+      }
+      if (state.materialQueue.empty())
+        return;
+      MaterialBatch batch;
+      batch.generation = state.generation;
+      batch.hashes = std::exchange(state.materialQueue, {});
+      std::set<std::string> seen;
+      for (auto hash : batch.hashes)
+        if (auto it = state.active.materials.find(hash); it != state.active.materials.end())
+          for (auto &path : state.submissions[it->second.first]->materialTextures(it->second.second["path"]))
+            if (seen.insert(path).second)
+              batch.paths.push_back(path);
+      state.materialBatch = std::async(std::launch::async, [batch = std::move(batch)]() mutable {
+        batch.textures = decodeTextures(batch.paths);
+        return batch;
+      });
+    }
   } // namespace
   void startMods(bool disabled) {
     state.enabled = !disabled;
@@ -186,10 +242,12 @@ namespace remix::usd {
         for (size_t i = 0; i < next.snapshots.size(); ++i)
           submissions.push_back(std::make_unique<Submission>(
               resources, next.snapshots[i], 0x4d4f440000000000ull + (generation << 20) + i, false));
-        std::map<uint64_t, remixapi_MaterialHandle> materials;
+        // Material replacements are created as draws first use them.
+        std::unordered_set<uint64_t> candidates;
         for (const auto &[hash, entry] : next.materials)
-          materials[hash] = submissions[entry.first]->materialHandle(entry.second["path"]);
-        resources.replaceModMaterials(materials);
+          candidates.insert(hash);
+        resources.setModMaterialCandidates(std::move(candidates));
+        state.materialQueue.clear();
         for (auto light : state.overriddenLights)
           resources.destroyLight(light);
         state.overriddenLights.clear();
@@ -209,6 +267,7 @@ namespace remix::usd {
         state.diagnostic = "Mod resources could not be created; retaining previous replacements";
       }
     }
+    serviceMaterials(resources);
     auto now = Clock::now();
     if (!state.watch || state.pending.valid() || now < state.next)
       return;

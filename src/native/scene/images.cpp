@@ -694,6 +694,43 @@ namespace remix::scene {
       if (floatChannels)
         return decodeFloat(width, height, word(data, 28), floatChannels, floatHalf, data.data() + offset,
                            data.size() - offset);
+      // Block-compressed files stay compressed, as API uploads do: decoding a
+      // large mod's DDS set to RGBA multiplies its memory several times over.
+      // BC2 (DXT3) has no compressed path and still decodes.
+      if (block && block != 2) {
+        remixapi_TextureInfo info{};
+        info.sType = REMIXAPI_STRUCT_TYPE_TEXTURE_INFO;
+        info.width = width;
+        info.height = height;
+        info.depth = 1;
+        info.mipLevels = std::max(1u, word(data, 28));
+        info.data = data.data() + offset;
+        info.dataSize = data.size() - offset;
+        switch (block) {
+        case 1:
+          info.format = remixapi_Format(srgb ? REMIXAPI_FORMAT_BC1_RGBA_SRGB_EXT : REMIXAPI_FORMAT_BC1_RGBA_UNORM_EXT);
+          break;
+        case 3:
+          info.format = srgb ? REMIXAPI_FORMAT_BC3_SRGB : REMIXAPI_FORMAT_BC3_UNORM;
+          break;
+        case 4:
+          info.format = remixapi_Format(REMIXAPI_FORMAT_BC4_UNORM_EXT);
+          break;
+        case 5:
+          info.format = REMIXAPI_FORMAT_BC5_UNORM;
+          break;
+        case 6:
+          info.format = remixapi_Format(REMIXAPI_FORMAT_BC6H_UFLOAT_EXT);
+          break;
+        case 16:
+          info.format = remixapi_Format(REMIXAPI_FORMAT_BC6H_SFLOAT_EXT);
+          break;
+        default:
+          info.format = srgb ? REMIXAPI_FORMAT_BC7_SRGB : REMIXAPI_FORMAT_BC7_UNORM;
+          break;
+        }
+        return compressTexture(info);
+      }
       auto out = decode(width, height, word(data, 28), srgb, block, bgra, data.data() + offset,
                         data.size() - offset);
       if (forceAlpha) {

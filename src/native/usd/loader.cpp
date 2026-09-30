@@ -37,6 +37,32 @@ namespace remix::usd {
     }
     return 0;
   }
+  std::vector<std::shared_ptr<scene::Texture>> decodeTextures(const std::vector<std::string> &paths) {
+    // Half the cores leave room for the host still rendering meanwhile.
+    std::vector<std::shared_ptr<scene::Texture>> decoded(paths.size());
+    std::atomic<size_t> next{0};
+    auto work = [&] {
+      for (size_t i; (i = next++) < paths.size();) {
+        try {
+          auto texture = std::make_shared<scene::Texture>();
+          texture->pixels = scene::loadTexture(utf8Path(paths[i]));
+          texture->fingerprint();
+          decoded[i] = std::move(texture);
+        } catch (...) {
+          // Left null for the caller. Exceptions stay on their thread.
+        }
+      }
+    };
+    const unsigned threads = std::clamp(std::thread::hardware_concurrency() / 2, 1u, 8u);
+    std::vector<std::thread> pool;
+    for (unsigned t = 1; t < threads && t < paths.size(); ++t)
+      pool.emplace_back(work);
+    work();
+    for (auto &thread : pool)
+      thread.join();
+    return decoded;
+  }
+
   Snapshot load(const Options &options) {
     static std::mutex parserMutex;
     std::lock_guard lock(parserMutex);
@@ -251,9 +277,16 @@ namespace remix::usd {
         if (warning.get<std::string>().starts_with("Unresolved texture "))
           throw std::runtime_error(warning.get<std::string>());
       if (options.preloadTextures) {
-        // Decode each distinct texture once, in parallel: large mods reference
-        // thousands, and decoding dominated their load time. Half the cores
-        // leave room for the host still rendering while mods load.
+        // Textures the snapshot's geometry and lights draw with. Materials
+        // referenced only as replacements load when first drawn (mods.cpp):
+        // large mods reference far more than any one map shows.
+        std::set<std::string> used{"default"};
+        for (const auto &mesh : result.scene["meshes"])
+          for (const auto &surface : mesh.value("surfaces", Json::array()))
+            used.insert(surface.value("material", std::string("default")));
+        for (const auto &entry : result.scene["replacements"]["meshes"])
+          if (entry.contains("material"))
+            used.insert(entry["material"].get<std::string>());
         std::vector<std::string> paths;
         std::set<std::string> seen;
         auto want = [&](const std::string &path) {
@@ -261,34 +294,15 @@ namespace remix::usd {
             paths.push_back(path);
         };
         for (const auto &material : result.scene["materials"])
-          for (const char *key : {"albedo_texture", "normal_texture", "roughness_texture", "metallic_texture",
-                                  "emissive_texture"})
-            want(material.value(key, std::string()));
+          if (used.contains(material.value("id", std::string())))
+            for (const char *key : {"albedo_texture", "normal_texture", "roughness_texture", "metallic_texture",
+                                    "emissive_texture"})
+              want(material.value(key, std::string()));
         for (const auto &light : result.scene["lights"])
           want(light.value("texture", std::string()));
         for (const auto &light : result.scene["replacements"]["lights"])
           want(light["overrides"].value("texture", std::string()));
-        std::vector<std::shared_ptr<scene::Texture>> decoded(paths.size());
-        std::atomic<size_t> next{0};
-        auto work = [&] {
-          for (size_t i; (i = next++) < paths.size();) {
-            try {
-              auto texture = std::make_shared<scene::Texture>();
-              texture->pixels = scene::loadTexture(utf8Path(paths[i]));
-              texture->fingerprint();
-              decoded[i] = std::move(texture);
-            } catch (...) {
-              // Left null; reported below. Exceptions stay on their thread.
-            }
-          }
-        };
-        const unsigned threads = std::clamp(std::thread::hardware_concurrency() / 2, 1u, 8u);
-        std::vector<std::thread> pool;
-        for (unsigned t = 1; t < threads && t < paths.size(); ++t)
-          pool.emplace_back(work);
-        work();
-        for (auto &thread : pool)
-          thread.join();
+        auto decoded = decodeTextures(paths);
         for (size_t i = 0; i < paths.size(); ++i) {
           if (!decoded[i])
             throw std::runtime_error("Could not decode texture: " + paths[i]);

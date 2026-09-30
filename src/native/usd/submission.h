@@ -14,10 +14,11 @@ namespace remix::usd {
     void retireAttachments();
     void draw(bool camera, float aspect, const remixapi_InstanceInfo *parent = nullptr,
               const std::string &root = "");
-    remixapi_MaterialHandle materialHandle(const std::string &id) const {
-      auto it = materials_.find(id);
-      return it == materials_.end() ? nullptr : it->second;
-    }
+    // Materials are created on first use; their textures load then unless
+    // already cached (NativeResources::cacheTexturePath).
+    remixapi_MaterialHandle materialHandle(const std::string &id);
+    // Texture files a material reads (empty entries omitted).
+    std::vector<std::string> materialTextures(const std::string &id) const;
     const std::vector<remixapi_InstanceInfo> &instances() const { return instances_; }
 
   private:
@@ -34,6 +35,7 @@ namespace remix::usd {
     std::vector<uint64_t> instance_hashes_;
     Json snapshot_;
     std::map<std::string, remixapi_MaterialHandle> materials_;
+    std::map<std::string, Json> material_defs_;
     std::vector<remixapi_MeshHandle> meshes_;
     std::map<uint64_t, remixapi_MeshHandle> mesh_cache_;
     std::vector<remixapi_InstanceInfo> instances_;

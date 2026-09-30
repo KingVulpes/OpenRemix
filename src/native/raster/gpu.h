@@ -183,6 +183,10 @@ namespace remix {
     void copyLevels(VkCommandBuffer command, VkImage image, uint32_t levels,
                     const std::vector<VkBufferImageCopy> &copies);
     bool textureCompression = false; // Device enabled textureCompressionBC.
+    bool memoryBudget = false;       // VK_EXT_memory_budget queries available.
+    // Top mip levels to leave out of a new texture: large textures give up
+    // detail as device-local memory fills, instead of failing allocations.
+    uint32_t textureMipSkip(uint32_t width, uint32_t height, uint32_t levels) const;
     VkDescriptorSet material(const std::shared_ptr<scene::Material> &source, VkCommandBuffer command);
     VkPipeline pipeline(const scene::Draw &draw);
   };

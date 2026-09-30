@@ -10,7 +10,8 @@ namespace remix {
     ~RasterRenderer();
     // textureCompression: the device was created with textureCompressionBC, so
     // compressed textures upload as BC images instead of a decoded fallback.
-    void initializeGpu(VkPhysicalDevice physical, VkDevice device, bool textureCompression = false);
+    void initializeGpu(VkPhysicalDevice physical, VkDevice device, bool textureCompression = false,
+                       bool memoryBudget = false);
     // Takes other's GPU state (caches, pipelines, target and raster profile),
     // leaving other without one. Asynchronous presentation renders from a
     // published frame (NativeResources::publishFrame) held by a second

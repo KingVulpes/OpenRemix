@@ -303,10 +303,11 @@ namespace remix {
             if (resolved && i == 0)
               resolved->push_back(it->second);
             draw.material = it->second;
-            if (auto replacement = m_modMaterials.find(draw.material->sourceHash ? draw.material->sourceHash
-                                                                                 : key(surface->material));
-                replacement != m_modMaterials.end())
+            const uint64_t modKey = draw.material->sourceHash ? draw.material->sourceHash : key(surface->material);
+            if (auto replacement = m_modMaterials.find(modKey); replacement != m_modMaterials.end())
               draw.material = replacement->second;
+            else if (m_modCandidates.contains(modKey) && m_modRequested.insert(modKey).second)
+              m_modRequests.push_back(modKey);
           }
         }
         if (materialOverride)

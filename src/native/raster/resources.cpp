@@ -59,6 +59,10 @@ namespace remix {
       return out;
     }
 
+    bool outOfMemory(VkResult result) {
+      return result == VK_ERROR_OUT_OF_DEVICE_MEMORY || result == VK_ERROR_OUT_OF_HOST_MEMORY;
+    }
+
     VkFormat blockFormat(uint32_t format) {
       switch (format) {
       case REMIXAPI_FORMAT_BC1_RGB_SRGB:
@@ -141,25 +145,57 @@ namespace remix {
     return textures.emplace(source.get(), uploadPixels(source, source->pixels, command, 0)).first->second;
   }
 
+  uint32_t RasterRenderer::Gpu::textureMipSkip(uint32_t width, uint32_t height, uint32_t levels) const {
+    if (!memoryBudget || levels <= 1 || std::max(width, height) <= 1024)
+      return 0;
+    VkPhysicalDeviceMemoryBudgetPropertiesEXT budget = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
+    VkPhysicalDeviceMemoryProperties2 properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2,
+                                                    .pNext = &budget};
+    vkGetPhysicalDeviceMemoryProperties2(physical, &properties);
+    double used = 0;
+    for (uint32_t i = 0; i < properties.memoryProperties.memoryHeapCount; ++i)
+      if ((properties.memoryProperties.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) && budget.heapBudget[i])
+        used = std::max(used, double(budget.heapUsage[i]) / double(budget.heapBudget[i]));
+    uint32_t skip = used > .9 ? 2 : used > .75 ? 1 : 0;
+    while (skip && std::max(width, height) >> skip < 512)
+      --skip;
+    return std::min(skip, levels - 1);
+  }
+
   RasterRenderer::Gpu::TextureGpu RasterRenderer::Gpu::uploadPixels(const std::shared_ptr<Texture> &source,
                                                                     const Pixels &p, VkCommandBuffer command,
                                                                     VkImageCreateFlags flags) {
-    const uint32_t levels = uint32_t(p.mips.size());
-    TextureGpu value{source, image(p.width, p.height, levels,
-                                   !p.hdrMips.empty() ? VK_FORMAT_R32G32B32A32_SFLOAT
-                                   : p.srgb           ? VK_FORMAT_R8G8B8A8_SRGB
-                                                      : VK_FORMAT_R8G8B8A8_UNORM,
-                                   false, flags)};
+    const uint32_t available = uint32_t(p.mips.size());
+    const VkFormat format = !p.hdrMips.empty() ? VK_FORMAT_R32G32B32A32_SFLOAT
+                            : p.srgb           ? VK_FORMAT_R8G8B8A8_SRGB
+                                               : VK_FORMAT_R8G8B8A8_UNORM;
+    uint32_t skip = textureMipSkip(p.width, p.height, available);
+    std::unique_ptr<Image> allocated;
+    for (;;) {
+      try {
+        allocated = image(std::max(1u, p.width >> skip), std::max(1u, p.height >> skip), available - skip, format,
+                          false, flags);
+        break;
+      } catch (VkResult result) {
+        if (!outOfMemory(result) || skip + 1 >= available)
+          throw;
+        ++skip;
+      }
+    }
+    const uint32_t levels = available - skip;
+    TextureGpu value{source, std::move(allocated)};
     value.view = value.data->view;
     // Level bytes go straight into the staging buffer.
     auto level = [&](uint32_t i) -> std::pair<const uint8_t *, size_t> {
+      i += skip;
       if (p.hdrMips.empty())
         return {p.mips[i].data(), p.mips[i].size()};
       return {reinterpret_cast<const uint8_t *>(p.hdrMips[i].data()), p.hdrMips[i].size() * sizeof(float)};
     };
     std::vector<VkBufferImageCopy> copies;
     size_t total = 0;
-    uint32_t width = p.width, height = p.height;
+    uint32_t width = std::max(1u, p.width >> skip), height = std::max(1u, p.height >> skip);
     for (uint32_t i = 0; i < levels; ++i) {
       copies.push_back({.bufferOffset = total,
                         .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i, 0, 1},
@@ -248,24 +284,55 @@ namespace remix {
         c.block == 4 ? VkComponentMapping{VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_R,
                                           VK_COMPONENT_SWIZZLE_ONE}
                      : VkComponentMapping{};
-    TextureGpu value{source, image(p.width, p.height, c.levels, format, false, flags, components)};
-    value.view = value.data->view;
     const VkDeviceSize blockSize = (c.block == 1 || c.block == 4) ? 8 : 16;
-    std::vector<VkBufferImageCopy> copies;
-    VkDeviceSize offset = 0;
-    uint32_t width = p.width, height = p.height;
-    for (uint32_t i = 0; i < c.levels; ++i) {
-      copies.push_back({.bufferOffset = offset,
-                        .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i, 0, 1},
-                        .imageExtent = {width, height, 1}});
-      offset += VkDeviceSize((width + 3) / 4) * ((height + 3) / 4) * blockSize;
-      width = std::max(1u, width / 2);
-      height = std::max(1u, height / 2);
-    }
-    if (offset != c.upload.size())
+    auto levelBytes = [&](uint32_t level) {
+      const uint32_t w = std::max(1u, p.width >> level), h = std::max(1u, p.height >> level);
+      return VkDeviceSize((w + 3) / 4) * ((h + 3) / 4) * blockSize;
+    };
+    VkDeviceSize total = 0;
+    for (uint32_t i = 0; i < c.levels; ++i)
+      total += levelBytes(i);
+    if (total != c.upload.size())
       throw VK_ERROR_INITIALIZATION_FAILED;
-    uploads.push_back(buffer(c.upload.data(), c.upload.size(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT));
-    copyLevels(command, value.data->image, c.levels, copies);
+    // Budgeted top-mip skipping; out of memory drops further levels and, at
+    // the last one, falls back to the preview instead of failing the frame.
+    uint32_t skip = textureMipSkip(p.width, p.height, c.levels);
+    std::unique_ptr<Image> allocated;
+    for (;;) {
+      try {
+        allocated = image(std::max(1u, p.width >> skip), std::max(1u, p.height >> skip), c.levels - skip, format,
+                          false, flags, components);
+        break;
+      } catch (VkResult result) {
+        if (!outOfMemory(result))
+          throw;
+        if (skip + 1 < c.levels) {
+          ++skip;
+          continue;
+        }
+        Pixels preview = {c.previewWidth, c.previewHeight, p.srgb, {c.preview}};
+        if (!c.hdrPreview.empty())
+          preview.hdrMips = {c.hdrPreview};
+        auto value = uploadPixels(source, preview, command, flags);
+        release();
+        return textures.emplace(source.get(), std::move(value)).first->second;
+      }
+    }
+    TextureGpu value{source, std::move(allocated)};
+    value.view = value.data->view;
+    std::vector<VkBufferImageCopy> copies;
+    VkDeviceSize first = 0, offset = 0;
+    for (uint32_t i = 0; i < skip; ++i)
+      first += levelBytes(i);
+    for (uint32_t i = skip; i < c.levels; ++i) {
+      const uint32_t w = std::max(1u, p.width >> i), h = std::max(1u, p.height >> i);
+      copies.push_back({.bufferOffset = offset,
+                        .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i - skip, 0, 1},
+                        .imageExtent = {w, h, 1}});
+      offset += levelBytes(i);
+    }
+    uploads.push_back(buffer(c.upload.data() + first, c.upload.size() - first, VK_BUFFER_USAGE_TRANSFER_SRC_BIT));
+    copyLevels(command, value.data->image, c.levels - skip, copies);
     // The staging buffer and then the image are now the only copies.
     release();
     return textures.emplace(source.get(), std::move(value)).first->second;

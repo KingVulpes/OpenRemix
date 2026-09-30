@@ -168,7 +168,12 @@ namespace remix::scene {
                            uint32_t level) {
     depth = std::max(depth, level);
     m_nodes[index].links[3] = end - begin;
+    // Subtrees are not contiguous in node order (siblings are adjacent), so
+    // each node records the first position of its leaves in leaf order
+    // (links[0] of a leaf, links[2] of an internal node): subtree membership
+    // is a leaf-rank range test (light_guiding.glsl lightRank).
     if (end - begin == 1) {
+      m_nodes[index].links[0] = begin;
       m_nodes[index].links[2] = order[begin];
       m_leaves[order[begin]] = index;
     } else {
@@ -198,6 +203,7 @@ namespace remix::scene {
       m_parents.push_back(index);
       m_nodes[index].links[0] = left;
       m_nodes[index].links[1] = right;
+      m_nodes[index].links[2] = begin;
       buildInto(left, order, begin, middle, level + 1);
       buildInto(right, order, middle, end, level + 1);
     }

@@ -16,17 +16,19 @@ uint lightGuideCellKey(vec3 cell,uint face) {
   uvec3 bits=mix(floatBitsToUint(cell),uvec3(0),equal(cell,vec3(0)));
   return max(1u,hash(hash(bits.x)^hash(bits.y+0x9e3779b9u)^hash(bits.z+face*0x85ebca6bu)));
 }
+// Cells per world unit (localGuideCellSize meters over sceneScale; 2 m by default).
+float lightGuideScale() { return frame.lightGuideConfig.z!=0?uintBitsToFloat(frame.lightGuideConfig.z):.5; }
 uint lightGuideKey(Hit hit) {
   // Grid-aligned walls sit exactly on cell boundaries. Interpolation and
   // intersection rounding can place the same plane on either side, changing
   // a whole wall's proposal under camera motion. Use the same surface-safe
   // position as the visibility ray for the guide lookup only; physical light
   // evaluation and its PDF still use the original hit position.
-  return lightGuideCellKey(floor(offsetRay(hit.p,hit.n)*.5),lightGuideFace(hit.n));
+  return lightGuideCellKey(floor(offsetRay(hit.p,hit.n)*lightGuideScale()),lightGuideFace(hit.n));
 }
 uint lightGuideQueryKey(Hit hit,uint state) {
   uint face=lightGuideFace(hit.n),axis=face/2;
-  vec3 grid=offsetRay(hit.p,hit.n)*.5,cell=floor(grid);
+  vec3 grid=offsetRay(hit.p,hit.n)*lightGuideScale(),cell=floor(grid);
   // Point lookup changes the entire proposal at two-block cell boundaries.
   // Different proposal variances become colored patches after tonemapping
   // and temporal clipping, even though their linear expectations agree.
@@ -40,6 +42,17 @@ uint lightGuideQueryKey(Hit hit,uint state) {
     cell[tangent]=floor(coordinate)+float(lightRandom(lookupState)<fract(coordinate));
   }
   return lightGuideCellKey(cell,face);
+}
+// Position of a node's first leaf in leaf order. Subtree nodes are not
+// contiguous in node order, but their leaves are contiguous in leaf order:
+// a leaf is under node n iff its rank is in [lightRank(n), +leaf count).
+uint lightRank(LightNodes nodes,uint index) {
+  uvec4 links=nodes.data[index].links;
+  return links.w==1?links.x:links.z;
+}
+bool lightInSubtree(LightNodes nodes,uint leaf,uint root) {
+  uint rank=lightRank(nodes,leaf),first=lightRank(nodes,root);
+  return rank>=first&&rank-first<nodes.data[root].links.w;
 }
 float lightGuideProposal(LightNodes nodes,Hit hit,uint state,out uint preferred,bool resampled) {
   preferred=0;
@@ -59,15 +72,15 @@ float lightGuideProposal(LightNodes nodes,Hit hit,uint state,out uint preferred,
   return mixWeight;
 }
 float lightBasePdf(LightNodes nodes,Hit hit,uint preferred) {
-  // Preorder subtrees occupy contiguous node ranges; no extra emitter path or
-  // parent buffer is needed to evaluate the base PDF of a cached leaf.
+  // Descend toward the cached leaf by leaf rank (lightRank); no emitter path
+  // or parent buffer is needed to evaluate its base PDF.
   uint index=0;float pdf=1;
   while(nodes.data[index].links.w>1) {
     uvec4 links=nodes.data[index].links;
     float a=lightWeight(nodes.data[links.x],hit.p,hit.n),b=lightWeight(nodes.data[links.y],hit.p,hit.n);
     if(a==0&&b==0)return 0;
     float split=lightSplit(a,b);
-    bool right=preferred>=links.y;
+    bool right=lightRank(nodes,preferred)>=lightRank(nodes,links.y);
     pdf*=right?1-split:split;
     index=right?links.y:links.x;
   }

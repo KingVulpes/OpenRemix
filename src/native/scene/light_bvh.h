@@ -15,7 +15,9 @@ namespace remix::scene {
   struct LightNode {
     float minimumPower[4] = {};
     float maximum[4] = {};  // xyz bounds; w largest emitter radius squared
-    uint32_t links[4] = {}; // left, right, emitter, leaf count
+    // Internal: left, right, first leaf rank, leaf count. Leaf: leaf rank,
+    // unused, emitter, 1.
+    uint32_t links[4] = {};
   };
   static_assert(sizeof(LightEmitter) == 112 && sizeof(LightNode) == 48);
   class LightBvh {

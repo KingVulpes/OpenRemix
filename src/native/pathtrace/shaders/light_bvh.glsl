@@ -264,7 +264,9 @@ vec3 resampledLocalLighting(LightNodes nodes,LightEmitters emitters,Hit hit,uint
     guideMix=lightGuideProposal(nodes,hit,state,preferred,true);
     // Keep the stratified whole-tree proposal on torch-dominated cells. A
     // single cached torch is a poor substitute for the other visible torches.
-    if(guideMix>0&&emitters.data[nodes.data[preferred].links.z].radiance.w==0)guideMix=0;
+    // (Sphere-only sets have no area lights to stratify: there, guidance is
+    // the only visibility-aware proposal, e.g. lamps inside their fixtures.)
+    if(guideMix>0&&emitters.data[nodes.data[preferred].links.z].radiance.w==0&&(frame.localConfig.w&0x40000000u)==0)guideMix=0;
     if(guideMix>0) {
       // A visible area light guides its local subtree, not just one triangle
       // of a tessellated surface.
@@ -273,7 +275,7 @@ vec3 resampledLocalLighting(LightNodes nodes,LightEmitters emitters,Hit hit,uint
         uvec4 links=nodes.data[guideRoot].links;
         float a=lightWeight(nodes.data[links.x],hit.p,hit.n),b=lightWeight(nodes.data[links.y],hit.p,hit.n);
         if(a==0&&b==0) {rootPdf=0;break;}
-        float split=lightSplit(a,b);bool right=preferred>=links.y;
+        float split=lightSplit(a,b);bool right=lightRank(nodes,preferred)>=lightRank(nodes,links.y);
         rootPdf*=right?1-split:split;guideRoot=right?links.y:links.x;
       }
       if(rootPdf<=0)guideMix=0;
@@ -296,7 +298,7 @@ vec3 resampledLocalLighting(LightNodes nodes,LightEmitters emitters,Hit hit,uint
         else {index=links.y;pdf*=1-probability;u=(u-probability)/(1-probability);}
         u=min(u,.99999994);
       }
-      bool inCluster=index>=guideRoot&&index<guideRoot+2*nodes.data[guideRoot].links.w-1;
+      bool inCluster=lightInSubtree(nodes,index,guideRoot);
       pdf*=1-guideMix+(guideMix>0&&inCluster?guideMix/rootPdf:0);
       if(pdf<=0)continue;
       LocalCandidate candidate=localCandidate(emitters.data[nodes.data[index].links.z],hit,state,true,blue,noiseBase+sampleIndex*8u+candidateIndex);

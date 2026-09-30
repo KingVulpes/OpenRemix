@@ -38,6 +38,11 @@ namespace remix {
     float localDirectClamp = 0, indirectClamp = 0;
     bool localFireflyFilter = false;
     bool localGuiding = true;
+    // Visibility-guiding cell size in meters (see sceneScale).
+    float localGuideCellSize = 2;
+    // Meters per world unit. Scales meter-based defaults: denoiser hit
+    // distances and guiding cells (Source engine inches: 0.0254).
+    float sceneScale = 1;
     uint32_t shadowDebug = 0;
     uint32_t debugView = 0;        // display diagnostics; never selects an integrator
     float sunAngularDiameter = -1; // -1 inherits the distant light's diameter.

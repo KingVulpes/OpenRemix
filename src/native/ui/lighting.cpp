@@ -89,6 +89,12 @@ namespace remix {
         ImGui::SetTooltip(
             "Guides opaque direct-light samples while retaining exploration.\nOne active light needs no "
             "visibility history.\nEmissive reservoirs use visible groups while checking shadows afresh.");
+      ImGui::BeginDisabled(!options.localGuiding);
+      ui::DragFloat("Guide cell size", &options.localGuideCellSize, .01f, .05f, 100, "%.2f m");
+      ImGui::EndDisabled();
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Size of a visibility cell in meters (converted with the scene scale).");
+      options.localGuideCellSize = std::clamp(options.localGuideCellSize, .05f, 100.f);
       const auto guiding = localLightGuidingStatistics();
       if (guiding.active)
         ImGui::TextWrapped("Guided %u / %u observed samples | %.1f MiB history", guiding.sampledGuided,

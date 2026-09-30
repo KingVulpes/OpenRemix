@@ -135,6 +135,8 @@ namespace remix::config {
         TRACE(localFireflyFilter, 0, 1);
         TRACE(localDenoiser, 0, 1);
         TRACE(localGuiding, 0, 1);
+        TRACE(localGuideCellSize, .05, 100);
+        TRACE(sceneScale, .0001, 1000);
         TRACE(localSamples, 1, 16);
         TRACE(shadowDebug, 0, 2);
         TRACE(debugView, 0, 11);

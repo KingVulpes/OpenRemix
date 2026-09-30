@@ -8,8 +8,11 @@ void PathTracer::Gpu::configureLightGuiding(Frame &frame, const TraceOptions &op
   const bool split = frame.splitLocal[0] != 0;
   const auto &tree = split ? emissiveBvh : lightBvh;
   g.stats.requested = options.localGuiding;
+  // Diagnostic: local estimator of this frame (bit 0 RIS, bit 1 sphere-only set).
+  g.stats.reserved = uint32_t(localResamplingActive) | (frame.localConfig[3] & 0x40000000u ? 2u : 0u);
   g.stats.influenceRange = options.localRange;
-  g.stats.cellSize = 2;
+  const float cellUnits = options.localGuideCellSize / options.sceneScale;
+  g.stats.cellSize = cellUnits;
   localGuidingActive = false;
   g.stats.active = 0;
   if (g.pipelineFailed || !options.localGuiding || (split ? frame.splitLocal[2] : frame.localConfig[0]) < 2 || tree.nodes().size() >= (1u << 20)) {
@@ -43,23 +46,27 @@ void PathTracer::Gpu::configureLightGuiding(Frame &frame, const TraceOptions &op
   if (!g.history[0])
     return;
   const bool resampled = split || frame.localScale[2] > 1;
-  // Visibility correspondence survives small radiance animation, but a
-  // significant source change also changes the proposal weights. Drop the
-  // guide for that bounded fast-response event so it cannot favor an extinct
-  // or newly dominant light.
-  if (history.reset() || g.generation != tree.lightingGeneration || g.range != options.localRange || g.resampled != resampled || g.split != split) {
+  // The guide stores light-tree leaf indices and learned visibility. Neither
+  // depends on light intensity: flickering or animated lights keep it (it is
+  // only a proposal; every sample is still shadow-tested and fully weighted).
+  // Only a rebuilt tree (new leaf order) invalidates it.
+  if (history.reset() || g.generation != tree.builds || g.range != options.localRange || g.cellSize != cellUnits || g.resampled != resampled || g.split != split) {
     g.valid = false;
     ++g.stats.historyResets;
   }
-  g.generation = tree.lightingGeneration;
+  g.generation = tree.builds;
   g.split = split;
   g.range = options.localRange;
+  g.cellSize = cellUnits;
   g.resampled = resampled;
   frame.lightGuideRead = g.valid ? g.history[g.writeIndex ^ 1]->address : 0;
   frame.lightGuideWrite = g.history[g.writeIndex]->address;
   frame.lightGuideConfig[0] = LightGuiding::capacity;
   frame.lightGuideConfig[1] = uint32_t(tree.nodes().size());
+  const float scale = 1.f / cellUnits;
+  std::memcpy(&frame.lightGuideConfig[2], &scale, 4);
   g.stats.active = 1;
+  ++g.stats.renderedFrames;
   localGuidingActive = true;
 }
 

@@ -98,7 +98,7 @@ namespace remix::trace::detail {
     uint32_t localConfig[4] = {};
     float localScale[4] = {};
     uint64_t lightGuideRead = 0, lightGuideWrite = 0;
-    uint32_t lightGuideConfig[4] = {}; // capacity, node count, reserved
+    uint32_t lightGuideConfig[4] = {}; // capacity, node count, inverse cell size (float bits), reserved
     uint64_t torchNodes = 0, torchEmitters = 0, emissiveNodes = 0, emissiveEmitters = 0;
     uint32_t splitLocal[4] = {}; // mode, torch count, emissive count, debug view
     uint64_t reuseRead = 0, reuseWrite = 0;
@@ -321,9 +321,9 @@ namespace remix {
     // the combined local signal).
     bool emissiveSeen = false;
     bool postLocalDenoise = false, postLocalDenoiseRequested = false;
-    uint64_t previousLocalGeneration = 0;
+
     float previousLocalIntensity = 0, previousLocalRange = 0;
-    uint32_t previousLocalActive = 0, previousLocalAdaptive = 0, localResponsiveFrames = 0;
+    uint32_t previousLocalAdaptive = 0, localResponsiveFrames = 0;
     bool previousLocalBlueNoise = false;
     float previousSun[9] = {}, pendingSun[9] = {};
     std::unique_ptr<Buffer> blueNoise;
@@ -360,7 +360,7 @@ namespace remix {
       uint32_t writeIndex = 0;
       bool valid = false, pending = false, attempted = false, pipelineFailed = false;
       uint64_t generation = 0;
-      float range = 0;
+      float range = 0, cellSize = 2;
       bool resampled = false;
       bool split = false;
       remixapi_LocalLightGuidingStatisticsEXT stats{.structSize =

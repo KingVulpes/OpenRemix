@@ -376,7 +376,8 @@ namespace remix {
     frame.localConfig[1] = options.localSamples;
     frame.localConfig[2] = uint32_t(lightBvh.lightingGeneration);
     frame.localConfig[3] =
-        uint32_t(lightBvh.lightingGeneration >> 32) | (options.adaptiveLocalSampling ? 0x80000000u : 0u);
+        uint32_t(lightBvh.lightingGeneration >> 32) | (options.adaptiveLocalSampling ? 0x80000000u : 0u) |
+        (hasEmissiveLights ? 0u : 0x40000000u); // sphere-only set: guide sphere lights too
     frame.localScale[0] = options.localIntensity;
     frame.localScale[1] = options.localRange;
     // Private, previously unused shader word: bounded candidate count. Keep
@@ -498,19 +499,21 @@ namespace remix {
     const bool localSettingsChanged = frame.localScale[0] != previousLocalIntensity ||
                                       frame.localScale[1] != previousLocalRange ||
                                       localBlueNoise != previousLocalBlueNoise;
-    if (lightBvh.lightingGeneration != previousLocalGeneration || localSettingsChanged ||
-        frame.localConfig[0] != previousLocalActive ||
-        (frame.localConfig[3] & 0x80000000u) != previousLocalAdaptive)
+    // Only estimator changes shorten the local-light history. Lighting changes
+    // (flickering, animated or switched lights) are left to NRD's per-pixel
+    // anti-lag: a scene-wide reset on every flicker kept the whole screen's
+    // local lighting at two accumulated frames.
+    if (localSettingsChanged || (frame.localConfig[3] & 0x80000000u) != previousLocalAdaptive)
       localResponsiveFrames = 8;
     else if (localResponsiveFrames)
       --localResponsiveFrames;
-    previousLocalGeneration = lightBvh.lightingGeneration;
     previousLocalIntensity = frame.localScale[0];
     previousLocalRange = frame.localScale[1];
     previousLocalBlueNoise = localBlueNoise;
-    previousLocalActive = frame.localConfig[0];
     previousLocalAdaptive = frame.localConfig[3] & 0x80000000u;
     temporalFrame = {};
+    // NRD's hit-distance scale A is in meters (3 m); B and C are unitless.
+    temporalFrame.hitDistance[0] = 3.f / options.sceneScale;
     // The frame's draws, and the static set's when it is traced from its units.
     const bool staticUnits = prepared.staticUnits;
     temporalFrame.shadow[2] =
@@ -540,11 +543,11 @@ namespace remix {
     temporalFrame.local[3] = frame.splitLocal[0];
     for (unsigned i = 0; i < 2; ++i) {
       const auto &family = i ? emissiveBvh : torchBvh;
-      if (previousFamilyGeneration[i] != family.lightingGeneration || localSettingsChanged || history.reset())
+      if (previousFamilyGeneration[i] != family.builds || localSettingsChanged || history.reset())
         familyResponsive[i] = 8;
       else if (familyResponsive[i])
         --familyResponsive[i];
-      previousFamilyGeneration[i] = family.lightingGeneration;
+      previousFamilyGeneration[i] = family.builds;
       temporalFrame.families[i] = frame.splitLocal[i + 1];
       temporalFrame.families[i + 2] = familyResponsive[i];
     }

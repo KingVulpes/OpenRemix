@@ -50,6 +50,13 @@ namespace remix {
         ImGui::SetTooltip(
             "Compares unshadowed candidates at opaque primary surfaces in larger emissive light sets.\nKeeps "
             "one shadow ray per local light sample; 1 restores basic BVH sampling.");
+      int sphereCandidates = int(options.sphereCandidates);
+      if (ui::SliderInt("Light candidates (no emissives)", &sphereCandidates, 1, 8))
+        options.sphereCandidates = uint32_t(sphereCandidates);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(
+            "Scenes lit only by API lights: compares unshadowed candidates (spot cones included) before the\n"
+            "one shadow ray. Helps a dominant nearby light (a flashlight) among many distant ones.");
       ImGui::BeginDisabled(rrActive);
       ui::Checkbox("Blue noise local lights", &options.blueNoiseLocalLights);
       ImGui::EndDisabled();

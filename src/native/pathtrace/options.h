@@ -25,6 +25,10 @@ namespace remix {
     bool localLights = true, localDenoiser = true;
     bool torchLights = true, emissiveLights = true;
     uint32_t emissiveCandidates = 4;
+    // RIS candidates in sets of more than four sphere lights without emissive
+    // surfaces (1: plain BVH sampling). Candidates compare unshadowed
+    // contributions, cone shaping included, before the one shadow ray.
+    uint32_t sphereCandidates = 1;
     bool adaptiveLocalSampling = true;
     bool stabilizeEmissiveLighting = false, emissiveSolidAngleSampling = false;
     bool freezeEmissiveRadiance = false; // diagnostic: casting only

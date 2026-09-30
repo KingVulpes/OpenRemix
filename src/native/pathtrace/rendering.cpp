@@ -381,8 +381,9 @@ namespace remix {
     frame.localScale[1] = options.localRange;
     // Private, previously unused shader word: bounded candidate count. Keep
     // the established one-/many-sphere and <=4-emitter estimators unchanged.
-    frame.localScale[2] =
-        hasEmissiveLights && lightBvh.emitters().size() > 4 ? float(options.emissiveCandidates) : 1.f;
+    frame.localScale[2] = lightBvh.emitters().size() <= 4 ? 1.f
+                          : hasEmissiveLights           ? float(options.emissiveCandidates)
+                                                        : float(options.sphereCandidates);
     localResamplingActive = localIlluminationActive && frame.localScale[2] > 1;
     frame.localScale[3] = options.localRange > 0 ? 1.f / (options.localRange * options.localRange) : 0;
     frame.camera = resources.camera();
@@ -628,6 +629,7 @@ namespace remix {
     if (options.pbrLocalReuse) {
       const uint32_t settings[] = {options.localSamples,
                                    options.emissiveCandidates,
+                                   options.sphereCandidates,
                                    uint32_t(options.adaptiveLocalSampling),
                                    uint32_t(options.localGuiding),
                                    options.separateLocalLighting,

@@ -74,7 +74,7 @@ void PathTracer::Gpu::configureRestir(Frame &frame, const TraceOptions &options,
   frame.restirConfig[0] = options.restirCandidates;
   frame.restirConfig[1] = options.restirSpatialSamples;
   frame.restirConfig[2] = options.restirTemporalHistory;
-  frame.restirConfig[3] = options.restirInitialVisibility ? 1u : 0u;
+  frame.restirConfig[3] = (options.restirInitialVisibility ? 1u : 0u) | (options.restirPermutation ? 2u : 0u);
   frame.restirParams[0] = options.restirSpatialRadius;
   frame.restirParams[1] = float(lights.size());
   r.active = true;

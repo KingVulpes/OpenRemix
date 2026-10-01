@@ -144,6 +144,7 @@ namespace remix::config {
         TRACE(restirSpatialRadius, 1, 100);
         TRACE(restirTemporalHistory, 0, 64);
         TRACE(restirInitialVisibility, 0, 1);
+        TRACE(restirPermutation, 0, 1);
         TRACE(localSamples, 1, 16);
         TRACE(shadowDebug, 0, 2);
         TRACE(debugView, 0, 11);

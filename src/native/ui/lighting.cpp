@@ -84,6 +84,15 @@ namespace remix {
       ui::SliderFloat("Light reach (0 = unlimited)", &options.localRange, 0.f, 64.f, "%.1f");
       if (options.localRange > 0 && options.localRange < .01f)
         options.localRange = .01f;
+      {
+        // Logarithmic: hosts range from inches (0.0254) to meters and beyond.
+        ui::DragFloat("Scene scale (m per unit)", &options.sceneScale, .0005f, .0001f, 1000, "%.4f",
+                      ImGuiSliderFlags_Logarithmic);
+        options.sceneScale = std::clamp(options.sceneScale, .0001f, 1000.f);
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Meters per world unit (1 for meter-scale hosts, 0.0254 for Source inches).\n"
+                            "Converts the denoiser's hit distances and the visibility-guide cell size.");
+      }
       ui::Checkbox("ReSTIR DI (local lights)", &options.restir);
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Reservoir resampling of primary local lighting: light samples are reused across\n"
@@ -100,6 +109,10 @@ namespace remix {
         if (ui::SliderInt("ReSTIR temporal history", &history, 0, 64))
           options.restirTemporalHistory = uint32_t(history);
         ui::Checkbox("ReSTIR initial visibility", &options.restirInitialVisibility);
+        ui::Checkbox("ReSTIR permutation sampling", &options.restirPermutation);
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Reuses a shuffled neighbor's history each frame: less temporally\n"
+                            "correlated (frozen) noise for the denoiser.");
       }
       ui::Checkbox("Cull lights by visibility sets", &options.lightVisibilityCulling);
       if (ImGui::IsItemHovered())

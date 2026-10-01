@@ -181,6 +181,8 @@ Reservoir restirInitial(Hit hit,uint state,float depth,ivec2 pixel) {
     vec4 previous=temporal.previousCamera*vec4(hit.previousPosition,1);
     if(previous.w>0) {
       ivec2 at=ivec2(floor((previous.xy/previous.w*.5+.5)*vec2(frame.target.xy)-temporal.jitter.zw));
+      // Permutation sampling: a bijective per-frame shuffle within 2x2 blocks.
+      if((frame.restirConfig.w&2u)!=0)at^=ivec2(frame.config.z&1u,(frame.config.z>>1)&1u);
       if(all(greaterThanEqual(at,ivec2(0)))&&all(lessThan(at,ivec2(frame.target.xy)))) {
         Reservoir p=Reservoirs(frame.restirHistoryRead).data[uint(at.x)+uint(at.y)*frame.target.x];
         float previousDepth=abs((temporal.previousView*vec4(hit.previousPosition,1)).z);

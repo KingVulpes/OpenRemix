@@ -49,7 +49,13 @@ namespace remix {
     uint32_t restirCandidates = 8;     // initial light-tree candidates per pixel
     uint32_t restirSpatialSamples = 2; // neighbor reservoirs per pixel
     float restirSpatialRadius = 30;    // pixels
-    uint32_t restirTemporalHistory = 20; // temporal M cap, in multiples of the current M
+    // Temporal M cap in multiples of the current M. Longer histories correlate
+    // the signal over time, which NRD cannot filter (frozen noise); dxvk-remix
+    // uses 4.
+    uint32_t restirTemporalHistory = 4;
+    // RTXDI permutation sampling: the temporal lookup takes a per-frame
+    // shuffled neighbor (2x2 block), decorrelating reused samples.
+    bool restirPermutation = true;
     bool restirInitialVisibility = true; // shadow-test the initial winner before reuse
     bool lightVisibilityCulling = false; // opt-in: ~3 ms on L4D2 c1m1, no gain where the PVS is broad
     // Meters per world unit. Scales meter-based defaults: denoiser hit

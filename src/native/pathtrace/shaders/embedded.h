@@ -82,10 +82,10 @@ inline constexpr EmbeddedShader embeddedShaders[] = {
   {9562092u, 390228u, 2161932u}, // sharcSplitLocalTemporal
   {9952320u, 372320u, 2061980u}, // sharcSplitLocalSigmaTemporal
   {10324640u, 298684u, 1643356u}, // splitLocalDirect
-  {10623324u, 109600u, 598232u}, // splitRestirInitial
-  {10732924u, 107568u, 588116u}, // splitRestirSpatial
-  {10840492u, 242784u, 1343628u}, // indirectTemporal
-  {11083276u, 242952u, 1356436u}, // sharcIndirectTemporal
-  {11326228u, 1028u, 3392u}, // vertexAssemble
+  {10623324u, 107800u, 588008u}, // splitRestirInitial
+  {10731124u, 107568u, 588116u}, // splitRestirSpatial
+  {10838692u, 242784u, 1343628u}, // indirectTemporal
+  {11081476u, 242952u, 1356436u}, // sharcIndirectTemporal
+  {11324428u, 1028u, 3392u}, // vertexAssemble
 };
 }

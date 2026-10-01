@@ -177,15 +177,19 @@ Reservoir restirInitial(Hit hit,uint state,float depth,ivec2 pixel) {
   }
   r.target=selected;
   // Temporal reuse: the reservoir the same surface held last frame.
-  if(frame.restirHistoryRead!=0&&hit.historyValid) {
-    vec4 previous=temporal.previousCamera*vec4(hit.previousPosition,1);
-    if(previous.w>0) {
-      ivec2 at=ivec2(floor((previous.xy/previous.w*.5+.5)*vec2(frame.target.xy)-temporal.jitter.zw));
+  // The opaque pass's motion vector (guideMotion: previous-frame offset in
+  // pixels, previous view depth minus current, valid in w) locates last
+  // frame's surface. Raster primary visibility cannot use hit.previousPosition
+  // here: the opaque pass reuses that image for emission.
+  vec4 motion=imageLoad(guideMotion,pixel);
+  if(frame.restirHistoryRead!=0&&motion.w!=0) {
+    {
+      ivec2 at=ivec2(floor(vec2(pixel)+.5+frame.jitter.xy+motion.xy-temporal.jitter.zw));
       // Permutation sampling: a bijective per-frame shuffle within 2x2 blocks.
       if((frame.restirConfig.w&2u)!=0)at^=ivec2(frame.config.z&1u,(frame.config.z>>1)&1u);
       if(all(greaterThanEqual(at,ivec2(0)))&&all(lessThan(at,ivec2(frame.target.xy)))) {
         Reservoir p=Reservoirs(frame.restirHistoryRead).data[uint(at.x)+uint(at.y)*frame.target.x];
-        float previousDepth=abs((temporal.previousView*vec4(hit.previousPosition,1)).z);
+        float previousDepth=depth+motion.z;
         bool similar=p.M>0&&abs(p.depth-previousDepth)<=.1*previousDepth&&
                      dot(restirUnpackNormal(p.normal),hit.n)>.8;
         if(similar&&p.light!=restirNone&&frame.restirRemap!=0)p.light=LightRemap(frame.restirRemap).data[p.light];

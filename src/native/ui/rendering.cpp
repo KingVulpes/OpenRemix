@@ -26,6 +26,13 @@ namespace remix {
                         "Applies at the next Present (the render thread is drained first).");
     if (settings.asyncPresent && m_headless)
       ImGui::TextDisabled("%s", "The headless editor always presents synchronously.");
+    // World units of the host: converts the tracer's meter-based defaults.
+    ui::DragFloat("Scene scale (m per unit)", &options.sceneScale, .0005f, .0001f, 1000, "%.4f",
+                  ImGuiSliderFlags_Logarithmic);
+    options.sceneScale = std::clamp(options.sceneScale, .0001f, 1000.f);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Meters per world unit (1 for meter-scale hosts, 0.0254 for Source inches).\n"
+                        "Converts the denoiser's hit distances and the visibility-guide cell size.");
     if (ImGui::CollapsingHeader("Sampling and visibility", ImGuiTreeNodeFlags_DefaultOpen)) {
       int primary = options.rasterPrimary ? 0 : 1;
       if (ui::Combo("Primary visibility", &primary, "Rasterized G-buffer\0Ray traced\0"))

@@ -368,15 +368,29 @@ float cacheFootprint(Hit origin) {
   float alpha2=pow(origin.rm.x,4);
   return min(1,2*sqrt(.5*alpha2/max(1-alpha2,1e-6)));
 }
+// The cache cell of a hit: hashed slightly above the surface along its
+// geometric normal facing the viewer. Axis-aligned walls often lie exactly on
+// hash-grid cell boundaries (whole-unit coordinates), where the difference
+// between a raster-interpolated primary position and a ray intersection
+// flips the cell per pixel: scattered cache misses (raw path tracing among
+// cached neighbors) read as grain after denoising. The offset (1/1000 of the
+// camera distance) is far above that rounding and far below the cell size.
+vec3 cacheNormal(Hit hit) {
+  vec3 n=dot(hit.ng,hit.ng)>.5?hit.ng:hit.n;
+  return dot(n,hit.wo)<0?-n:n;
+}
+vec3 cachePosition(Hit hit) {
+  return hit.p+cacheNormal(hit)*(1e-3*length(hit.p-frame.eye.xyz)+1e-4);
+}
 bool cacheFootprintFits(Hit hit,float footprint) {
   SharcParameters parameters=cacheParameters();
-  uint level=HashGridGetLevel(hit.p,parameters.hashGridParameters);
+  uint level=HashGridGetLevel(cachePosition(hit),parameters.hashGridParameters);
   float voxel=HashGridGetVoxelSize(level,parameters.hashGridParameters);
   return footprint>voxel*1.732050808;
 }
 SharcHitData cacheHit(Hit hit) {
   SharcHitData data;
-  data.positionWorld=hit.p;data.normalWorld=hit.n;
+  data.positionWorld=cachePosition(hit);data.normalWorld=cacheNormal(hit);
   data.radianceDirectionWorld=hit.wo;data.radianceDirectionWeight=0;
   data.materialDemodulation=max(hit.color.rgb,vec3(.001));
   if(hit.pbr) {

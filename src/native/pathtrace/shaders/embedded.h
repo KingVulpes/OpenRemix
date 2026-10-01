@@ -58,34 +58,34 @@ inline constexpr EmbeddedShader embeddedShaders[] = {
   {1698620u, 56604u, 307984u}, // frontGuides
   {1755224u, 487488u, 2720388u}, // singleTransparency
   {2242712u, 493896u, 2747372u}, // singleTemporalTransparency
-  {2736608u, 491864u, 2744224u}, // sharcSingleTransparency
-  {3228472u, 497604u, 2770456u}, // sharcSingleTemporalTransparency
-  {3726076u, 169796u, 905972u}, // confidence
-  {3895872u, 3064u, 11884u}, // gbufferVert
-  {3898936u, 5600u, 22960u}, // gbufferFrag
-  {3904536u, 3104u, 12024u}, // depthFrag
-  {3907640u, 115476u, 604676u}, // sharcUpdate
-  {4023116u, 2832u, 10716u}, // sharcResolve
-  {4025948u, 491816u, 2718992u}, // sharcQuery
-  {4517764u, 360392u, 2005652u}, // sharcTransparency
-  {4878156u, 495624u, 2746192u}, // sharcTemporal
-  {5373780u, 361312u, 2010816u}, // sharcTemporalTransparency
-  {5735092u, 173456u, 917804u}, // sharcConfidence
-  {5908548u, 474080u, 2627108u}, // sigmaTemporal
-  {6382628u, 476912u, 2646240u}, // sharcSigmaTemporal
-  {6859540u, 493360u, 2739272u}, // localTemporal
-  {7352900u, 476576u, 2639320u}, // localSigmaTemporal
-  {7829476u, 496996u, 2758404u}, // sharcLocalTemporal
-  {8326472u, 481312u, 2658452u}, // sharcLocalSigmaTemporal
-  {8807784u, 385512u, 2142800u}, // splitLocalTemporal
-  {9193296u, 368796u, 2042848u}, // splitLocalSigmaTemporal
-  {9562092u, 390228u, 2161932u}, // sharcSplitLocalTemporal
-  {9952320u, 372320u, 2061980u}, // sharcSplitLocalSigmaTemporal
-  {10324640u, 298684u, 1643356u}, // splitLocalDirect
-  {10623324u, 107800u, 588008u}, // splitRestirInitial
-  {10731124u, 107568u, 588116u}, // splitRestirSpatial
-  {10838692u, 242784u, 1343628u}, // indirectTemporal
-  {11081476u, 242952u, 1356436u}, // sharcIndirectTemporal
-  {11324428u, 1028u, 3392u}, // vertexAssemble
+  {2736608u, 491580u, 2745480u}, // sharcSingleTransparency
+  {3228188u, 498012u, 2771712u}, // sharcSingleTemporalTransparency
+  {3726200u, 169796u, 905972u}, // confidence
+  {3895996u, 3064u, 11884u}, // gbufferVert
+  {3899060u, 5600u, 22960u}, // gbufferFrag
+  {3904660u, 3104u, 12024u}, // depthFrag
+  {3907764u, 115760u, 605516u}, // sharcUpdate
+  {4023524u, 2832u, 10716u}, // sharcResolve
+  {4026356u, 491808u, 2720096u}, // sharcQuery
+  {4518164u, 359948u, 2006280u}, // sharcTransparency
+  {4878112u, 493740u, 2747296u}, // sharcTemporal
+  {5371852u, 361280u, 2011444u}, // sharcTemporalTransparency
+  {5733132u, 173180u, 918432u}, // sharcConfidence
+  {5906312u, 474080u, 2627108u}, // sigmaTemporal
+  {6380392u, 477924u, 2647344u}, // sharcSigmaTemporal
+  {6858316u, 493360u, 2739272u}, // localTemporal
+  {7351676u, 476576u, 2639320u}, // localSigmaTemporal
+  {7828252u, 496376u, 2759508u}, // sharcLocalTemporal
+  {8324628u, 479712u, 2659556u}, // sharcLocalSigmaTemporal
+  {8804340u, 385512u, 2142800u}, // splitLocalTemporal
+  {9189852u, 368796u, 2042848u}, // splitLocalSigmaTemporal
+  {9558648u, 390156u, 2163036u}, // sharcSplitLocalTemporal
+  {9948804u, 373172u, 2063084u}, // sharcSplitLocalSigmaTemporal
+  {10321976u, 298684u, 1643356u}, // splitLocalDirect
+  {10620660u, 107800u, 588008u}, // splitRestirInitial
+  {10728460u, 107568u, 588116u}, // splitRestirSpatial
+  {10836028u, 242784u, 1343628u}, // indirectTemporal
+  {11078812u, 243540u, 1357064u}, // sharcIndirectTemporal
+  {11322352u, 1028u, 3392u}, // vertexAssemble
 };
 }

@@ -47,8 +47,9 @@ namespace remix {
     // Drop local-light history where moved lights changed the light (flashlight trails).
     bool localHistoryConfidence = true;
     // Trace an indirect continuation path from each transparent sheet (glass,
-    // blended surfaces). Off: a sheet takes the denoised indirect light of the
-    // surface behind it (much cheaper; transparent layers cost about a third).
+    // blended surfaces). Off: a non-PBR sheet takes the denoised indirect light
+    // of the surface behind it (much cheaper; transparent layers cost about a
+    // third). PBR sheets (water) always trace: their reflections need it.
     bool translucentIndirect = false;
     // Shadow, light-visibility and bounce rays ignore blended layers (glass,
     // sprites): no transmission through them and no candidate alpha tests.

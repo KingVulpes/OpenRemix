@@ -69,6 +69,11 @@ namespace remix {
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Glass, sprites and other blended layers stay visible to the camera, but cast no\n"
                           "shadows and do not tint light passing through them. Cheaper wherever rays cross them.");
+      ui::Checkbox("Primary surface replacement (mirrors)", &options.primarySurfaceReplacement);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Smooth metal and smooth black surfaces show the surface they reflect as if it were\n"
+                          "directly visible: full direct lighting and denoising instead of a noisy reflection.\n"
+                          "Requires raster primary visibility and a denoiser.");
       ui::Checkbox("Trace indirect light from translucent layers", &options.translucentIndirect);
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Off: each transparent layer takes the denoised indirect light of the surface behind it,\n"

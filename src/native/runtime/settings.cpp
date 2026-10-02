@@ -142,6 +142,7 @@ namespace remix::config {
         TRACE(localHistoryConfidence, 0, 1);
         TRACE(translucentIndirect, 0, 1);
         TRACE(skipBlendedSecondaryRays, 0, 1);
+        TRACE(primarySurfaceReplacement, 0, 1);
         TRACE(sheetLocalLights, 0, 1);
         TRACE(sceneScale, .0001, 1000);
         TRACE(lightVisibilityCulling, 0, 1);
@@ -154,7 +155,7 @@ namespace remix::config {
         TRACE(restirPermutation, 0, 1);
         TRACE(localSamples, 1, 16);
         TRACE(shadowDebug, 0, 2);
-        TRACE(debugView, 0, 11);
+        TRACE(debugView, 0, 12);
         TRACE(taa, 0, 1);
         TRACE(waterIndirectReuse, 0, 1);
         TRACE(translucencyDenoiser, 0, 1);

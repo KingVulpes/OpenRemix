@@ -172,7 +172,7 @@ namespace remix {
     VkDescriptorSet set = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
     VkPipeline transparencyCompute{}, temporalTransparencyCompute{};
-    VkPipeline singleTransparencyCompute{}, singleTemporalTransparencyCompute{}, frontGuidesCompute{};
+    VkPipeline singleTransparencyCompute{}, singleTemporalTransparencyCompute{}, frontGuidesCompute{}, psrCompute{};
     VkPipeline compute = VK_NULL_HANDLE, composite[2] = {};
     VkPipeline splitDirectCompute = VK_NULL_HANDLE;
     struct IndirectPass {

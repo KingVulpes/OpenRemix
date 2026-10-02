@@ -31,13 +31,19 @@ layout(set=0,binding=4,rgba32f) uniform image2D worldColor;
 layout(set=0,binding=5,rgba32ui) uniform uimage2D backgroundTransmission;
 layout(set=0,binding=7,rgba32f) readonly uniform image2D rawSky;
 
-layout(set=0,binding=8,rgba32f) readonly uniform image2D primaryPosition;
-layout(set=0,binding=9,rgba16f) readonly uniform image2D primaryNormal;
-layout(set=0,binding=10,rgba8) readonly uniform image2D primaryAlbedo;
+// Primary surface replacement rewrites the raster G-buffer at mirrors.
+#ifdef PSR_PASS
+#define PRIMARY_ACCESS
+#else
+#define PRIMARY_ACCESS readonly
+#endif
+layout(set=0,binding=8,rgba32f) PRIMARY_ACCESS uniform image2D primaryPosition;
+layout(set=0,binding=9,rgba16f) PRIMARY_ACCESS uniform image2D primaryNormal;
+layout(set=0,binding=10,rgba8) PRIMARY_ACCESS uniform image2D primaryAlbedo;
 layout(set=0,binding=11,rgba32f) uniform image2D primaryPrevious;
 layout(set=0,binding=12,r32f) readonly uniform image2D primaryDepth;
-layout(set=0,binding=13,rgba16f) readonly uniform image2D primaryEmission;
-layout(set=0,binding=14,rgba16f) readonly uniform image2D primaryPbr;
+layout(set=0,binding=13,rgba16f) PRIMARY_ACCESS uniform image2D primaryEmission;
+layout(set=0,binding=14,rgba16f) PRIMARY_ACCESS uniform image2D primaryPbr;
 layout(set=0,binding=15,rgba16f) uniform image2D meterMaterial;
 
 layout(constant_id=11) const bool enableDecals=true;
@@ -239,6 +245,14 @@ Hit rasterPrimary(ivec2 pixel, vec3 origin) {
   vec4 pbr=imageLoad(primaryPbr,pixel);
   hit.ng=decodeGeometricNormal(pbr.zw);hit.rm=vec2(max(0,pbr.x),pbr.y);hit.pbr=pbr.x>=0;
   hit.wo=hit.t<1e30?normalize(origin-hit.p):vec3(0,0,1);
+#if defined(TEMPORAL) && !defined(PSR_PASS)
+  // A surface seen through a mirror (PSR) is viewed from the mirrored eye.
+  Mirror mirror=loadMirror(pixel);
+  if(mirror.replaced&&hit.t<1e30) {
+    vec3 eye=mirrorPoint(mirror,origin);
+    hit.t=length(eye-hit.p);hit.wo=normalize(eye-hit.p);
+  }
+#endif
   // Re-query painted pixels to obtain the ray traversal's exact intersection
   // distance. Raster-interpolated positions can round to the other side of a
   // very close receiver; the common resolver advances tMin without an offset.
@@ -249,8 +263,9 @@ Hit rasterPrimary(ivec2 pixel, vec3 origin) {
 // guides belong to the opaque receiver behind transparent sheets.
 vec3 debugGeometry(Hit hit,ivec2 pixel) {
   uint view=frame.splitLocal.w;
-  if(view>=8)return debugUnavailable(pixel); // filled by temporal composition when available
+  if(view>=8&&view!=12)return debugUnavailable(pixel); // filled by temporal composition when available
   if(hit.t==1e30)return vec3(0);
+  if(view==12)return hit.pbr?vec3(hit.rm.x,hit.rm.y,0):vec3(0,0,1);
   if(view==1)return hit.color.rgb;
   if(view==2)return hit.n*.5+.5;
   if(view==3)return debugPalette(hit.identity);
@@ -703,9 +718,49 @@ vec3 sheetIndirect(ivec2 pixel,Hit hit,vec3 direction) {
   return vec3(0);
 #endif
 }
+#ifdef PSR_PASS
+// NRD sample's delta (mirror) test: smooth metal, or smooth and black.
+bool deltaSurface(Hit hit) {
+  return hit.pbr&&hit.rm.x<.041&&(hit.rm.y>.941||dot(hit.color.rgb,vec3(.2126,.7152,.0722))<.005);
+}
+// Primary surface replacement (dxvk-remix PSR, NRD sample's delta event):
+// a mirror's reflection is deterministic, so the surface it shows replaces
+// the mirror as this pixel's primary surface. Lighting, ReSTIR and the
+// diffuse denoisers then treat it like a directly visible surface, at the
+// mirrored (virtual) position, instead of a one-sample secondary hit. The
+// mirror's reflectance multiplies the composed result.
+void replaceMirror(ivec2 pixel) {
+  vec3 origin,direction;
+  ray((vec2(pixel)+.5+frame.jitter.xy)/vec2(frame.target.xy)*2-1,frame.inverseCamera,origin,direction);
+  Hit mirror=rasterPrimary(pixel,origin);
+  uvec4 packed=uvec4(0);
+  if(mirror.t<1e30&&!mirror.blended&&!mirror.decal&&deltaSurface(mirror)) {
+    vec3 reflected=reflect(-mirror.wo,mirror.n);
+    if(dot(reflected,mirror.ng)>0) {
+      Hit hit=closest(offsetRay(mirror.p,mirror.ng),reflected);
+      if(hit.t<1e30&&!hit.blended&&!deltaSurface(hit)) {
+        // A delta lobe reflects exactly the Fresnel term (GGX shadowing -> 1).
+        vec3 reflectance=fresnel(mix(vec3(.04),mirror.color.rgb,mirror.rm.y),max(0,dot(mirror.n,mirror.wo)));
+        packed=packMirror(mirror.n,mirror.p,reflectance);
+        imageStore(primaryPosition,pixel,vec4(hit.p,imageLoad(primaryPosition,pixel).w));
+        imageStore(primaryNormal,pixel,vec4(hit.n,1));
+        imageStore(primaryAlbedo,pixel,vec4(hit.color.rgb,1));
+        imageStore(primaryPrevious,pixel,vec4(hit.previousPosition,hit.historyValid?1:0));
+        imageStore(primaryEmission,pixel,vec4(hit.emission,hit.identity));
+        imageStore(primaryPbr,pixel,vec4(hit.pbr?hit.rm.x:-1,hit.rm.y,encodeGeometricNormal(hit.ng)));
+      }
+    }
+  }
+  imageStore(psrMirror,pixel,packed);
+}
+#endif
 void main() {
   ivec2 pixel=ivec2(gl_GlobalInvocationID.xy);
-#ifdef FRONT_GUIDES_PASS
+#ifdef PSR_PASS
+  if(any(greaterThanEqual(pixel,ivec2(frame.target.xy))))return;
+  replaceMirror(pixel);
+  return;
+#elif defined(FRONT_GUIDES_PASS)
   if(any(greaterThanEqual(pixel,ivec2(frame.target.xy))))return;
   vec3 origin,direction;
   ray((vec2(pixel)+.5+frame.jitter.xy)/vec2(frame.target.xy)*2-1,frame.inverseCamera,origin,direction);
@@ -921,9 +976,17 @@ void main() {
 #ifdef TEMPORAL
   float z=opaque?abs((temporal.view*vec4(primary.p,1)).z):1e10;
   vec4 mv=vec4(0);vec3 N=opaque?primary.n:vec3(0,0,1);
+  // Guides of a surface seen in a mirror describe its virtual image behind
+  // the mirror plane, which moves with the camera like a real surface would.
+  Mirror mirror=loadMirror(pixel);
+  vec3 guidePosition=primary.p,guidePrevious=primary.previousPosition;
+  if(mirror.replaced&&opaque) {
+    guidePosition=mirrorPoint(mirror,primary.p);guidePrevious=mirrorPoint(mirror,primary.previousPosition);
+    N=mirrorVector(mirror,N);z=abs((temporal.view*vec4(guidePosition,1)).z);
+  }
   if(opaque&&temporal.flags.x==0) {
-    vec4 clip=frame.camera*vec4(primary.p,1),prev=temporal.previousCamera*vec4(primary.previousPosition,1);
-    if(prev.w>0&&clip.w>0)mv=vec4((prev.xy/prev.w-clip.xy/clip.w)*.5*vec2(frame.target.xy),abs((temporal.previousView*vec4(primary.previousPosition,1)).z)-z,1);
+    vec4 clip=frame.camera*vec4(guidePosition,1),prev=temporal.previousCamera*vec4(guidePrevious,1);
+    if(prev.w>0&&clip.w>0)mv=vec4((prev.xy/prev.w-clip.xy/clip.w)*.5*vec2(frame.target.xy),abs((temporal.previousView*vec4(guidePrevious,1)).z)-z,1);
   }
   if(!opaque&&!primary.blended&&temporal.flags.x==0) {
     vec4 clip=frame.camera*vec4(direction,0),prev=temporal.previousCamera*vec4(direction,0);
@@ -932,9 +995,10 @@ void main() {
   if(temporal.hitDistance.w!=0) {
     vec3 diffuse=opaque?primary.color.rgb*(primary.pbr?1-primary.rm.y:1):vec3(.5);
     vec3 specular=opaque&&primary.pbr?rrSpecularAlbedo(mix(vec3(.04),primary.color.rgb,primary.rm.y),primary.rm.x,dot(primary.n,primary.wo)):vec3(0);
+    if(mirror.replaced){diffuse*=mirror.reflectance;specular*=mirror.reflectance;}
     imageStore(rrDiffuse,pixel,vec4(diffuse,0));
     imageStore(rrSpecular,pixel,vec4(specular,0));
-    imageStore(rrNormal,pixel,opaque?vec4(primary.n,primary.pbr?primary.rm.x:1):vec4(0));
+    imageStore(rrNormal,pixel,opaque?vec4(N,primary.pbr?primary.rm.x:1):vec4(0));
     // Unnormalized transport distance, never a local-light blocker distance.
     imageStore(rrHitDistance,pixel,vec4(opaque&&primary.pbr&&specularDistance>0?min(specularDistance,65504):65504));
   }
@@ -976,6 +1040,10 @@ void main() {
 #endif
   // Motion has been consumed above. Reuse its scratch image for deterministic
   // visible emission so SIGMA/local filtering never shadows or blurs it.
+  #ifdef TEMPORAL
+  // Denoised lighting takes the mirror's reflectance in composition.
+  if(mirror.replaced){emission*=mirror.reflectance;color*=mirror.reflectance;}
+  #endif
   imageStore(primaryPrevious,pixel,vec4(emission,0));
   #ifdef TEMPORAL
   if(temporal.hitDistance.w!=0)imageStore(composed,pixel,vec4(safeRadiance(color),1));

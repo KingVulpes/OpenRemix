@@ -246,6 +246,8 @@ namespace remix::denoise {
         format = VK_FORMAT_R32_SFLOAT;
       if (i == Motion || i == FrontMotion)
         format = VK_FORMAT_R32G32B32A32_SFLOAT;
+      if (i == PsrMirror)
+        format = VK_FORMAT_R32G32B32A32_UINT;
       if (i == Penumbra)
         format = VK_FORMAT_R16_SFLOAT;
       if (i == ShadowInput || i == ShadowOutput)
@@ -284,7 +286,7 @@ namespace remix::denoise {
                                               &g.inputLayout));
     VkDescriptorPoolSize sizes[] = {
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-         BaseImageCount + 22 + (sigma ? 3u : 0u) + (local ? 2u : 0u) + (g.split ? 2u : 0u)},
+         BaseImageCount + 23 + (sigma ? 3u : 0u) + (local ? 2u : 0u) + (g.split ? 2u : 0u)},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}};
     for (auto &size : sizes)
       size.descriptorCount *= gpuFrameCount;

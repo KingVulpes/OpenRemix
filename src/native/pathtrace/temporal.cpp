@@ -99,6 +99,10 @@ namespace remix {
     if (frontGuidesCompute)
       pipeline::destroyPipeline(device, frontGuidesCompute, nullptr);
     frontGuidesCompute = VK_NULL_HANDLE;
+    forgetLightingPipeline(psrCompute);
+    if (psrCompute)
+      pipeline::destroyPipeline(device, psrCompute, nullptr);
+    psrCompute = VK_NULL_HANDLE;
     forgetLightingPipeline(singleTemporalTransparencyCompute);
     if (singleTemporalTransparencyCompute)
       pipeline::destroyPipeline(device, singleTemporalTransparencyCompute, nullptr);
@@ -218,6 +222,7 @@ namespace remix {
         make(trace::Stage::temporalTransparency,
              temporalTransparencyCompute);
         make(trace::Stage::frontGuides, frontGuidesCompute);
+        make(trace::Stage::psr, psrCompute);
         make(trace::Stage::singleTemporalTransparency,
              singleTemporalTransparencyCompute);
         if (postSplit)

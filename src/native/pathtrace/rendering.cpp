@@ -563,6 +563,7 @@ namespace remix {
         hasBlendedGeometry;
     temporalFrame.translucency[1] = denoiser && postReblur && !rrActive() && options.translucencyReuse &&
         options.bounces > 0 && options.indirectClamp == 0 && !debugView && hasBlendedGeometry;
+    temporalFrame.translucency[2] = denoiser && psrCompute && options.rasterPrimary && options.primarySurfaceReplacement;
     temporalFrame.local[0] = denoiser && postLocalDenoise;
     temporalFrame.local[1] = frame.localConfig[0];
     temporalFrame.local[2] = localResponsiveFrames;
@@ -846,6 +847,13 @@ namespace remix {
       auto inputs = denoiser->inputs();
       vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, temporalLayout, 1, 1, &inputs, 0,
                               nullptr);
+    }
+    if (denoiser && temporalFrame.translucency[2]) {
+      gpu::GpuScope scope(command, "Primary surface replacement", extent);
+      vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, psrCompute);
+      vkCmdDispatch(command, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
+      barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
     }
     if (denoiser && temporalFrame.translucency[0]) {
       gpu::GpuScope scope(command, "Translucency front guides", extent);

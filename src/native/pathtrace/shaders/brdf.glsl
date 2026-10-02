@@ -43,8 +43,16 @@ vec3 materialResponse(Hit hit,vec3 wi,out vec3 specular) {
   specular*=scale;
   return diffuse*scale+specular;
 }
+// Lobe selection by estimated reflectance at this view angle. Both lobes keep
+// at least a quarter of the samples for the denoiser, except that a lobe with
+// no energy (the diffuse lobe of a pure metal) gets none: its samples would all
+// be black, which reads as grain on mirrors.
 float specularProbability(Hit hit) {
-  return clamp(.25+.5*hit.rm.y,.25,.75);
+  vec3 f0=mix(vec3(.04),hit.color.rgb,hit.rm.y);
+  float specular=dot(fresnel(f0,max(0,dot(hit.n,hit.wo))),vec3(.2126,.7152,.0722));
+  float diffuse=dot(hit.color.rgb,vec3(.2126,.7152,.0722))*(1-hit.rm.y)*(1-specular);
+  if(diffuse<=0)return 1;
+  return clamp(specular/(specular+diffuse),.25,.75);
 }
 // Heitz 2018 GGX visible-normal sampling (isotropic), followed by reflection.
 vec3 sampleGgx(vec3 wo,float alpha,vec2 u) {

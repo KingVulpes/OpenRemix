@@ -57,6 +57,10 @@ layout(set=1,binding=48,rgba16f) uniform image2D frontDiffuseOutput;
 layout(set=1,binding=49,rgba16f) uniform image2D frontSpecularOutput;
 layout(set=1,binding=50,r32f) uniform image2D frontConfidence;
 layout(set=1,binding=51,r32f) uniform image2D localConfidence;
+// Primary surface replacement (PSR) through a mirror: the mirror plane
+// (octahedral normal, distance from the origin) and its reflectance, applied
+// to the replaced surface's composed lighting. w=0 marks pixels without PSR.
+layout(set=1,binding=52,rgba32ui) uniform uimage2D psrMirror;
 layout(set=1,binding=25,std140) uniform TemporalFrame {
   mat4 view;
   mat4 previousView;
@@ -83,3 +87,21 @@ vec3 decodeNormal(vec2 e) {
   vec3 n=vec3(e,1-abs(e.x)-abs(e.y));float t=clamp(-n.z,0,1);
   n.xy+=mix(vec2(t),vec2(-t),greaterThanEqual(n.xy,vec2(0)));return normalize(n);
 }
+struct Mirror { vec3 n; float d; vec3 reflectance; bool replaced; };
+Mirror loadMirror(ivec2 p) {
+  Mirror m=Mirror(vec3(0,0,1),0,vec3(1),false);
+  if(temporal.translucency.z==0)return m;
+  uvec4 v=imageLoad(psrMirror,p);
+  if(v.w==0u)return m;
+  m.n=decodeNormal(unpackSnorm2x16(v.x));m.d=uintBitsToFloat(v.y);
+  m.reflectance=vec3(unpackHalf2x16(v.z),unpackHalf2x16(v.w).x);m.replaced=true;
+  return m;
+}
+uvec4 packMirror(vec3 n,vec3 point,vec3 reflectance) {
+  return uvec4(packSnorm2x16(encodeNormal(n)),floatBitsToUint(dot(n,point)),
+               packHalf2x16(reflectance.rg),packHalf2x16(vec2(reflectance.b,1)));
+}
+// Reflections through the mirror plane: the virtual (mirrored) position and
+// direction of a surface seen in it.
+vec3 mirrorPoint(Mirror m,vec3 p) { return p-2*(dot(m.n,p)-m.d)*m.n; }
+vec3 mirrorVector(Mirror m,vec3 v) { return v-2*dot(m.n,v)*m.n; }

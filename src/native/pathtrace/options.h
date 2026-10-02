@@ -55,6 +55,11 @@ namespace remix {
     // sprites): no transmission through them and no candidate alpha tests.
     // Camera and transparency rays still see them.
     bool skipBlendedSecondaryRays = true;
+    // Primary surface replacement: with raster primary visibility and a
+    // denoiser, the surface a mirror (smooth metal or smooth black) reflects
+    // replaces it as the pixel's primary surface, so it gets primary-quality
+    // lighting and denoising at its mirrored position.
+    bool primarySurfaceReplacement = true;
     // Without traced sheet indirect: PBR sheets (water) also sample local
     // lights at their own surface. Off: sun and sky only there (local light
     // still reaches them through their reflection paths).

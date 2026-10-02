@@ -165,7 +165,7 @@ namespace remix {
               "Debug view", &view,
               "Final lighting\0Albedo\0Shading normals\0Triangle IDs\0Depth bands\0World position grid\0"
               "Raw local lighting\0Raw indirect lighting\0Motion vectors\0Motion validity\0"
-              "Indirect lighting confidence\0TAA current-frame weight\0"))
+              "Indirect lighting confidence\0TAA current-frame weight\0Roughness and metalness\0"))
         options.debugView = uint32_t(view);
       static const char *help[] = {
           "Start with Triangle IDs and Shading normals at the problem angle, then compare Raw local "
@@ -191,7 +191,9 @@ namespace remix {
           "REBLUR indirect confidence: white = high trust, black = low. This is not the local-light "
           "denoiser's history.",
           "Actual native TAA blend weight: white = current frame only; darker = more history. Unavailable "
-          "with FSR or TAA off."};
+          "with FSR or TAA off.",
+          "PBR material of the first visible surface: red = roughness, green = metalness. Blue marks "
+          "non-PBR materials."};
       ImGui::TextWrapped("%s", help[options.debugView]);
       if (options.debugView) {
         ImGui::TextWrapped(

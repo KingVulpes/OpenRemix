@@ -120,6 +120,8 @@ void main() {
         local+=REBLUR_BackEnd_UnpackRadianceAndNormHitDist(temporal.local.x!=0&&material.a<1.5?imageLoad(emissiveOutput,p):imageLoad(emissiveInput,p)).rgb;
 #endif
       color=direct+safeRadiance(indirect+local)*material.rgb+safeRadiance(specular);
+      Mirror mirror=loadMirror(p);
+      if(mirror.replaced)color*=mirror.reflectance;
     }
     if(pass.step==0) {
       imageStore(composed,p,vec4(safeRadiance(color),1));return;

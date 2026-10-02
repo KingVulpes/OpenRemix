@@ -49,9 +49,10 @@ namespace remix::denoise {
     FrontNormal, FrontDepth, FrontMotion, FrontAlbedo, FrontSpecularFactor,
     FrontDiffuse, FrontSpecular, FrontDiffuseOutput, FrontSpecularOutput, FrontConfidence,
     LocalConfidence, // local-light history confidence (lights that moved)
+    PsrMirror,       // primary surface replacement: mirror plane and reflectance
     ImageCount
   };
-  static_assert(BaseImageCount == 22 && PbrSpecularInput == 29 && FrontNormal == 37 && ImageCount == 48,
+  static_assert(BaseImageCount == 22 && PbrSpecularInput == 29 && FrontNormal == 37 && ImageCount == 49,
                 "Update the matching inputs.glsl bindings when changing image slots");
   // Shared std140 constants. Matrices are nonjittered, in Vulkan framebuffer coordinates.
   struct Frame {
@@ -64,7 +65,7 @@ namespace remix::denoise {
     float sun[4] = {};       // direction toward sun, SIGMA active
     uint32_t shadow[4] = {}; // SIGMA reset, debug view, PBR receivers, legacy receivers
     uint32_t local[4] = {}; // denoise, active lights, responsive frames, reserved
-    uint32_t translucency[4] = {}; // foreground NRD, opaque lighting reuse, reserved
+    uint32_t translucency[4] = {}; // foreground NRD, opaque lighting reuse, PSR mirrors, reserved
     uint32_t families[4] = {}; // torch/emissive counts, torch/emissive response frames
   };
   static_assert(sizeof(Frame) == 480 && offsetof(Frame, families) == 464 && offsetof(Frame, local) == 432 && offsetof(Frame, sun) == 400 && offsetof(Frame, shadow) == 416);

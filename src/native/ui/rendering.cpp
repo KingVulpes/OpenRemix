@@ -74,6 +74,12 @@ namespace remix {
         ImGui::SetTooltip("Off: each transparent layer takes the denoised indirect light of the surface behind it,\n"
                           "and deeper layers reuse the front layer's direct light (much cheaper).\n"
                           "On: every layer traces its own lighting paths.");
+      ImGui::BeginDisabled(options.translucentIndirect);
+      ui::Checkbox("Local lights on glossy translucent layers", &options.sheetLocalLights);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Samples torches and other local lights at water and glossy glass surfaces.\n"
+                          "Off: sun and sky only there; reflections still show locally lit surroundings.");
+      ImGui::EndDisabled();
       ImGui::BeginDisabled(rrActive || options.indirectClamp > 0);
       ui::Checkbox("Reuse opaque lighting through translucency", &options.translucencyReuse);
       if (ImGui::IsItemHovered())

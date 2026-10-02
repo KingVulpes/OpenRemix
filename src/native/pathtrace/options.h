@@ -55,6 +55,10 @@ namespace remix {
     // sprites): no transmission through them and no candidate alpha tests.
     // Camera and transparency rays still see them.
     bool skipBlendedSecondaryRays = true;
+    // Without traced sheet indirect: PBR sheets (water) also sample local
+    // lights at their own surface. Off: sun and sky only there (local light
+    // still reaches them through their reflection paths).
+    bool sheetLocalLights = false;
     // Exclude local lights outside the shading point's potentially visible
     // clusters (remixapi_SetVisibilityPartitionEXT), when a partition is set.
     // ReSTIR DI for primary local lighting (implies separateLocalLighting 3):

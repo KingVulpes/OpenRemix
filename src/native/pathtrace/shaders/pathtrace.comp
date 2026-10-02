@@ -333,6 +333,7 @@ vec3 sunVisibility(Hit receiver,ivec2 pixel,out float blockerDistance) {
 #include "restir.glsl"
 #endif
 #include "pbr_reuse.glsl"
+bool skipSheetLocal=false; // set around direct() for PBR sheets (see sheetLocalLights)
 #if defined(TEMPORAL) && defined(SINGLE_SHEET_PASS)
 vec3 direct(Hit hit,bool primary,out vec3 specular,out float distance) {
 #else
@@ -345,8 +346,12 @@ vec3 direct(Hit hit,bool primary,out vec3 specular) {
 #else
   float distance;
 #endif
-  vec3 local;specular=vec3(0);
-  if(!reuseLocal(hit,local)) {
+  vec3 local=vec3(0);specular=vec3(0);
+  // PBR transparent sheets (water) may skip local-light sampling at their own
+  // surface (rtx.native.pathtrace.sheetLocalLights=0); their traced paths still
+  // carry local light reflected from the scene. Sun and sky stay.
+  if(skipSheetLocal) {
+  } else if(!reuseLocal(hit,local)) {
     local=materialFactor(hit)*localLighting(hit,rng,primary?frame.localConfig.y:1u,distance,false,specular,primary?frame.firefly.x:0);
     specular*=materialFactor(hit);
   }
@@ -561,9 +566,9 @@ void updateCache(ivec2 pixel) {
     // weighted by transmission. This also trains surfaces reached from water
     // when the opaque primary guide is sky (for example, looking up from
     // underwater). The traced-sheet mode keeps the stochastic choice.
-    if(hit.blended&&(frame.pathConfig.z==0||random()>=hit.color.a)) {
+    if(hit.blended&&((frame.pathConfig.z&1u)==0||random()>=hit.color.a)) {
       if(++layers>=32)break;
-      if(bounce!=0)SharcSetThroughput(state,transmissionColor(hit.color.rgb,hit.tinted)*(frame.pathConfig.z==0?1-hit.color.a:1.));
+      if(bounce!=0)SharcSetThroughput(state,transmissionColor(hit.color.rgb,hit.tinted)*((frame.pathConfig.z&1u)==0?1-hit.color.a:1.));
       origin=offsetRay(hit.p,-hit.ng);continue;
     }
     vec3 directSpecular;
@@ -1032,10 +1037,12 @@ void main() {
 #if defined(TEMPORAL) && defined(SINGLE_SHEET_PASS)
       vec3 surfaceSpecular;
       float surfaceDistance;
+      skipSheetLocal=hit.pbr&&(frame.pathConfig.z&3u)==0;
       vec3 surfaceLight=direct(hit,true,surfaceSpecular,surfaceDistance)+hit.emission;
+      skipSheetLocal=false;
       surfaceDistance=nearestDistance(surfaceDistance,sharedDistance);
       if(sharedIndirect.a!=0)surfaceLight+=materialFactor(hit)*sharedIndirect.rgb;
-      else if(frame.pathConfig.z==0&&!hit.pbr)surfaceLight+=materialFactor(hit)*sheetIndirect(pixel,hit,direction);
+      else if((frame.pathConfig.z&1u)==0&&!hit.pbr)surfaceLight+=materialFactor(hit)*sheetIndirect(pixel,hit,direction);
       else for(uint i=0;i<frame.config.x;++i) {
         vec3 d,s;float t;
         surfaceLight+=materialFactor(hit)*continuation(hit,d,t,s)/float(frame.config.x);
@@ -1045,15 +1052,17 @@ void main() {
       frontRadiance(hit,pixel,max(surfaceLight-hit.emission,vec3(0)),surfaceSpecular,surfaceDistance);
 #else
       vec3 surfaceLight;
-      if(frame.pathConfig.z==0&&!hit.pbr&&reusedDirect.x>=0)surfaceLight=reusedDirect*materialFactor(hit);
+      if((frame.pathConfig.z&1u)==0&&!hit.pbr&&reusedDirect.x>=0)surfaceLight=reusedDirect*materialFactor(hit);
       else {
+        skipSheetLocal=hit.pbr&&(frame.pathConfig.z&3u)==0;
         surfaceLight=direct(hit,true);
+        skipSheetLocal=false;
         vec3 factor=materialFactor(hit);
         if(!hit.pbr&&all(greaterThan(factor,vec3(1e-3))))reusedDirect=surfaceLight/factor;
       }
       surfaceLight+=hit.emission;
       if(sharedIndirect.a!=0)surfaceLight+=materialFactor(hit)*sharedIndirect.rgb;
-      else if(frame.pathConfig.z==0&&!hit.pbr)surfaceLight+=materialFactor(hit)*sheetIndirect(pixel,hit,direction);
+      else if((frame.pathConfig.z&1u)==0&&!hit.pbr)surfaceLight+=materialFactor(hit)*sheetIndirect(pixel,hit,direction);
       else for(uint i=0;i<frame.config.x;++i){vec3 d;float t;surfaceLight+=materialFactor(hit)*continuation(hit,d,t)/float(frame.config.x);}
 #endif
 #ifdef TEMPORAL

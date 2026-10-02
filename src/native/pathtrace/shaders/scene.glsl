@@ -62,8 +62,8 @@ layout(set=0,binding=3,std140) uniform Frame {
   vec4 firefly; // outgoing local direct / indirect luminance limits; reserved
   uvec4 pathConfig; // adaptive termination, minimum completed bounces, reserved
   vec4 domeTransform[3];
-  uint64_t visibilityNodes, visibilityLeaves, visibilityTable, visibilityReserved;
-  uvec4 visibilityConfig; // table row words, reserved
+  uint64_t visibilityNodes, visibilityLeaves, visibilityTable, movedLights;
+  uvec4 visibilityConfig; // table row words, moved light count, reserved
   vec4 visibilityProbe; // world units: x probe offset above the surface, y decal attachment distance
   uint64_t restirCurrent, restirHistoryRead, restirHistoryWrite, restirRemap;
   uvec4 restirConfig; // candidates, spatial samples, temporal M cap, flags (1 initial visibility)

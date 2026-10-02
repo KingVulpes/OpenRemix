@@ -20,6 +20,11 @@ namespace remix::scene {
     uint32_t links[4] = {};
   };
   static_assert(sizeof(LightEmitter) == 112 && sizeof(LightNode) == 48);
+  // A sphere light that moved, reshaped, changed power or switched on/off since
+  // the previous update: its emitter now and before (zero radiance when absent).
+  struct MovedLight {
+    LightEmitter current, previous;
+  };
   class LightBvh {
   public:
     bool update(std::vector<SphereLight> lights);
@@ -27,6 +32,10 @@ namespace remix::scene {
     const std::vector<LightNode> &nodes() const { return m_nodes; }
     // The lights in emitter order (sorted by type and identity).
     const std::vector<SphereLight> &lights() const { return m_lights; }
+    // Lights that changed in the last update (at most kMaxMoved; the denoiser's
+    // local history confidence). Empty when nothing changed.
+    static constexpr size_t kMaxMoved = 16;
+    const std::vector<MovedLight> &moved() const { return m_moved; }
     uint64_t generation = 0, builds = 0, refits = 0;
     // Separate transport updates, scene-wide temporal response and the spatial
     // correspondence used by visibility guidance. Color animation changes only
@@ -41,6 +50,7 @@ namespace remix::scene {
     static double falloff(double distanceSquared, double range);
 
   private:
+    std::vector<MovedLight> m_moved;
     uint32_t build(std::vector<uint32_t> &order, uint32_t begin, uint32_t end, uint32_t level);
     void buildInto(uint32_t index, std::vector<uint32_t> &order, uint32_t begin, uint32_t end, uint32_t level);
     void bounds(uint32_t index, bool geometry = true);

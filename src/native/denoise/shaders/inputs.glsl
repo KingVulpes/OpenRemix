@@ -56,6 +56,7 @@ layout(set=1,binding=47,rgba16f) uniform image2D frontSpecular;
 layout(set=1,binding=48,rgba16f) uniform image2D frontDiffuseOutput;
 layout(set=1,binding=49,rgba16f) uniform image2D frontSpecularOutput;
 layout(set=1,binding=50,r32f) uniform image2D frontConfidence;
+layout(set=1,binding=51,r32f) uniform image2D localConfidence;
 layout(set=1,binding=25,std140) uniform TemporalFrame {
   mat4 view;
   mat4 previousView;

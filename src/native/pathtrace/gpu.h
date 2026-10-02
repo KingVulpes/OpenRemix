@@ -107,8 +107,9 @@ namespace remix::trace::detail {
     float firefly[4] = {};       // outgoing local direct / indirect luminance limits; reserved
     uint32_t pathConfig[4] = {}; // adaptive termination, minimum completed bounces, reserved
     float domeTransform[3][4] = {};
-    uint64_t visibilityNodes = 0, visibilityLeaves = 0, visibilityTable = 0, visibilityReserved = 0;
-    uint32_t visibilityConfig[4] = {}; // table row words, reserved
+    uint64_t visibilityNodes = 0, visibilityLeaves = 0, visibilityTable = 0;
+    uint64_t movedLights = 0; // scene::MovedLight pairs, count in visibilityConfig[1]
+    uint32_t visibilityConfig[4] = {}; // table row words, moved light count, reserved
     float visibilityProbe[4] = {};     // world units: probe offset above the surface, decal attachment distance
     uint64_t restirCurrent = 0, restirHistoryRead = 0, restirHistoryWrite = 0, restirRemap = 0;
     uint32_t restirConfig[4] = {}; // candidates, spatial samples, temporal M cap, flags (1 initial visibility)
@@ -362,6 +363,7 @@ namespace remix {
     bool splitLightingActive = false, postSplit = false, postSplitRequested = false;
     bool postCombinedDirect = false;
     std::unique_ptr<Buffer> lightNodes, lightEmitters;
+    std::unique_ptr<Buffer> movedLights; // this frame's scene::LightBvh::moved()
     uint64_t lightBufferGeneration = 0, torchBufferGeneration = 0, emissiveBufferGeneration = 0;
     struct LightGuiding {
       static constexpr uint32_t capacity = 65536;

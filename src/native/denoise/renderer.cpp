@@ -241,7 +241,8 @@ namespace remix::denoise {
       VkFormat format = VK_FORMAT_R16G16B16A16_SFLOAT;
       if (i == Normal || i == PreviousNormal || i == FrontNormal)
         format = VK_FORMAT_A2B10G10R10_UNORM_PACK32;
-      if (i == Depth || i == PreviousDepth || i == Confidence || i == RrHitDistance || i == FrontDepth || i == FrontConfidence)
+      if (i == Depth || i == PreviousDepth || i == Confidence || i == RrHitDistance || i == FrontDepth || i == FrontConfidence ||
+          i == LocalConfidence)
         format = VK_FORMAT_R32_SFLOAT;
       if (i == Motion || i == FrontMotion)
         format = VK_FORMAT_R32G32B32A32_SFLOAT;
@@ -283,7 +284,7 @@ namespace remix::denoise {
                                               &g.inputLayout));
     VkDescriptorPoolSize sizes[] = {
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-         BaseImageCount + 21 + (sigma ? 3u : 0u) + (local ? 2u : 0u) + (g.split ? 2u : 0u)},
+         BaseImageCount + 22 + (sigma ? 3u : 0u) + (local ? 2u : 0u) + (g.split ? 2u : 0u)},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}};
     for (auto &size : sizes)
       size.descriptorCount *= gpuFrameCount;
@@ -527,6 +528,7 @@ namespace remix::denoise {
     auto size = mode == 0 ? images[GradientA]->extent : extent;
     vkCmdDispatch(command, (size.width + 7) / 8, (size.height + 7) / 8, 1);
   }
+  void Renderer::setLocalTuning(const LocalTuning &tuning) { m_gpu->localTuning = tuning; }
   void Renderer::beginConfidence(VkCommandBuffer command) {
     if (m_gpu->timestamps)
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, m_gpu->timestamps, 0);

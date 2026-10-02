@@ -19,6 +19,20 @@ namespace remix::scene {
           .5 * std::hypot(a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]);
       return area * light.triangle / (4 * 3.141592653589793);
     }
+    LightEmitter emitterOf(const SphereLight &light) {
+      LightEmitter e;
+      std::copy_n(light.position, 3, e.positionRadius);
+      e.positionRadius[3] = light.radius;
+      std::copy_n(light.radiance, 3, e.radiance);
+      e.radiance[3] = float(light.triangle);
+      std::copy_n(light.direction, 3, e.directionCone);
+      e.directionCone[3] = light.coneCos;
+      e.shaping[0] = light.softness;
+      e.shaping[1] = light.focus;
+      for (unsigned v = 0; v < 3; ++v)
+        std::copy_n(light.corners[v], 3, e.corners[v]);
+      return e;
+    }
   } // namespace
   bool LightBvh::update(std::vector<SphereLight> lights) {
     const auto start = std::chrono::steady_clock::now();
@@ -41,6 +55,33 @@ namespace remix::scene {
     for (auto i : m_order)
       ordered.push_back(lights[i]);
     lights = std::move(ordered);
+    // Sphere lights that changed since the last update, now and before (both
+    // lists are sorted with sphere lights first, by identity).
+    m_moved.clear();
+    {
+      auto zero = [](LightEmitter e) {
+        std::fill_n(e.radiance, 3, 0.f);
+        return e;
+      };
+      size_t a = 0, b = 0;
+      while (m_moved.size() < kMaxMoved) {
+        const bool hasA = a < lights.size() && lights[a].triangle == 0;
+        const bool hasB = b < m_lights.size() && m_lights[b].triangle == 0;
+        if (!hasA && !hasB)
+          break;
+        if (hasA && hasB && lights[a].id == m_lights[b].id) {
+          if (!(lights[a] == m_lights[b]))
+            m_moved.push_back({emitterOf(lights[a]), emitterOf(m_lights[b])});
+          ++a, ++b;
+        } else if (hasA && (!hasB || lights[a].id < m_lights[b].id)) {
+          const auto e = emitterOf(lights[a++]); // switched on
+          m_moved.push_back({e, zero(e)});
+        } else {
+          const auto e = emitterOf(m_lights[b++]); // switched off
+          m_moved.push_back({zero(e), e});
+        }
+      }
+    }
     if (lights == m_lights) {
       updateMilliseconds =
           std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();

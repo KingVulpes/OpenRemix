@@ -136,6 +136,10 @@ namespace remix::config {
         TRACE(localDenoiser, 0, 1);
         TRACE(localGuiding, 0, 1);
         TRACE(localGuideCellSize, .05, 100);
+        TRACE(localAntilagSigma, .1, 16);
+        TRACE(localAntilagSensitivity, .1, 16);
+        TRACE(localHistoryFrames, 2, 64);
+        TRACE(localHistoryConfidence, 0, 1);
         TRACE(sceneScale, .0001, 1000);
         TRACE(lightVisibilityCulling, 0, 1);
         TRACE(restir, 0, 1);

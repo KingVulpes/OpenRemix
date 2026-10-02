@@ -40,6 +40,12 @@ namespace remix {
     bool localGuiding = true;
     // Visibility-guiding cell size in meters (see sceneScale).
     float localGuideCellSize = 2;
+    // Local-light (torch) REBLUR: anti-lag variance scale and sensitivity
+    // (NRD ReblurAntilagSettings; lower values react sooner) and history cap.
+    float localAntilagSigma = 2, localAntilagSensitivity = 3;
+    uint32_t localHistoryFrames = 16;
+    // Drop local-light history where moved lights changed the light (flashlight trails).
+    bool localHistoryConfidence = true;
     // Exclude local lights outside the shading point's potentially visible
     // clusters (remixapi_SetVisibilityPartitionEXT), when a partition is set.
     // ReSTIR DI for primary local lighting (implies separateLocalLighting 3):

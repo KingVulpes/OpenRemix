@@ -48,9 +48,10 @@ namespace remix::denoise {
     RrDiffuse, RrSpecular, RrNormal, RrHitDistance,
     FrontNormal, FrontDepth, FrontMotion, FrontAlbedo, FrontSpecularFactor,
     FrontDiffuse, FrontSpecular, FrontDiffuseOutput, FrontSpecularOutput, FrontConfidence,
+    LocalConfidence, // local-light history confidence (lights that moved)
     ImageCount
   };
-  static_assert(BaseImageCount == 22 && PbrSpecularInput == 29 && FrontNormal == 37 && ImageCount == 47,
+  static_assert(BaseImageCount == 22 && PbrSpecularInput == 29 && FrontNormal == 37 && ImageCount == 48,
                 "Update the matching inputs.glsl bindings when changing image slots");
   // Shared std140 constants. Matrices are nonjittered, in Vulkan framebuffer coordinates.
   struct Frame {
@@ -67,6 +68,11 @@ namespace remix::denoise {
     uint32_t families[4] = {}; // torch/emissive counts, torch/emissive response frames
   };
   static_assert(sizeof(Frame) == 480 && offsetof(Frame, families) == 464 && offsetof(Frame, local) == 432 && offsetof(Frame, sun) == 400 && offsetof(Frame, shadow) == 416);
+  // Local-light pass tuning (see trace::Options::localAntilag*).
+  struct LocalTuning {
+    float antilagSigma = 2, antilagSensitivity = 3;
+    uint32_t historyFrames = 16;
+  };
   remixapi_DenoisingCapabilitiesEXT capabilities(VkPhysicalDevice physical);
   bool sigmaSupported(VkPhysicalDevice physical);
   bool localSupported(VkPhysicalDevice physical, bool sigma, bool split = false);
@@ -87,6 +93,7 @@ namespace remix::denoise {
     void begin(VkCommandBuffer command, const Frame &frame, const scene::Matrix &projection,
                const scene::Matrix &previousProjection, VkImageView world, VkImageView sky, bool localFireflyFilter = false);
     void beginConfidence(VkCommandBuffer command);
+    void setLocalTuning(const LocalTuning &tuning);
     void recordOpaque(VkCommandBuffer command);
     void record(VkCommandBuffer command);
     void submitted();

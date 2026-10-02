@@ -661,6 +661,18 @@ namespace remix {
     frame.visibilityLeaves = visibilityActive ? visibilityLeaves->address : 0;
     frame.visibilityTable = visibilityActive ? visibilityTable->address : 0;
     frame.visibilityConfig[0] = lightVisibility.rowWords();
+    // Lights that changed since the previous frame: the local denoiser drops
+    // history where they changed the light (a turning flashlight's trail).
+    {
+      static const std::vector<scene::MovedLight> none;
+      const auto &moved = options.localHistoryConfidence ? lightBvh.moved() : none;
+      if (movedLights)
+        retiredBuffers.push_back(std::move(movedLights));
+      if (!moved.empty())
+        hostBuffer(movedLights, moved.data(), moved.size() * sizeof(moved[0]), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+      frame.movedLights = movedLights ? movedLights->address : 0;
+      frame.visibilityConfig[1] = uint32_t(moved.size());
+    }
     // Classify the empty space just above a shading point (2 cm).
     frame.visibilityProbe[0] = .02f / options.sceneScale;
     // Paint lies at most this far above its receiver (5 cm; Source lifts 0.1 in).
@@ -798,10 +810,12 @@ namespace remix {
     lap(breakdown.primaryMilliseconds);
     stageTime(4);
     recordSharc(command, options);
-    if (denoiser)
+    if (denoiser) {
+      denoiser->setLocalTuning({options.localAntilagSigma, options.localAntilagSensitivity, options.localHistoryFrames});
       denoiser->begin(command, temporalFrame, pendingProjection,
                       history.reset() ? pendingProjection : previousProjection, world->view, sky->view,
                       options.localFireflyFilter && (postLocalDenoise || options.bounces > 0));
+    }
     stageTime(5);
     // Idle caches have no eligible hit in either TLAS. Select the ordinary
     // shader so unused hash-grid code does not reserve tracing registers.

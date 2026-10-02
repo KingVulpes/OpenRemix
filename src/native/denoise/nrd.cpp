@@ -170,7 +170,7 @@ namespace remix::denoise {
         (frame.flags[0] || ((pass.sigma || pass.foreground) && frame.shadow[0]) || !pass.wasActive)
             ? nrd::AccumulationMode::CLEAR_AND_RESTART : nrd::AccumulationMode::CONTINUE;
     common.enableValidation = frame.timing[1] != 0;
-    common.isHistoryConfidenceAvailable = !pass.sigma && !pass.local;
+    common.isHistoryConfidenceAvailable = !pass.sigma;
     common.enableValidation &= !pass.sigma && !pass.local && !pass.foreground;
     require(nrd::SetCommonSettings(*pass.instance, common));
     pass.wasActive = true;
@@ -239,7 +239,10 @@ namespace remix::denoise {
         settings.maxBlurRadius = 8.f;
         settings.historyFixBasePixelStride = 2;
         settings.historyFixFrameNum = 1;
-        settings.maxAccumulatedFrameNum = std::min(settings.maxAccumulatedFrameNum, responsive ? 2u : 16u);
+        settings.maxAccumulatedFrameNum =
+            std::min(settings.maxAccumulatedFrameNum, responsive ? 2u : localTuning.historyFrames);
+        settings.antilagSettings.luminanceSigmaScale = localTuning.antilagSigma;
+        settings.antilagSettings.luminanceSensitivity = localTuning.antilagSensitivity;
         settings.maxFastAccumulatedFrameNum = 2;
         settings.maxStabilizedFrameNum = responsive ? 1u : 8u;
         if (split && frame.local[3] == 1) {
@@ -297,7 +300,7 @@ namespace remix::denoise {
         return *images[Sh1];
       case R::IN_DIFF_CONFIDENCE:
       case R::IN_SPEC_CONFIDENCE:
-        return *images[pass.foreground ? FrontConfidence : Confidence];
+        return *images[pass.foreground ? FrontConfidence : pass.local ? LocalConfidence : Confidence];
       case R::OUT_DIFF_SH0:
         return *images[Out0];
       case R::OUT_DIFF_SH1:

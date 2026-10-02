@@ -335,7 +335,12 @@ void NgxFeature::initialize([[maybe_unused]] std::shared_ptr<Ngx> context, [[may
     VkCommandBufferBeginInfo bi{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                 .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     vkCheck(vkBeginCommandBuffer(command, &bi));
-    const int flags = NVSDK_NGX_DLSS_Feature_Flags_IsHDR | NVSDK_NGX_DLSS_Feature_Flags_MVLowRes;
+    // HDR input is scene radiance before the runtime's exposure; the exposure
+    // texture stays 1. DLSS's history rejection works on exposed color, so it
+    // computes its own exposure: with 1, dark scenes look black to it and
+    // stale history (a moving view model's outline) survives as ghosts.
+    const int flags = NVSDK_NGX_DLSS_Feature_Flags_IsHDR | NVSDK_NGX_DLSS_Feature_Flags_MVLowRes |
+                      NVSDK_NGX_DLSS_Feature_Flags_AutoExposure;
     if (rr) {
       // SDK 310.9.1 preset F records uninitialized internal image reads and
       // transfer hazards on the Linux 615.71.09 driver. Preset E passes sync

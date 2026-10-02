@@ -551,12 +551,14 @@ void updateCache(ivec2 pixel) {
   for(uint step=0;step<164&&bounce<=frame.config.y;++step) {
     Hit hit=secondaryHit(origin,direction);
     if(hit.t==1e30) { SharcUpdateMiss(parameters,state,frame.skyRadiance.w!=0?vec3(0):environmentRadiance(direction));break; }
-    // A sparse update chooses among the visible sheets and opaque background
-    // stochastically. This also trains surfaces reached from water when the
-    // opaque primary guide is sky (for example, looking up from underwater).
-    if(hit.blended&&random()>=hit.color.a) {
+    // Transparent sheets never hold cache entries, and their lighting no longer
+    // queries the cache: update paths pass through them to the surfaces behind,
+    // weighted by transmission. This also trains surfaces reached from water
+    // when the opaque primary guide is sky (for example, looking up from
+    // underwater). The traced-sheet mode keeps the stochastic choice.
+    if(hit.blended&&(frame.pathConfig.z==0||random()>=hit.color.a)) {
       if(++layers>=32)break;
-      if(bounce!=0)SharcSetThroughput(state,transmissionColor(hit.color.rgb,hit.tinted));
+      if(bounce!=0)SharcSetThroughput(state,transmissionColor(hit.color.rgb,hit.tinted)*(frame.pathConfig.z==0?1-hit.color.a:1.));
       origin=offsetRay(hit.p,-hit.ng);continue;
     }
     vec3 directSpecular;
@@ -674,6 +676,21 @@ float localHistoryConfidence(Hit hit,vec3 signal) {
 }
 #include "translucency.glsl"
 #endif
+// Indirect light at a transparent sheet without tracing from it (dxvk-remix,
+// NRD sample and others never path-trace from glass): the denoised indirect
+// lighting of the opaque surface behind the pixel, which NRD has already
+// produced when the transparency passes run, resolved for the sheet's normal.
+vec3 sheetIndirect(ivec2 pixel,Hit hit,vec3 direction) {
+#ifdef TEMPORAL
+  if(temporal.flags.y==0)return vec3(0);
+  if(imageLoad(guideAlbedo,pixel).a>1.5)
+    return REBLUR_BackEnd_UnpackRadianceAndNormHitDist(imageLoad(pbrDiffuseOutput,pixel)).rgb;
+  NRD_SG sg=REBLUR_BackEnd_UnpackSh(imageLoad(outSh0,pixel),imageLoad(outSh1,pixel).xyz);
+  return max(NRD_SG_ResolveDiffuse(sg,hit.n,-direction,1),vec3(0));
+#else
+  return vec3(0);
+#endif
+}
 void main() {
   ivec2 pixel=ivec2(gl_GlobalInvocationID.xy);
 #ifdef FRONT_GUIDES_PASS
@@ -993,6 +1010,9 @@ void main() {
   if(sheetCount>1)return;
 #endif
   if(!inBounds)return;
+  // Without traced sheet indirect, deeper sheets reuse the front sheet's direct
+  // light (per unit albedo): one set of light samples and shadow rays per pixel.
+  vec3 reusedDirect=vec3(-1);
 #ifdef SINGLE_SHEET_PASS
   if(sheetCount==1) {
     Hit hit=primary;hit.wo=-direction;
@@ -1008,6 +1028,7 @@ void main() {
       vec3 surfaceLight=direct(hit,true,surfaceSpecular,surfaceDistance)+hit.emission;
       surfaceDistance=nearestDistance(surfaceDistance,sharedDistance);
       if(sharedIndirect.a!=0)surfaceLight+=materialFactor(hit)*sharedIndirect.rgb;
+      else if(frame.pathConfig.z==0)surfaceLight+=materialFactor(hit)*sheetIndirect(pixel,hit,direction);
       else for(uint i=0;i<frame.config.x;++i) {
         vec3 d,s;float t;
         surfaceLight+=materialFactor(hit)*continuation(hit,d,t,s)/float(frame.config.x);
@@ -1016,8 +1037,16 @@ void main() {
       }
       frontRadiance(hit,pixel,max(surfaceLight-hit.emission,vec3(0)),surfaceSpecular,surfaceDistance);
 #else
-      vec3 surfaceLight=direct(hit,true)+hit.emission;
+      vec3 surfaceLight;
+      if(frame.pathConfig.z==0&&reusedDirect.x>=0)surfaceLight=reusedDirect*materialFactor(hit);
+      else {
+        surfaceLight=direct(hit,true);
+        vec3 factor=materialFactor(hit);
+        if(all(greaterThan(factor,vec3(1e-3))))reusedDirect=surfaceLight/factor;
+      }
+      surfaceLight+=hit.emission;
       if(sharedIndirect.a!=0)surfaceLight+=materialFactor(hit)*sharedIndirect.rgb;
+      else if(frame.pathConfig.z==0)surfaceLight+=materialFactor(hit)*sheetIndirect(pixel,hit,direction);
       else for(uint i=0;i<frame.config.x;++i){vec3 d;float t;surfaceLight+=materialFactor(hit)*continuation(hit,d,t)/float(frame.config.x);}
 #endif
 #ifdef TEMPORAL

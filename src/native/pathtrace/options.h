@@ -46,6 +46,10 @@ namespace remix {
     uint32_t localHistoryFrames = 16;
     // Drop local-light history where moved lights changed the light (flashlight trails).
     bool localHistoryConfidence = true;
+    // Trace an indirect continuation path from each transparent sheet (glass,
+    // blended surfaces). Off: a sheet takes the denoised indirect light of the
+    // surface behind it (much cheaper; transparent layers cost about a third).
+    bool translucentIndirect = false;
     // Exclude local lights outside the shading point's potentially visible
     // clusters (remixapi_SetVisibilityPartitionEXT), when a partition is set.
     // ReSTIR DI for primary local lighting (implies separateLocalLighting 3):

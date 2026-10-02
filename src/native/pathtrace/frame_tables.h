@@ -672,7 +672,9 @@ namespace remix::trace {
       input = {draw.instanceId, geometry.accel->address, draw.instanceIndex, uint32_t(surfaceBase), model,
                geometry.diagonal * scale, geometry.revision,
                std::none_of(instance.begin(), instance.end(),
-                            [](const auto &surface) { return surface.draw.doubleSided; })};
+                            [](const auto &surface) { return surface.draw.doubleSided; }),
+               std::all_of(instance.begin(), instance.end(),
+                           [](const auto &surface) { return surface.draw.blend.enabled && !surface.draw.decal; })};
       write(sceneCursor, model.data(), sizeof(model));
       write(sceneCursor, &view.fingerprint, sizeof(view.fingerprint));
       write(sceneCursor, &draw.instanceId, sizeof(draw.instanceId));

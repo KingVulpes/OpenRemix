@@ -105,7 +105,7 @@ namespace remix::trace::detail {
     uint32_t reuseConfig[4] = {}; // previous frame valid, diagnostics, ray counter address low/high
     uint64_t indirectResults = 0, blueNoise = 0;
     float firefly[4] = {};       // outgoing local direct / indirect luminance limits; reserved
-    uint32_t pathConfig[4] = {}; // adaptive termination, minimum completed bounces, sheet indirect, reserved
+    uint32_t pathConfig[4] = {}; // adaptive termination, minimum completed bounces, sheet indirect, secondary ray mask
     float domeTransform[3][4] = {};
     uint64_t visibilityNodes = 0, visibilityLeaves = 0, visibilityTable = 0;
     uint64_t movedLights = 0; // scene::MovedLight pairs, count in visibilityConfig[1]

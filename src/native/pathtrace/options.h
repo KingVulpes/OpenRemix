@@ -50,6 +50,10 @@ namespace remix {
     // blended surfaces). Off: a sheet takes the denoised indirect light of the
     // surface behind it (much cheaper; transparent layers cost about a third).
     bool translucentIndirect = false;
+    // Shadow, light-visibility and bounce rays ignore blended layers (glass,
+    // sprites): no transmission through them and no candidate alpha tests.
+    // Camera and transparency rays still see them.
+    bool skipBlendedSecondaryRays = true;
     // Exclude local lights outside the shading point's potentially visible
     // clusters (remixapi_SetVisibilityPartitionEXT), when a partition is set.
     // ReSTIR DI for primary local lighting (implies separateLocalLighting 3):

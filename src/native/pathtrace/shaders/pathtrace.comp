@@ -89,10 +89,11 @@ struct Hit { float t; vec3 p; vec3 n; vec4 color; bool blended; bool blendedDraw
 // facing culling in the TLAS and this flag culls exactly those back faces in
 // traversal (same front-face definition), so their surfaces can be opaque.
 uint traceFlags() { return (frame.target.z&4u)!=0?gl_RayFlagsCullBackFacingTrianglesEXT:gl_RayFlagsNoneEXT; }
+uint traceMask=0xffu; // instance mask for closestGeometry (secondaryHit narrows it)
 void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, inout Hit hit,bool motion,float minimum) {
   rayQueryEXT query;
   profileRay(0);
-  rayQueryInitializeEXT(query, scene, traceFlags(), 255, origin, minimum, direction, hit.t);
+  rayQueryInitializeEXT(query, scene, traceFlags(), traceMask, origin, minimum, direction, hit.t);
   while (rayQueryProceedEXT(query)) {
     if (rayQueryGetIntersectionTypeEXT(query,false)!=gl_RayQueryCandidateIntersectionTriangleEXT) continue;
     profileRay(1);
@@ -219,7 +220,11 @@ Hit closest(vec3 origin,vec3 direction,float maximum,bool motion) {
   return resolveDecals(closestGeometry(origin,direction,maximum,motion),origin,direction,maximum,motion);
 }
 Hit closest(vec3 origin,vec3 direction) { return closest(origin,direction,1e30,true); }
-Hit secondaryHit(vec3 origin,vec3 direction) { return closest(origin,direction,1e30,false); }
+// Bounce rays may ignore blended layers (frame.pathConfig.w; see
+// skipBlendedSecondaryRays). Camera and transparency rays keep every instance.
+Hit secondaryHit(vec3 origin,vec3 direction) {
+  traceMask=frame.pathConfig.w;Hit hit=closest(origin,direction,1e30,false);traceMask=0xffu;return hit;
+}
 // First visibility comes from rasterization; secondary rays still query the full scene.
 Hit rasterPrimary(ivec2 pixel, vec3 origin) {
   vec4 position=imageLoad(primaryPosition,pixel), normal=imageLoad(primaryNormal,pixel);

@@ -15,7 +15,7 @@ namespace remix {
         for (int c = 0; c < 4; ++c)
           instance.transform.matrix[r][c] = input.model[c * 4 + r];
       instance.instanceCustomIndex = input.customIndex;
-      instance.mask = mask;
+      instance.mask = input.blended ? trace::blendedInstanceMask : mask;
       instance.flags = trace::instanceFlags(input, faceCulling);
       instance.accelerationStructureReference = input.geometry;
       return instance;

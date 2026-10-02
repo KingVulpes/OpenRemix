@@ -485,6 +485,7 @@ namespace remix {
     frame.pathConfig[0] = rouletteActive;
     frame.pathConfig[1] = options.rouletteMinBounces;
     frame.pathConfig[2] = options.translucentIndirect ? 1u : 0u;
+    frame.pathConfig[3] = options.skipBlendedSecondaryRays ? 0xffu & ~uint32_t(trace::blendedInstanceMask) : 0xffu;
     append(&frame, sizeof(frame));
     append(&options.localFireflyFilter, sizeof(options.localFireflyFilter));
     append(&options.translucencyDenoiser, sizeof(options.translucencyDenoiser));

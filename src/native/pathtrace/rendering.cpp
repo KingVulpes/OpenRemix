@@ -663,6 +663,8 @@ namespace remix {
     frame.visibilityConfig[0] = lightVisibility.rowWords();
     // Classify the empty space just above a shading point (2 cm).
     frame.visibilityProbe[0] = .02f / options.sceneScale;
+    // Paint lies at most this far above its receiver (5 cm; Source lifts 0.1 in).
+    frame.visibilityProbe[1] = .05f / options.sceneScale;
     frame.torchNodes = torchNodes ? torchNodes->address : 0;
     frame.torchEmitters = torchEmitters ? torchEmitters->address : 0;
     frame.emissiveNodes = emissiveNodes ? emissiveNodes->address : 0;

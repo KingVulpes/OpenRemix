@@ -173,6 +173,7 @@ Hit resolveDecals(Hit first,vec3 origin,vec3 direction,float maximum,bool motion
   // multiplicative paint (D3D DESTCOLOR*SRCCOLOR, mod2x) tints them and keeps
   // the receiver's normal and roughness.
   float remaining=1;vec3 through=vec3(1);
+  float lastDecal=first.t;
   for(uint layer=0;layer<32&&hit.decal;++layer) {
     if(hit.decalMode!=0u) {
       // mod2x is authored in sRGB (128 is neutral): scale so linear(128/255) maps to one.
@@ -183,14 +184,29 @@ Hit resolveDecals(Hit first,vec3 origin,vec3 direction,float maximum,bool motion
       parameters+=weight*vec2(hit.rm.x*hit.rm.x,hit.rm.y);
       remaining*=1-hit.color.a;through*=1-hit.color.a;
     }
+    lastDecal=hit.t;
     // Keep the ray origin fixed. The normal-offset used for lighting rays can
     // jump through a decal's close receiver at large world coordinates.
     float minimum=uintBitsToFloat(floatBitsToUint(hit.t)+1u);
     hit=closestGeometry(origin,direction,maximum,motion,minimum);
   }
+  // Paint coats the surface right behind it. A ray that starts at the paint's
+  // plane without meeting that surface behind it left the painted surface
+  // itself (bounce, sky and light rays from under the paint): it must not see
+  // the paint, which would otherwise shade its own receiver.
+  const float attach=frame.visibilityProbe.y;
+  const bool attached=hit.t<1e30&&!hit.decal&&hit.t-lastDecal<=attach;
+  if(!attached&&!hit.decal&&abs(dot(direction,first.ng))*first.t<=attach)return hit;
+  // Multiplicative paint over glass tints what is seen through it (a sheet
+  // without coverage of its own) instead of standing as an opaque quad.
+  if(attached&&hit.blended&&remaining==1) {
+    first.decal=false;first.blended=true;first.blendedDraw=true;first.tinted=true;
+    first.color=vec4(through,0);first.emission=vec3(0);
+    return first;
+  }
   // Unattached decals and layers above translucent receivers retain ordinary
   // source-over transport. Do not project paint onto the sky or change glass.
-  if(hit.t==1e30||hit.decal||hit.blended) {first.decal=false;return first;}
+  if(!attached||hit.blended) {first.decal=false;return first;}
   hit.color.rgb=min(color+through*hit.color.rgb,vec3(1));
   hit.emission=emission+through*hit.emission;
   normal+=remaining*hit.n;

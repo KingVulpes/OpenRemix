@@ -109,7 +109,7 @@ namespace remix::trace::detail {
     float domeTransform[3][4] = {};
     uint64_t visibilityNodes = 0, visibilityLeaves = 0, visibilityTable = 0, visibilityReserved = 0;
     uint32_t visibilityConfig[4] = {}; // table row words, reserved
-    float visibilityProbe[4] = {};     // probe offset above the surface (world units), reserved
+    float visibilityProbe[4] = {};     // world units: probe offset above the surface, decal attachment distance
     uint64_t restirCurrent = 0, restirHistoryRead = 0, restirHistoryWrite = 0, restirRemap = 0;
     uint32_t restirConfig[4] = {}; // candidates, spatial samples, temporal M cap, flags (1 initial visibility)
     float restirParams[4] = {};    // spatial radius (pixels), emitter count, reserved

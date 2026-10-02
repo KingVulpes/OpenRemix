@@ -151,6 +151,14 @@ void serviceDevRequests() {
           std::snprintf(line, sizeof(line), "%-56s %8.3f %8.3f\n", pass.name, pass.selfMilliseconds, pass.milliseconds);
           text += line;
         }
+        const auto local = g_runtime.localLightStatistics();
+        std::snprintf(line, sizeof(line), "# local lights %u (active %u), light tree nodes %u, depth %u\n", local.lightCount,
+                      local.activeLights, local.nodeCount, local.treeDepth);
+        text += line;
+        const auto cache = g_runtime.sharcStatistics();
+        std::snprintf(line, sizeof(line), "# sharc update paths %u, query attempts %u, hits %u, entries %u\n", cache.updatePaths,
+                      cache.queryAttempts, cache.queryHits, cache.occupiedEntries);
+        text += line;
       }
     }
     std::ofstream(directory / "timings.txt") << text;

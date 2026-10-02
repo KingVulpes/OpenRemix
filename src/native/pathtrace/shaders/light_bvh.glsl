@@ -518,6 +518,8 @@ vec3 localLighting(Hit hit,uint state,uint samples,out float lightDistance,bool 
     vec3 specularResponse;
     vec3 scale=light.radiance.rgb*emitterShaping(light,-direction)*(2*oneMinusCos*cosine*attenuation)*frame.localScale.x;
     vec3 physical=materialResponse(hit,direction,specularResponse)*scale;
+    // A spot light facing away or a back-facing response: no visibility ray.
+    if(localLuminance(physical)<=0)continue;
     vec3 estimate=physical/selectionPdf;
     vec3 visibility=localVisibility(offsetRay(hit.p,hit.ng),hit.p+direction*distance);
     vec3 contribution=estimate*visibility,specularContribution=specularResponse*scale/selectionPdf*visibility;

@@ -111,21 +111,6 @@ bool restirSamplePoint(LightEmitter light,Hit hit,vec2 u,out vec2 uv,out float p
   return true;
 }
 
-// Probability of the tree reaching a leaf with a stratified variate: the
-// same weights as the local-light estimators (nodeWeight).
-uint restirSelect(LightNodes nodes,Hit hit,float u,out float pmf) {
-  uint index=0;pmf=1;
-  while(nodes.data[index].links.w>1) {
-    uvec4 links=nodes.data[index].links;
-    float a=nodeWeight(nodes,links.x,hit.p,hit.n),b=nodeWeight(nodes,links.y,hit.p,hit.n);
-    if(a==0&&b==0){pmf=0;return 0;}
-    float p=lightSplit(a,b);
-    if(u<p){index=links.x;pmf*=p;u/=p;}else{index=links.y;pmf*=1-p;u=(u-p)/(1-p);}
-    u=min(u,.99999994);
-  }
-  return index;
-}
-
 // Resampling step: stream reservoir r (its target at this pixel is target)
 // into the running sum. A reservoir without a sample (nothing found, or its
 // sample was occluded) still counts its M: it is a zero-valued estimate, and
@@ -151,9 +136,31 @@ Reservoir restirInitial(Hit hit,uint state,float depth,ivec2 pixel) {
   if(frame.localConfig.x==0||nodeWeight(nodes,0,hit.p,hit.n)<=0)return r;
   uint count=max(frame.restirConfig.x,1u);
   float wsum=0,selected=0;
+  // Each candidate descends the light tree with a stratified variate, using
+  // the local-light estimators' weights (nodeWeight). The variates increase
+  // with i, so consecutive descents share an upper path and leave it once
+  // (leaf order is monotonic in u). The previous path's split probabilities
+  // are kept per level and reused while the paths coincide: identical PMFs,
+  // a fraction of the node weights (RT Gems I, 18.4.3.2).
+  const uint pathCapacity=24u;
+  uint pathNode[pathCapacity];float pathSplit[pathCapacity];uint pathLength=0;
   for(uint i=0;i<count;++i) {
-    float pmf;
-    uint index=restirSelect(nodes,hit,(float(i)+lightRandom(state))/float(count),pmf);
+    float pmf=1,u=(float(i)+lightRandom(state))/float(count);
+    uint index=0,level=0;bool onPath=true;
+    while(nodes.data[index].links.w>1) {
+      uvec4 links=nodes.data[index].links;
+      float p;
+      if(onPath&&level<pathLength&&pathNode[level]==index)p=pathSplit[level];
+      else {
+        onPath=false;
+        float a=nodeWeight(nodes,links.x,hit.p,hit.n),b=nodeWeight(nodes,links.y,hit.p,hit.n);
+        if(a==0&&b==0){pmf=0;pathLength=min(level,pathCapacity);break;}
+        p=lightSplit(a,b);
+        if(level<pathCapacity){pathNode[level]=index;pathSplit[level]=p;pathLength=level+1;}
+      }
+      if(u<p){index=links.x;pmf*=p;u/=p;}else{index=links.y;pmf*=1-p;u=(u-p)/(1-p);}
+      u=min(u,.99999994);++level;
+    }
     if(pmf<=0)continue;
     uint emitter=nodes.data[index].links.z;
     LightEmitter light=emitters.data[emitter];

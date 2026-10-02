@@ -65,6 +65,15 @@ namespace remix {
       if (options.translucencyDenoiser)
         ImGui::TextDisabled("Surface filter: %s", m_pathTracer && m_pathTracer->translucencyDenoiserActive()
                                                ? "active" : "inactive (requires NRD and translucent surfaces)");
+      ui::Checkbox("Shadow and bounce rays ignore blended surfaces", &options.skipBlendedSecondaryRays);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Glass, sprites and other blended layers stay visible to the camera, but cast no\n"
+                          "shadows and do not tint light passing through them. Cheaper wherever rays cross them.");
+      ui::Checkbox("Trace indirect light from translucent layers", &options.translucentIndirect);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Off: each transparent layer takes the denoised indirect light of the surface behind it,\n"
+                          "and deeper layers reuse the front layer's direct light (much cheaper).\n"
+                          "On: every layer traces its own lighting paths.");
       ImGui::BeginDisabled(rrActive || options.indirectClamp > 0);
       ui::Checkbox("Reuse opaque lighting through translucency", &options.translucencyReuse);
       if (ImGui::IsItemHovered())

@@ -26,6 +26,13 @@
 #endif
 #include "api/entrypoints.h"
 #include <cstdlib>
+#include "platform/gpu_timings.h"
+#include "runtime/profiles.h"
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <string>
 
 using namespace remix::api;
 
@@ -79,7 +86,80 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_Shutdown() {
   return status;
 }
 
+namespace {
+// Dev aid for unattended testing, polled every 30 presents. Files in the
+// profile directory (REMIX_CONFIG_DIR, else ./openremix):
+//   config.request     "key = value" lines applied as SetConfigVariable
+//   screenshot.request presented frame to screenshot.png
+//   timings.request    GPU pass timings (rtx.native.gpuPassTimers) to timings.txt
+// Each request file is deleted when served.
+void serviceDevRequests() {
+  static uint32_t calls = 0;
+  if (++calls % 30)
+    return;
+  std::error_code ec;
+  static const auto directory = remix::config::Profiles::defaultDirectory();
+  auto take = [&](const char *name, std::string *contents) {
+    const auto path = directory / name;
+    if (!std::filesystem::exists(path, ec))
+      return false;
+    if (contents) {
+      std::ifstream in(path);
+      std::stringstream text;
+      text << in.rdbuf();
+      *contents = text.str();
+    }
+    std::filesystem::remove(path, ec);
+    return true;
+  };
+  std::string config;
+  if (take("config.request", &config)) {
+    std::istringstream lines(config);
+    for (std::string line; std::getline(lines, line);) {
+      const auto eq = line.find('=');
+      if (eq == std::string::npos)
+        continue;
+      auto trim = [](std::string v) {
+        const auto a = v.find_first_not_of(" \t\r"), b = v.find_last_not_of(" \t\r");
+        return a == std::string::npos ? std::string() : v.substr(a, b - a + 1);
+      };
+      const auto key = trim(line.substr(0, eq)), value = trim(line.substr(eq + 1));
+      if (!key.empty())
+        remix::api::setConfigVariable(key.c_str(), value.c_str());
+    }
+  }
+  if (take("screenshot.request", nullptr)) {
+    const auto path = std::filesystem::absolute(directory / "screenshot.png", ec).string();
+    std::lock_guard lock(g_apiMutex);
+    g_runtime.requestScreenshot(path.c_str());
+  }
+  if (take("timings.request", nullptr)) {
+    std::string text;
+    {
+      std::lock_guard lock(g_apiMutex);
+      const auto &t = g_runtime.gpuPassTimings();
+      char line[200];
+      if (!t.available) {
+        text = "unavailable (enable rtx.native.gpuPassTimers)\n";
+      } else {
+        std::snprintf(line, sizeof(line), "GPU frame %.3f ms (passes %.3f, between passes %.3f); render %ux%u, output %ux%u\n",
+                      t.frameMilliseconds, t.passMilliseconds, t.untimedMilliseconds, t.renderWidth, t.renderHeight,
+                      t.outputWidth, t.outputHeight);
+        text += line;
+        for (const auto index : remix::gpu::byCost(t)) {
+          const auto &pass = t.passes[index];
+          std::snprintf(line, sizeof(line), "%-56s %8.3f %8.3f\n", pass.name, pass.selfMilliseconds, pass.milliseconds);
+          text += line;
+        }
+      }
+    }
+    std::ofstream(directory / "timings.txt") << text;
+  }
+}
+} // namespace
+
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_Present(const remixapi_PresentInfo *info) {
+  serviceDevRequests();
   PFN_remixapi_BridgeCallback presentCallback = nullptr;
   remixapi_ErrorCode status = REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
   {

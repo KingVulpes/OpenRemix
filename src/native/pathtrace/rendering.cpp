@@ -686,6 +686,7 @@ namespace remix {
     frame.emissiveEmitters = emissiveEmitters ? emissiveEmitters->address : 0;
     configureLightGuiding(frame, options);
     configureRestir(frame, options, extent);
+    configureRegir(frame, options);
     if (options.pbrLocalReuse) {
       const uint32_t settings[] = {options.localSamples,
                                    options.emissiveCandidates,
@@ -812,6 +813,7 @@ namespace remix {
     recordPrimary(command, options.rasterPrimary);
     lap(breakdown.primaryMilliseconds);
     stageTime(4);
+    recordRegir(command);
     recordSharc(command, options);
     if (denoiser) {
       denoiser->setLocalTuning({options.localAntilagSigma, options.localAntilagSensitivity, options.localHistoryFrames});

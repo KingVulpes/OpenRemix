@@ -68,6 +68,8 @@ layout(set=0,binding=3,std140) uniform Frame {
   uint64_t restirCurrent, restirHistoryRead, restirHistoryWrite, restirRemap;
   uvec4 restirConfig; // candidates, spatial samples, temporal M cap, flags (1 initial visibility)
   vec4 restirParams; // spatial radius (pixels), emitter count, reserved
+  uint64_t regirRead, regirWrite, regirSlots, regirReserved;
+  uvec4 regirConfig; // cell capacity, slots per cell, cells per world unit (float bits), active
 } frame;
 layout(set=0,binding=6) uniform sampler2D textures[4096];
 vec3 environmentRadiance(vec3 direction) {

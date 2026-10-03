@@ -84,6 +84,12 @@ namespace remix {
       ui::SliderFloat("Light reach (0 = unlimited)", &options.localRange, 0.f, 64.f, "%.1f");
       if (options.localRange > 0 && options.localRange < .01f)
         options.localRange = .01f;
+      ui::Checkbox("Presampled light cells (ReGIR)", &options.regir);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Each world cell gets a pool of light samples drawn once per frame. Bounce lighting,\n"
+                          "the SHARC update and ReSTIR candidates pick from it instead of walking the light tree.");
+      if (options.regir)
+        ui::SliderFloat("Light cell size", &options.regirCellSize, .125f, 16.f, "%.2f m");
       ui::Checkbox("ReSTIR DI (local lights)", &options.restir);
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Reservoir resampling of primary local lighting: light samples are reused across\n"

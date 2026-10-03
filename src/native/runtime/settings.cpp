@@ -147,6 +147,8 @@ namespace remix::config {
         TRACE(sceneScale, .0001, 1000);
         TRACE(lightVisibilityCulling, 0, 1);
         TRACE(restir, 0, 1);
+        TRACE(regir, 0, 1);
+        TRACE(regirCellSize, .125f, 16);
         TRACE(restirCandidates, 1, 32);
         TRACE(restirSpatialSamples, 0, 8);
         TRACE(restirSpatialRadius, 1, 100);

@@ -756,7 +756,10 @@ void replaceMirror(ivec2 pixel) {
 #endif
 void main() {
   ivec2 pixel=ivec2(gl_GlobalInvocationID.xy);
-#ifdef PSR_PASS
+#ifdef REGIR_PRESAMPLE_PASS
+  regirPresample(gl_WorkGroupID.x*64u+gl_LocalInvocationIndex);
+  return;
+#elif defined(PSR_PASS)
   if(any(greaterThanEqual(pixel,ivec2(frame.target.xy))))return;
   replaceMirror(pixel);
   return;

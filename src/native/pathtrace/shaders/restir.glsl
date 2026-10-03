@@ -144,10 +144,13 @@ Reservoir restirInitial(Hit hit,uint state,float depth,ivec2 pixel) {
   // a fraction of the node weights (RT Gems I, 18.4.3.2).
   const uint pathCapacity=24u;
   uint pathNode[pathCapacity];float pathSplit[pathCapacity];uint pathLength=0;
+  uint pool=regirPool(hit.p,state);
   for(uint i=0;i<count;++i) {
     float pmf=1,u=(float(i)+lightRandom(state))/float(count);
     uint index=0,level=0;bool onPath=true;
-    while(nodes.data[index].links.w>1) {
+    // A presampled cell pool replaces the descent (regir.glsl).
+    if(pool!=regirNone&&!regirSample(pool,u,index,pmf))pmf=0;
+    else while(pool==regirNone&&nodes.data[index].links.w>1) {
       uvec4 links=nodes.data[index].links;
       float p;
       if(onPath&&level<pathLength&&pathNode[level]==index)p=pathSplit[level];

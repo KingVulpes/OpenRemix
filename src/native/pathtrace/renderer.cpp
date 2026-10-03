@@ -150,6 +150,9 @@ namespace remix {
     forgetLightingPipeline(singleTransparencyCompute);
     if (singleTransparencyCompute)
       pipeline::destroyPipeline(device, singleTransparencyCompute, nullptr);
+    forgetLightingPipeline(regir.presample);
+    if (regir.presample)
+      pipeline::destroyPipeline(device, regir.presample, nullptr);
     forgetLightingPipeline(transparencyCompute);
     forgetLightingPipeline(compute);
     if (transparencyCompute)

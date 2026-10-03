@@ -70,6 +70,11 @@ namespace remix {
     // per-pixel reservoirs of light samples, resampled from the light tree,
     // reused across frames and neighbors, occluded samples discarded.
     bool restir = false;
+    // Presampled light pools per world cell (ReGIR): bounce vertices, the
+    // SHARC update and ReSTIR's initial candidates take a light from their
+    // cell's pool instead of descending the light tree per sample.
+    bool regir = false;
+    float regirCellSize = 1; // meters (see sceneScale)
     uint32_t restirCandidates = 8;     // initial light-tree candidates per pixel
     uint32_t restirSpatialSamples = 2; // neighbor reservoirs per pixel
     float restirSpatialRadius = 30;    // pixels

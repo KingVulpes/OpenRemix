@@ -174,6 +174,7 @@ vec3 localVisibility(vec3 origin,vec3 endpoint) {
   return vec3(0);
 }
 #include "light_guiding.glsl"
+#include "regir.glsl"
 // A sphere candidate includes solid-angle weighting, but not discrete selection.
 struct LocalCandidate { vec3 physical; vec3 specular; vec3 endpoint; float distance; };
 #include "triangle_sampling.glsl"
@@ -457,12 +458,17 @@ vec3 localLighting(Hit hit,uint state,uint samples,out float lightDistance,bool 
   if(enableSmallLights&&nodes.data[0].links.w<=4)
     return smallLocalLighting(nodes,emitters,hit,state,adaptiveSamples,guideKey,preferred,guideMix,lightDistance,useGuiding,blue,0u,specular,threshold);
   vec3 result=vec3(0);float distanceWeight=0;
+  // Bounce vertices draw from the cell's presampled pool (regir.glsl).
+  uint pool=useGuiding?regirNone:regirPool(hit.p,state);
   for(uint sampleIndex=0;sampleIndex<adaptiveSamples;++sampleIndex) {
     bool guided=guideMix>0&&lightRandom(state)<guideMix;
     uint index=0;float selectionPdf=1,u=lightRandom(state);
     if(guided) {
       if(preferredPdf<0)preferredPdf=lightBasePdf(nodes,hit,preferred);
       index=preferred;selectionPdf=preferredPdf;
+    }
+    else if(pool!=regirNone) {
+      if(!regirSample(pool,u,index,selectionPdf))continue;
     }
     else while(nodes.data[index].links.w>1) {
       uvec4 links=nodes.data[index].links;

@@ -114,8 +114,10 @@ namespace remix::trace::detail {
     uint64_t restirCurrent = 0, restirHistoryRead = 0, restirHistoryWrite = 0, restirRemap = 0;
     uint32_t restirConfig[4] = {}; // candidates, spatial samples, temporal M cap, flags (1 initial visibility)
     float restirParams[4] = {};    // spatial radius (pixels), emitter count, reserved
+    uint64_t regirRead = 0, regirWrite = 0, regirSlots = 0, regirReserved = 0;
+    uint32_t regirConfig[4] = {}; // cell capacity, slots per cell, cells per world unit (float bits), active
   };
-  static_assert(sizeof(Frame) == 720 && offsetof(Frame, restirCurrent) == 656 && offsetof(Frame, visibilityNodes) == 592 && offsetof(Frame, pathConfig) == 528 &&
+  static_assert(sizeof(Frame) == 768 && offsetof(Frame, regirConfig) == 752 && offsetof(Frame, restirCurrent) == 656 && offsetof(Frame, visibilityNodes) == 592 && offsetof(Frame, pathConfig) == 528 &&
                 offsetof(Frame, firefly) == 512 && offsetof(Frame, indirectResults) == 496 &&
                 offsetof(Frame, lightGuideRead) == 384 && offsetof(Frame, lightGuideConfig) == 400 &&
                 offsetof(Frame, lightNodes) == 336 && offsetof(Frame, localConfig) == 352 &&
@@ -388,6 +390,16 @@ namespace remix {
       std::vector<std::pair<uint64_t, uint32_t>> keys;
     } restir;
     void configureRestir(Frame &frame, const TraceOptions &options, VkExtent2D extent);
+    // Presampled light pools per world cell (regir.cpp, regir.glsl).
+    struct Regir {
+      static constexpr uint32_t capacity = 1u << 15, slots = 64;
+      VkPipeline presample = VK_NULL_HANDLE;
+      std::unique_ptr<Buffer> cells[2], pool;
+      uint32_t writeIndex = 0;
+      bool valid = false, active = false, pipelineFailed = false;
+    } regir;
+    void configureRegir(Frame &frame, const TraceOptions &options);
+    void recordRegir(VkCommandBuffer command);
     void recordRestir(VkCommandBuffer command, VkExtent2D extent);
     void beginLightGuiding(VkCommandBuffer command);
     void finishLightGuiding(VkCommandBuffer command);

@@ -880,6 +880,9 @@ void main() {
 #endif
     storeReuse(pixel,hit,materialFactor(hit)*(torch+emissive));
     historyConfidence=localHistoryConfidence(hit,torch);
+#ifdef RESTIR_SPATIAL
+    historyConfidence=min(historyConfidence,1-restirOcclusionChange);
+#endif
     // Capture the unfiltered signal before PBR routing clears or remodulates
     // the local buffers. The opaque pass already wrote black for empty pixels.
     if(frame.splitLocal.w==6) {

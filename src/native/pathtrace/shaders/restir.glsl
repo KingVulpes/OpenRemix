@@ -12,6 +12,8 @@
 // Spatial reuse normalizes by the M of the reservoirs that could have produced
 // the chosen sample (RTXDI's basic 1/Z bias correction, geometric test, no
 // rays); temporal reuse merges without correction.
+// pad: in the current buffer, this frame's occlusion change of the history
+// sample (restirOcclusionChange); unused in history.
 struct Reservoir { uint light; float u, v, W, M, depth; uint normal; float target; float x, y, z, pad; };
 layout(buffer_reference,std430,buffer_reference_align=16) buffer Reservoirs { Reservoir data[]; };
 layout(buffer_reference,std430,buffer_reference_align=4) readonly buffer LightRemap { uint data[]; };
@@ -186,6 +188,7 @@ Reservoir restirInitial(Hit hit,uint state,float depth,ivec2 pixel) {
     if(localLuminance(localVisibility(offsetRay(hit.p,hit.ng),endpoint))<=0){r.W=0;r.light=restirNone;}
   }
   r.target=selected;
+  float occlusionChange=0;
   // Temporal reuse: the reservoir the same surface held last frame.
   // The opaque pass's motion vector (guideMotion: previous-frame offset in
   // pixels, previous view depth minus current, valid in w) locates last
@@ -204,6 +207,18 @@ Reservoir restirInitial(Hit hit,uint state,float depth,ivec2 pixel) {
                      dot(restirUnpackNormal(p.normal),hit.n)>.8;
         if(similar&&p.light!=restirNone&&frame.restirRemap!=0)p.light=LightRemap(frame.restirRemap).data[p.light];
         if(p.light!=restirNone&&p.light>=uint(frame.restirParams.y))p.light=restirNone; // light gone
+        // History keeps only samples that were visible when shaded. Re-test
+        // the same segment from the same surface point: if it is blocked
+        // now, an occluder moved (a closing door), and the local denoiser's
+        // history there is stale. A static scene cannot change this test,
+        // so penumbrae and permutation sampling never register.
+        if(similar&&p.light!=restirNone&&(frame.restirConfig.w&4u)!=0) {
+          LightEmitter light=emitters.data[p.light];
+          RestirPoint q=restirPoint(light,vec2(p.u,p.v));
+          vec3 point=vec3(p.x,p.y,p.z),normal=restirUnpackNormal(p.normal);
+          vec3 endpoint=light.radiance.w==0?q.x:offsetRay(q.x,dot(q.n,point-q.x)>0?q.n:-q.n);
+          occlusionChange=1-clamp(localLuminance(localVisibility(offsetRay(point,normal),endpoint)),0,1);
+        }
         if(similar) {
           p.M=min(p.M,float(frame.restirConfig.z)*max(r.M,1));
           Reservoir merged=restirEmpty();float mergedSum=0,mergedTarget=0;
@@ -215,10 +230,12 @@ Reservoir restirInitial(Hit hit,uint state,float depth,ivec2 pixel) {
       }
     }
   }
+  r.pad=occlusionChange;
   r.depth=depth;r.normal=restirPackNormal(hit.n);r.x=hit.p.x;r.y=hit.p.y;r.z=hit.p.z;
   return r;
 }
 
+float restirOcclusionChange=0; // set by restirShade
 // Spatial reuse and shading (splitRestirSpatial). Returns the pixel's local
 // radiance; writes the reservoir kept for the next frame.
 vec3 restirShade(Hit hit,ivec2 pixel,uint state,float depth,out float lightDistance,out vec3 specular) {
@@ -227,6 +244,14 @@ vec3 restirShade(Hit hit,ivec2 pixel,uint state,float depth,out float lightDista
   Reservoirs current=Reservoirs(frame.restirCurrent);
   uint self=uint(pixel.x)+uint(pixel.y)*frame.target.x;
   Reservoir own=current.data[self];
+  // Occlusion change around the pixel (3x3 maximum): sparse per-pixel
+  // detections cover the region whose light changed.
+  restirOcclusionChange=0;
+  if((frame.restirConfig.w&4u)!=0)
+    for(int y=-1;y<=1;++y)for(int x=-1;x<=1;++x) {
+      ivec2 at=clamp(pixel+ivec2(x,y),ivec2(0),ivec2(frame.target.xy)-1);
+      restirOcclusionChange=max(restirOcclusionChange,current.data[uint(at.x)+uint(at.y)*frame.target.x].pad);
+    }
   Reservoir r=restirEmpty();float wsum=0,selected=0;
   restirStream(r,wsum,selected,own,own.target,state);
   const uint maxNeighbors=8u;

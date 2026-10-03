@@ -44,7 +44,8 @@ namespace remix {
     // (NRD ReblurAntilagSettings; lower values react sooner) and history cap.
     float localAntilagSigma = 2, localAntilagSensitivity = 3;
     uint32_t localHistoryFrames = 16;
-    // Drop local-light history where moved lights changed the light (flashlight trails).
+    // Drop local-light history where moved lights or moved occluders (a closing
+    // door; ReSTIR history samples re-tested) changed the light.
     bool localHistoryConfidence = true;
     // Trace an indirect continuation path from each transparent sheet (glass,
     // blended surfaces). Off: a non-PBR sheet takes the denoised indirect light

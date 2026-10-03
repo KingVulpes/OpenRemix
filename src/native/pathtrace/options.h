@@ -75,6 +75,15 @@ namespace remix {
     // cell's pool instead of descending the light tree per sample.
     bool regir = true;
     float regirCellSize = 1; // meters (see sceneScale)
+    // ORCA: a radiance cache rebuilt every frame from sparse full paths (one
+    // per orcaTile x orcaTile pixels); other pixels read their first bounce
+    // from it. No history: indirect light follows lighting changes at once.
+    bool orca = false;
+    uint32_t orcaTile = 4;
+    float orcaCellSize = .0625f; // smallest voxel, meters; levels grow by 4x
+    uint32_t orcaLevels = 6, orcaMinSamples = 4;
+    // Indirect-light denoiser history cap in frames (0 = NRD's default).
+    uint32_t indirectHistoryFrames = 0;
     uint32_t restirCandidates = 8;     // initial light-tree candidates per pixel
     uint32_t restirSpatialSamples = 2; // neighbor reservoirs per pixel
     float restirSpatialRadius = 30;    // pixels

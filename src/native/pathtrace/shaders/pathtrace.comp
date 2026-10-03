@@ -4,6 +4,9 @@
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
 #extension GL_EXT_nonuniform_qualifier : require
 #extension GL_GOOGLE_include_directive : require
+#ifdef ORCA_SPARSE_PASS
+#extension GL_EXT_shader_atomic_int64 : require
+#endif
 #if defined(SHARC_QUERY) || defined(SHARC_UPDATE_PASS)
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
 #extension GL_EXT_shader_atomic_int64 : require
@@ -462,6 +465,11 @@ bool cacheRadiance(Hit hit,float footprint,out vec3 radiance) {
 #if defined(TEMPORAL) && defined(SINGLE_SHEET_PASS)
 #include "translucent_reuse.glsl"
 #endif
+#include "orca.glsl"
+#ifdef ORCA_SPARSE_PASS
+// The sparse path's first opaque vertex: throughput and radiance so far.
+Hit orcaFirst;vec3 orcaDirection,orcaThroughput,orcaBefore;bool orcaRecorded=false;
+#endif
 vec3 continuation(Hit primary,out vec3 firstDirection,out float firstDistance,out vec3 specular) {
   profilePath(0u);
   uint rouletteState=enableRussianRoulette?hash(rng^0x726f756cu):0u;
@@ -496,9 +504,25 @@ vec3 continuation(Hit primary,out vec3 firstDirection,out float firstDistance,ou
       break;
     }
 #endif
+#ifdef ORCA_SPARSE_PASS
+    if(bounce==0&&!orcaRecorded) {
+      orcaFirst=hit;orcaDirection=direction;orcaThroughput=throughput;orcaBefore=result;orcaRecorded=true;
+    }
+#elif !defined(TRANSPARENCY_PASS)
+    // This frame's ORCA cache answers the first bounce (orca.glsl).
+    if(bounce==0&&frame.orcaConfig.w!=0) {
+      vec3 cachedRadiance;
+      if(orcaLookup(hit,direction,cachedRadiance)){result+=throughput*cachedRadiance;break;}
+    }
+#endif
 #ifdef SHARC_QUERY
     vec3 cached;
+#ifdef ORCA_SPARSE_PASS
+    // Sparse paths measure the first vertex themselves; only tails use SHARC.
+    if(bounce>0&&cacheRadiance(hit,length(hit.p-previousVertex)*footprintScale,cached)) {
+#else
     if(cacheRadiance(hit,length(hit.p-previousVertex)*footprintScale,cached)) {
+#endif
       result+=throughput*cached;profilePath(7u);break; // Cached outgoing radiance already includes this hit's direct light.
     }
 #endif
@@ -527,6 +551,11 @@ vec3 continuation(Hit primary,out vec3 firstDirection,out float firstDistance,ou
     }
   }
   specular=result*specularWeight/max(weight,vec3(1e-20));
+#ifdef ORCA_SPARSE_PASS
+  // Radiance leaving the first vertex toward the primary surface.
+  if(orcaRecorded&&all(greaterThan(orcaThroughput,vec3(0))))
+    orcaInsert(orcaFirst,orcaDirection,(result-orcaBefore)/orcaThroughput);
+#endif
   clampLighting(primary,result,specular,frame.firefly.y);
   return result;
 }
@@ -758,6 +787,24 @@ void main() {
   ivec2 pixel=ivec2(gl_GlobalInvocationID.xy);
 #ifdef REGIR_PRESAMPLE_PASS
   regirPresample(gl_WorkGroupID.x*64u+gl_LocalInvocationIndex);
+  return;
+#elif defined(ORCA_SPARSE_PASS)
+  // One sparse path per tile, at a pixel that changes every frame.
+  uint tile=frame.orcaConfig.y;
+  uint pick=hash(uint(pixel.x)*7919u+uint(pixel.y)*104729u+hash(frame.config.z^0x6f726361u));
+  pixel=pixel*int(tile)+ivec2(pick%tile,(pick/tile)%tile);
+  if(any(greaterThanEqual(pixel,ivec2(frame.target.xy))))return;
+  rng=hash(uint(pixel.x)+uint(pixel.y)*frame.target.x+hash(frame.config.z^0x73706172u));
+  vec3 origin,direction;
+  ray((vec2(pixel)+.5+frame.jitter.xy)/vec2(frame.target.xy)*2-1,frame.inverseCamera,origin,direction);
+  Hit primary=frame.target.w!=0?rasterPrimary(pixel,origin):closest(origin,direction);
+  for(uint layer=0;layer<32&&primary.blended;++layer) {
+    origin=offsetRay(primary.p,-primary.ng);primary=closest(origin,direction);
+  }
+  if(primary.t<1e30&&!primary.blended) {
+    vec3 firstDirection,specular;float firstDistance;
+    continuation(primary,firstDirection,firstDistance,specular);
+  }
   return;
 #elif defined(PSR_PASS)
   if(any(greaterThanEqual(pixel,ivec2(frame.target.xy))))return;

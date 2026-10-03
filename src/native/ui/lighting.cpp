@@ -84,6 +84,26 @@ namespace remix {
       ui::SliderFloat("Light reach (0 = unlimited)", &options.localRange, 0.f, 64.f, "%.1f");
       if (options.localRange > 0 && options.localRange < .01f)
         options.localRange = .01f;
+      ui::Checkbox("Per-frame radiance cache (ORCA)", &options.orca);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Traces full indirect paths for one pixel per tile and caches their first-bounce radiance\n"
+                          "in voxels rebuilt every frame; other pixels read it after one ray. No lighting lag from\n"
+                          "the cache itself. Combine with a shorter indirect history below.");
+      if (options.orca) {
+        int tile = int(options.orcaTile), levels = int(options.orcaLevels), minimum = int(options.orcaMinSamples);
+        if (ui::SliderInt("ORCA tile (one path per tile)", &tile, 2, 8))
+          options.orcaTile = uint32_t(tile);
+        ui::SliderFloat("ORCA smallest voxel", &options.orcaCellSize, .01f, 1.f, "%.3f m");
+        if (ui::SliderInt("ORCA voxel sizes", &levels, 1, 8))
+          options.orcaLevels = uint32_t(levels);
+        if (ui::SliderInt("ORCA minimum samples", &minimum, 1, 16))
+          options.orcaMinSamples = uint32_t(minimum);
+      }
+      {
+        int history = int(options.indirectHistoryFrames);
+        if (ui::SliderInt("Indirect denoiser history (0 = default)", &history, 0, 64))
+          options.indirectHistoryFrames = uint32_t(history);
+      }
       ui::Checkbox("Presampled light cells (ReGIR)", &options.regir);
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Each world cell gets a pool of light samples drawn once per frame. Bounce lighting,\n"

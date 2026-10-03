@@ -70,6 +70,9 @@ layout(set=0,binding=3,std140) uniform Frame {
   vec4 restirParams; // spatial radius (pixels), emitter count, reserved
   uint64_t regirRead, regirWrite, regirSlots, regirReserved;
   uvec4 regirConfig; // cell capacity, slots per cell, cells per world unit (float bits), active
+  uint64_t orcaTable, orcaReserved;
+  uvec4 orcaConfig; // entry capacity, sparse tile size, voxel levels, active
+  vec4 orcaParams; // smallest voxel (world units), level growth, minimum samples, reserved
 } frame;
 layout(set=0,binding=6) uniform sampler2D textures[4096];
 vec3 environmentRadiance(vec3 direction) {

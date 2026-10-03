@@ -150,6 +150,12 @@ namespace remix {
     forgetLightingPipeline(singleTransparencyCompute);
     if (singleTransparencyCompute)
       pipeline::destroyPipeline(device, singleTransparencyCompute, nullptr);
+    for (auto &sparse : orca.sparse) {
+      forgetLightingPipeline(sparse);
+      if (sparse)
+        pipeline::destroyPipeline(device, sparse, nullptr);
+      sparse = VK_NULL_HANDLE;
+    }
     forgetLightingPipeline(regir.presample);
     if (regir.presample)
       pipeline::destroyPipeline(device, regir.presample, nullptr);

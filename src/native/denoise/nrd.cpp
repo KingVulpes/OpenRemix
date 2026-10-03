@@ -254,6 +254,10 @@ namespace remix::denoise {
         }
       } else
         warmupFrames = std::max(32u, settings.maxAccumulatedFrameNum);
+      // Indirect light (SH and PBR lobes): a shorter history trades noise for
+      // faster response when lighting changes (rtx.native.pathtrace.indirectHistoryFrames).
+      if (!pass.local && !pass.foreground && localTuning.indirectHistoryFrames)
+        settings.maxAccumulatedFrameNum = std::min(settings.maxAccumulatedFrameNum, localTuning.indirectHistoryFrames);
       settings.maxFastAccumulatedFrameNum =
           std::min(settings.maxFastAccumulatedFrameNum, settings.maxAccumulatedFrameNum);
       require(nrd::SetDenoiserSettings(*pass.instance, 0, &settings));

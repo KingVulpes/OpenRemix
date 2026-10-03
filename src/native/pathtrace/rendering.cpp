@@ -687,6 +687,7 @@ namespace remix {
     configureLightGuiding(frame, options);
     configureRestir(frame, options, extent);
     configureRegir(frame, options);
+    configureOrca(frame, options);
     if (options.pbrLocalReuse) {
       const uint32_t settings[] = {options.localSamples,
                                    options.emissiveCandidates,
@@ -815,8 +816,10 @@ namespace remix {
     stageTime(4);
     recordRegir(command);
     recordSharc(command, options);
+    recordOrca(command, extent, querySharc);
     if (denoiser) {
-      denoiser->setLocalTuning({options.localAntilagSigma, options.localAntilagSensitivity, options.localHistoryFrames});
+      denoiser->setLocalTuning({options.localAntilagSigma, options.localAntilagSensitivity, options.localHistoryFrames,
+                                options.indirectHistoryFrames});
       denoiser->begin(command, temporalFrame, pendingProjection,
                       history.reset() ? pendingProjection : previousProjection, world->view, sky->view,
                       options.localFireflyFilter && (postLocalDenoise || options.bounces > 0));

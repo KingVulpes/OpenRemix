@@ -116,8 +116,11 @@ namespace remix::trace::detail {
     float restirParams[4] = {};    // spatial radius (pixels), emitter count, reserved
     uint64_t regirRead = 0, regirWrite = 0, regirSlots = 0, regirReserved = 0;
     uint32_t regirConfig[4] = {}; // cell capacity, slots per cell, cells per world unit (float bits), active
+    uint64_t orcaTable = 0, orcaReserved = 0;
+    uint32_t orcaConfig[4] = {}; // entry capacity, sparse tile size, voxel levels, active
+    float orcaParams[4] = {};    // smallest voxel (world units), level growth, minimum samples, reserved
   };
-  static_assert(sizeof(Frame) == 768 && offsetof(Frame, regirConfig) == 752 && offsetof(Frame, restirCurrent) == 656 && offsetof(Frame, visibilityNodes) == 592 && offsetof(Frame, pathConfig) == 528 &&
+  static_assert(sizeof(Frame) == 816 && offsetof(Frame, orcaParams) == 800 && offsetof(Frame, regirConfig) == 752 && offsetof(Frame, restirCurrent) == 656 && offsetof(Frame, visibilityNodes) == 592 && offsetof(Frame, pathConfig) == 528 &&
                 offsetof(Frame, firefly) == 512 && offsetof(Frame, indirectResults) == 496 &&
                 offsetof(Frame, lightGuideRead) == 384 && offsetof(Frame, lightGuideConfig) == 400 &&
                 offsetof(Frame, lightNodes) == 336 && offsetof(Frame, localConfig) == 352 &&
@@ -399,6 +402,16 @@ namespace remix {
       bool valid = false, active = false, pipelineFailed = false;
     } regir;
     void configureRegir(Frame &frame, const TraceOptions &options);
+    // Per-frame radiance cache from sparse paths (orca.cpp, orca.glsl).
+    struct Orca {
+      static constexpr uint32_t capacity = 1u << 18;
+      VkPipeline sparse[2] = {}; // without, with SHARC path tails
+      std::unique_ptr<Buffer> table;
+      bool active = false, pipelineFailed = false;
+      uint32_t tile = 4;
+    } orca;
+    void configureOrca(Frame &frame, const TraceOptions &options);
+    void recordOrca(VkCommandBuffer command, VkExtent2D extent, bool querySharc);
     void recordRegir(VkCommandBuffer command);
     void recordRestir(VkCommandBuffer command, VkExtent2D extent);
     void beginLightGuiding(VkCommandBuffer command);

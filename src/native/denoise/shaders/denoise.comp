@@ -83,7 +83,11 @@ void main() {
   if(pass.mode==1) {
     vec2 prev=vec2(p)+imageLoad(guideMotion,p).xy+temporal.jitter.xy-temporal.jitter.zw;
     float c=imageLoad(gradientB,clamp(ivec2(prev)/5,ivec2(0),imageSize(gradientB)-1)).x;
-    c*=imageLoad(guideMotion,p).w;
+    // Motion w: 0 invalid, else 1 + the surface's own motion in pixels; a
+    // moving surface's indirect history is stale (the gradient pass cannot
+    // compare it: its depth changed under the previous ray).
+    float w=imageLoad(guideMotion,p).w;
+    c*=w>0?1-smoothstep(.5,3.,w-1):0;
     imageStore(confidence,p,vec4(temporal.flags.x!=0?0:c));return;
   }
   if(pass.mode==2) {

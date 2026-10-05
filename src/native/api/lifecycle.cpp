@@ -28,6 +28,7 @@
 #include <cstdlib>
 #include "platform/gpu_timings.h"
 #include "runtime/profiles.h"
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -92,13 +93,25 @@ namespace {
 //   config.request     "key = value" lines applied as SetConfigVariable
 //   screenshot.request presented frame to screenshot.png
 //   timings.request    GPU pass timings (rtx.native.gpuPassTimers) to timings.txt
+//   sequence.request   N (default 60) consecutive captures to sequence/NNN.png,
+//                      one per present while the previous one has completed
 // Each request file is deleted when served.
 void serviceDevRequests() {
-  static uint32_t calls = 0;
-  if (++calls % 30)
-    return;
+  static uint32_t calls = 0, sequenceLeft = 0, sequenceIndex = 0;
   std::error_code ec;
   static const auto directory = remix::config::Profiles::defaultDirectory();
+  if (sequenceLeft) {
+    char name[32];
+    std::snprintf(name, sizeof(name), "%03u.png", sequenceIndex);
+    const auto path = std::filesystem::absolute(directory / "sequence" / name, ec).string();
+    std::lock_guard lock(g_apiMutex);
+    if (g_runtime.requestScreenshot(path.c_str()) == REMIXAPI_ERROR_CODE_SUCCESS) {
+      ++sequenceIndex;
+      --sequenceLeft;
+    }
+  }
+  if (++calls % 30)
+    return;
   auto take = [&](const char *name, std::string *contents) {
     const auto path = directory / name;
     if (!std::filesystem::exists(path, ec))
@@ -132,6 +145,15 @@ void serviceDevRequests() {
     const auto path = std::filesystem::absolute(directory / "screenshot.png", ec).string();
     std::lock_guard lock(g_apiMutex);
     g_runtime.requestScreenshot(path.c_str());
+  }
+  std::string sequence;
+  if (!sequenceLeft && take("sequence.request", &sequence)) {
+    std::filesystem::remove_all(directory / "sequence", ec);
+    std::filesystem::create_directories(directory / "sequence", ec);
+    sequenceLeft = std::clamp(std::atoi(sequence.c_str()), 0, 600);
+    if (!sequenceLeft)
+      sequenceLeft = 60;
+    sequenceIndex = 0;
   }
   if (take("timings.request", nullptr)) {
     std::string text;

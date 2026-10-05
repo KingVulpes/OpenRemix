@@ -163,7 +163,7 @@ namespace remix::config {
         TRACE(restirPermutation, 0, 1);
         TRACE(localSamples, 1, 16);
         TRACE(shadowDebug, 0, 2);
-        TRACE(debugView, 0, 12);
+        TRACE(debugView, 0, 13);
         TRACE(taa, 0, 1);
         TRACE(waterIndirectReuse, 0, 1);
         TRACE(translucencyDenoiser, 0, 1);

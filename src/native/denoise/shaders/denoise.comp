@@ -81,13 +81,28 @@ void main() {
     return;
   }
   if(pass.mode==1) {
-    vec2 prev=vec2(p)+imageLoad(guideMotion,p).xy+temporal.jitter.xy-temporal.jitter.zw;
-    float c=imageLoad(gradientB,clamp(ivec2(prev)/5,ivec2(0),imageSize(gradientB)-1)).x;
-    // Motion w: 0 invalid, else 1 + the surface's own motion in pixels; a
-    // moving surface's indirect history is stale (the gradient pass cannot
-    // compare it: its depth changed under the previous ray).
-    float w=imageLoad(guideMotion,p).w;
-    c*=w>0?1-smoothstep(.5,3.,w-1):0;
+    // NRD samples IN_DIFF_CONFIDENCE at the history's (previous-frame) pixel
+    // (REBLUR temporal accumulation, smbPixelUv), so this image is indexed by
+    // previous-frame pixels p. The gradient pass already traces them.
+    float c=imageLoad(gradientB,clamp(p/5,ivec2(0),imageSize(gradientB)-1)).x;
+    // The current pixel whose surface was at p (inverse warp of the motion
+    // guide, fixed-point iteration), then that surface's own motion: motion
+    // w is 0 when invalid, else 1 + the pixels it moved by itself. A moving
+    // surface's indirect history is stale (the gradient pass cannot compare
+    // it: its depth changed under the previous ray), and a moving object
+    // also changes the indirect light right next to it (the contact shadow
+    // under a swinging door) on static surfaces whose gradients the
+    // 1/5-resolution pass misses: rings up to 16 pixels, fading.
+    vec2 source=vec2(p);
+    for(int i=0;i<3;++i)source=vec2(p)-imageLoad(guideMotion,clamp(ivec2(round(source)),ivec2(0),size-1)).xy;
+    ivec2 s=clamp(ivec2(round(source)),ivec2(0),size-1);
+    float moving=max(imageLoad(guideMotion,s).w-1,0);
+    for(int ring=1;ring<=3;++ring)for(int k=0;k<8;++k) {
+      float angle=.785398*float(k)+.4*float(ring);
+      ivec2 q=clamp(s+ivec2(round(vec2(cos(angle),sin(angle))*float(ring*5+1))),ivec2(0),size-1);
+      moving=max(moving,max(imageLoad(guideMotion,q).w-1,0)*(1-.2*float(ring)));
+    }
+    c*=1-smoothstep(.5,3.,moving);
     imageStore(confidence,p,vec4(temporal.flags.x!=0?0:c));return;
   }
   if(pass.mode==2) {
@@ -197,6 +212,7 @@ void main() {
     if(view==9)world.rgb=imageLoad(guideMotion,p).w>0?vec3(0,1,0):vec3(1,0,0);
     if(view==10)world.rgb=temporal.flags.y!=0?vec3(imageLoad(confidence,p).x):debugUnavailable(p);
     if(view==11)world.rgb=temporal.flags.z!=0?vec3(rate):debugUnavailable(p);
+    if(view==13)world.rgb=temporal.local.x!=0?vec3(imageLoad(localConfidence,p).x):debugUnavailable(p);
     imageStore(finalWorld,p,world);return;
   }
   imageStore(previousDepth,p,imageLoad(guideDepth,p));imageStore(previousNormal,p,imageLoad(guideNormal,p));imageStore(previousLighting,p,imageLoad(lighting,p));

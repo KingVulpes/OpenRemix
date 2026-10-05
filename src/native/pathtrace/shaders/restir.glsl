@@ -13,7 +13,8 @@
 // the chosen sample (RTXDI's basic 1/Z bias correction, geometric test, no
 // rays); temporal reuse merges without correction.
 // pad: in the current buffer, this frame's occlusion change of the history
-// sample (restirOcclusionChange); unused in history.
+// sample (restirOcclusionChange); in history, 1 marks a sample that was
+// occluded when shaded (kept only to detect it becoming visible).
 struct Reservoir { uint light; float u, v, W, M, depth; uint normal; float target; float x, y, z, pad; };
 layout(buffer_reference,std430,buffer_reference_align=16) buffer Reservoirs { Reservoir data[]; };
 layout(buffer_reference,std430,buffer_reference_align=4) readonly buffer LightRemap { uint data[]; };
@@ -207,18 +208,21 @@ Reservoir restirInitial(Hit hit,uint state,float depth,ivec2 pixel) {
                      dot(restirUnpackNormal(p.normal),hit.n)>.8;
         if(similar&&p.light!=restirNone&&frame.restirRemap!=0)p.light=LightRemap(frame.restirRemap).data[p.light];
         if(p.light!=restirNone&&p.light>=uint(frame.restirParams.y))p.light=restirNone; // light gone
-        // History keeps only samples that were visible when shaded. Re-test
-        // the same segment from the same surface point: if it is blocked
-        // now, an occluder moved (a closing door), and the local denoiser's
+        // Re-test the history sample's segment from the same surface point.
+        // Visible then and blocked now, or blocked then (flagged) and
+        // visible now: an occluder moved (a door), and the local denoiser's
         // history there is stale. A static scene cannot change this test,
         // so penumbrae and permutation sampling never register.
+        bool wasOccluded=p.pad>.5;
         if(similar&&p.light!=restirNone&&(frame.restirConfig.w&4u)!=0) {
           LightEmitter light=emitters.data[p.light];
           RestirPoint q=restirPoint(light,vec2(p.u,p.v));
           vec3 point=vec3(p.x,p.y,p.z),normal=restirUnpackNormal(p.normal);
           vec3 endpoint=light.radiance.w==0?q.x:offsetRay(q.x,dot(q.n,point-q.x)>0?q.n:-q.n);
-          occlusionChange=1-clamp(localLuminance(localVisibility(offsetRay(point,normal),endpoint)),0,1);
+          float visible=clamp(localLuminance(localVisibility(offsetRay(point,normal),endpoint)),0,1);
+          occlusionChange=wasOccluded?visible:1-visible;
         }
+        if(wasOccluded)p.light=restirNone; // never reuse an occluded sample
         if(similar) {
           p.M=min(p.M,float(frame.restirConfig.z)*max(r.M,1));
           Reservoir merged=restirEmpty();float mergedSum=0,mergedTarget=0;
@@ -286,8 +290,9 @@ vec3 restirShade(Hit hit,ivec2 pixel,uint state,float depth,out float lightDista
     vec3 physical=restirContribution(hit,emitters.data[r.light],vec2(r.u,r.v),specular,endpoint,lightDistance);
     vec3 visibility=localVisibility(offsetRay(hit.p,hit.ng),endpoint);
     radiance=physical*r.W*visibility;specular*=r.W*visibility;
-    // Discard occluded samples from the history (RTXDI discardInvisibleSamples).
-    if(localLuminance(visibility)<=0)r.light=restirNone;
+    // Occluded samples are never reused (RTXDI discardInvisibleSamples); the
+    // history keeps them flagged so a shadow that clears can be detected.
+    r.pad=localLuminance(visibility)<=0?1:0;
   }
   r.depth=depth;r.normal=restirPackNormal(hit.n);r.x=hit.p.x;r.y=hit.p.y;r.z=hit.p.z;
   Reservoirs(frame.restirHistoryWrite).data[self]=r;

@@ -213,7 +213,9 @@ namespace remix {
             .format = renderer().depthFormat(),
             .samples = VK_SAMPLE_COUNT_1_BIT,
             .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-            .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            // Stored: a frame with halo outlines leaves the pass after the
+            // scene and depth-tests their silhouettes against it.
+            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
             .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
             .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
             .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
@@ -266,9 +268,15 @@ namespace remix {
     if (pipeline::createRenderPass(m_device, &pass, nullptr, &m_overlayPass) !=
         VK_SUCCESS)
       return fail();
-    renderer().configureTarget(m_renderPass, m_swapchainExtent,
-                             m_srgb && m_swapchainFormat != VK_FORMAT_R8G8B8A8_SRGB &&
-                                 m_swapchainFormat != VK_FORMAT_B8G8R8A8_SRGB);
+    // Re-entered within a frame, right after the scene pass (halo outlines):
+    // preserves the scene's depth as well.
+    attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    attachments[1].initialLayout = attachments[1].finalLayout;
+    if (pipeline::createRenderPass(m_device, &pass, nullptr, &m_resumePass) != VK_SUCCESS)
+      return fail();
+    const bool hardwareSrgb =
+        m_swapchainFormat == VK_FORMAT_R8G8B8A8_SRGB || m_swapchainFormat == VK_FORMAT_B8G8R8A8_SRGB;
+    renderer().configureTarget(m_renderPass, m_swapchainExtent, m_srgb && !hardwareSrgb, hardwareSrgb);
     const uint32_t count = static_cast<uint32_t>(m_swapchainImages.size());
     m_imageViews.resize(count);
     m_framebuffers.resize(count);
@@ -361,6 +369,9 @@ namespace remix {
     if (m_overlayPass)
       pipeline::destroyRenderPass(m_device, m_overlayPass, nullptr);
     m_overlayPass = VK_NULL_HANDLE;
+    if (m_resumePass)
+      pipeline::destroyRenderPass(m_device, m_resumePass, nullptr);
+    m_resumePass = VK_NULL_HANDLE;
     if (m_swapchain) {
       vkDestroySwapchainKHR(m_device, m_swapchain, nullptr);
     }

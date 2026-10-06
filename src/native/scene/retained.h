@@ -31,6 +31,9 @@ namespace remix::scene {
     const remixapi_Transform *instanceValues = nullptr;
     uint32_t instanceCount = 0;
     std::shared_ptr<std::vector<Matrix>> bones;
+    // remixapi_InstanceInfoHaloEXT: a halo source, kept out of the scene.
+    bool halo = false;
+    Halo haloParameters;
   };
   // Throws the codes DrawInstance returns. Mesh-independent checks only.
   void describeInstance(const remixapi_InstanceInfo &info, InstanceDescription &out);

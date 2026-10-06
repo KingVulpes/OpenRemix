@@ -1,0 +1,5 @@
+#version 450
+// Halo outlines: one triangle covering the target (scissored to the halo).
+void main() {
+  gl_Position = vec4(vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2) * 2.0 - 1.0, 0.0, 1.0);
+}

@@ -1,5 +1,6 @@
 #include "raster/gpu.h"
 #include <deque>
+#include <limits>
 
 namespace remix {
   using namespace scene;
@@ -120,13 +121,16 @@ namespace remix {
     m_profile.draws = ordered.size();
     std::vector<Vertex> skinned;
     const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - g.epoch).count();
-    for (const auto &entry : ordered) {
-      const auto &draw = *entry.draw;
+    // One command per draw. halo: a halo source of that group, drawn into its
+    // silhouette mask instead of the frame.
+    const auto build = [&](const Draw &draw, Gpu::Halo::Group *halo) {
       const auto &mat = *draw.material;
       auto &mesh = g.mesh(draw.surface, command);
       Gpu::Command out = {};
       out.set = g.material(draw.material, command);
-      out.pipeline = g.pipeline(draw);
+      const bool haloDepth = halo && !halo->halo.ignoreZ && draw.camera == REMIXAPI_CAMERA_TYPE_WORLD;
+      out.pipeline = halo ? g.halo.mask[haloDepth] : g.pipeline(draw);
+      const size_t firstSkinned = skinned.size();
       out.vertices = out.indices = mesh.data->buffer;
       out.indexOffset = mesh.indexOffset;
       out.firstIndex = draw.firstIndex;
@@ -194,32 +198,124 @@ namespace remix {
       out.push.factor[1] = linear(float((b.factor >> 8) & 255) / 255);
       out.push.factor[2] = linear(float(b.factor & 255) / 255);
       out.push.factor[3] = float(b.factor >> 24) / 255;
-      g.commands.push_back(out);
+      if (!halo) {
+        g.commands.push_back(out);
+        return;
+      }
+      // Screen bounds of the silhouette, from the vertices' bounding box.
+      float low[3], high[3];
+      const auto extend = [&](const Vertex *vertices, size_t count, float *lo, float *hi) {
+        std::fill_n(lo, 3, std::numeric_limits<float>::max());
+        std::fill_n(hi, 3, std::numeric_limits<float>::lowest());
+        for (size_t v = 0; v < count; ++v)
+          for (int c = 0; c < 3; ++c) {
+            lo[c] = std::min(lo[c], vertices[v].position[c]);
+            hi[c] = std::max(hi[c], vertices[v].position[c]);
+          }
+      };
+      if (draw.surface->bonesPerVertex) {
+        extend(skinned.data() + firstSkinned, skinned.size() - firstSkinned, low, high);
+      } else {
+        if (!mesh.bounded) {
+          extend(draw.surface->vertices.data(), draw.surface->vertices.size(), mesh.low, mesh.high);
+          mesh.bounded = true;
+        }
+        std::copy_n(mesh.low, 3, low);
+        std::copy_n(mesh.high, 3, high);
+      }
+      bool bounded = low[0] <= high[0];
+      float area[4] = {std::numeric_limits<float>::max(), std::numeric_limits<float>::max(),
+                       std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest()};
+      const auto &m = out.push.mvp;
+      for (int corner = 0; corner < 8 && bounded; ++corner) {
+        const float p[3] = {corner & 1 ? high[0] : low[0], corner & 2 ? high[1] : low[1],
+                            corner & 4 ? high[2] : low[2]};
+        const float x = m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12];
+        const float y = m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13];
+        const float w = m[3] * p[0] + m[7] * p[1] + m[11] * p[2] + m[15];
+        // A box reaching behind the camera has no finite projection.
+        if (!(w > 1e-4f) || !std::isfinite(x) || !std::isfinite(y)) {
+          bounded = false;
+          break;
+        }
+        area[0] = std::min(area[0], x / w);
+        area[1] = std::min(area[1], y / w);
+        area[2] = std::max(area[2], x / w);
+        area[3] = std::max(area[3], y / w);
+      }
+      if (!bounded) {
+        area[0] = area[1] = -1;
+        area[2] = area[3] = 1;
+      }
+      if (!halo->bounded) {
+        std::copy_n(area, 2, halo->low);
+        std::copy_n(area + 2, 2, halo->high);
+        halo->bounded = true;
+      } else
+        for (int c = 0; c < 2; ++c) {
+          halo->low[c] = std::min(halo->low[c], area[c]);
+          halo->high[c] = std::max(halo->high[c], area[2 + c]);
+        }
+      g.halo.commands.push_back(out);
+      ++halo->count;
+    };
+    for (const auto &entry : ordered)
+      build(*entry.draw, nullptr);
+    // Halo sources: one group of mask commands per halo, when its passes are
+    // ready (preparePipelines) and the group reaches the screen.
+    g.halo.groups.clear();
+    g.halo.commands.clear();
+    if (!m_halos.empty() && g.halo.ready && !g.halo.failed) {
+      try {
+        g.createHaloTargets();
+      } catch (VkResult result) {
+        g.destroyHaloTargets();
+        if (result == VK_ERROR_DEVICE_LOST)
+          throw;
+        g.halo.failed = true;
+      }
+    }
+    if (!m_halos.empty() && g.halo.ready && !g.halo.failed) {
+      for (const auto &source : m_halos) {
+        Gpu::Halo::Group group;
+        group.halo = source.halo;
+        group.first = uint32_t(g.halo.commands.size());
+        for (const auto &draw : source.draws)
+          build(draw, &group);
+        m_profile.haloDraws += group.count;
+        if (g.haloArea(group))
+          g.halo.groups.push_back(group);
+      }
+      m_profile.haloGroups = g.halo.groups.size();
+      m_profile.draws += m_profile.haloDraws;
     }
     static const bool digestEnabled = std::getenv("REMIX_FRAME_DIGEST") != nullptr;
     if (digestEnabled) {
       uint64_t digest = hashBytes(skinned.data(), skinned.size() * sizeof(Vertex));
-      for (const auto &command : g.commands) {
-        const uint64_t values[] = {command.vertices ? 0u : command.vertexOffset, command.firstIndex, command.count,
-                                   uint64_t(int64_t(command.baseVertex)), uint64_t(command.layer)};
-        digest = hashBytes(values, sizeof(values), digest);
-        digest = hashBytes(&command.push, sizeof(command.push), digest);
-      }
+      for (const auto *list : {&g.commands, &g.halo.commands})
+        for (const auto &command : *list) {
+          const uint64_t values[] = {command.vertices ? 0u : command.vertexOffset, command.firstIndex,
+                                     command.count, uint64_t(int64_t(command.baseVertex)),
+                                     uint64_t(command.layer)};
+          digest = hashBytes(values, sizeof(values), digest);
+          digest = hashBytes(&command.push, sizeof(command.push), digest);
+        }
       m_profile.digest = digest;
     }
     if (!skinned.empty()) {
       g.skin = g.geometryBuffer(skinned.data(), skinned.size() * sizeof(Vertex),
                                 VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, command);
-      for (auto &draw : g.commands) {
-        if (!draw.vertices) {
-          draw.vertices = g.skin->buffer;
+      for (auto *list : {&g.commands, &g.halo.commands})
+        for (auto &draw : *list) {
+          if (!draw.vertices) {
+            draw.vertices = g.skin->buffer;
+          }
         }
-      }
     }
   }
 
   void RasterRenderer::record(VkCommandBuffer command, bool skyOnly, bool skipSky, const float *skyJitter,
-                              VkExtent2D skyExtent) {
+                              VkExtent2D skyExtent, int firstLayer, int lastLayer) {
     auto &g = *m_gpu;
     const auto extent = skyOnly && skyExtent.width ? skyExtent : g.extent;
     const VkViewport viewport = {0, 0, float(extent.width), float(extent.height), 0, 1};
@@ -228,7 +324,8 @@ namespace remix {
     vkCmdSetScissor(command, 0, 1, &scissor);
     int previousLayer = -1;
     for (const auto &draw : g.commands) {
-      if ((skyOnly && draw.layer != 0) || (skipSky && draw.layer == 0))
+      if ((skyOnly && draw.layer != 0) || (skipSky && draw.layer == 0) || draw.layer < firstLayer ||
+          draw.layer > lastLayer)
         continue;
       if (draw.layer != previousLayer && draw.layer >= 2) {
         VkClearAttachment clear = {};

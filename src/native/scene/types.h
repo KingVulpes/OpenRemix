@@ -209,5 +209,22 @@ namespace remix {
       uint32_t firstIndex = 0, indexCount = 0;
       int32_t vertexOffset = 0;
     };
+    // remixapi_InstanceInfoHaloEXT, validated and clamped. Instances whose
+    // parameters compare equal share one group (one silhouette mask).
+    struct Halo {
+      float color[3] = {1, 1, 1}; // display-referred, 0..1
+      float blurX = 2, blurY = 2; // pixels at 1080p output height, (0, maxBlur]
+      uint32_t passes = 1;        // 1..maxPasses
+      bool additive = true, ignoreZ = false;
+      static constexpr float maxBlur = 64;
+      static constexpr uint32_t maxPasses = 8;
+      bool operator==(const Halo &) const = default;
+    };
+    // Halo sources of one frame. Their draws are in no other list: only the
+    // rasterizer's halo passes read them (never traced, lit or drawn).
+    struct HaloGroup {
+      Halo halo;
+      std::vector<Draw> draws;
+    };
   } // namespace scene
 } // namespace remix

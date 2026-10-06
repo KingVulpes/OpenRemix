@@ -386,6 +386,7 @@ private:
   std::vector<VkFramebuffer> m_framebuffers;
   VkRenderPass m_renderPass = VK_NULL_HANDLE;
   VkRenderPass m_overlayPass = VK_NULL_HANDLE;
+  VkRenderPass m_resumePass = VK_NULL_HANDLE; // loads colour and depth (halo outlines)
   VkCommandPool m_commandPool = VK_NULL_HANDLE;
   std::vector<VkCommandBuffer> m_commandBuffers;
   struct FrameSync {

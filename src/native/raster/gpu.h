@@ -96,7 +96,7 @@ namespace remix {
     VkFormat depthFormat = VK_FORMAT_UNDEFINED;
     VkRenderPass pass = VK_NULL_HANDLE, skyPass = VK_NULL_HANDLE;
     VkExtent2D extent = {};
-    bool encodeOutput = false;
+    bool encodeOutput = false, linearTarget = false;
     VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
     VkDescriptorPool pool = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
@@ -106,6 +106,9 @@ namespace remix {
       std::weak_ptr<scene::Surface> owner;
       std::unique_ptr<Buffer> data;
       VkDeviceSize indexOffset;
+      // Object-space bounds of the vertices, computed on first halo use.
+      bool bounded = false;
+      float low[3] = {}, high[3] = {};
     };
     struct TextureGpu {
       std::weak_ptr<scene::Texture> owner;
@@ -156,6 +159,47 @@ namespace remix {
     uint32_t frameIndex = 0;
     uint64_t uploadBytes = 0; // Staged by buffer(), for RasterRenderer::profile().
     std::vector<Command> commands;
+    // Halo outlines (remixapi_InstanceInfoHaloEXT, raster/halo.cpp). Nothing
+    // here exists until a frame submits a halo instance; the objects are
+    // destroyed with the target.
+    struct Halo {
+      struct Target {
+        VkImage image = VK_NULL_HANDLE;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        VkImageView view = VK_NULL_HANDLE;
+        VkFramebuffer framebuffer = VK_NULL_HANDLE;
+        VkDescriptorSet set = VK_NULL_HANDLE;
+      };
+      // Coverage at target resolution: the silhouette mask and two blur targets.
+      Target targets[3];
+      VkRenderPass maskPass = VK_NULL_HANDLE, blurPass = VK_NULL_HANDLE;
+      VkPipelineLayout layout = VK_NULL_HANDLE; // blur and composite
+      VkShaderModule maskFragment = VK_NULL_HANDLE, vertex = VK_NULL_HANDLE, blurFragment = VK_NULL_HANDLE,
+                     compositeFragment = VK_NULL_HANDLE;
+      VkSampler sampler = VK_NULL_HANDLE;
+      // mask: [depth tested]; composite: [additive].
+      VkPipeline mask[2] = {}, blur = VK_NULL_HANDLE, composite[2] = {};
+      bool ready = false;  // every pipeline is compiled
+      bool failed = false; // creation failed: no halos until the target changes
+      struct Group {
+        scene::Halo halo;
+        uint32_t first = 0, count = 0; // in commands
+        VkRect2D area = {};            // pixels the group can change
+        bool bounded = false;
+        float low[2] = {}, high[2] = {}; // silhouette bounds while accumulating
+      };
+      std::vector<Group> groups; // this frame's, in composite order
+      std::vector<Command> commands;
+    } halo;
+    // Requests the halo pipelines (creating the passes they need); false while
+    // they compile.
+    bool prepareHalo();
+    void createHaloTargets();
+    void destroyHaloTargets();
+    // Sets the group's pixel area from its silhouette bounds and blur reach;
+    // false when it reaches no pixel.
+    bool haloArea(Halo::Group &group) const;
+    void destroyHalo();
     std::chrono::steady_clock::time_point epoch = std::chrono::steady_clock::now();
 
     ~Gpu();

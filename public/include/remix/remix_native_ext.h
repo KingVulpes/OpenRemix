@@ -24,14 +24,33 @@ typedef struct remixapi_MaterialInfoEmissionEXT {
 } remixapi_MaterialInfoEmissionEXT;
 
 // Optional InstanceInfo pNext: the instance is a halo source. It is not part
-// of the scene (neither traced nor rasterized into the image); the runtime
-// draws its silhouette into a display-resolution mask, blurs the mask and
-// composites the blurred colour outside the silhouette, as a glow outline
-// (Garry's Mod halo.Add, Source glow outlines). Hosts submit the object
-// itself as usual and, in addition, the same mesh/transform with this
-// extension. Instances sharing identical parameters form one halo group
-// (their silhouettes are masked together); groups are composited in
-// submission order.
+// of the scene (neither traced nor rasterized into the image; no identity,
+// motion or lights); the runtime draws its silhouette into a display-
+// resolution mask, blurs the mask and composites the blurred colour outside
+// the silhouette, as a glow outline (Garry's Mod halo.Add, Source glow
+// outlines). Hosts submit the object itself as usual and, in addition, the
+// same mesh/transform (and bone transforms) with this extension. Instances
+// sharing identical parameters form one halo group (their silhouettes are
+// masked together); groups are composited in submission order (of each
+// group's first instance), each over the result of the previous ones.
+//
+// The silhouette is the mesh's coverage, both faces, after its materials'
+// alpha test; everything else about the materials is ignored. The halo is
+// composited after tonemapping and upscaling, over the world, under view-model
+// instances and the UI. Depth-tested halos test against the frame's opaque
+// surfaces. SKY and VIEW_MODEL instances use their camera and are never
+// depth-tested. At most 32 groups and 4096 mesh surfaces per frame; further
+// halo instances are ignored. Non-finite values, blur <= 0 and booleans other
+// than 0/1 are invalid arguments; colour is clamped to 0..1, blur to 64 and
+// passes to 1..8.
+//
+// blur matches halo.Add's blur size: the mask is blurred twice by a Gaussian
+// whose standard deviation is about two blur sizes. passes is the number of
+// times the blurred halo is composited: halo.Add draws it DrawPasses + 1
+// times. Additive halos add colour * coverage. Non-additive halos reproduce
+// the game's "subtractive" mode, which multiplies the frame by the blurred
+// mask (white outside, colour inside): a dark outline for a dark colour, no
+// effect for white.
 #define REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_HALO_EXT ((remixapi_StructType)0x7fff100c)
 typedef struct remixapi_InstanceInfoHaloEXT {
   remixapi_StructType sType;
@@ -39,8 +58,8 @@ typedef struct remixapi_InstanceInfoHaloEXT {
   remixapi_Float3D color;   // display-referred (sRGB-encoded) 0..1, as a game's UI colour
   float blurX;              // blur extent in pixels at 1080p height (scaled with the output), > 0
   float blurY;
-  uint32_t passes;          // the blurred halo is composited this many times (strength), >= 1
-  remixapi_Bool additive;   // add (glow) or, if false, subtract (dark outline)
+  uint32_t passes;          // the blurred halo is composited this many times (strength), 1..8
+  remixapi_Bool additive;   // add (glow) or, if false, multiply toward the colour (dark outline)
   remixapi_Bool ignoreZ;    // visible through scene geometry; otherwise depth-tested against it
 } remixapi_InstanceInfoHaloEXT;
 

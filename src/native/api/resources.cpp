@@ -83,7 +83,11 @@ namespace remix::api {
 #if REMIX_HAS_USD
       const auto *replacement = static_cast<const remixapi_InstanceInfoReplacementHashEXT *>(
           remix::scene::extension(info->pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_REPLACEMENT_HASH_EXT));
-      if (remix::usd::modInstance(raster, *info, replacement ? replacement->meshHash : 0))
+      // A halo source outlines the submitted mesh: a mod's replacement (and its
+      // lights) is drawn once, by the scene instance.
+      const bool halo =
+          remix::scene::extension(info->pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_HALO_EXT) != nullptr;
+      if (!halo && remix::usd::modInstance(raster, *info, replacement ? replacement->meshHash : 0))
         return;
 #endif
       raster.drawInstance(*info);

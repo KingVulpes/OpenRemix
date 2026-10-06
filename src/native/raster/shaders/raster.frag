@@ -44,6 +44,10 @@ void main() {
     (op == 3 && result.a <= ref) || (op == 4 && result.a > ref) ||
     (op == 5 && result.a != ref) || (op == 6 && result.a >= ref);
   if (!pass) discard;
+#ifdef HALO_MASK
+  // Halo silhouette (halo.frag): coverage only, after the material's alpha test.
+  result = vec4(1);
+#else
   // UNORM-only swapchains need explicit output encoding. Their fixed-function
   // blending operates in display space; SRGB targets retain linear blending.
   if ((draw.state.w & 2) != 0) {
@@ -51,4 +55,5 @@ void main() {
     result.rgb = mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055,
                      greaterThan(c, vec3(0.0031308)));
   }
+#endif
 }

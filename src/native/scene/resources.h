@@ -179,6 +179,11 @@ namespace remix {
     size_t pendingDrawCount() const { return m_draws.size() + m_staticDraws; }
 
     const std::vector<scene::Draw> &draws() const { return m_draws; }
+    // Halo sources of this frame (remixapi_InstanceInfoHaloEXT), in submission
+    // order of each group's first instance. Not part of draws().
+    const std::vector<scene::HaloGroup> &halos() const { return m_halos; }
+    // Per-frame limits; instances beyond them are ignored.
+    static constexpr size_t maxHaloGroups = 32, maxHaloDraws = 4096;
     const scene::Matrix &camera(uint32_t type = 0) const { return m_cameras[type]; }
     const scene::Matrix &view(uint32_t type = 0) const { return m_views[type]; }
     const scene::Matrix &projection(uint32_t type = 0) const { return m_projections[type]; }
@@ -263,6 +268,11 @@ namespace remix {
     scene::TemporalEpoch m_temporalEpoch;
     std::array<float, 3> m_skyRadiance = {};
     std::vector<scene::Draw> m_draws, m_uiDraws, m_overlay;
+    std::vector<scene::HaloGroup> m_halos;
+    size_t m_haloDraws = 0;
+    // Moves a halo instance's draws into its group (the group with equal
+    // parameters, or a new one); origin: a retained replay's scene origin.
+    void appendHalo(const scene::Halo &halo, std::vector<scene::Draw> &&draws, const float *origin = nullptr);
     scene::IdSet m_frameIds;
     float m_tint[4] = {};
 

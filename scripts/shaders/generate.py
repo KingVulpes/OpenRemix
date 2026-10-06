@@ -20,7 +20,7 @@ OPTIMIZED = {'pathtrace'}
 BACKENDS = {
     'postfx': ('postfx', 'vulkan1.2', ('meter', 'resolve', 'down', 'up')),
     'upscale': ('upscale', 'vulkan1.2', ('comp', 'vert', 'frag')),
-    'raster': ('raster', 'vulkan1.1', ('vert', 'frag')),
+    'raster': ('raster', 'vulkan1.1', ('vert', 'frag', 'haloMask', 'haloVert', 'haloBlur', 'haloComposite')),
     'pathtrace': ('trace', 'vulkan1.2', ('vert', 'frag', 'comp', 'temporal', 'transparency', 'temporalTransparency', 'frontGuides', 'psr', 'regirPresample', 'orcaSparse', 'sharcOrcaSparse', 'singleTransparency', 'singleTemporalTransparency', 'sharcSingleTransparency', 'sharcSingleTemporalTransparency', 'confidence', 'gbufferVert', 'gbufferFrag', 'depthFrag', 'sharcUpdate', 'sharcResolve', 'sharcQuery', 'sharcTransparency', 'sharcTemporal', 'sharcTemporalTransparency', 'sharcConfidence', 'sigmaTemporal', 'sharcSigmaTemporal', 'localTemporal', 'localSigmaTemporal', 'sharcLocalTemporal', 'sharcLocalSigmaTemporal', 'splitLocalTemporal', 'splitLocalSigmaTemporal', 'sharcSplitLocalTemporal', 'sharcSplitLocalSigmaTemporal', 'splitLocalDirect', 'splitRestirInitial', 'splitRestirSpatial', 'indirectTemporal', 'sharcIndirectTemporal', 'vertexAssemble')),
     'denoise': ('denoise', 'vulkan1.2', ('comp', 'sigma', 'local', 'localSigma', 'splitLocal', 'splitLocalSigma')),
 }
@@ -65,6 +65,12 @@ def defines_for(backend, stage, stages):
     if stage in ('gbufferVert', 'gbufferFrag', 'depthFrag'):
         source = directory / ('gbuffer.vert' if stage == 'gbufferVert' else 'gbuffer.frag')
         if stage == 'depthFrag': defines += ['-DSTABLE_DEPTH=1']
+    if stage.startswith('halo'):
+        # Halo outlines: the raster fragment shader as a silhouette mask, and
+        # the fullscreen blur and composite passes.
+        defines = ['-D' + {'haloMask': 'HALO_MASK', 'haloVert': 'HALO_VERT', 'haloBlur': 'HALO_BLUR',
+                           'haloComposite': 'HALO_COMPOSITE'}[stage] + '=1']
+        source = directory / {'haloMask': 'raster.frag', 'haloVert': 'halo.vert'}.get(stage, 'halo.frag')
     if stage == 'sharcResolve': source = directory / 'sharc-resolve.comp'
     if stage == 'vertexAssemble': source = directory / 'vertex-assemble.comp'
     return defines, source

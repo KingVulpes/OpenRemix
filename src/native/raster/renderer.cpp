@@ -40,6 +40,7 @@ namespace remix {
       pipeline::destroyPipeline(device, pipeline, nullptr);
     }
     pipelines.clear();
+    destroyHalo();
     depth.reset();
     pass = VK_NULL_HANDLE;
     extent = {};
@@ -151,13 +152,15 @@ namespace remix {
     m_profile = std::exchange(other.m_profile, {});
   }
 
-  void RasterRenderer::configureTarget(VkRenderPass pass, VkExtent2D extent, bool encodeOutput) {
+  void RasterRenderer::configureTarget(VkRenderPass pass, VkExtent2D extent, bool encodeOutput,
+                                       bool linearTarget) {
     auto &g = *m_gpu;
     g.destroyTarget();
     g.pass = pass;
     g.skyPass = VK_NULL_HANDLE;
     g.extent = extent;
     g.encodeOutput = encodeOutput;
+    g.linearTarget = linearTarget;
     g.depth = g.image(extent.width, extent.height, 1, g.depthFormat, true);
   }
 

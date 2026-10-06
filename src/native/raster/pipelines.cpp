@@ -48,6 +48,18 @@ namespace remix {
     };
     overlays(m_overlay);
     overlays(m_uiDraws);
+    // Halo outlines: compiled on first use. A frame never waits for them; it
+    // is drawn without halos until they are ready (prepare()).
+    if (!m_halos.empty()) {
+      try {
+        m_gpu->prepareHalo();
+      } catch (VkResult result) {
+        // Halos are decoration: a failure to create them leaves frames without.
+        if (result == VK_ERROR_DEVICE_LOST)
+          throw;
+        m_gpu->halo.failed = true;
+      }
+    }
     if (m_tint[3] > 0) {
       scene::Draw tint;
       tint.ui = true;

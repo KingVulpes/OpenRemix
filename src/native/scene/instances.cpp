@@ -223,7 +223,7 @@ namespace remix {
     if (description.traceIdentity && m_frameIds.count(description.instanceId))
       throw invalid;
     const uint32_t count = description.instanced ? description.instanceCount : 1;
-    if (uint64_t(count) * mesh->second->surfaces.size() + pendingDrawCount() > 65536) {
+    if (uint64_t(count) * mesh->second->surfaces.size() + (description.halo ? 0 : pendingDrawCount()) > 65536) {
       throw invalid;
     }
     // A USD mod's material wins over remixapi_InstanceInfoMaterialOverrideEXT.
@@ -237,6 +237,11 @@ namespace remix {
     }
     std::vector<Draw> pending;
     buildDraws(description, mesh->second, m_modelScratch.data(), count, override, true, pending, nullptr);
+    if (description.halo) {
+      // A halo source: validated like any instance, kept out of the scene.
+      appendHalo(description.haloParameters, std::move(pending));
+      return;
+    }
     if (m_draws.capacity() < m_draws.size() + pending.size())
       m_draws.reserve(std::max(m_draws.size() + pending.size(), m_draws.capacity() * 2));
     if (description.traceIdentity && !pending.empty())
@@ -254,6 +259,25 @@ namespace remix {
       return {};
     const auto it = m_materials.find(description.materialOverride);
     return it == m_materials.end() ? nullptr : it->second;
+  }
+
+  void NativeResources::appendHalo(const Halo &halo, std::vector<Draw> &&draws, const float *origin) {
+    if (draws.empty() || m_haloDraws + draws.size() > maxHaloDraws)
+      return;
+    auto group = std::find_if(m_halos.begin(), m_halos.end(),
+                              [&](const HaloGroup &candidate) { return candidate.halo == halo; });
+    if (group == m_halos.end()) {
+      if (m_halos.size() >= maxHaloGroups)
+        return;
+      group = m_halos.insert(m_halos.end(), HaloGroup{halo, {}});
+    }
+    m_haloDraws += draws.size();
+    for (auto &draw : draws) {
+      if (origin)
+        for (int c = 0; c < 3; ++c)
+          draw.model[12 + c] -= origin[c];
+      group->draws.push_back(std::move(draw));
+    }
   }
 
   bool NativeResources::buildDraws(const InstanceDescription &description, const std::shared_ptr<Mesh> &mesh,
@@ -413,6 +437,25 @@ namespace remix::scene {
       for (uint32_t i = 0; i < skin->boneTransforms_count; ++i) {
         d.bones->push_back(transform(skin->boneTransforms_values[i]));
       }
+    }
+    if (const auto *halo = static_cast<const remixapi_InstanceInfoHaloEXT *>(
+            extension(info.pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_HALO_EXT))) {
+      const float values[] = {halo->color.x, halo->color.y, halo->color.z, halo->blurX, halo->blurY};
+      finite(values, 5);
+      if (halo->blurX <= 0 || halo->blurY <= 0 || halo->additive > 1 || halo->ignoreZ > 1)
+        throw invalid;
+      d.halo = true;
+      auto &h = d.haloParameters;
+      for (int c = 0; c < 3; ++c)
+        h.color[c] = std::clamp(values[c], 0.f, 1.f);
+      h.blurX = std::min(halo->blurX, Halo::maxBlur);
+      h.blurY = std::min(halo->blurY, Halo::maxBlur);
+      h.passes = std::clamp(halo->passes, 1u, Halo::maxPasses);
+      h.additive = halo->additive != 0;
+      h.ignoreZ = halo->ignoreZ != 0;
+      // Not a scene instance: no identity, so no duplicate check and no
+      // temporal lineage; classification and raster visibility are unused.
+      d.traceIdentity = false;
     }
     const auto *instances = static_cast<const remixapi_InstanceInfoGpuInstancingEXT *>(
         extension(info.pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_GPU_INSTANCING_EXT));

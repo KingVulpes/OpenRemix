@@ -782,13 +782,34 @@ void RemixNativeRuntime::presented() {
       gpu::GpuScope scope(buffer, m_pathTracer && !m_loading ? "Composite, tonemap and prism" : "Raster scene",
                           m_swapchainExtent);
       vkCmdBeginRenderPass(buffer, &pass, VK_SUBPASS_CONTENTS_INLINE);
+      // Halo outlines (remixapi_InstanceInfoHaloEXT) composite over the world
+      // layers, under the view model and the UI: the frame's layers are split
+      // around them. Without halos this is the single pass it always was.
+      const uint32_t halos = m_loading ? 0 : raster.haloCount();
+      const int sceneLayers = halos ? 1 : 3;
       if (!m_loading && m_pathTracer) {
         m_pathTracer->record(buffer);
         scope.close();
         gpu::GpuScope overlay(buffer, "Raster overlay (HUD, effects)", m_swapchainExtent);
-        raster.record(buffer, false, true);
+        raster.record(buffer, false, true, nullptr, {}, 0, sceneLayers);
       } else if (!m_loading)
-        raster.record(buffer);
+        raster.record(buffer, false, false, nullptr, {}, 0, sceneLayers);
+      scope.close();
+      if (halos) {
+        {
+          gpu::GpuScope haloTime(buffer, "Halo outlines (mask, blur, composite)", m_swapchainExtent);
+          pass.renderPass = m_resumePass;
+          for (uint32_t group = 0; group < halos; ++group) {
+            // The scene's depth stays in the target's depth attachment.
+            vkCmdEndRenderPass(buffer);
+            raster.recordHaloMask(buffer, group);
+            vkCmdBeginRenderPass(buffer, &pass, VK_SUBPASS_CONTENTS_INLINE);
+            raster.recordHaloComposite(buffer, group);
+          }
+        }
+        gpu::GpuScope overlay(buffer, "Raster overlay (view model, HUD)", m_swapchainExtent);
+        raster.record(buffer, false, true, nullptr, {}, 2, 3);
+      }
     }
     lap(breakdown.compositeMilliseconds);
     if (capture) {

@@ -371,6 +371,11 @@ namespace remix {
       stats.moving += e.moving;
       if (!e.visible || !e.placed || e.records.empty())
         continue;
+      if (e.description.halo) {
+        // A halo source: into its halo group, never the scene or the static set.
+        appendHalo(e.description.haloParameters, std::vector<Draw>(e.records), rebase ? origin : nullptr);
+        continue;
+      }
       if (pendingDrawCount() + e.records.size() > 65536) {
         ++stats.overCapacity; // DrawInstance's per-frame limit.
         continue;

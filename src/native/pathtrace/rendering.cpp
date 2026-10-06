@@ -787,6 +787,10 @@ namespace remix {
     clear[0].color.float32[1] = .035f;
     clear[0].color.float32[2] = .055f;
     clear[0].color.float32[3] = 1;
+    // With a dome, the rasterized sky layer (3D skybox) is drawn over it:
+    // alpha -1 marks pixels no sky geometry covered (any draw writes >= 0).
+    if (options.sky && resources.dome().enabled)
+      clear[0].color.float32[3] = -1;
     clear[1].depthStencil.depth = 1;
     VkRenderPassBeginInfo skyBegin{.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
                                    .renderPass = skyPass,

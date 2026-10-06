@@ -1007,7 +1007,9 @@ void main() {
   storeReuse(pixel,primary,materialFactor(primary)*local);
   bool opaque=primary.t<1e30&&!primary.blended;
   vec3 emission=opaque?primary.emission:vec3(0);
-  vec3 color=opaque?emission+primaryDirect+materialFactor(primary)*(indirect+local):(frame.skyRadiance.w!=0?environmentRadiance(direction):imageLoad(rawSky,pixel).rgb);
+  vec3 color=opaque?emission+primaryDirect+materialFactor(primary)*(indirect+local):imageLoad(rawSky,pixel).rgb;
+  // A dome shows where the sky layer drew nothing (alpha -1, see the sky raster clear).
+  if(!opaque&&frame.skyRadiance.w!=0&&imageLoad(rawSky,pixel).a<-.5)color=environmentRadiance(direction);
   if(primary.blended)color=vec3(0);
 #ifndef TEMPORAL
   // Raw diagnostics, before display transfer: distance / 16, or the combined

@@ -38,6 +38,9 @@ void main() {
   vec4 nearPoint=frame.inverseCamera*vec4(projected.xy/projected.w,0,1);
   vec3 direction=position-nearPoint.xyz/nearPoint.w;
   if((s.state.w&4)==0&&dot(normal,direction)<=0)discard;
+  // Footprint per output pixel (visibilityProbe.z: render/output size).
+  uvGradX=dFdx(uv)*frame.visibilityProbe.z;
+  uvGradY=dFdy(uv)*frame.visibilityProbe.z;
   vec4 albedo=materialColor(s,uv,color);
   if(!visibleAlpha(s,albedo.a))discard;
 #ifdef STABLE_DEPTH

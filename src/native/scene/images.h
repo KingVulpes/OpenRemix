@@ -16,4 +16,9 @@ namespace remix::scene {
   // decodeTexture's result for a compressed texture whose upload payload is
   // still present (used when the device cannot sample BC formats).
   Pixels decodeCompressed(const Pixels &pixels);
+  // Completes a single-level decoded texture with a box-filtered mip chain
+  // (sRGB colors averaged in linear space). Hosts that upload only the top
+  // level (D3D9 proxies, on request: remixapi_TextureInfoGenerateMipsEXT;
+  // file-loaded textures always) otherwise leave distant surfaces to alias.
+  void generateMips(Pixels &pixels);
 } // namespace remix::scene

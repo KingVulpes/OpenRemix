@@ -284,6 +284,9 @@ namespace remix {
       vkGetPhysicalDeviceFeatures(selection.physicalDevice, &available);
       m_textureCompression = available.textureCompressionBC == VK_TRUE;
       features.features.textureCompressionBC = available.textureCompressionBC;
+      // Material samplers filter anisotropically wherever supported (raster
+      // and traced surfaces with UV gradients; see RasterRenderer::Gpu).
+      features.features.samplerAnisotropy = available.samplerAnisotropy;
     }
     // Physical-device queries need only support, not device enablement.
     m_memoryBudget = m_instanceApiVersion >= VK_API_VERSION_1_1 &&

@@ -64,7 +64,7 @@ layout(set=0,binding=3,std140) uniform Frame {
   vec4 domeTransform[3];
   uint64_t visibilityNodes, visibilityLeaves, visibilityTable, movedLights;
   uvec4 visibilityConfig; // table row words, moved light count, reserved
-  vec4 visibilityProbe; // world units: x probe offset above the surface, y decal attachment distance
+  vec4 visibilityProbe; // world units: x probe offset above the surface, y decal attachment distance; z texture footprint scale (render/output size)
   uint64_t restirCurrent, restirHistoryRead, restirHistoryWrite, restirRemap;
   uvec4 restirConfig; // candidates, spatial samples, temporal M cap, flags (1 initial visibility)
   vec4 restirParams; // spatial radius (pixels), emitter count, reserved
@@ -75,6 +75,14 @@ layout(set=0,binding=3,std140) uniform Frame {
   vec4 orcaParams; // smallest voxel (world units), level growth, minimum samples, reserved
 } frame;
 layout(set=0,binding=6) uniform sampler2D textures[4096];
+// UV change per output pixel along two footprint axes at the surface being
+// shaded (ray differentials, or dFdx/dFdy when rasterized). Zero selects the
+// finest mip: visibility tests during traversal keep full-resolution coverage.
+vec2 uvGradX=vec2(0),uvGradY=vec2(0);
+// A material texture at mesh UV `uv`, filtered over the footprint.
+vec4 materialTexel(Surface s,uint index,vec2 uv) {
+  return textureGrad(textures[nonuniformEXT(index)],uv*s.uv.xy+s.uv.zw,uvGradX*s.uv.xy,uvGradY*s.uv.xy);
+}
 vec3 environmentRadiance(vec3 direction) {
   if(frame.skyRadiance.w<=0)return frame.skyRadiance.rgb;
   vec3 d=normalize(vec3(dot(frame.domeTransform[0].xyz,direction),dot(frame.domeTransform[1].xyz,direction),dot(frame.domeTransform[2].xyz,direction)));
@@ -103,10 +111,9 @@ float specularMetal(uint p,float spec,inout vec3 albedo) {
 // A smoothness map (spec/gloss extension) decodes as max(1 - smoothness,
 // roughness constant), smoothness from green or red.
 vec2 materialParameters(Surface s,vec2 uv,inout vec3 albedo) {
-  uv=uv*s.uv.xy+s.uv.zw;
-  float metallic=s.pbrTextures.y==0?s.pbr.y:textureLod(textures[nonuniformEXT(s.pbrTextures.y-1)],uv,0).r;
+  float metallic=s.pbrTextures.y==0?s.pbr.y:materialTexel(s,s.pbrTextures.y-1,uv).r;
   if(s.pbrTextures.x==0)return clamp(vec2(s.pbr.x,metallic),0,1);
-  vec4 map=textureLod(textures[nonuniformEXT(s.pbrTextures.x-1)],uv,0);
+  vec4 map=materialTexel(s,s.pbrTextures.x-1,uv);
   uint flags=s.material.x;
   float roughness=(flags&1u)!=0?max(1-((flags&2u)!=0?map.g:map.r),s.pbr.x):map.r;
   if((flags&4u)!=0)metallic=max(metallic,specularMetal(s.material.y,map.r,albedo));
@@ -124,7 +131,7 @@ mat3 materialBasis(vec3 n,vec3 e1,vec3 e2,vec2 u1,vec2 u2) {
 }
 vec3 materialNormal(Surface s,vec2 uv,mat3 basis,vec3 wo) {
   if(s.pbrTextures.z==0)return basis[2];
-  vec3 local=textureLod(textures[nonuniformEXT(s.pbrTextures.z-1)],uv*s.uv.xy+s.uv.zw,0).xyz*2-1;
+  vec3 local=materialTexel(s,s.pbrTextures.z-1,uv).xyz*2-1;
   if((s.pbrTextures.w&1)!=0)local.z=sqrt(max(0,1-dot(local.xy,local.xy)));
   if(s.pbrTextures.w==2) { local.xy=vec2(local.x+local.y,local.x-local.y)*.5; local.z=1-abs(local.x)-abs(local.y); }
   if((s.pbrTextures.w&4)!=0)local.y=-local.y;
@@ -145,7 +152,7 @@ vec3 decodeGeometricNormal(vec2 e) {
 vec3 materialEmission(Surface s,vec2 uv) {
   if(!any(greaterThan(s.emission.rgb,vec3(0))))return vec3(0);
   return s.emission.rgb*(s.textureState.z==0?vec3(1):
-      textureLod(textures[nonuniformEXT(s.textureState.z-1)],uv*s.uv.xy+s.uv.zw,0).rgb);
+      materialTexel(s,s.textureState.z-1,uv).rgb);
 }
 vec3 linearColor(vec3 c) {
   return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), greaterThan(c, vec3(0.04045)));
@@ -185,7 +192,7 @@ vec3 albedoTint(Surface s) {
   return (s.material.x&16u)!=0?pow(tint,vec3(2.2)):tint;
 }
 vec4 materialColor(Surface s, vec2 uv, vec4 vertex) {
-  vec4 texel = textureLod(textures[nonuniformEXT(s.textureState.x)], uv * s.uv.xy + s.uv.zw, 0);
+  vec4 texel = materialTexel(s, s.textureState.x, uv);
   if ((s.material.x&8u)!=0) texel.rgb*=albedoTint(s);
   vertex.rgb = linearColor(vertex.rgb);
   uint op = s.state.x;

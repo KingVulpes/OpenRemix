@@ -75,6 +75,7 @@ namespace remix {
     }
     auto texture = std::make_shared<Texture>();
     texture->pixels = loadTexture(normalized);
+    generateMips(texture->pixels);
     m_paths[normalized] = texture;
     return texture;
   }
@@ -99,10 +100,18 @@ namespace remix {
     if (!info.hash) {
       throw invalid;
     }
-    storeTexture(info.hash,
-                 keepCompressedTextures() && isBlockCompressed(info.format) ? compressTexture(info)
-                                                                            : decodeTexture(info),
-                 handle);
+    const auto *mips = static_cast<const remixapi_TextureInfoGenerateMipsEXT *>(
+        extension(info.pNext, REMIXAPI_STRUCT_TYPE_TEXTURE_GENERATE_MIPS_EXT));
+    const bool generate = mips && mips->generate && info.mipLevels <= 1;
+    // A requested chain is built from decoded texels, so such BC data is not kept compressed.
+    if (!generate && keepCompressedTextures() && isBlockCompressed(info.format)) {
+      storeTexture(info.hash, compressTexture(info), handle);
+      return;
+    }
+    auto pixels = decodeTexture(info);
+    if (generate)
+      generateMips(pixels);
+    storeTexture(info.hash, std::move(pixels), handle);
   }
 
   void NativeResources::createTexture(const remixapi_TextureInfo &info, scene::Pixels &&pixels,

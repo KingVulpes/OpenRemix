@@ -680,6 +680,11 @@ namespace remix {
     frame.visibilityProbe[0] = .02f / options.sceneScale;
     // Paint lies at most this far above its receiver (5 cm; Source lifts 0.1 in).
     frame.visibilityProbe[1] = .05f / options.sceneScale;
+    // Texture footprints are measured in output pixels: an upscaled frame
+    // samples finer mips (render/output size, the usual upscaler mip bias).
+    frame.visibilityProbe[2] = upscaler && displayExtent.height && extent.height < displayExtent.height
+                                   ? float(extent.height) / float(displayExtent.height)
+                                   : 1.f;
     frame.torchNodes = torchNodes ? torchNodes->address : 0;
     frame.torchEmitters = torchEmitters ? torchEmitters->address : 0;
     frame.emissiveNodes = emissiveNodes ? emissiveNodes->address : 0;

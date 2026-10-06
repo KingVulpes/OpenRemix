@@ -2,6 +2,7 @@
 #include <remix/remix_native_ext.h>
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cmath>
 #include <cstring>
@@ -767,5 +768,61 @@ namespace remix::scene {
     }
     return decode(uint32_t(width), uint32_t(height), 1, true, 0, false, pixels.get(),
                   size_t(width) * height * 4);
+  }
+
+  void generateMips(Pixels &pixels) {
+    if (pixels.compressed || pixels.mips.size() != 1 || (pixels.width <= 1 && pixels.height <= 1) ||
+        pixels.mips[0].size() != size_t(pixels.width) * pixels.height * 4)
+      return;
+    const bool hdr = pixels.hdrMips.size() == 1;
+    static const auto toLinear = [] {
+      std::array<float, 256> table{};
+      for (int i = 0; i < 256; ++i) {
+        const float c = i / 255.f;
+        table[i] = c <= .04045f ? c / 12.92f : std::pow((c + .055f) / 1.055f, 2.4f);
+      }
+      return table;
+    }();
+    static const auto srgbTable = [] {
+      std::array<uint8_t, 4097> table{};
+      for (int i = 0; i <= 4096; ++i) {
+        const float c = i / 4096.f;
+        table[i] = uint8_t(std::lround((c <= .0031308f ? c * 12.92f : 1.055f * std::pow(c, 1 / 2.4f) - .055f) * 255));
+      }
+      return table;
+    }();
+    auto toSrgb = [](float c) { return srgbTable[size_t(std::lround(std::clamp(c, 0.f, 1.f) * 4096))]; };
+    uint32_t width = pixels.width, height = pixels.height;
+    while (width > 1 || height > 1) {
+      const uint32_t w = std::max(1u, width / 2), h = std::max(1u, height / 2);
+      const auto &source = pixels.mips.back();
+      std::vector<uint8_t> level(size_t(w) * h * 4);
+      std::vector<float> hdrLevel(hdr ? level.size() : 0);
+      const float *hdrSource = hdr ? pixels.hdrMips.back().data() : nullptr;
+      for (uint32_t y = 0; y < h; ++y)
+        for (uint32_t x = 0; x < w; ++x) {
+          // 2x2 box (a 1-texel edge stays as is); odd sizes drop their last row/column.
+          const uint32_t x0 = std::min(2 * x, width - 1), x1 = std::min(2 * x + 1, width - 1);
+          const uint32_t y0 = std::min(2 * y, height - 1), y1 = std::min(2 * y + 1, height - 1);
+          const size_t taps[4] = {(size_t(y0) * width + x0) * 4, (size_t(y0) * width + x1) * 4,
+                                  (size_t(y1) * width + x0) * 4, (size_t(y1) * width + x1) * 4};
+          const size_t out = (size_t(y) * w + x) * 4;
+          for (int c = 0; c < 4; ++c) {
+            float sum = 0;
+            for (const size_t t : taps)
+              sum += pixels.srgb && c < 3 ? toLinear[source[t + c]] : source[t + c] / 255.f;
+            sum *= .25f;
+            level[out + c] = pixels.srgb && c < 3 ? toSrgb(sum) : uint8_t(std::lround(std::clamp(sum, 0.f, 1.f) * 255));
+            if (hdr)
+              hdrLevel[out + c] =
+                  .25f * (hdrSource[taps[0] + c] + hdrSource[taps[1] + c] + hdrSource[taps[2] + c] + hdrSource[taps[3] + c]);
+          }
+        }
+      pixels.mips.push_back(std::move(level));
+      if (hdr)
+        pixels.hdrMips.push_back(std::move(hdrLevel));
+      width = w;
+      height = h;
+    }
   }
 } // namespace remix::scene

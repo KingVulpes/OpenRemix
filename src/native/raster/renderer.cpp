@@ -95,6 +95,13 @@ namespace remix {
     g.memoryBudget = memoryBudget;
     vkGetPhysicalDeviceMemoryProperties(physical, &g.memory);
     vkGetPhysicalDeviceProperties(physical, &g.properties);
+    {
+      // The runtime enables samplerAnisotropy whenever the device supports it.
+      VkPhysicalDeviceFeatures features{};
+      vkGetPhysicalDeviceFeatures(physical, &features);
+      if (features.samplerAnisotropy)
+        g.maxAnisotropy = std::min(16.f, g.properties.limits.maxSamplerAnisotropy);
+    }
     for (auto format : {VK_FORMAT_D32_SFLOAT, VK_FORMAT_D16_UNORM}) {
       VkFormatProperties p;
       vkGetPhysicalDeviceFormatProperties(physical, format, &p);

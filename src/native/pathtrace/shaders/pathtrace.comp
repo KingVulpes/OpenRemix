@@ -99,9 +99,41 @@ struct Hit { float t; vec3 p; vec3 n; vec4 color; bool blended; bool blendedDraw
 // traversal (same front-face definition), so their surfaces can be opaque.
 uint traceFlags() { return (frame.target.z&4u)!=0?gl_RayFlagsCullBackFacingTrianglesEXT:gl_RayFlagsNoneEXT; }
 uint traceMask=0xffu; // instance mask for closestGeometry (secondaryHit narrows it)
+// Angle between neighbouring pixel rays at the screen centre, scaled to output
+// pixels (visibilityProbe.z: render/output size, the upscaler's mip bias).
+// Orthographic cameras give zero: finest mip.
+float pixelAngle=-1;
+float cameraPixelAngle() {
+  if(pixelAngle<0) {
+    vec2 step=vec2(0,2./float(frame.target.y));
+    vec4 o0=frame.inverseCamera*vec4(0,0,0,1),f0=frame.inverseCamera*vec4(0,0,.99999,1);
+    vec4 o1=frame.inverseCamera*vec4(step,0,1),f1=frame.inverseCamera*vec4(step,.99999,1);
+    vec3 d0=normalize(f0.xyz/f0.w-o0.xyz/o0.w),d1=normalize(f1.xyz/f1.w-o1.xyz/o1.w);
+    pixelAngle=length(d1-d0)*frame.visibilityProbe.z;
+  }
+  return pixelAngle;
+}
+// Texture footprint of a hit (ray cones, Ray Tracing Gems ch. 20): a cone of
+// one pixel's angle meets the triangle's plane in an ellipse, stretched by
+// 1/cos along the view direction, whose axes map to UV through the
+// triangle's barycentric basis (e1, e2 world edges; du1, du2 their UV edges).
+// Anisotropic sampling then filters it like rasterized texture derivatives.
+void hitFootprint(vec3 direction,float t,vec3 e1,vec3 e2,vec2 du1,vec2 du2) {
+  uvGradX=uvGradY=vec2(0);
+  vec3 n=cross(e1,e2);
+  float nn=dot(n,n),r=cameraPixelAngle()*t;
+  if(nn<1e-30||!(r>0))return;
+  vec3 nh=n*inversesqrt(nn),axis=direction-nh*dot(direction,nh);
+  if(dot(axis,axis)<1e-12)axis=cross(abs(nh.z)<.999?vec3(0,0,1):vec3(1,0,0),nh);
+  axis=normalize(axis);
+  vec3 dx=axis*(r/max(abs(dot(direction,nh)),.02)),dy=cross(nh,axis)*r;
+  uvGradX=(dot(cross(dx,e2),n)*du1+dot(cross(e1,dx),n)*du2)/nn;
+  uvGradY=(dot(cross(dy,e2),n)*du1+dot(cross(e1,dy),n)*du2)/nn;
+}
 void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, inout Hit hit,bool motion,float minimum) {
   rayQueryEXT query;
   profileRay(0);
+  uvGradX=uvGradY=vec2(0); // candidates test coverage at the finest mip
   rayQueryInitializeEXT(query, scene, traceFlags(), traceMask, origin, minimum, direction, hit.t);
   while (rayQueryProceedEXT(query)) {
     if (rayQueryGetIntersectionTypeEXT(query,false)!=gl_RayQueryCandidateIntersectionTriangleEXT) continue;
@@ -128,6 +160,11 @@ void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, ino
   hit.p=model*vec4(a + bary.x*(b-a) + bary.y*(c-a),1);
   hit.n=normalize(cross(model*vec4(b-a,0),model*vec4(c-a,0)));
   if (dot(hit.n,direction)>0) hit.n=-hit.n;
+  {
+    vec2 ua=s.vertices.v[s.indices.i[tri]].uv.xy;
+    hitFootprint(direction,hit.t,model*vec4(b-a,0),model*vec4(c-a,0),
+                 s.vertices.v[s.indices.i[tri+1]].uv.xy-ua,s.vertices.v[s.indices.i[tri+2]].uv.xy-ua);
+  }
   hit.color=albedo(s,tri/3,bary);
   hit.emission=vec3(0);
   hit.identity=motion&&frame.splitLocal.w==3?debugTriangle(s.debugIdentity,originalTriangle(s,tri/3)):0;

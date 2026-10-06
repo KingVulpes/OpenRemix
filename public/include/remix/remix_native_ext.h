@@ -23,6 +23,19 @@ typedef struct remixapi_MaterialInfoEmissionEXT {
   remixapi_Bool suppressLightGeneration;
 } remixapi_MaterialInfoEmissionEXT;
 
+// Optional TextureInfo pNext. With `generate` set and a single supplied level
+// (mipLevels = 1), the runtime completes the texture with a box-filtered mip
+// chain (sRGB colors averaged in linear space). For hosts that capture only a
+// texture's top level, e.g. D3D9 proxies: without mips, traced surfaces sample
+// the full-resolution level at any distance and alias. Leave it unset for
+// textures that are single-level by design (lookup tables, UI, gradients).
+#define REMIXAPI_STRUCT_TYPE_TEXTURE_GENERATE_MIPS_EXT ((remixapi_StructType)0x7fff100b)
+typedef struct remixapi_TextureInfoGenerateMipsEXT {
+  remixapi_StructType sType;
+  const void* pNext;
+  remixapi_Bool generate;
+} remixapi_TextureInfoGenerateMipsEXT;
+
 // Optional MeshInfo pNext. An opt-in replacement of the same mesh hash may
 // reuse update-capable geometry when all surface vertex counts and index values
 // match. DestroyMesh ends that lifetime. This is a storage hint, not object or

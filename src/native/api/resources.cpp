@@ -21,6 +21,8 @@
  */
 
 #include "api/state.h"
+#include "scene/types.h"
+#include <remix/remix_native_ext.h>
 #if REMIX_HAS_USD
 #include "usd/mods.h"
 #endif
@@ -131,7 +133,10 @@ namespace remix::api {
     // initialization checks, as they would inside the lock.
     std::optional<scene::Pixels> prepared;
     auto prepareError = REMIXAPI_ERROR_CODE_SUCCESS;
-    if (info->hash && g_runtime.raster().keepCompressedTextures() && scene::isBlockCompressed(info->format)) {
+    const auto *mips = static_cast<const remixapi_TextureInfoGenerateMipsEXT *>(
+        scene::extension(info->pNext, REMIXAPI_STRUCT_TYPE_TEXTURE_GENERATE_MIPS_EXT));
+    if (info->hash && g_runtime.raster().keepCompressedTextures() && scene::isBlockCompressed(info->format) &&
+        !(mips && mips->generate && info->mipLevels <= 1)) {
       try {
         prepared = scene::compressTexture(*info);
       } catch (remixapi_ErrorCode code) {

@@ -110,7 +110,7 @@ namespace remix::trace::detail {
     uint64_t visibilityNodes = 0, visibilityLeaves = 0, visibilityTable = 0;
     uint64_t movedLights = 0; // scene::MovedLight pairs, count in visibilityConfig[1]
     uint32_t visibilityConfig[4] = {}; // table row words, moved light count, reserved
-    float visibilityProbe[4] = {};     // world units: probe offset above the surface, decal attachment distance
+    float visibilityProbe[4] = {};     // world units: probe offset above the surface, decal attachment distance; texture footprint scale (render/output size)
     uint64_t restirCurrent = 0, restirHistoryRead = 0, restirHistoryWrite = 0, restirRemap = 0;
     uint32_t restirConfig[4] = {}; // candidates, spatial samples, temporal M cap, flags (1 initial visibility)
     float restirParams[4] = {};    // spatial radius (pixels), emitter count, reserved

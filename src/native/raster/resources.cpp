@@ -368,6 +368,8 @@ namespace remix {
                                          .addressModeU = address(source->wrapU),
                                          .addressModeV = address(source->wrapV),
                                          .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                                         .anisotropyEnable = source->filter && maxAnisotropy > 1,
+                                         .maxAnisotropy = std::max(1.f, maxAnisotropy),
                                          .maxLod = float(source->texture->pixels.levels() - 1),
                                          .borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK};
     check(pipeline::createSampler(device, &sampler, nullptr, &value->sampler));

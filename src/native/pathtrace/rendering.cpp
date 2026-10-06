@@ -456,7 +456,8 @@ namespace remix {
       if (dome.texture) {
         if (textures.size() >= PathTracer::textureLimit)
           throw VK_ERROR_TOO_MANY_OBJECTS;
-        auto material = resources.defaultMaterial();
+        // Nearest sampling showed every dome texel as a block on screen.
+        auto material = resources.domeMaterial();
         frame.skyRadiance[3] = float(textures.size() + 1);
         textures.push_back(resources.sampledTexture(material, dome.texture, command));
         auto fingerprint = dome.texture->fingerprint();

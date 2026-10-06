@@ -200,6 +200,17 @@ namespace remix {
       }
       return m_default;
     }
+    // Sampler state for a dome light's equirect map: linear, wrapping in
+    // longitude, clamped at the poles. Kept alive: GPU material state is
+    // cached per material object.
+    std::shared_ptr<scene::Material> domeMaterial() {
+      if (!m_domeMaterial) {
+        m_domeMaterial = std::make_shared<scene::Material>(*defaultMaterial());
+        m_domeMaterial->filter = 1;
+        m_domeMaterial->wrapV = 3;
+      }
+      return m_domeMaterial;
+    }
     const scene::DomeLight &dome() const { return m_dome; }
     const scene::DistantLight &light() const { return m_light; }
     std::vector<scene::SphereLight> sphereLights() const;
@@ -212,7 +223,7 @@ namespace remix {
     std::atomic<bool> m_keepCompressed{false};
     bool m_refreshGeometry = false;
     std::shared_ptr<scene::Texture> m_white;
-    std::shared_ptr<scene::Material> m_default;
+    std::shared_ptr<scene::Material> m_default, m_domeMaterial;
     std::shared_ptr<const scene::VisibilityPartition> m_visibilityPartition;
     std::unordered_map<uint64_t, std::shared_ptr<scene::Material>> m_materials, m_modMaterials;
     std::unordered_set<uint64_t> m_modCandidates, m_modRequested;

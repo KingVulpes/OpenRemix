@@ -20,7 +20,7 @@ OPTIMIZED = {'pathtrace'}
 BACKENDS = {
     'postfx': ('postfx', 'vulkan1.2', ('meter', 'resolve', 'down', 'up')),
     'upscale': ('upscale', 'vulkan1.2', ('comp', 'vert', 'frag')),
-    'raster': ('raster', 'vulkan1.1', ('vert', 'frag', 'haloMask', 'haloVert', 'haloBlur', 'haloComposite')),
+    'raster': ('raster', 'vulkan1.1', ('vert', 'frag', 'haloMask', 'haloVert', 'haloBlur', 'haloComposite', 'maskWithin', 'maskOverlay')),
     'pathtrace': ('trace', 'vulkan1.2', ('vert', 'frag', 'comp', 'temporal', 'transparency', 'temporalTransparency', 'frontGuides', 'psr', 'regirPresample', 'orcaSparse', 'sharcOrcaSparse', 'singleTransparency', 'singleTemporalTransparency', 'sharcSingleTransparency', 'sharcSingleTemporalTransparency', 'confidence', 'gbufferVert', 'gbufferFrag', 'depthFrag', 'sharcUpdate', 'sharcResolve', 'sharcQuery', 'sharcTransparency', 'sharcTemporal', 'sharcTemporalTransparency', 'sharcConfidence', 'sigmaTemporal', 'sharcSigmaTemporal', 'localTemporal', 'localSigmaTemporal', 'sharcLocalTemporal', 'sharcLocalSigmaTemporal', 'splitLocalTemporal', 'splitLocalSigmaTemporal', 'sharcSplitLocalTemporal', 'sharcSplitLocalSigmaTemporal', 'splitLocalDirect', 'splitRestirInitial', 'splitRestirSpatial', 'indirectTemporal', 'sharcIndirectTemporal', 'vertexAssemble')),
     'denoise': ('denoise', 'vulkan1.2', ('comp', 'sigma', 'local', 'localSigma', 'splitLocal', 'splitLocalSigma')),
 }
@@ -71,6 +71,12 @@ def defines_for(backend, stage, stages):
         defines = ['-D' + {'haloMask': 'HALO_MASK', 'haloVert': 'HALO_VERT', 'haloBlur': 'HALO_BLUR',
                            'haloComposite': 'HALO_COMPOSITE'}[stage] + '=1']
         source = directory / {'haloMask': 'raster.frag', 'haloVert': 'halo.vert'}.get(stage, 'halo.frag')
+    if backend == 'raster' and stage.startswith('mask'):
+        # Masked overlays: the raster fragment shader as a coverage source
+        # limited to another group's coverage, and as an overlay tested
+        # against a group's coverage.
+        defines = ['-DHALO_MASK=1', '-DMASK_WITHIN=1'] if stage == 'maskWithin' else ['-DMASK_OVERLAY=1']
+        source = directory / 'raster.frag'
     if stage == 'sharcResolve': source = directory / 'sharc-resolve.comp'
     if stage == 'vertexAssemble': source = directory / 'vertex-assemble.comp'
     return defines, source

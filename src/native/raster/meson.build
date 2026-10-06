@@ -1,5 +1,5 @@
 raster_library = static_library('remix_raster',
-  'halo.cpp', 'memory.cpp', 'pipelines.cpp', 'renderer.cpp', 'rendering.cpp', 'resources.cpp',
+  'halo.cpp', 'mask.cpp', 'memory.cpp', 'pipelines.cpp', 'renderer.cpp', 'rendering.cpp', 'resources.cpp',
   link_with : [scene_library, pipeline_library],
   dependencies : [vulkan_dep], include_directories : [remix_public_include, native_include, image_include],
   cpp_args : cpp.get_supported_arguments('-Wno-missing-field-initializers'),

@@ -184,6 +184,10 @@ namespace remix {
     const std::vector<scene::HaloGroup> &halos() const { return m_halos; }
     // Per-frame limits; instances beyond them are ignored.
     static constexpr size_t maxHaloGroups = 32, maxHaloDraws = 4096;
+    // Mask sources of this frame (remixapi_InstanceInfoMaskEXT, role SOURCE),
+    // in the order their coverage is drawn. Not part of draws().
+    const std::vector<scene::MaskRun> &masks() const { return m_masks; }
+    static constexpr size_t maxMaskRuns = 64, maxMaskDraws = 4096;
     const scene::Matrix &camera(uint32_t type = 0) const { return m_cameras[type]; }
     const scene::Matrix &view(uint32_t type = 0) const { return m_views[type]; }
     const scene::Matrix &projection(uint32_t type = 0) const { return m_projections[type]; }
@@ -273,6 +277,13 @@ namespace remix {
     // Moves a halo instance's draws into its group (the group with equal
     // parameters, or a new one); origin: a retained replay's scene origin.
     void appendHalo(const scene::Halo &halo, std::vector<scene::Draw> &&draws, const float *origin = nullptr);
+    std::vector<scene::MaskRun> m_masks;
+    size_t m_maskDraws = 0;
+    // Moves a mask source's draws into a run. It joins the latest run with
+    // equal parameters unless a run after that one read this group's coverage
+    // (its `within`) or wrote the coverage these sources are limited to: a
+    // source sees `within` as accumulated by the sources submitted before it.
+    void appendMask(const scene::Mask &mask, std::vector<scene::Draw> &&draws, const float *origin = nullptr);
     scene::IdSet m_frameIds;
     float m_tint[4] = {};
 

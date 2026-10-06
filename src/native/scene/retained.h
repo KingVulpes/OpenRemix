@@ -34,6 +34,13 @@ namespace remix::scene {
     // remixapi_InstanceInfoHaloEXT: a halo source, kept out of the scene.
     bool halo = false;
     Halo haloParameters;
+    // remixapi_InstanceInfoMaskEXT. maskSource: a coverage source, kept out of
+    // the scene (maskParameters). Otherwise maskGroup != 0 marks a masked
+    // raster-only overlay.
+    bool maskSource = false;
+    Mask maskParameters;
+    uint8_t maskGroup = 0;
+    bool maskOutside = false;
   };
   // Throws the codes DrawInstance returns. Mesh-independent checks only.
   void describeInstance(const remixapi_InstanceInfo &info, InstanceDescription &out);

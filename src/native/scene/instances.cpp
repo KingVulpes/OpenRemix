@@ -223,7 +223,7 @@ namespace remix {
     if (description.traceIdentity && m_frameIds.count(description.instanceId))
       throw invalid;
     const uint32_t count = description.instanced ? description.instanceCount : 1;
-    if (uint64_t(count) * mesh->second->surfaces.size() + (description.halo ? 0 : pendingDrawCount()) > 65536) {
+    if (uint64_t(count) * mesh->second->surfaces.size() + (description.halo || description.maskSource ? 0 : pendingDrawCount()) > 65536) {
       throw invalid;
     }
     // A USD mod's material wins over remixapi_InstanceInfoMaterialOverrideEXT.
@@ -240,6 +240,10 @@ namespace remix {
     if (description.halo) {
       // A halo source: validated like any instance, kept out of the scene.
       appendHalo(description.haloParameters, std::move(pending));
+      return;
+    }
+    if (description.maskSource) {
+      appendMask(description.maskParameters, std::move(pending));
       return;
     }
     if (m_draws.capacity() < m_draws.size() + pending.size())
@@ -280,6 +284,33 @@ namespace remix {
     }
   }
 
+  void NativeResources::appendMask(const Mask &mask, std::vector<Draw> &&draws, const float *origin) {
+    if (draws.empty() || m_maskDraws + draws.size() > maxMaskDraws)
+      return;
+    auto run = m_masks.end();
+    for (auto it = m_masks.rbegin(); it != m_masks.rend(); ++it) {
+      if (it->mask == mask) {
+        run = std::prev(it.base());
+        break;
+      }
+      // Joining a run before this one would change what it read or reads.
+      if (it->mask.within == mask.group || (mask.within && it->mask.group == mask.within))
+        break;
+    }
+    if (run == m_masks.end()) {
+      if (m_masks.size() >= maxMaskRuns)
+        return;
+      run = m_masks.insert(m_masks.end(), MaskRun{mask, {}});
+    }
+    m_maskDraws += draws.size();
+    for (auto &draw : draws) {
+      if (origin)
+        for (int c = 0; c < 3; ++c)
+          draw.model[12 + c] -= origin[c];
+      run->draws.push_back(std::move(draw));
+    }
+  }
+
   bool NativeResources::buildDraws(const InstanceDescription &description, const std::shared_ptr<Mesh> &mesh,
                                    const Matrix *models, uint32_t count,
                                    const std::shared_ptr<Material> &materialOverride, bool strict,
@@ -300,6 +331,8 @@ namespace remix {
         draw.instanceId = d.instanceId;
         draw.classification = d.classification;
         draw.rasterVisible = d.rasterVisible;
+        draw.maskGroup = d.maskGroup;
+        draw.maskOutside = d.maskOutside;
         draw.model = models[i];
         draw.bones = d.bones;
         if (d.hasRasterState) {
@@ -455,6 +488,24 @@ namespace remix::scene {
       h.ignoreZ = halo->ignoreZ != 0;
       // Not a scene instance: no identity, so no duplicate check and no
       // temporal lineage; classification and raster visibility are unused.
+      d.traceIdentity = false;
+    }
+    if (const auto *mask = static_cast<const remixapi_InstanceInfoMaskEXT *>(
+            extension(info.pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_MASK_EXT))) {
+      if (!mask->group || mask->group > Mask::maxGroup || mask->role > REMIXAPI_INSTANCE_MASK_OUTSIDE_EXT || d.halo)
+        throw invalid;
+      if (mask->role == REMIXAPI_INSTANCE_MASK_SOURCE_EXT) {
+        if (mask->within > Mask::maxGroup || mask->within == mask->group || mask->depthTest > 1)
+          throw invalid;
+        d.maskSource = true;
+        d.maskParameters = {mask->group, mask->within, mask->depthTest != 0};
+      } else {
+        // A raster-only overlay whatever its blend mode and identity say.
+        d.maskGroup = uint8_t(mask->group);
+        d.maskOutside = mask->role == REMIXAPI_INSTANCE_MASK_OUTSIDE_EXT;
+        d.classification = REMIXAPI_INSTANCE_RASTER_ONLY_EXT;
+      }
+      // Neither is a scene instance: no identity, duplicate check or lineage.
       d.traceIdentity = false;
     }
     const auto *instances = static_cast<const remixapi_InstanceInfoGpuInstancingEXT *>(

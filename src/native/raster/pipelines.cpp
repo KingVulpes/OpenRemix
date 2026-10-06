@@ -18,33 +18,61 @@ namespace remix {
 
   bool RasterRenderer::preparePipelines(bool tracing) {
     bool ready = true;
-    auto request = [&](scene::Draw draw) {
-      if (tracing && draw.depthCompare == 2) {
-        draw.depthCompare = 3;
-        draw.depthBias = true;
+    // Masked overlays (raster/mask.cpp): their coverage machinery and their
+    // pipeline variants are compiled on first use, as for halos. A frame never
+    // waits for them: until they are ready (and if the machinery cannot be
+    // created) prepare() leaves masked draws out.
+    int masks = -1;
+    const auto masksReady = [&] {
+      if (masks < 0) {
+        try {
+          masks = m_gpu->prepareMask();
+        } catch (VkResult result) {
+          if (result == VK_ERROR_DEVICE_LOST)
+            throw;
+          m_gpu->mask.failed = true;
+          masks = 0;
+        }
       }
+      return masks > 0;
+    };
+    if (!m_masks.empty())
+      masksReady();
+    const auto request = [&](const scene::Draw &draw, bool masked, bool wait = true) {
       try {
-        m_gpu->pipeline(draw);
+        m_gpu->pipeline(draw, masked);
       } catch (VkResult result) {
         if (result != VK_NOT_READY)
           throw;
-        ready = false;
+        ready = ready && !wait;
       }
     };
+    // The variants prepare() can choose for a draw: a masked draw's is tested
+    // against its group's coverage; an OUTSIDE draw is drawn plainly while its
+    // group has no sources.
+    const auto variants = [&](const scene::Draw &draw) {
+      if (!draw.maskGroup)
+        return request(draw, false);
+      if (draw.camera == REMIXAPI_CAMERA_TYPE_SKY || !masksReady())
+        return;
+      if (draw.maskOutside)
+        request(draw, false, false);
+      request(draw, true, false);
+    };
     for (const auto &draw : m_draws)
-      if (draw.rasterVisible && (!tracing || !draw.traced()))
-        request(draw);
+      if (draw.rasterVisible && (!tracing || !draw.traced())) {
+        if (tracing && draw.depthCompare == 2) {
+          auto adjusted = draw;
+          adjusted.depthCompare = 3;
+          adjusted.depthBias = true;
+          variants(adjusted);
+        } else
+          variants(draw);
+      }
     // These draws are appended after the depth adjustment in prepare().
     const auto overlays = [&](const auto &draws) {
-      for (const auto &draw : draws) {
-        try {
-          m_gpu->pipeline(draw);
-        } catch (VkResult result) {
-          if (result != VK_NOT_READY)
-            throw;
-          ready = false;
-        }
-      }
+      for (const auto &draw : draws)
+        variants(draw);
     };
     overlays(m_overlay);
     overlays(m_uiDraws);
@@ -66,14 +94,14 @@ namespace remix {
       tint.depth = false;
       tint.doubleSided = true;
       tint.blend.enabled = true;
-      request(tint);
+      request(tint, false);
     }
     return ready;
   }
 
-  VkPipeline RasterRenderer::Gpu::pipeline(const Draw &draw) {
+  VkPipeline RasterRenderer::Gpu::pipeline(const Draw &draw, bool masked) {
     const bool sky = skyPass && draw.camera == REMIXAPI_CAMERA_TYPE_SKY;
-    const uint64_t key = pipelineKey(draw) | uint64_t(sky) << 34;
+    const uint64_t key = pipelineKey(draw) | uint64_t(sky) << 34 | uint64_t(masked) << 35;
     if (auto it = pipelines.find(key); it != pipelines.end()) {
       return it->second;
     }
@@ -87,7 +115,7 @@ namespace remix {
          .pName = "main"},
         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
          .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-         .module = fragment,
+         .module = masked ? mask.overlayFragment : fragment,
          .pName = "main"}};
     const VkVertexInputBindingDescription binding = {0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX};
     const VkVertexInputAttributeDescription attributes[] = {
@@ -159,7 +187,7 @@ namespace remix {
                                                .pDepthStencilState = &depthState,
                                                .pColorBlendState = &blending,
                                                .pDynamicState = &dynamic,
-                                               .layout = layout,
+                                               .layout = masked ? mask.layout : layout,
                                                .renderPass = sky ? skyPass : pass};
     VkPipeline result = VK_NULL_HANDLE;
     const auto status = pipeline::createGraphicsPipelines(

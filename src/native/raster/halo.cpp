@@ -67,20 +67,23 @@ namespace remix {
     }
   } // namespace
 
+  void RasterRenderer::Gpu::destroyCoverageTarget(Halo::Target &target) {
+    if (target.set)
+      vkFreeDescriptorSets(device, pool, 1, &target.set);
+    if (target.framebuffer)
+      vkDestroyFramebuffer(device, target.framebuffer, nullptr);
+    if (target.view)
+      vkDestroyImageView(device, target.view, nullptr);
+    if (target.image)
+      vkDestroyImage(device, target.image, nullptr);
+    if (target.memory)
+      vkFreeMemory(device, target.memory, nullptr);
+    target = {};
+  }
+
   void RasterRenderer::Gpu::destroyHaloTargets() {
-    for (auto &target : halo.targets) {
-      if (target.set)
-        vkFreeDescriptorSets(device, pool, 1, &target.set);
-      if (target.framebuffer)
-        vkDestroyFramebuffer(device, target.framebuffer, nullptr);
-      if (target.view)
-        vkDestroyImageView(device, target.view, nullptr);
-      if (target.image)
-        vkDestroyImage(device, target.image, nullptr);
-      if (target.memory)
-        vkFreeMemory(device, target.memory, nullptr);
-      target = {};
-    }
+    for (auto &target : halo.targets)
+      destroyCoverageTarget(target);
   }
 
   void RasterRenderer::Gpu::destroyHalo() {
@@ -96,7 +99,7 @@ namespace remix {
         pipeline::destroyShaderModule(device, *shader, nullptr);
       *shader = VK_NULL_HANDLE;
     }
-    for (auto *pass : {&h.maskPass, &h.blurPass}) {
+    for (auto *pass : {&h.maskPass, &h.loadPass, &h.blurPass}) {
       if (*pass)
         pipeline::destroyRenderPass(device, *pass, nullptr);
       *pass = VK_NULL_HANDLE;
@@ -107,14 +110,112 @@ namespace remix {
     if (h.sampler)
       pipeline::destroySampler(device, h.sampler, nullptr);
     h.sampler = VK_NULL_HANDLE;
-    h.ready = h.failed = false;
+    h.ready = h.coverageReady = h.failed = false;
     h.groups.clear();
     h.commands.clear();
   }
 
-  bool RasterRenderer::Gpu::prepareHalo() {
+  namespace {
+    // Fixed state shared by the coverage and fullscreen pipelines.
+    struct PipelineState {
+      VkPipelineInputAssemblyStateCreateInfo assembly = {
+          .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+          .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
+      VkPipelineViewportStateCreateInfo viewport = {
+          .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .scissorCount = 1};
+      VkPipelineMultisampleStateCreateInfo samples = {
+          .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+          .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
+      VkDynamicState dynamicStates[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+      VkPipelineDynamicStateCreateInfo dynamic = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+                                                  .dynamicStateCount = 2,
+                                                  .pDynamicStates = dynamicStates};
+      VkPipelineShaderStageCreateInfo stages[2] = {{.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                    .stage = VK_SHADER_STAGE_VERTEX_BIT,
+                                                    .pName = "main"},
+                                                   {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                    .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+                                                    .pName = "main"}};
+    };
+    // A pipeline that is still compiling is requested again by the next frame.
+    // False while it is not ready.
+    bool create(VkDevice device, const VkGraphicsPipelineCreateInfo &info, VkPipeline &out) {
+      if (out)
+        return true;
+      VkPipeline result = VK_NULL_HANDLE;
+      const auto status = pipeline::createGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, &result);
+      if (status == VK_SUCCESS) {
+        out = result;
+        return true;
+      }
+      if (result)
+        pipeline::destroyPipeline(device, result, nullptr);
+      if (status != VK_NOT_READY)
+        check(status);
+      return false;
+    }
+  } // namespace
+
+  bool RasterRenderer::Gpu::coveragePipeline(VkPipeline &out, VkShaderModule fragmentModule,
+                                             VkPipelineLayout pipelineLayout, bool tested) {
+    PipelineState state;
+    // Silhouette: the raster vertex stage and material alpha test. Both faces,
+    // so the silhouette does not depend on winding or mirroring.
+    state.stages[0].module = vertex;
+    state.stages[1].module = fragmentModule;
+    const VkVertexInputBindingDescription binding = {0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX};
+    const VkVertexInputAttributeDescription attributes[] = {
+        {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position)},
+        {1, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, uv)},
+        {2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, color)}};
+    const VkPipelineVertexInputStateCreateInfo input = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        .vertexBindingDescriptionCount = 1,
+        .pVertexBindingDescriptions = &binding,
+        .vertexAttributeDescriptionCount = 3,
+        .pVertexAttributeDescriptions = attributes};
+    // The source is usually also in the scene, at the same depth: the frame's
+    // depth comes from another pipeline (the tracer's primary surface, at a
+    // jittered sample without an upscaler), so the test is biased toward the
+    // camera by a few depth steps and by the surface's slope over a pixel.
+    const VkPipelineRasterizationStateCreateInfo raster = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .polygonMode = VK_POLYGON_MODE_FILL,
+        .cullMode = VK_CULL_MODE_NONE,
+        .frontFace = VK_FRONT_FACE_CLOCKWISE,
+        .depthBiasEnable = VkBool32(tested),
+        .depthBiasConstantFactor = depthFormat == VK_FORMAT_D32_SFLOAT ? -16.f : -2.f,
+        .depthBiasSlopeFactor = -2.f,
+        .lineWidth = 1};
+    const VkPipelineDepthStencilStateCreateInfo depthState = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        .depthTestEnable = VkBool32(tested),
+        .depthWriteEnable = VK_FALSE,
+        .depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL};
+    const VkPipelineColorBlendAttachmentState blend = {.colorWriteMask = VK_COLOR_COMPONENT_R_BIT};
+    const VkPipelineColorBlendStateCreateInfo blending = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        .attachmentCount = 1,
+        .pAttachments = &blend};
+    const VkGraphicsPipelineCreateInfo info = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+                                               .stageCount = 2,
+                                               .pStages = state.stages,
+                                               .pVertexInputState = &input,
+                                               .pInputAssemblyState = &state.assembly,
+                                               .pViewportState = &state.viewport,
+                                               .pRasterizationState = &raster,
+                                               .pMultisampleState = &state.samples,
+                                               .pDepthStencilState = &depthState,
+                                               .pColorBlendState = &blending,
+                                               .pDynamicState = &state.dynamic,
+                                               .layout = pipelineLayout,
+                                               .renderPass = halo.maskPass};
+    return create(device, info, out);
+  }
+
+  bool RasterRenderer::Gpu::prepareCoverage() {
     auto &h = halo;
-    if (h.ready)
+    if (h.coverageReady)
       return true;
     if (!pass || h.failed)
       return false;
@@ -129,25 +230,8 @@ namespace remix {
                                         .maxAnisotropy = 1};
       check(pipeline::createSampler(device, &info, nullptr, &h.sampler));
     }
-    if (!h.layout) {
-      // Set 0: the pass's source; set 1 (composite): the silhouette mask.
-      const VkDescriptorSetLayout sets[] = {setLayout, setLayout};
-      const VkPushConstantRange push = {VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(BlurPush)};
-      const VkPipelineLayoutCreateInfo info = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-                                               .setLayoutCount = 2,
-                                               .pSetLayouts = sets,
-                                               .pushConstantRangeCount = 1,
-                                               .pPushConstantRanges = &push};
-      check(pipeline::createPipelineLayout(device, &info, nullptr, &h.layout));
-    }
     if (!h.maskFragment)
       h.maskFragment = module(device, haloMaskShader, sizeof(haloMaskShader));
-    if (!h.vertex)
-      h.vertex = module(device, haloVertShader, sizeof(haloVertShader));
-    if (!h.blurFragment)
-      h.blurFragment = module(device, haloBlurShader, sizeof(haloBlurShader));
-    if (!h.compositeFragment)
-      h.compositeFragment = module(device, haloCompositeShader, sizeof(haloCompositeShader));
 
     const auto attachmentStages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
                                   VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
@@ -191,19 +275,29 @@ namespace remix {
          .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL}};
     const VkAttachmentReference color = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
     const VkAttachmentReference depthReference = {1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
-    if (!h.maskPass) {
+    for (int keep = 0; keep < 2; ++keep) {
+      // loadPass keeps the target's contents (mask sources drawn in several runs).
+      auto &out = keep ? h.loadPass : h.maskPass;
+      if (out)
+        continue;
+      auto described = attachments[0];
+      if (keep) {
+        described.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+        described.initialLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+      }
+      const VkAttachmentDescription both[] = {described, attachments[1]};
       const VkSubpassDescription subpass = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
                                             .colorAttachmentCount = 1,
                                             .pColorAttachments = &color,
                                             .pDepthStencilAttachment = &depthReference};
       const VkRenderPassCreateInfo info = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
                                            .attachmentCount = 2,
-                                           .pAttachments = attachments,
+                                           .pAttachments = both,
                                            .subpassCount = 1,
                                            .pSubpasses = &subpass,
                                            .dependencyCount = 2,
                                            .pDependencies = dependencies};
-      check(pipeline::createRenderPass(device, &info, nullptr, &h.maskPass));
+      check(pipeline::createRenderPass(device, &info, nullptr, &out));
     }
     if (!h.blurPass) {
       // Every pixel of the render area is written.
@@ -222,98 +316,39 @@ namespace remix {
       check(pipeline::createRenderPass(device, &info, nullptr, &h.blurPass));
     }
 
-    // A pipeline that is still compiling is requested again by the next frame;
-    // until all are ready, frames simply have no halos.
     bool ready = true;
-    const auto create = [&](const VkGraphicsPipelineCreateInfo &info, VkPipeline &out) {
-      if (out)
-        return;
-      VkPipeline result = VK_NULL_HANDLE;
-      const auto status = pipeline::createGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, &result);
-      if (status == VK_SUCCESS) {
-        out = result;
-        return;
-      }
-      if (result)
-        pipeline::destroyPipeline(device, result, nullptr);
-      if (status != VK_NOT_READY)
-        check(status);
-      ready = false;
-    };
-    const VkPipelineInputAssemblyStateCreateInfo assembly = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
-    const VkPipelineViewportStateCreateInfo viewport = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .scissorCount = 1};
-    const VkPipelineMultisampleStateCreateInfo samples = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
-    const VkDynamicState dynamicStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
-    const VkPipelineDynamicStateCreateInfo dynamic = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-        .dynamicStateCount = 2,
-        .pDynamicStates = dynamicStates};
-    VkPipelineShaderStageCreateInfo stages[] = {{.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                                 .stage = VK_SHADER_STAGE_VERTEX_BIT,
-                                                 .pName = "main"},
-                                                {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                                 .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-                                                 .pName = "main"}};
+    for (int tested = 0; tested < 2; ++tested)
+      ready &= coveragePipeline(h.mask[tested], h.maskFragment, layout, tested != 0);
+    h.coverageReady = ready;
+    return ready;
+  }
 
-    // Silhouette mask: the raster vertex stage and material alpha test. Both
-    // faces, so the silhouette does not depend on winding or mirroring.
-    for (int tested = 0; tested < 2; ++tested) {
-      stages[0].module = vertex;
-      stages[1].module = h.maskFragment;
-      const VkVertexInputBindingDescription binding = {0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX};
-      const VkVertexInputAttributeDescription attributes[] = {
-          {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, position)},
-          {1, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, uv)},
-          {2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, color)}};
-      const VkPipelineVertexInputStateCreateInfo input = {
-          .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-          .vertexBindingDescriptionCount = 1,
-          .pVertexBindingDescriptions = &binding,
-          .vertexAttributeDescriptionCount = 3,
-          .pVertexAttributeDescriptions = attributes};
-      // The source is usually also in the scene, at the same depth: the frame's
-      // depth comes from another pipeline (the tracer's primary surface, at a
-      // jittered sample without an upscaler), so the test is biased toward the
-      // camera by a few depth steps and by the surface's slope over a pixel.
-      const VkPipelineRasterizationStateCreateInfo raster = {
-          .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-          .polygonMode = VK_POLYGON_MODE_FILL,
-          .cullMode = VK_CULL_MODE_NONE,
-          .frontFace = VK_FRONT_FACE_CLOCKWISE,
-          .depthBiasEnable = VkBool32(tested),
-          .depthBiasConstantFactor = depthFormat == VK_FORMAT_D32_SFLOAT ? -16.f : -2.f,
-          .depthBiasSlopeFactor = -2.f,
-          .lineWidth = 1};
-      const VkPipelineDepthStencilStateCreateInfo depthState = {
-          .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-          .depthTestEnable = VkBool32(tested),
-          .depthWriteEnable = VK_FALSE,
-          .depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL};
-      const VkPipelineColorBlendAttachmentState blend = {.colorWriteMask = VK_COLOR_COMPONENT_R_BIT};
-      const VkPipelineColorBlendStateCreateInfo blending = {
-          .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-          .attachmentCount = 1,
-          .pAttachments = &blend};
-      const VkGraphicsPipelineCreateInfo info = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-                                                 .stageCount = 2,
-                                                 .pStages = stages,
-                                                 .pVertexInputState = &input,
-                                                 .pInputAssemblyState = &assembly,
-                                                 .pViewportState = &viewport,
-                                                 .pRasterizationState = &raster,
-                                                 .pMultisampleState = &samples,
-                                                 .pDepthStencilState = &depthState,
-                                                 .pColorBlendState = &blending,
-                                                 .pDynamicState = &dynamic,
-                                                 .layout = layout,
-                                                 .renderPass = h.maskPass};
-      create(info, h.mask[tested]);
+  bool RasterRenderer::Gpu::prepareHalo() {
+    auto &h = halo;
+    if (h.ready)
+      return true;
+    if (!pass || h.failed)
+      return false;
+    // Until every pipeline is ready, frames simply have no halos.
+    bool ready = prepareCoverage();
+    if (!h.layout) {
+      // Set 0: the pass's source; set 1 (composite): the silhouette mask.
+      const VkDescriptorSetLayout sets[] = {setLayout, setLayout};
+      const VkPushConstantRange push = {VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(BlurPush)};
+      const VkPipelineLayoutCreateInfo info = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                                               .setLayoutCount = 2,
+                                               .pSetLayouts = sets,
+                                               .pushConstantRangeCount = 1,
+                                               .pPushConstantRanges = &push};
+      check(pipeline::createPipelineLayout(device, &info, nullptr, &h.layout));
     }
+    if (!h.vertex)
+      h.vertex = module(device, haloVertShader, sizeof(haloVertShader));
+    if (!h.blurFragment)
+      h.blurFragment = module(device, haloBlurShader, sizeof(haloBlurShader));
+    if (!h.compositeFragment)
+      h.compositeFragment = module(device, haloCompositeShader, sizeof(haloCompositeShader));
+    PipelineState state;
 
     // Fullscreen passes: blur, and the composite onto the frame (additive, or
     // the reference's "Modulate": the frame times the blurred mask).
@@ -327,10 +362,10 @@ namespace remix {
         .lineWidth = 1};
     const VkPipelineDepthStencilStateCreateInfo noDepth = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-    stages[0].module = h.vertex;
+    state.stages[0].module = h.vertex;
     for (int variant = 0; variant < 3; ++variant) {
       // 0: blur; 1: additive composite; 2: multiplicative composite.
-      stages[1].module = variant ? h.compositeFragment : h.blurFragment;
+      state.stages[1].module = variant ? h.compositeFragment : h.blurFragment;
       VkPipelineColorBlendAttachmentState blend = {.colorWriteMask = VK_COLOR_COMPONENT_R_BIT};
       if (variant) {
         blend.blendEnable = VK_TRUE;
@@ -348,93 +383,91 @@ namespace remix {
           .pAttachments = &blend};
       const VkGraphicsPipelineCreateInfo info = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
                                                  .stageCount = 2,
-                                                 .pStages = stages,
+                                                 .pStages = state.stages,
                                                  .pVertexInputState = &noInput,
-                                                 .pInputAssemblyState = &assembly,
-                                                 .pViewportState = &viewport,
+                                                 .pInputAssemblyState = &state.assembly,
+                                                 .pViewportState = &state.viewport,
                                                  .pRasterizationState = &fullscreen,
-                                                 .pMultisampleState = &samples,
+                                                 .pMultisampleState = &state.samples,
                                                  .pDepthStencilState = &noDepth,
                                                  .pColorBlendState = &blending,
-                                                 .pDynamicState = &dynamic,
+                                                 .pDynamicState = &state.dynamic,
                                                  .layout = h.layout,
                                                  .renderPass = variant ? pass : h.blurPass};
-      create(info, variant == 0 ? h.blur : h.composite[variant == 1]);
+      ready &= create(device, info, variant == 0 ? h.blur : h.composite[variant == 1]);
     }
     h.ready = ready;
     return ready;
+  }
+
+  void RasterRenderer::Gpu::createCoverageTarget(Halo::Target &target, bool tested) {
+    const VkImageCreateInfo info = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                                    .imageType = VK_IMAGE_TYPE_2D,
+                                    .format = coverageFormat,
+                                    .extent = {extent.width, extent.height, 1},
+                                    .mipLevels = 1,
+                                    .arrayLayers = 1,
+                                    .samples = VK_SAMPLE_COUNT_1_BIT,
+                                    .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                    .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                                    .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                                    .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+    check(vkCreateImage(device, &info, nullptr, &target.image));
+    VkMemoryRequirements requirements;
+    vkGetImageMemoryRequirements(device, target.image, &requirements);
+    const VkMemoryAllocateInfo allocation = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = requirements.size,
+        .memoryTypeIndex = memoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)};
+    check(vkAllocateMemory(device, &allocation, nullptr, &target.memory));
+    check(vkBindImageMemory(device, target.image, target.memory, 0));
+    const VkImageViewCreateInfo view = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                                        .image = target.image,
+                                        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                        .format = coverageFormat,
+                                        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    check(vkCreateImageView(device, &view, nullptr, &target.view));
+    // A silhouette target tests the frame's depth attachment.
+    const VkImageView views[] = {target.view, depth->view};
+    const VkFramebufferCreateInfo framebuffer = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+                                                 .renderPass = tested ? halo.maskPass : halo.blurPass,
+                                                 .attachmentCount = tested ? 2u : 1u,
+                                                 .pAttachments = views,
+                                                 .width = extent.width,
+                                                 .height = extent.height,
+                                                 .layers = 1};
+    check(vkCreateFramebuffer(device, &framebuffer, nullptr, &target.framebuffer));
+    const VkDescriptorSetAllocateInfo sets = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                                              .descriptorPool = pool,
+                                              .descriptorSetCount = 1,
+                                              .pSetLayouts = &setLayout};
+    check(vkAllocateDescriptorSets(device, &sets, &target.set));
+    const VkDescriptorImageInfo image = {halo.sampler, target.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    const VkWriteDescriptorSet write = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                        .dstSet = target.set,
+                                        .dstBinding = 0,
+                                        .descriptorCount = 1,
+                                        .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                        .pImageInfo = &image};
+    vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
   }
 
   void RasterRenderer::Gpu::createHaloTargets() {
     auto &h = halo;
     if (h.targets[0].image)
       return;
-    for (auto &target : h.targets) {
-      const VkImageCreateInfo info = {
-          .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-          .imageType = VK_IMAGE_TYPE_2D,
-          .format = coverageFormat,
-          .extent = {extent.width, extent.height, 1},
-          .mipLevels = 1,
-          .arrayLayers = 1,
-          .samples = VK_SAMPLE_COUNT_1_BIT,
-          .tiling = VK_IMAGE_TILING_OPTIMAL,
-          .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-          .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-          .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
-      check(vkCreateImage(device, &info, nullptr, &target.image));
-      VkMemoryRequirements requirements;
-      vkGetImageMemoryRequirements(device, target.image, &requirements);
-      const VkMemoryAllocateInfo allocation = {
-          .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-          .allocationSize = requirements.size,
-          .memoryTypeIndex = memoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)};
-      check(vkAllocateMemory(device, &allocation, nullptr, &target.memory));
-      check(vkBindImageMemory(device, target.image, target.memory, 0));
-      const VkImageViewCreateInfo view = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-                                          .image = target.image,
-                                          .viewType = VK_IMAGE_VIEW_TYPE_2D,
-                                          .format = coverageFormat,
-                                          .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
-      check(vkCreateImageView(device, &view, nullptr, &target.view));
-      // The mask tests the frame's depth attachment.
-      const bool mask = &target == &h.targets[0];
-      const VkImageView views[] = {target.view, depth->view};
-      const VkFramebufferCreateInfo framebuffer = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
-                                                   .renderPass = mask ? h.maskPass : h.blurPass,
-                                                   .attachmentCount = mask ? 2u : 1u,
-                                                   .pAttachments = views,
-                                                   .width = extent.width,
-                                                   .height = extent.height,
-                                                   .layers = 1};
-      check(vkCreateFramebuffer(device, &framebuffer, nullptr, &target.framebuffer));
-      const VkDescriptorSetAllocateInfo sets = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-                                                .descriptorPool = pool,
-                                                .descriptorSetCount = 1,
-                                                .pSetLayouts = &setLayout};
-      check(vkAllocateDescriptorSets(device, &sets, &target.set));
-      const VkDescriptorImageInfo image = {h.sampler, target.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-      const VkWriteDescriptorSet write = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                                          .dstSet = target.set,
-                                          .dstBinding = 0,
-                                          .descriptorCount = 1,
-                                          .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                                          .pImageInfo = &image};
-      vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
-    }
+    for (auto &target : h.targets)
+      createCoverageTarget(target, &target == &h.targets[0]);
   }
 
-  bool RasterRenderer::Gpu::haloArea(Halo::Group &group) const {
+  bool RasterRenderer::Gpu::coverageArea(Halo::Group &group, const float *margin) const {
     if (!group.count || !group.bounded || !extent.width || !extent.height)
       return false;
     const float size[2] = {float(extent.width), float(extent.height)};
-    const float blur[2] = {group.halo.blurX, group.halo.blurY};
     int32_t low[2], high[2];
     for (int c = 0; c < 2; ++c) {
-      // Each iteration spreads the silhouette by the kernel's reach.
-      const float margin = blurIterations * kernel(blur[c], extent.height).reach + 2;
-      const float a = (group.low[c] * .5f + .5f) * size[c] - margin;
-      const float b = (group.high[c] * .5f + .5f) * size[c] + margin;
+      const float a = (group.low[c] * .5f + .5f) * size[c] - margin[c];
+      const float b = (group.high[c] * .5f + .5f) * size[c] + margin[c];
       low[c] = int32_t(std::floor(std::clamp(a, 0.f, size[c])));
       high[c] = int32_t(std::ceil(std::clamp(b, 0.f, size[c])));
       if (high[c] <= low[c])
@@ -442,6 +475,15 @@ namespace remix {
     }
     group.area = {{low[0], low[1]}, {uint32_t(high[0] - low[0]), uint32_t(high[1] - low[1])}};
     return true;
+  }
+
+  bool RasterRenderer::Gpu::haloArea(Halo::Group &group) const {
+    const float blur[2] = {group.halo.blurX, group.halo.blurY};
+    float margin[2];
+    // Each iteration spreads the silhouette by the kernel's reach.
+    for (int c = 0; c < 2; ++c)
+      margin[c] = blurIterations * kernel(blur[c], extent.height).reach + 2;
+    return coverageArea(group, margin);
   }
 
   uint32_t RasterRenderer::haloCount() const { return m_gpu ? uint32_t(m_gpu->halo.groups.size()) : 0; }

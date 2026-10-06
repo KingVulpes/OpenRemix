@@ -376,6 +376,10 @@ namespace remix {
         appendHalo(e.description.haloParameters, std::vector<Draw>(e.records), rebase ? origin : nullptr);
         continue;
       }
+      if (e.description.maskSource) {
+        appendMask(e.description.maskParameters, std::vector<Draw>(e.records), rebase ? origin : nullptr);
+        continue;
+      }
       if (pendingDrawCount() + e.records.size() > 65536) {
         ++stats.overCapacity; // DrawInstance's per-frame limit.
         continue;

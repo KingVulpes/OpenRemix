@@ -785,16 +785,33 @@ void RemixNativeRuntime::presented() {
       // Halo outlines (remixapi_InstanceInfoHaloEXT) composite over the world
       // layers, under the view model and the UI: the frame's layers are split
       // around them. Without halos this is the single pass it always was.
+      // Masked overlays (remixapi_InstanceInfoMaskEXT) likewise split the
+      // world layer: the coverage passes follow its unmasked draws.
       const uint32_t halos = m_loading ? 0 : raster.haloCount();
-      const int sceneLayers = halos ? 1 : 3;
+      const bool masks = !m_loading && raster.maskRuns() != 0;
+      const bool split = halos || masks;
+      const int sceneLayers = split ? 1 : 3;
+      const bool skipSky = m_pathTracer != nullptr;
       if (!m_loading && m_pathTracer) {
         m_pathTracer->record(buffer);
         scope.close();
         gpu::GpuScope overlay(buffer, "Raster overlay (HUD, effects)", m_swapchainExtent);
-        raster.record(buffer, false, true, nullptr, {}, 0, sceneLayers);
+        raster.record(buffer, false, true, nullptr, {}, 0, sceneLayers, masks ? 1 : 0);
       } else if (!m_loading)
-        raster.record(buffer, false, false, nullptr, {}, 0, sceneLayers);
+        raster.record(buffer, false, false, nullptr, {}, 0, sceneLayers, masks ? 1 : 0);
       scope.close();
+      if (masks) {
+        {
+          gpu::GpuScope maskTime(buffer, "Mask coverage", m_swapchainExtent);
+          // The scene's depth stays in the target's depth attachment.
+          vkCmdEndRenderPass(buffer);
+          raster.recordMasks(buffer);
+          pass.renderPass = m_resumePass;
+          vkCmdBeginRenderPass(buffer, &pass, VK_SUBPASS_CONTENTS_INLINE);
+        }
+        gpu::GpuScope overlay(buffer, "Raster overlay (masked effects)", m_swapchainExtent);
+        raster.record(buffer, false, skipSky, nullptr, {}, 0, 1, 2);
+      }
       if (halos) {
         {
           gpu::GpuScope haloTime(buffer, "Halo outlines (mask, blur, composite)", m_swapchainExtent);
@@ -807,6 +824,8 @@ void RemixNativeRuntime::presented() {
             raster.recordHaloComposite(buffer, group);
           }
         }
+      }
+      if (split) {
         gpu::GpuScope overlay(buffer, "Raster overlay (view model, HUD)", m_swapchainExtent);
         raster.record(buffer, false, true, nullptr, {}, 2, 3);
       }

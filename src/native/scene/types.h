@@ -190,7 +190,8 @@ namespace remix {
       uint32_t classification = 1; // dynamic for callers without the extension
       bool rasterVisible = true;
       bool traced() const {
-        return !ui && camera == REMIXAPI_CAMERA_TYPE_WORLD && classification != 2 && blend.mask != 0;
+        return !ui && camera == REMIXAPI_CAMERA_TYPE_WORLD && classification != 2 && blend.mask != 0 &&
+               !maskGroup;
       }
       std::shared_ptr<Surface> surface;
       std::shared_ptr<Material> material;
@@ -208,6 +209,11 @@ namespace remix {
       uint32_t canvasWidth = 0, canvasHeight = 0;
       uint32_t firstIndex = 0, indexCount = 0;
       int32_t vertexOffset = 0;
+      // Masked overlay (remixapi_InstanceInfoMaskEXT INSIDE/OUTSIDE, or a UI
+      // command's mask flags): rasterized only where the group's coverage is
+      // set (or, maskOutside, clear). Never traced. 0: unmasked.
+      uint8_t maskGroup = 0;
+      bool maskOutside = false;
     };
     // remixapi_InstanceInfoHaloEXT, validated and clamped. Instances whose
     // parameters compare equal share one group (one silhouette mask).
@@ -224,6 +230,22 @@ namespace remix {
     // rasterizer's halo passes read them (never traced, lit or drawn).
     struct HaloGroup {
       Halo halo;
+      std::vector<Draw> draws;
+    };
+    // remixapi_InstanceInfoMaskEXT with role SOURCE, validated.
+    struct Mask {
+      static constexpr uint32_t maxGroup = 32;
+      uint32_t group = 0;  // 1..maxGroup
+      uint32_t within = 0; // 0, or the group whose coverage (so far) limits these sources
+      bool depthTest = false;
+      bool operator==(const Mask &) const = default;
+    };
+    // Mask sources of one frame that are drawn together: a run of sources with
+    // equal parameters. Runs are kept in an order that preserves what `within`
+    // observes (see NativeResources::appendMask). Like halo sources, the draws
+    // are in no other list.
+    struct MaskRun {
+      Mask mask;
       std::vector<Draw> draws;
     };
   } // namespace scene

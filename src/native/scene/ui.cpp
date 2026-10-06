@@ -115,11 +115,13 @@ namespace remix {
     for (uint32_t i = 0; i < info->commandCount; ++i) {
       const auto &cmd = info->pCommands[i];
       const uint64_t end = uint64_t(cmd.indexOffset) + cmd.indexCount;
-      constexpr uint32_t nativeFlags = 0xff1fu;
+      constexpr uint32_t nativeFlags = 0xff1fu | REMIXAPI_UI_NATIVE_MASK_GROUP_BITS | REMIXAPI_UI_NATIVE_MASK_OUTSIDE;
+      const uint32_t maskGroup = (cmd.flags & REMIXAPI_UI_NATIVE_MASK_GROUP_BITS) >> REMIXAPI_UI_NATIVE_MASK_GROUP_SHIFT;
       const uint32_t sourceBlend = (cmd.flags >> REMIXAPI_UI_NATIVE_SRC_BLEND_SHIFT) & 15;
       const uint32_t destinationBlend = (cmd.flags >> REMIXAPI_UI_NATIVE_DST_BLEND_SHIFT) & 15;
       if ((cmd.flags & ~nativeFlags) || end > info->indexCount || cmd.indexCount % 3 || sourceBlend > 14 ||
-          destinationBlend > 14 ||
+          destinationBlend > 14 || maskGroup > Mask::maxGroup ||
+          (!maskGroup && (cmd.flags & REMIXAPI_UI_NATIVE_MASK_OUTSIDE)) ||
           (!(cmd.flags & REMIXAPI_UI_NATIVE_CUSTOM_BLEND) && (cmd.flags & 0xff00u))) {
         throw invalid;
       }
@@ -162,6 +164,8 @@ namespace remix {
       draw.vertexOffset = cmd.vertexOffset;
       draw.canvasWidth = info->displayWidth;
       draw.canvasHeight = info->displayHeight;
+      draw.maskGroup = uint8_t(maskGroup);
+      draw.maskOutside = (cmd.flags & REMIXAPI_UI_NATIVE_MASK_OUTSIDE) != 0;
       pending.push_back(std::move(draw));
     }
     m_uiDraws = std::move(pending);

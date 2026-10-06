@@ -140,6 +140,10 @@ namespace remix {
       uint32_t firstIndex, count;
       int32_t baseVertex;
       int layer;
+      // A masked overlay (raster/mask.cpp): the group's coverage, bound as set 1
+      // of mask.layout, and the pixels the draw is confined to.
+      VkDescriptorSet coverage;
+      VkRect2D area;
     };
     std::unordered_map<const scene::Surface *, MeshGpu> meshes;
     std::unordered_map<const scene::Texture *, TextureGpu> textures;
@@ -172,7 +176,8 @@ namespace remix {
       };
       // Coverage at target resolution: the silhouette mask and two blur targets.
       Target targets[3];
-      VkRenderPass maskPass = VK_NULL_HANDLE, blurPass = VK_NULL_HANDLE;
+      // loadPass: maskPass keeping the target's contents.
+      VkRenderPass maskPass = VK_NULL_HANDLE, loadPass = VK_NULL_HANDLE, blurPass = VK_NULL_HANDLE;
       VkPipelineLayout layout = VK_NULL_HANDLE; // blur and composite
       VkShaderModule maskFragment = VK_NULL_HANDLE, vertex = VK_NULL_HANDLE, blurFragment = VK_NULL_HANDLE,
                      compositeFragment = VK_NULL_HANDLE;
@@ -180,6 +185,7 @@ namespace remix {
       // mask: [depth tested]; composite: [additive].
       VkPipeline mask[2] = {}, blur = VK_NULL_HANDLE, composite[2] = {};
       bool ready = false;  // every pipeline is compiled
+      bool coverageReady = false; // the silhouette passes and mask pipelines (prepareCoverage)
       bool failed = false; // creation failed: no halos until the target changes
       struct Group {
         scene::Halo halo;
@@ -200,6 +206,51 @@ namespace remix {
     // false when it reaches no pixel.
     bool haloArea(Halo::Group &group) const;
     void destroyHalo();
+    // Silhouette coverage, shared by halo outlines and masked overlays: the
+    // sampler, the silhouette passes (halo.maskPass, loadPass) and the
+    // silhouette pipelines (halo.mask). False while they compile.
+    bool prepareCoverage();
+    // A silhouette pipeline for halo.maskPass: the raster vertex stage, the
+    // given fragment stage and layout, both faces, optionally depth-tested
+    // (biased) against the frame's depth. False while it compiles.
+    bool coveragePipeline(VkPipeline &out, VkShaderModule fragmentModule, VkPipelineLayout pipelineLayout,
+                          bool tested);
+    // An R8 target at target resolution with its framebuffer (tested: with the
+    // frame's depth attachment, for halo.maskPass/loadPass) and sampling set.
+    void createCoverageTarget(Halo::Target &target, bool tested);
+    void destroyCoverageTarget(Halo::Target &target);
+    // Sets the group's pixel area from its silhouette bounds grown by margin
+    // (pixels, x and y); false when it reaches no pixel.
+    bool coverageArea(Halo::Group &group, const float *margin) const;
+    // Masked overlays (remixapi_InstanceInfoMaskEXT and masked UI commands,
+    // raster/mask.cpp). As for halos, nothing exists until a frame uses a mask.
+    struct Mask {
+      // One coverage target per group that has sources in a frame, in the order
+      // the groups first appear; kept until the target changes.
+      std::vector<Halo::Target> targets;
+      VkPipelineLayout layout = VK_NULL_HANDLE; // the raster layout and, set 1, a coverage target
+      VkShaderModule withinFragment = VK_NULL_HANDLE, overlayFragment = VK_NULL_HANDLE;
+      VkPipeline within[2] = {}; // sources limited to another group: [depth tested]
+      bool ready = false, failed = false;
+      // This frame's coverage passes, in order: sources with equal parameters.
+      struct Run {
+        uint32_t target = 0;
+        int32_t within = -1;           // the target limiting these sources
+        bool clear = false;            // the target's first run
+        uint32_t first = 0, count = 0; // in commands
+      };
+      std::vector<Run> runs;
+      std::vector<Command> commands;
+      int32_t slot[scene::Mask::maxGroup + 1] = {}; // group -> target this frame, -1: no sources
+      VkRect2D area[scene::Mask::maxGroup] = {};    // per target: pixels its coverage can be set in
+      uint32_t used = 0;                            // targets holding this frame's coverage
+      // Commands [0, split) are recorded before the coverage passes: every
+      // world-layer draw that is not masked.
+      size_t split = 0;
+    } mask;
+    bool prepareMask();
+    void createMaskTargets(uint32_t count);
+    void destroyMask();
     std::chrono::steady_clock::time_point epoch = std::chrono::steady_clock::now();
 
     ~Gpu();
@@ -237,6 +288,7 @@ namespace remix {
     // detail as device-local memory fills, instead of failing allocations.
     uint32_t textureMipSkip(uint32_t width, uint32_t height, uint32_t levels) const;
     VkDescriptorSet material(const std::shared_ptr<scene::Material> &source, VkCommandBuffer command);
-    VkPipeline pipeline(const scene::Draw &draw);
+    // masked: the variant tested against a group's coverage (mask.layout).
+    VkPipeline pipeline(const scene::Draw &draw, bool masked = false);
   };
 } // namespace remix

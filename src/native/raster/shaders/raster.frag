@@ -3,6 +3,11 @@ layout(location=0) in vec2 uv;
 layout(location=1) in vec4 vertexColor;
 layout(location=0) out vec4 result;
 layout(set=0,binding=0) uniform sampler2D albedo;
+#if defined(MASK_WITHIN) || defined(MASK_OVERLAY)
+// Masked overlays (remixapi_InstanceInfoMaskEXT, raster/mask.cpp): a group's
+// coverage at target resolution, zero or one.
+layout(set=1,binding=0) uniform sampler2D coverage;
+#endif
 layout(push_constant) uniform Draw {
   mat4 mvp;
   vec4 tint;
@@ -44,8 +49,17 @@ void main() {
     (op == 3 && result.a <= ref) || (op == 4 && result.a > ref) ||
     (op == 5 && result.a != ref) || (op == 6 && result.a >= ref);
   if (!pass) discard;
+#ifdef MASK_WITHIN
+  // A mask source limited to another group's coverage.
+  if (texelFetch(coverage, ivec2(gl_FragCoord.xy), 0).r == 0.0) discard;
+#endif
+#ifdef MASK_OVERLAY
+  // Only inside the group's coverage, or (state.w bit 4) only outside it.
+  if ((texelFetch(coverage, ivec2(gl_FragCoord.xy), 0).r > 0.0) == ((draw.state.w & 16) != 0)) discard;
+#endif
 #ifdef HALO_MASK
-  // Halo silhouette (halo.frag): coverage only, after the material's alpha test.
+  // Silhouette (halo outlines, mask sources): coverage only, after the
+  // material's alpha test.
   result = vec4(1);
 #else
   // UNORM-only swapchains need explicit output encoding. Their fixed-function

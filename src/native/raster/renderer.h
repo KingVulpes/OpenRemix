@@ -27,6 +27,7 @@ namespace remix {
       double prepareMilliseconds = 0, skinningMilliseconds = 0;
       uint64_t draws = 0, skinnedVertices = 0, uploadBytes = 0; // draws include halo sources
       uint64_t haloGroups = 0, haloDraws = 0;
+      uint64_t maskGroups = 0, maskDraws = 0; // groups with coverage, their source draws
       uint64_t digest = 0; // REMIX_FRAME_DIGEST only: commands and skinned vertices.
     };
     const Profile &profile() const { return m_profile; }
@@ -44,10 +45,22 @@ namespace remix {
     bool preparePipelines(bool tracing);
     void prepare(VkCommandBuffer command,
                  bool tracing = false); // After prior frame fence, outside render pass.
-    // Layers: 0 sky, 1 world, 2 view model, 3 UI and overlays.
+    // Layers: 0 sky, 1 world, 2 view model, 3 UI and overlays. part: with
+    // masked overlays, the commands before (1) or from (2) the coverage passes.
     void record(VkCommandBuffer command, bool skyOnly = false, bool skipSky = false,
                 const float *skyJitter = nullptr, VkExtent2D skyExtent = {}, int firstLayer = 0,
-                int lastLayer = 3); // Inside render pass, before ImGui.
+                int lastLayer = 3, int part = 0); // Inside render pass, before ImGui.
+
+    // Masked overlays (remixapi_InstanceInfoMaskEXT, masked UI commands).
+    // maskRuns: coverage passes the last prepare() made; zero when the frame
+    // has none. Such a frame records layers 0-1 part 1 (every world draw that
+    // is not masked), leaves the target pass (its depth, stored, is what
+    // depth-tested sources test), recordMasks (own passes, one per run),
+    // re-enters a pass that loads colour and depth and records layers 0-1
+    // part 2 (the masked world overlays and the blended draws sorted after the
+    // first of them); then halos, then layers 2-3.
+    uint32_t maskRuns() const;
+    void recordMasks(VkCommandBuffer command);
 
     // Halo outlines (remixapi_InstanceInfoHaloEXT). haloCount: groups the last
     // prepare() made ready, in composite order; zero when the frame has none.

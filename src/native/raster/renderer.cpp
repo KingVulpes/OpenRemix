@@ -40,6 +40,7 @@ namespace remix {
       pipeline::destroyPipeline(device, pipeline, nullptr);
     }
     pipelines.clear();
+    destroyMask();
     destroyHalo();
     depth.reset();
     pass = VK_NULL_HANDLE;

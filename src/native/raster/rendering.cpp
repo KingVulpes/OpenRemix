@@ -85,7 +85,10 @@ namespace remix {
           copy.depthBias = true;
           source = &copy;
         }
-        ordered.push_back({layer(draw), draw.blend.enabled, draw.blend.enabled ? distance(draw) : 0.f, source});
+        // A masked overlay is drawn after its layer's opaque draws, which
+        // precede the coverage passes (their depth is what sources test).
+        const bool late = draw.blend.enabled || draw.maskGroup;
+        ordered.push_back({layer(draw), late, late ? distance(draw) : 0.f, source});
       }
     }
     std::stable_sort(ordered.begin(), ordered.end(), [](const Entry &a, const Entry &b) {
@@ -121,15 +124,45 @@ namespace remix {
     m_profile.draws = ordered.size();
     std::vector<Vertex> skinned;
     const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - g.epoch).count();
-    // One command per draw. halo: a halo source of that group, drawn into its
-    // silhouette mask instead of the frame.
-    const auto build = [&](const Draw &draw, Gpu::Halo::Group *halo) {
+    // A halo or mask source: drawn as a silhouette into a coverage target
+    // instead of the frame.
+    struct Silhouette {
+      Gpu::Halo::Group *group;     // counts the commands and bounds them on screen
+      const VkPipeline *pipelines; // [depth tested]
+      bool depthTest;              // honoured by WORLD instances only
+      std::vector<Gpu::Command> *commands;
+    };
+    auto &masks = g.mask;
+    const VkRect2D whole = {{0, 0}, g.extent};
+    // Coverage exists for this frame's masked draws (set below).
+    bool masking = false;
+    // One command per draw.
+    const auto build = [&](const Draw &draw, const Silhouette *silhouette) {
       const auto &mat = *draw.material;
-      auto &mesh = g.mesh(draw.surface, command);
+      // A masked overlay samples its group's coverage. Without the machinery
+      // it is left out; a group without sources covers nothing.
+      const bool masked = !silhouette && draw.maskGroup;
+      const int32_t slot = masked && masking ? masks.slot[draw.maskGroup] : -1;
+      if (masked && (!masking || draw.camera == REMIXAPI_CAMERA_TYPE_SKY || (slot < 0 && !draw.maskOutside) ||
+                     (slot >= 0 && !draw.maskOutside && !masks.area[slot].extent.width)))
+        return;
       Gpu::Command out = {};
+      const bool tested = silhouette && silhouette->depthTest && draw.camera == REMIXAPI_CAMERA_TYPE_WORLD;
+      try {
+        out.pipeline = silhouette ? silhouette->pipelines[tested] : g.pipeline(draw, slot >= 0);
+      } catch (VkResult result) {
+        // A masked draw's variant is still compiling (preparePipelines does
+        // not wait for it): left out of this frame.
+        if (!masked || result != VK_NOT_READY)
+          throw;
+        return;
+      }
+      auto &mesh = g.mesh(draw.surface, command);
       out.set = g.material(draw.material, command);
-      const bool haloDepth = halo && !halo->halo.ignoreZ && draw.camera == REMIXAPI_CAMERA_TYPE_WORLD;
-      out.pipeline = halo ? g.halo.mask[haloDepth] : g.pipeline(draw);
+      if (slot >= 0) {
+        out.coverage = masks.targets[slot].set;
+        out.area = draw.maskOutside ? whole : masks.area[slot];
+      }
       const size_t firstSkinned = skinned.size();
       out.vertices = out.indices = mesh.data->buffer;
       out.indexOffset = mesh.indexOffset;
@@ -185,7 +218,8 @@ namespace remix {
       std::memcpy(&out.push.state[2], &reference, sizeof(reference));
       out.push.state[3] =
           uint32_t(draw.ignoreAlpha) |
-          (g.encodeOutput && !(g.skyPass && draw.camera == REMIXAPI_CAMERA_TYPE_SKY) ? 2u : 0u);
+          (g.encodeOutput && !(g.skyPass && draw.camera == REMIXAPI_CAMERA_TYPE_SKY) ? 2u : 0u) |
+          (slot >= 0 && draw.maskOutside ? 16u : 0u);
       // Albedo tint (fork extension) as halves in the unused high words; the
       // roughness/metal decodes have no raster (unlit) counterpart.
       if (const auto decode = materialDecode(mat); decode.flags & MaterialDecode::albedoTint) {
@@ -198,10 +232,11 @@ namespace remix {
       out.push.factor[1] = linear(float((b.factor >> 8) & 255) / 255);
       out.push.factor[2] = linear(float(b.factor & 255) / 255);
       out.push.factor[3] = float(b.factor >> 24) / 255;
-      if (!halo) {
+      if (!silhouette) {
         g.commands.push_back(out);
         return;
       }
+      auto *bounds = silhouette->group;
       // Screen bounds of the silhouette, from the vertices' bounding box.
       float low[3], high[3];
       const auto extend = [&](const Vertex *vertices, size_t count, float *lo, float *hi) {
@@ -247,20 +282,106 @@ namespace remix {
         area[0] = area[1] = -1;
         area[2] = area[3] = 1;
       }
-      if (!halo->bounded) {
-        std::copy_n(area, 2, halo->low);
-        std::copy_n(area + 2, 2, halo->high);
-        halo->bounded = true;
+      if (!bounds->bounded) {
+        std::copy_n(area, 2, bounds->low);
+        std::copy_n(area + 2, 2, bounds->high);
+        bounds->bounded = true;
       } else
         for (int c = 0; c < 2; ++c) {
-          halo->low[c] = std::min(halo->low[c], area[c]);
-          halo->high[c] = std::max(halo->high[c], area[2 + c]);
+          bounds->low[c] = std::min(bounds->low[c], area[c]);
+          bounds->high[c] = std::max(bounds->high[c], area[2 + c]);
         }
-      g.halo.commands.push_back(out);
-      ++halo->count;
+      silhouette->commands->push_back(out);
+      ++bounds->count;
     };
+    // Mask sources (raster/mask.cpp): a coverage target per group and a pass
+    // per run, when the machinery is ready (preparePipelines). Before the
+    // frame's draws, which need to know whether their group has coverage.
+    masks.runs.clear();
+    masks.commands.clear();
+    masks.used = 0;
+    std::fill(std::begin(masks.slot), std::end(masks.slot), -1);
+    masking = masks.ready && !masks.failed;
+    if (!m_masks.empty() && masking) {
+      struct Plan {
+        const MaskRun *run;
+        Gpu::Mask::Run pass;
+      };
+      std::vector<Plan> plans;
+      for (const auto &run : m_masks) {
+        Gpu::Mask::Run pass;
+        if (run.mask.within) {
+          // Limited to a group without coverage so far: covers nothing.
+          pass.within = masks.slot[run.mask.within];
+          if (pass.within < 0)
+            continue;
+        }
+        auto &slot = masks.slot[run.mask.group];
+        pass.clear = slot < 0;
+        if (pass.clear)
+          slot = int32_t(masks.used++);
+        pass.target = uint32_t(slot);
+        plans.push_back({&run, pass});
+      }
+      try {
+        g.createMaskTargets(masks.used);
+      } catch (VkResult result) {
+        if (result == VK_ERROR_DEVICE_LOST)
+          throw;
+        masks.failed = true;
+        masking = false;
+        masks.used = 0;
+        plans.clear();
+      }
+      const auto right = [](const VkRect2D &r) { return r.offset.x + int32_t(r.extent.width); };
+      const auto bottom = [](const VkRect2D &r) { return r.offset.y + int32_t(r.extent.height); };
+      for (auto &plan : plans) {
+        Gpu::Halo::Group bounds;
+        bounds.first = uint32_t(masks.commands.size());
+        const Silhouette silhouette = {&bounds, plan.pass.within >= 0 ? masks.within : g.halo.mask,
+                                       plan.run->mask.depthTest, &masks.commands};
+        for (const auto &draw : plan.run->draws)
+          build(draw, &silhouette);
+        plan.pass.first = bounds.first;
+        plan.pass.count = bounds.count;
+        masks.runs.push_back(plan.pass);
+        // The pixels the group's coverage can be set in: masked INSIDE draws
+        // are confined to them.
+        const float margin[2] = {1, 1};
+        VkRect2D area = {};
+        if (g.coverageArea(bounds, margin))
+          area = bounds.area;
+        if (plan.pass.within >= 0 && area.extent.width) {
+          const auto &limit = masks.area[plan.pass.within];
+          const int32_t x0 = std::max(area.offset.x, limit.offset.x), y0 = std::max(area.offset.y, limit.offset.y);
+          const int32_t x1 = std::min(right(area), right(limit)), y1 = std::min(bottom(area), bottom(limit));
+          area = x1 > x0 && y1 > y0 && limit.extent.width
+                     ? VkRect2D{{x0, y0}, {uint32_t(x1 - x0), uint32_t(y1 - y0)}}
+                     : VkRect2D{};
+        }
+        auto &total = masks.area[plan.pass.target];
+        if (plan.pass.clear || !total.extent.width)
+          total = area;
+        else if (area.extent.width) {
+          const int32_t x0 = std::min(area.offset.x, total.offset.x), y0 = std::min(area.offset.y, total.offset.y);
+          const int32_t x1 = std::max(right(area), right(total)), y1 = std::max(bottom(area), bottom(total));
+          total = {{x0, y0}, {uint32_t(x1 - x0), uint32_t(y1 - y0)}};
+        }
+      }
+      m_profile.maskGroups = masks.used;
+      m_profile.maskDraws = masks.commands.size();
+    }
     for (const auto &entry : ordered)
       build(*entry.draw, nullptr);
+    // The coverage passes run before the first masked world draw, or after
+    // the world layer.
+    masks.split = g.commands.size();
+    if (!masks.runs.empty())
+      for (size_t i = 0; i < g.commands.size(); ++i)
+        if (g.commands[i].layer >= 2 || (g.commands[i].layer == 1 && g.commands[i].coverage)) {
+          masks.split = i;
+          break;
+        }
     // Halo sources: one group of mask commands per halo, when its passes are
     // ready (preparePipelines) and the group reaches the screen.
     g.halo.groups.clear();
@@ -280,8 +401,9 @@ namespace remix {
         Gpu::Halo::Group group;
         group.halo = source.halo;
         group.first = uint32_t(g.halo.commands.size());
+        const Silhouette silhouette = {&group, g.halo.mask, !source.halo.ignoreZ, &g.halo.commands};
         for (const auto &draw : source.draws)
-          build(draw, &group);
+          build(draw, &silhouette);
         m_profile.haloDraws += group.count;
         if (g.haloArea(group))
           g.halo.groups.push_back(group);
@@ -289,10 +411,11 @@ namespace remix {
       m_profile.haloGroups = g.halo.groups.size();
       m_profile.draws += m_profile.haloDraws;
     }
+    m_profile.draws += m_profile.maskDraws;
     static const bool digestEnabled = std::getenv("REMIX_FRAME_DIGEST") != nullptr;
     if (digestEnabled) {
       uint64_t digest = hashBytes(skinned.data(), skinned.size() * sizeof(Vertex));
-      for (const auto *list : {&g.commands, &g.halo.commands})
+      for (const auto *list : {&g.commands, &g.halo.commands, &masks.commands})
         for (const auto &command : *list) {
           const uint64_t values[] = {command.vertices ? 0u : command.vertexOffset, command.firstIndex,
                                      command.count, uint64_t(int64_t(command.baseVertex)),
@@ -305,7 +428,7 @@ namespace remix {
     if (!skinned.empty()) {
       g.skin = g.geometryBuffer(skinned.data(), skinned.size() * sizeof(Vertex),
                                 VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, command);
-      for (auto *list : {&g.commands, &g.halo.commands})
+      for (auto *list : {&g.commands, &g.halo.commands, &masks.commands})
         for (auto &draw : *list) {
           if (!draw.vertices) {
             draw.vertices = g.skin->buffer;
@@ -315,7 +438,7 @@ namespace remix {
   }
 
   void RasterRenderer::record(VkCommandBuffer command, bool skyOnly, bool skipSky, const float *skyJitter,
-                              VkExtent2D skyExtent, int firstLayer, int lastLayer) {
+                              VkExtent2D skyExtent, int firstLayer, int lastLayer, int part) {
     auto &g = *m_gpu;
     const auto extent = skyOnly && skyExtent.width ? skyExtent : g.extent;
     const VkViewport viewport = {0, 0, float(extent.width), float(extent.height), 0, 1};
@@ -323,7 +446,15 @@ namespace remix {
     vkCmdSetViewport(command, 0, 1, &viewport);
     vkCmdSetScissor(command, 0, 1, &scissor);
     int previousLayer = -1;
-    for (const auto &draw : g.commands) {
+    const size_t split = std::min(g.mask.split, g.commands.size());
+    const size_t begin = part == 2 ? split : 0, end = part == 1 ? split : g.commands.size();
+    auto confined = scissor;
+    const auto same = [](const VkRect2D &a, const VkRect2D &b) {
+      return a.offset.x == b.offset.x && a.offset.y == b.offset.y && a.extent.width == b.extent.width &&
+             a.extent.height == b.extent.height;
+    };
+    for (size_t index = begin; index < end; ++index) {
+      const auto &draw = g.commands[index];
       if ((skyOnly && draw.layer != 0) || (skipSky && draw.layer == 0) || draw.layer < firstLayer ||
           draw.layer > lastLayer)
         continue;
@@ -335,8 +466,17 @@ namespace remix {
         vkCmdClearAttachments(command, 1, &clear, 1, &rect);
       }
       previousLayer = draw.layer;
+      // A masked overlay: its group's coverage as set 1, confined to the
+      // pixels the coverage can be set in.
+      const auto layout = draw.coverage ? g.mask.layout : g.layout;
+      const auto &wanted = draw.coverage ? draw.area : scissor;
+      if (!same(wanted, confined)) {
+        vkCmdSetScissor(command, 0, 1, &wanted);
+        confined = wanted;
+      }
       vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, draw.pipeline);
-      vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, g.layout, 0, 1, &draw.set, 0,
+      const VkDescriptorSet sets[] = {draw.set, draw.coverage};
+      vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, draw.coverage ? 2 : 1, sets, 0,
                               nullptr);
       vkCmdBindVertexBuffers(command, 0, 1, &draw.vertices, &draw.vertexOffset);
       vkCmdBindIndexBuffer(command, draw.indices, draw.indexOffset, VK_INDEX_TYPE_UINT32);
@@ -349,7 +489,7 @@ namespace remix {
           push.mvp[column * 4 + 1] -= 2 * skyJitter[1] / extent.height * push.mvp[column * 4 + 3];
         }
       }
-      vkCmdPushConstants(command, g.layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+      vkCmdPushConstants(command, layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                          sizeof(Push), &push);
       vkCmdDrawIndexed(command, draw.count, 1, draw.firstIndex, draw.baseVertex, 0);
     }

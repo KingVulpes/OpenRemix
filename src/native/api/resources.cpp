@@ -85,8 +85,10 @@ namespace remix::api {
           remix::scene::extension(info->pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_REPLACEMENT_HASH_EXT));
       // A halo source outlines the submitted mesh: a mod's replacement (and its
       // lights) is drawn once, by the scene instance.
+      // Mask sources and masked overlays likewise draw what was submitted.
       const bool halo =
-          remix::scene::extension(info->pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_HALO_EXT) != nullptr;
+          remix::scene::extension(info->pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_HALO_EXT) != nullptr ||
+          remix::scene::extension(info->pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_MASK_EXT) != nullptr;
       if (!halo && remix::usd::modInstance(raster, *info, replacement ? replacement->meshHash : 0))
         return;
 #endif

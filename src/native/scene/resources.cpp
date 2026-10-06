@@ -22,6 +22,8 @@ namespace remix {
     m_overlay.clear();
     m_halos.clear();
     m_haloDraws = 0;
+    m_masks.clear();
+    m_maskDraws = 0;
     // Handles keep counting up: one issued before a restart never names a new instance.
     m_retained.clear();
     m_retainedIndex.clear();
@@ -76,6 +78,8 @@ namespace remix {
     m_uiDraws.clear();
     m_halos.clear();
     m_haloDraws = 0;
+    m_masks.clear();
+    m_maskDraws = 0;
     m_light = {};
     m_dome = {};
     m_frameLights.clear();

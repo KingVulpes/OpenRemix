@@ -65,18 +65,49 @@ typedef struct remixapi_InstanceInfoHaloEXT {
 
 // Optional InstanceInfo pNext: screen-space masking, what a host did with the
 // stencil buffer (a sight's reticle visible only through its lens, a tint
-// limited to a scope's opening). Groups are numbered by the host per frame.
+// limited to a scope's opening). Groups are numbered by the host per frame;
+// their coverage is independent and lasts for the frame.
 //   SOURCE  The instance only marks coverage for its group: it is not part of
-//           the scene (as a halo source). Coverage is its silhouette at
-//           display resolution, after alpha test, optionally depth-tested
-//           against the frame's opaque depth so nearer geometry cuts it.
-//           `within` (0: none) limits the coverage to that group's coverage
-//           (an intersection: stencil increments inside a marked area); that
-//           group's sources must precede.
-//   INSIDE / OUTSIDE  The instance is drawn as a raster-only overlay (with its
-//           blend and raster state), visible only where the group covers /
-//           does not cover. Not traced or lit.
+//           the scene (as a halo source: neither traced nor rasterized into
+//           the image; no identity, motion or lights). Hosts submit the
+//           object itself as usual and, in addition, the same mesh/transform
+//           (and bone transforms) with this extension. Coverage is its
+//           silhouette at display resolution, both faces, after its
+//           materials' alpha test (everything else about the materials is
+//           ignored), without antialiasing. A group's coverage is the union
+//           of its sources. With depthTest the silhouette is tested against
+//           the frame's opaque depth (the traced primary surfaces plus
+//           unmasked opaque raster-only world draws), biased toward the
+//           camera so a source coplanar with its scene instance passes: nearer
+//           geometry cuts it; blended surfaces and the view-model layer do
+//           not. SKY and VIEW_MODEL instances use their camera and are never
+//           depth-tested.
+//           `within` (0: none) limits these sources to the coverage of that
+//           group as accumulated by the sources submitted before this one
+//           (an intersection: stencil increments inside a marked area); a
+//           group without sources so far limits it to nothing.
+//   INSIDE / OUTSIDE  The instance is drawn as a raster-only overlay, visible
+//           only where the group covers / does not cover, whatever its
+//           identity classification and blend mode say (never traced or lit;
+//           no identity). Its material, InstanceInfoBlendEXT (blend, alpha
+//           test, texture stages, write mask), InstanceRasterStateEXT (depth
+//           test/write/compare, against the layer's depth as for any
+//           raster-only instance), bone transforms, material override and
+//           GPU instancing apply as usual. It samples the group's final
+//           coverage of the frame: sources may be submitted before or after
+//           it. It is sorted with the blended raster-only instances of its
+//           layer (after the opaque ones, back to front). While the group has
+//           no sources in the frame, INSIDE draws nothing and OUTSIDE draws
+//           unmasked. SKY instances cannot be masked and are not drawn.
 // UI draw commands can be masked the same way through their flags.
+// Sources with equal parameters are drawn together, in one pass per run; a
+// source starts a new run only when joining an earlier one would change what
+// a `within` relation observed. At most 64 runs and 4096 source surfaces per
+// frame; further sources are ignored. group outside 1..32, an unknown role,
+// within > 32 or equal to group, a depthTest other than 0/1 and a halo
+// extension on the same instance are invalid arguments (within and depthTest
+// are ignored for INSIDE/OUTSIDE). Coverage targets and pipelines are created
+// when first used; until they are ready, masked draws are left out.
 #define REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_MASK_EXT ((remixapi_StructType)0x7fff100d)
 #define REMIXAPI_INSTANCE_MASK_SOURCE_EXT 0u
 #define REMIXAPI_INSTANCE_MASK_INSIDE_EXT 1u
@@ -90,8 +121,9 @@ typedef struct remixapi_InstanceInfoMaskEXT {
   uint32_t within;          // SOURCE only: 0, or the group limiting this source's coverage
   remixapi_Bool depthTest;  // SOURCE only
 } remixapi_InstanceInfoMaskEXT;
-// remixapi_UIDrawCommand::flags: bits 16..21 hold a mask group (0: unmasked);
-// the command is drawn only inside its coverage, or only outside with OUTSIDE.
+// remixapi_UIDrawCommand::flags: bits 16..21 hold a mask group (0: unmasked,
+// above 32: invalid); the command is drawn only inside its coverage, or only
+// outside with OUTSIDE (invalid without a group), as an INSIDE/OUTSIDE instance.
 #define REMIXAPI_UI_NATIVE_MASK_GROUP_SHIFT 16u
 #define REMIXAPI_UI_NATIVE_MASK_GROUP_BITS 0x3f0000u
 #define REMIXAPI_UI_NATIVE_MASK_OUTSIDE 0x400000u

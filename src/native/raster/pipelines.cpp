@@ -107,11 +107,15 @@ namespace remix {
     const VkPipelineMultisampleStateCreateInfo samples = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
         .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
+    // SKY instances skip the depth test in the shared main pass (their camera
+    // is not the world's). The path tracer's sky pass has its own depth
+    // buffer, so there the 3D skybox's geometry occludes itself.
+    const bool depth = draw.depth || sky;
     const VkPipelineDepthStencilStateCreateInfo depthState = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-        .depthTestEnable = draw.depth,
+        .depthTestEnable = depth,
         .depthWriteEnable =
-            draw.depth && (draw.depthWriteOverride ? draw.depthWrite : (!draw.blend.enabled || draw.ui)),
+            depth && (draw.depthWriteOverride ? draw.depthWrite : (!draw.blend.enabled || draw.ui)),
         .depthCompareOp = VkCompareOp(draw.depthCompare)};
     const auto &b = draw.blend;
     const VkPipelineColorBlendAttachmentState blend = {.blendEnable = b.enabled,

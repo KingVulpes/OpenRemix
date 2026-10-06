@@ -23,6 +23,27 @@ typedef struct remixapi_MaterialInfoEmissionEXT {
   remixapi_Bool suppressLightGeneration;
 } remixapi_MaterialInfoEmissionEXT;
 
+// Optional InstanceInfo pNext: the instance is a halo source. It is not part
+// of the scene (neither traced nor rasterized into the image); the runtime
+// draws its silhouette into a display-resolution mask, blurs the mask and
+// composites the blurred colour outside the silhouette, as a glow outline
+// (Garry's Mod halo.Add, Source glow outlines). Hosts submit the object
+// itself as usual and, in addition, the same mesh/transform with this
+// extension. Instances sharing identical parameters form one halo group
+// (their silhouettes are masked together); groups are composited in
+// submission order.
+#define REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_HALO_EXT ((remixapi_StructType)0x7fff100c)
+typedef struct remixapi_InstanceInfoHaloEXT {
+  remixapi_StructType sType;
+  const void* pNext;
+  remixapi_Float3D color;   // display-referred (sRGB-encoded) 0..1, as a game's UI colour
+  float blurX;              // blur extent in pixels at 1080p height (scaled with the output), > 0
+  float blurY;
+  uint32_t passes;          // the blurred halo is composited this many times (strength), >= 1
+  remixapi_Bool additive;   // add (glow) or, if false, subtract (dark outline)
+  remixapi_Bool ignoreZ;    // visible through scene geometry; otherwise depth-tested against it
+} remixapi_InstanceInfoHaloEXT;
+
 // Optional TextureInfo pNext. With `generate` set and a single supplied level
 // (mipLevels = 1), the runtime completes the texture with a box-filtered mip
 // chain (sRGB colors averaged in linear space). For hosts that capture only a

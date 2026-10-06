@@ -86,7 +86,7 @@ namespace remix {
     // A voxel whose mean has a larger relative standard error than this is
     // passed over for the next larger one (then SHARC, then tracing on):
     // a few disagreeing samples flash as a patch. 0 accepts any voxel.
-    float orcaMaxError = .5f;
+    float orcaMaxError = .3f;
     // Indirect-light denoiser history cap in frames (0 = NRD's default).
     uint32_t indirectHistoryFrames = 0;
     uint32_t restirCandidates = 8;     // initial light-tree candidates per pixel

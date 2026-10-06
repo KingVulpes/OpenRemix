@@ -25,7 +25,7 @@ void PathTracer::Gpu::configureOrca(Frame &frame, const TraceOptions &options) {
   o.active = options.orca && o.sparse[0] && o.sparse[1] && options.bounces > 0;
   if (o.active && !o.table) {
     try {
-      o.table = buffer(VkDeviceSize(Orca::capacity) * 32,
+      o.table = buffer(VkDeviceSize(Orca::capacity) * 40,
                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
     } catch (VkResult error) {
       if (error == VK_ERROR_DEVICE_LOST)
@@ -44,6 +44,7 @@ void PathTracer::Gpu::configureOrca(Frame &frame, const TraceOptions &options) {
   frame.orcaParams[0] = std::max(options.orcaCellSize, .001f) / options.sceneScale;
   frame.orcaParams[1] = 4;
   frame.orcaParams[2] = float(std::max(options.orcaMinSamples, 1u));
+  frame.orcaParams[3] = std::max(options.orcaMaxError, 0.f);
 }
 
 // After the G-buffer and SHARC (sparse path tails may query it), before any

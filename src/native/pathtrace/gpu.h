@@ -118,7 +118,7 @@ namespace remix::trace::detail {
     uint32_t regirConfig[4] = {}; // cell capacity, slots per cell, cells per world unit (float bits), active
     uint64_t orcaTable = 0, orcaReserved = 0;
     uint32_t orcaConfig[4] = {}; // entry capacity, sparse tile size, voxel levels, active
-    float orcaParams[4] = {};    // smallest voxel (world units), level growth, minimum samples, reserved
+    float orcaParams[4] = {};    // smallest voxel (world units), level growth, minimum samples, maximum relative error
     // remixapi_InstanceInfoMaskEXT CUT. cutConfig: first coverage texture + 1
     // (0: nothing cuts), coverage textures. cutSlots: four bits per mask
     // group (1..32), its coverage texture (from the first) + 1 or 0.

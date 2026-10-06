@@ -154,6 +154,7 @@ namespace remix::config {
         TRACE(orcaCellSize, .01f, 4);
         TRACE(orcaLevels, 1, 8);
         TRACE(orcaMinSamples, 1, 64);
+        TRACE(orcaMaxError, 0, 4);
         TRACE(indirectHistoryFrames, 0, 64);
         TRACE(restirCandidates, 1, 32);
         TRACE(restirSpatialSamples, 0, 8);

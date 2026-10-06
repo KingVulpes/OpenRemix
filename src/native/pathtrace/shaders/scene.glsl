@@ -72,7 +72,7 @@ layout(set=0,binding=3,std140) uniform Frame {
   uvec4 regirConfig; // cell capacity, slots per cell, cells per world unit (float bits), active
   uint64_t orcaTable, orcaReserved;
   uvec4 orcaConfig; // entry capacity, sparse tile size, voxel levels, active
-  vec4 orcaParams; // smallest voxel (world units), level growth, minimum samples, reserved
+  vec4 orcaParams; // smallest voxel (world units), level growth, minimum samples, maximum relative error (0: any)
   uvec4 cutConfig; // first cut coverage texture + 1 (0: nothing cuts), coverage textures
   uvec4 cutSlots; // four bits per mask group (1..32): its coverage texture (from the first) + 1, or 0
 } frame;

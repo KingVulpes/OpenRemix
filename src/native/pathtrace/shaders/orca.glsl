@@ -10,7 +10,12 @@
 // Voxels are keyed by size level, position and a bin: the side of the
 // surface the ray hit (6 faces; keeps the two sides of a thin wall apart) and,
 // on glossy surfaces only, a coarse incoming direction (4x4 octahedral).
-struct OrcaEntry { uint64_t r,g,b; uint count,key; };
+// `squares`: the sum of the samples' squared luminance, for the standard error
+// of a voxel's mean. All of a voxel's pixels read the same mean, so an
+// unreliable one (few samples, one of them a bright light found by chance:
+// scenes with thousands of lights) is a patch that flashes for a frame, which
+// no denoiser removes. Such a voxel is passed over for the next larger one.
+struct OrcaEntry { uint64_t r,g,b,squares; uint count,key; };
 layout(buffer_reference,std430,buffer_reference_align=8) buffer OrcaTable { OrcaEntry data[]; };
 const uint orcaProbes=8u;
 const float orcaFixedPoint=4096.0; // radiance scale of the 64-bit sums
@@ -38,7 +43,10 @@ void orcaInsert(Hit hit,vec3 direction,vec3 radiance) {
   if(any(isnan(radiance))||any(isinf(radiance)))return;
   OrcaTable table=OrcaTable(frame.orcaTable);
   uint mask=frame.orcaConfig.x-1,bin=orcaBin(hit,direction);
-  u64vec3 fixedRadiance=u64vec3(min(max(radiance,vec3(0)),vec3(65000))*orcaFixedPoint);
+  radiance=min(max(radiance,vec3(0)),vec3(65000));
+  u64vec3 fixedRadiance=u64vec3(radiance*orcaFixedPoint);
+  float luminance=dot(radiance,vec3(.2126,.7152,.0722));
+  uint64_t squares=uint64_t(luminance*luminance*orcaFixedPoint);
   for(uint level=0;level<frame.orcaConfig.z;++level) {
     ivec3 cell=ivec3(floor(hit.p/orcaCellSize(level)));
     uvec2 h=orcaHash(cell,level,bin);
@@ -49,6 +57,7 @@ void orcaInsert(Hit hit,vec3 direction,vec3 radiance) {
       atomicAdd(table.data[slot].r,fixedRadiance.r);
       atomicAdd(table.data[slot].g,fixedRadiance.g);
       atomicAdd(table.data[slot].b,fixedRadiance.b);
+      atomicAdd(table.data[slot].squares,squares);
       atomicAdd(table.data[slot].count,1u);
       break;
     }
@@ -75,6 +84,12 @@ bool orcaLookup(Hit hit,vec3 direction,out vec3 radiance) {
       uint count=table.data[slot].count;
       if(count<minimum)break;
       radiance=vec3(table.data[slot].r,table.data[slot].g,table.data[slot].b)/(orcaFixedPoint*float(count));
+      if(frame.orcaParams.w>0) {
+        // Relative standard error of the mean luminance.
+        float mean=dot(radiance,vec3(.2126,.7152,.0722));
+        float variance=max(float(table.data[slot].squares)/(orcaFixedPoint*float(count))-mean*mean,0);
+        if(variance>frame.orcaParams.w*frame.orcaParams.w*mean*mean*float(count))break;
+      }
       return true;
     }
   }

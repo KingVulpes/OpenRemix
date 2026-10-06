@@ -98,6 +98,7 @@ namespace remix {
           options.orcaLevels = uint32_t(levels);
         if (ui::SliderInt("ORCA minimum samples", &minimum, 1, 16))
           options.orcaMinSamples = uint32_t(minimum);
+        ui::SliderFloat("ORCA maximum voxel error (0: any)", &options.orcaMaxError, 0.f, 2.f, "%.2f");
       }
       {
         int history = int(options.indirectHistoryFrames);

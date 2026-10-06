@@ -73,8 +73,32 @@ layout(set=0,binding=3,std140) uniform Frame {
   uint64_t orcaTable, orcaReserved;
   uvec4 orcaConfig; // entry capacity, sparse tile size, voxel levels, active
   vec4 orcaParams; // smallest voxel (world units), level growth, minimum samples, reserved
+  uvec4 cutConfig; // first cut coverage texture + 1 (0: nothing cuts), coverage textures
+  uvec4 cutSlots; // four bits per mask group (1..32): its coverage texture (from the first) + 1, or 0
 } frame;
 layout(set=0,binding=6) uniform sampler2D textures[4096];
+// remixapi_InstanceInfoMaskEXT CUT: the camera does not see a surface where
+// its mask group's coverage is set (state.w bits 16-21: the group). Coverage
+// is one output-resolution texture per cutting group, zero or one.
+// Bit i: coverage texture i is set at uv (the unjittered screen position of
+// the camera sample), so the hole's edge is sampled like a geometry edge.
+uint cutCoverage(vec2 uv) {
+  uint bits=0u;
+  for(uint i=0u;i<frame.cutConfig.y;++i) {
+    uint index=frame.cutConfig.x-1u+i;
+    ivec2 size=textureSize(textures[nonuniformEXT(index)],0);
+    if(texelFetch(textures[nonuniformEXT(index)],clamp(ivec2(floor(uv*vec2(size))),ivec2(0),size-1),0).r>0)bits|=1u<<i;
+  }
+  return bits;
+}
+// A surface with these state flags (Surface.state.w) is hidden from a camera
+// sample with these coverage bits.
+bool cutSurface(uint flags,uint bits) {
+  uint group=(flags>>16)&63u;
+  if(bits==0u||group==0u)return false;
+  uint slot=(frame.cutSlots[(group-1u)>>3]>>(((group-1u)&7u)*4u))&15u;
+  return slot!=0u&&((bits>>(slot-1u))&1u)!=0u;
+}
 // UV change per output pixel along two footprint axes at the surface being
 // shaded (ray differentials, or dFdx/dFdy when rasterized). Zero selects the
 // finest mip: visibility tests during traversal keep full-resolution coverage.

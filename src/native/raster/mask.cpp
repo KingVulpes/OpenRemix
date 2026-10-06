@@ -11,6 +11,10 @@
 // discards outside it. Masked draws are ordinary raster draws whose fragment
 // stage samples their group's target at the fragment and discards outside (or
 // inside) the coverage, so blending, alpha test and depth state are untouched.
+// Role CUT hides a scene instance from the camera inside a group's coverage.
+// Where the instance is rasterized here it is a masked draw (outside). Where
+// it is traced, the path tracer samples the group's target itself, before the
+// frame has a depth: recordCutCoverage draws those groups' runs ahead of it.
 namespace remix {
   using namespace scene;
   using namespace raster::detail;
@@ -39,6 +43,7 @@ namespace remix {
     m.commands.clear();
     m.used = 0;
     m.split = 0;
+    m.cut = {};
   }
 
   bool RasterRenderer::Gpu::prepareMask() {
@@ -91,18 +96,43 @@ namespace remix {
 
   uint32_t RasterRenderer::maskRuns() const { return m_gpu ? uint32_t(m_gpu->mask.runs.size()) : 0; }
 
-  void RasterRenderer::recordMasks(VkCommandBuffer command) {
-    auto &g = *m_gpu;
+  RasterRenderer::CutCoverage RasterRenderer::cutCoverage() const {
+    CutCoverage out;
+    if (!m_gpu)
+      return out;
+    const auto &m = m_gpu->mask;
+    out.count = m.cut.count;
+    for (uint32_t i = 0; i < out.count; ++i)
+      out.images[i] = {m_gpu->halo.sampler, m.targets[m.cut.targets[i]].view,
+                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    std::copy(std::begin(m.cut.slots), std::end(m.cut.slots), out.slots);
+    out.digest = m.cut.digest;
+    return out;
+  }
+
+  void RasterRenderer::recordMasks(VkCommandBuffer command) { m_gpu->recordMaskRuns(command, false); }
+
+  void RasterRenderer::recordCutCoverage(VkCommandBuffer command) {
+    if (m_gpu->mask.cut.count)
+      m_gpu->recordMaskRuns(command, true);
+  }
+
+  void RasterRenderer::Gpu::recordMaskRuns(VkCommandBuffer command, bool early) {
+    auto &g = *this;
     auto &m = g.mask;
     const VkViewport viewport = {0, 0, float(g.extent.width), float(g.extent.height), 0, 1};
     const VkRect2D whole = {{0, 0}, g.extent};
     vkCmdSetViewport(command, 0, 1, &viewport);
     vkCmdSetScissor(command, 0, 1, &whole);
     for (const auto &run : m.runs) {
+      if (early && !run.early)
+        continue;
       // The whole target is cleared: masked draws sample it anywhere.
       const VkClearValue clear = {};
+      const VkRenderPass passes[2][2] = {{g.halo.loadPass, g.halo.maskPass},
+                                         {g.halo.earlyLoadPass, g.halo.earlyPass}};
       const VkRenderPassBeginInfo begin = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-                                           .renderPass = run.clear ? g.halo.maskPass : g.halo.loadPass,
+                                           .renderPass = passes[early][run.clear],
                                            .framebuffer = m.targets[run.target].framebuffer,
                                            .renderArea = whole,
                                            .clearValueCount = run.clear ? 1u : 0u,
@@ -112,9 +142,11 @@ namespace remix {
       if (run.within >= 0)
         vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 1, 1, &m.targets[run.within].set,
                                 0, nullptr);
+      // Ahead of the scene nothing is depth-tested: the untested silhouette.
+      const VkPipeline untested = run.within >= 0 ? m.within[0] : g.halo.mask[0];
       for (uint32_t i = run.first; i < run.first + run.count; ++i) {
         const auto &draw = m.commands[i];
-        vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, draw.pipeline);
+        vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, early ? untested : draw.pipeline);
         vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &draw.set, 0, nullptr);
         vkCmdBindVertexBuffers(command, 0, 1, &draw.vertices, &draw.vertexOffset);
         vkCmdBindIndexBuffer(command, draw.indices, draw.indexOffset, VK_INDEX_TYPE_UINT32);

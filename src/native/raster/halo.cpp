@@ -99,7 +99,7 @@ namespace remix {
         pipeline::destroyShaderModule(device, *shader, nullptr);
       *shader = VK_NULL_HANDLE;
     }
-    for (auto *pass : {&h.maskPass, &h.loadPass, &h.blurPass}) {
+    for (auto *pass : {&h.maskPass, &h.loadPass, &h.earlyPass, &h.earlyLoadPass, &h.blurPass}) {
       if (*pass)
         pipeline::destroyRenderPass(device, *pass, nullptr);
       *pass = VK_NULL_HANDLE;
@@ -242,17 +242,20 @@ namespace remix {
     // The targets were last sampled (an earlier group or frame); the depth
     // attachment was last written by the target pass. Afterwards the targets
     // are sampled, and the target pass resumes on the depth attachment.
+    // Mask targets that cut traced instances are also sampled by the path
+    // tracer's compute passes.
+    const auto samplingStages = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
     const VkSubpassDependency dependencies[] = {
         {.srcSubpass = VK_SUBPASS_EXTERNAL,
          .dstSubpass = 0,
-         .srcStageMask = attachmentStages | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+         .srcStageMask = attachmentStages | samplingStages,
          .dstStageMask = attachmentStages,
          .srcAccessMask = attachmentAccess | VK_ACCESS_SHADER_READ_BIT,
          .dstAccessMask = attachmentAccess},
         {.srcSubpass = 0,
          .dstSubpass = VK_SUBPASS_EXTERNAL,
          .srcStageMask = attachmentStages,
-         .dstStageMask = attachmentStages | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+         .dstStageMask = attachmentStages | samplingStages,
          .srcAccessMask = attachmentAccess,
          .dstAccessMask = attachmentAccess | VK_ACCESS_SHADER_READ_BIT}};
     const VkAttachmentDescription attachments[] = {
@@ -275,9 +278,10 @@ namespace remix {
          .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL}};
     const VkAttachmentReference color = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
     const VkAttachmentReference depthReference = {1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
-    for (int keep = 0; keep < 2; ++keep) {
+    for (int variant = 0; variant < 4; ++variant) {
       // loadPass keeps the target's contents (mask sources drawn in several runs).
-      auto &out = keep ? h.loadPass : h.maskPass;
+      const bool keep = variant & 1, early = variant & 2;
+      auto &out = early ? (keep ? h.earlyLoadPass : h.earlyPass) : keep ? h.loadPass : h.maskPass;
       if (out)
         continue;
       auto described = attachments[0];
@@ -285,7 +289,15 @@ namespace remix {
         described.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
         described.initialLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
       }
-      const VkAttachmentDescription both[] = {described, attachments[1]};
+      // Before the target pass the depth attachment holds nothing (that pass
+      // clears it): compatible with the silhouette pipelines, never tested.
+      auto frameDepth = attachments[1];
+      if (early) {
+        frameDepth.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        frameDepth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        frameDepth.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+      }
+      const VkAttachmentDescription both[] = {described, frameDepth};
       const VkSubpassDescription subpass = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
                                             .colorAttachmentCount = 1,
                                             .pColorAttachments = &color,

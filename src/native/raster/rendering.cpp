@@ -86,8 +86,9 @@ namespace remix {
           source = &copy;
         }
         // A masked overlay is drawn after its layer's opaque draws, which
-        // precede the coverage passes (their depth is what sources test).
-        const bool late = draw.blend.enabled || draw.maskGroup;
+        // precede the coverage passes (their depth is what sources test). So
+        // is a rasterized CUT instance, drawn outside its group's coverage.
+        const bool late = draw.blend.enabled || draw.maskGroup || draw.cutGroup;
         ordered.push_back({layer(draw), late, late ? distance(draw) : 0.f, source});
       }
     }
@@ -141,10 +142,19 @@ namespace remix {
       const auto &mat = *draw.material;
       // A masked overlay samples its group's coverage. Without the machinery
       // it is left out; a group without sources covers nothing.
-      const bool masked = !silhouette && draw.maskGroup;
-      const int32_t slot = masked && masking ? masks.slot[draw.maskGroup] : -1;
-      if (masked && (!masking || draw.camera == REMIXAPI_CAMERA_TYPE_SKY || (slot < 0 && !draw.maskOutside) ||
-                     (slot >= 0 && !draw.maskOutside && !masks.area[slot].extent.width)))
+      // A rasterized CUT instance (role CUT is a scene instance: drawn here
+      // when it is not traced) is an OUTSIDE draw that is never left out:
+      // without coverage or the machinery it is drawn whole, as is a SKY one.
+      const bool cut = !silhouette && !draw.maskGroup && draw.cutGroup;
+      const uint32_t group = draw.maskGroup ? draw.maskGroup : draw.cutGroup;
+      const bool outside = draw.maskOutside || cut;
+      const bool masked = !silhouette && group;
+      int32_t slot = masked && masking ? masks.slot[group] : -1;
+      if (cut && draw.camera == REMIXAPI_CAMERA_TYPE_SKY)
+        slot = -1;
+      if (masked && !cut &&
+          (!masking || draw.camera == REMIXAPI_CAMERA_TYPE_SKY || (slot < 0 && !outside) ||
+           (slot >= 0 && !outside && !masks.area[slot].extent.width)))
         return;
       Gpu::Command out = {};
       const bool tested = silhouette && silhouette->depthTest && draw.camera == REMIXAPI_CAMERA_TYPE_WORLD;
@@ -152,16 +162,19 @@ namespace remix {
         out.pipeline = silhouette ? silhouette->pipelines[tested] : g.pipeline(draw, slot >= 0);
       } catch (VkResult result) {
         // A masked draw's variant is still compiling (preparePipelines does
-        // not wait for it): left out of this frame.
-        if (!masked || result != VK_NOT_READY)
+        // not wait for it): left out of this frame, a CUT instance drawn whole.
+        if (!masked || result != VK_NOT_READY || (cut && slot < 0))
           throw;
-        return;
+        if (!cut)
+          return;
+        slot = -1;
+        out.pipeline = g.pipeline(draw, false);
       }
       auto &mesh = g.mesh(draw.surface, command);
       out.set = g.material(draw.material, command);
       if (slot >= 0) {
         out.coverage = masks.targets[slot].set;
-        out.area = draw.maskOutside ? whole : masks.area[slot];
+        out.area = outside ? whole : masks.area[slot];
       }
       const size_t firstSkinned = skinned.size();
       out.vertices = out.indices = mesh.data->buffer;
@@ -219,7 +232,7 @@ namespace remix {
       out.push.state[3] =
           uint32_t(draw.ignoreAlpha) |
           (g.encodeOutput && !(g.skyPass && draw.camera == REMIXAPI_CAMERA_TYPE_SKY) ? 2u : 0u) |
-          (slot >= 0 && draw.maskOutside ? 16u : 0u);
+          (slot >= 0 && outside ? 16u : 0u);
       // Albedo tint (fork extension) as halves in the unused high words; the
       // roughness/metal decodes have no raster (unlit) counterpart.
       if (const auto decode = materialDecode(mat); decode.flags & MaterialDecode::albedoTint) {
@@ -300,6 +313,7 @@ namespace remix {
     masks.runs.clear();
     masks.commands.clear();
     masks.used = 0;
+    masks.cut = {};
     std::fill(std::begin(masks.slot), std::end(masks.slot), -1);
     masking = masks.ready && !masks.failed;
     if (!m_masks.empty() && masking) {
@@ -370,6 +384,60 @@ namespace remix {
       }
       m_profile.maskGroups = masks.used;
       m_profile.maskDraws = masks.commands.size();
+      // Role CUT with a traced scene: the groups that hide traced instances
+      // from the camera (the lowest numbered with coverage on screen) and the
+      // runs their coverage needs, which are drawn ahead of the path tracer
+      // (recordCutCoverage) as well.
+      if (tracing && m_cutGroups && !plans.empty()) {
+        auto &cut = masks.cut;
+        uint32_t early = 0; // groups, bit group - 1
+        for (uint32_t group = 1; group <= Mask::maxGroup && cut.count < Mask::maxCutGroups; ++group) {
+          const int32_t target = masks.slot[group];
+          if (!(m_cutGroups >> (group - 1) & 1) || target < 0 || !masks.area[target].extent.width)
+            continue;
+          early |= 1u << (group - 1);
+          cut.targets[cut.count] = uint32_t(target);
+          cut.slots[(group - 1) >> 3] |= (cut.count + 1) << (((group - 1) & 7) * 4);
+          ++cut.count;
+        }
+        // And the groups those are limited to, transitively.
+        for (bool grown = early != 0; grown;) {
+          grown = false;
+          for (const auto &plan : plans) {
+            const auto &mask = plan.run->mask;
+            if ((early >> (mask.group - 1) & 1) && mask.within && !(early >> (mask.within - 1) & 1)) {
+              early |= 1u << (mask.within - 1);
+              grown = true;
+            }
+          }
+        }
+        // The tracer reuses its output while its inputs are unchanged: this
+        // is what changes when the coverage may have.
+        uint64_t digest = hashBytes(cut.slots, sizeof(cut.slots));
+        for (size_t i = 0; i < plans.size(); ++i) {
+          const auto &run = *plans[i].run;
+          if (!(early >> (run.mask.group - 1) & 1))
+            continue;
+          auto &pass = masks.runs[i];
+          pass.early = true;
+          const uint32_t parameters[] = {run.mask.group, run.mask.within, pass.count};
+          digest = hashBytes(parameters, sizeof(parameters), digest);
+          for (uint32_t c = pass.first; c < pass.first + pass.count; ++c) {
+            const auto &source = masks.commands[c];
+            digest = hashBytes(&source.push, sizeof(source.push), digest);
+            const uint64_t values[] = {source.firstIndex, source.count, uint64_t(int64_t(source.baseVertex))};
+            digest = hashBytes(values, sizeof(values), digest);
+          }
+          for (const auto &draw : run.draws) {
+            const uintptr_t identity[] = {reinterpret_cast<uintptr_t>(draw.surface.get()),
+                                          reinterpret_cast<uintptr_t>(draw.material.get())};
+            digest = hashBytes(identity, sizeof(identity), digest);
+            if (draw.bones)
+              digest = hashBytes(draw.bones->data(), draw.bones->size() * sizeof(Matrix), digest);
+          }
+        }
+        cut.digest = digest;
+      }
     }
     for (const auto &entry : ordered)
       build(*entry.draw, nullptr);

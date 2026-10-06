@@ -464,6 +464,18 @@ namespace remix {
         append(&fingerprint, sizeof(fingerprint));
       }
     }
+    // Role CUT (remixapi_InstanceInfoMaskEXT): the coverage of the groups
+    // whose instances the camera does not see, drawn by the raster renderer
+    // ahead of this frame's passes. Its sources are in no table: their
+    // digest stands for them in the scene signature.
+    if (const auto cut = resources.cutCoverage();
+        cut.count && textures.size() + cut.count <= PathTracer::textureLimit) {
+      frame.cutConfig[0] = uint32_t(textures.size() + 1);
+      frame.cutConfig[1] = cut.count;
+      std::copy_n(cut.slots, 4, frame.cutSlots);
+      textures.insert(textures.end(), cut.images, cut.images + cut.count);
+      append(&cut.digest, sizeof(cut.digest));
+    }
     frame.config[0] = options.samples;
     frame.config[1] = options.bounces;
     frame.target[0] = extent.width;

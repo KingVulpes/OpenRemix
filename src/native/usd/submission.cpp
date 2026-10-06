@@ -178,12 +178,24 @@ namespace remix::usd {
         parentId = identity->instanceId;
     if (parent && !parentId)
       parentId = scene::hashBytes(&parent->transform, sizeof(parent->transform));
+    // A replaced host instance the camera does not see inside a mask group's
+    // coverage (remixapi_InstanceInfoMaskEXT CUT): so for its replacement.
+    remixapi_InstanceInfoMaskEXT cut{};
+    if (parent)
+      if (auto *mask = static_cast<const remixapi_InstanceInfoMaskEXT *>(
+              scene::extension(parent->pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_MASK_EXT));
+          mask && mask->role == REMIXAPI_INSTANCE_MASK_CUT_EXT)
+        cut = *mask;
     for (size_t i = 0; meshes && i < instances_.size(); ++i) {
       if (!root.empty() && instance_origins_[i].first != root &&
           !instance_origins_[i].first.starts_with(root + "/"))
         continue;
       auto instance = instances_[i];
       instance.pNext = &blend_states_[i];
+      if (cut.group) {
+        cut.pNext = instance.pNext;
+        instance.pNext = &cut;
+      }
       remixapi_InstanceIdentityEXT identity{};
       identity.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_IDENTITY_EXT;
       identity.pNext = instance.pNext;

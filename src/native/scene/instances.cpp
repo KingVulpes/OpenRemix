@@ -250,6 +250,7 @@ namespace remix {
       m_draws.reserve(std::max(m_draws.size() + pending.size(), m_draws.capacity() * 2));
     if (description.traceIdentity && !pending.empty())
       m_frameIds.insert(description.instanceId);
+    noteCut(description, pending);
     m_draws.insert(m_draws.end(), std::make_move_iterator(pending.begin()),
                    std::make_move_iterator(pending.end()));
   }
@@ -282,6 +283,12 @@ namespace remix {
           draw.model[12 + c] -= origin[c];
       group->draws.push_back(std::move(draw));
     }
+  }
+
+  void NativeResources::noteCut(const InstanceDescription &description, const std::vector<Draw> &draws) {
+    if (description.cutGroup &&
+        std::any_of(draws.begin(), draws.end(), [](const Draw &draw) { return draw.traced(); }))
+      m_cutGroups |= 1u << (description.cutGroup - 1);
   }
 
   void NativeResources::appendMask(const Mask &mask, std::vector<Draw> &&draws, const float *origin) {
@@ -333,6 +340,7 @@ namespace remix {
         draw.rasterVisible = d.rasterVisible;
         draw.maskGroup = d.maskGroup;
         draw.maskOutside = d.maskOutside;
+        draw.cutGroup = d.cutGroup;
         draw.model = models[i];
         draw.bones = d.bones;
         if (d.hasRasterState) {
@@ -492,21 +500,27 @@ namespace remix::scene {
     }
     if (const auto *mask = static_cast<const remixapi_InstanceInfoMaskEXT *>(
             extension(info.pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_MASK_EXT))) {
-      if (!mask->group || mask->group > Mask::maxGroup || mask->role > REMIXAPI_INSTANCE_MASK_OUTSIDE_EXT || d.halo)
+      if (!mask->group || mask->group > Mask::maxGroup || mask->role > REMIXAPI_INSTANCE_MASK_CUT_EXT || d.halo)
         throw invalid;
-      if (mask->role == REMIXAPI_INSTANCE_MASK_SOURCE_EXT) {
-        if (mask->within > Mask::maxGroup || mask->within == mask->group || mask->depthTest > 1)
-          throw invalid;
-        d.maskSource = true;
-        d.maskParameters = {mask->group, mask->within, mask->depthTest != 0};
+      if (mask->role == REMIXAPI_INSTANCE_MASK_CUT_EXT) {
+        // Still the scene instance it was: identity, classification and
+        // lineage stay. Only the camera's view of it is limited.
+        d.cutGroup = uint8_t(mask->group);
       } else {
-        // A raster-only overlay whatever its blend mode and identity say.
-        d.maskGroup = uint8_t(mask->group);
-        d.maskOutside = mask->role == REMIXAPI_INSTANCE_MASK_OUTSIDE_EXT;
-        d.classification = REMIXAPI_INSTANCE_RASTER_ONLY_EXT;
+        if (mask->role == REMIXAPI_INSTANCE_MASK_SOURCE_EXT) {
+          if (mask->within > Mask::maxGroup || mask->within == mask->group || mask->depthTest > 1)
+            throw invalid;
+          d.maskSource = true;
+          d.maskParameters = {mask->group, mask->within, mask->depthTest != 0};
+        } else {
+          // A raster-only overlay whatever its blend mode and identity say.
+          d.maskGroup = uint8_t(mask->group);
+          d.maskOutside = mask->role == REMIXAPI_INSTANCE_MASK_OUTSIDE_EXT;
+          d.classification = REMIXAPI_INSTANCE_RASTER_ONLY_EXT;
+        }
+        // Neither is a scene instance: no identity, duplicate check or lineage.
+        d.traceIdentity = false;
       }
-      // Neither is a scene instance: no identity, duplicate check or lineage.
-      d.traceIdentity = false;
     }
     const auto *instances = static_cast<const remixapi_InstanceInfoGpuInstancingEXT *>(
         extension(info.pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_GPU_INSTANCING_EXT));

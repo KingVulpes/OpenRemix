@@ -725,7 +725,10 @@ namespace remix::trace {
                          uint32_t(surface.doubleSided) << 2 | uint32_t(material.transmission) << 3 |
                          uint32_t(draw.classification == 0) << 4 |
                          uint32_t(material.translucent && !surface.decal) << 5 | uint32_t(surface.decal) << 6 |
-                         (surface.decal ? detail::decalMode(b) : 0u) << 7;
+                         (surface.decal ? detail::decalMode(b) : 0u) << 7 |
+                         // remixapi_InstanceInfoMaskEXT CUT: the group (bits 16-21) whose
+                         // coverage hides the surface from camera rays.
+                         uint32_t(surface.cutGroup) << 16;
         if (draw.classification == 0) {
           write(staticCursor, value.tint, sizeof(value.tint));
           write(staticCursor, value.factor, sizeof(value.factor));

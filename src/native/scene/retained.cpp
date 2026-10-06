@@ -386,6 +386,7 @@ namespace remix {
       }
       if (e.description.traceIdentity && !m_frameIds.insert(e.description.instanceId))
         continue; // Caller identity already drawn this frame.
+      noteCut(e.description, e.records);
       if (persistent && e.staticEligible) {
         leave.enabled = false;
         m_staticPlacement.emplace_back(m_draws.size(), uint32_t(index));

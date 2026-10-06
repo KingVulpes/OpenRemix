@@ -99,6 +99,32 @@ typedef struct remixapi_InstanceInfoHaloEXT {
 //           layer (after the opaque ones, back to front). While the group has
 //           no sources in the frame, INSIDE draws nothing and OUTSIDE draws
 //           unmasked. SKY instances cannot be masked and are not drawn.
+//   CUT     The instance stays the scene instance it would be without this
+//           extension (traced, lit, shadowing, in reflections and indirect
+//           light; identity, motion, bone transforms, material, blend and
+//           raster state, static or dynamic), except that the camera does not
+//           see it where the group covers: primary visibility looks through
+//           it to whatever is behind (a scope's body drawn where the stencil
+//           is not the eyepiece's value). Opaque, alpha-tested and blended
+//           surfaces alike; rays that are not the camera's own (shadows,
+//           reflections, bounces) still meet the whole instance. Ray-traced
+//           and raster primary visibility both honour it, per rendered sample,
+//           so the hole's edge resolves like a geometry edge under an
+//           upscaler. This coverage exists before the scene is resolved:
+//           it ignores depthTest (of the group's sources and of the sources of
+//           any group they are `within`), while INSIDE/OUTSIDE consumers of
+//           the same group keep seeing the depth-tested coverage, tested
+//           against a depth the cut has already been applied to. Sources may
+//           be submitted before or after the instance; a group without
+//           sources cuts nothing. At most 8 groups per frame cut (the lowest
+//           numbered that have traced CUT instances and sources on screen);
+//           CUT instances of further groups are not cut. A replacement mesh
+//           (USD mod) of the instance is cut as well. Where the instance is
+//           rasterized instead of traced (the raster backend, a raster-only
+//           classification, a VIEW_MODEL instance) it is drawn as usual but
+//           only outside the coverage, as OUTSIDE (then sorted with its
+//           layer's blended instances; the coverage is the depth-tested one).
+//           A SKY instance is not cut.
 // UI draw commands can be masked the same way through their flags.
 // Sources with equal parameters are drawn together, in one pass per run; a
 // source starts a new run only when joining an earlier one would change what
@@ -106,12 +132,14 @@ typedef struct remixapi_InstanceInfoHaloEXT {
 // frame; further sources are ignored. group outside 1..32, an unknown role,
 // within > 32 or equal to group, a depthTest other than 0/1 and a halo
 // extension on the same instance are invalid arguments (within and depthTest
-// are ignored for INSIDE/OUTSIDE). Coverage targets and pipelines are created
-// when first used; until they are ready, masked draws are left out.
+// are ignored for INSIDE/OUTSIDE/CUT). Coverage targets and pipelines are
+// created when first used; until they are ready, masked draws are left out and
+// CUT instances are not cut.
 #define REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_MASK_EXT ((remixapi_StructType)0x7fff100d)
 #define REMIXAPI_INSTANCE_MASK_SOURCE_EXT 0u
 #define REMIXAPI_INSTANCE_MASK_INSIDE_EXT 1u
 #define REMIXAPI_INSTANCE_MASK_OUTSIDE_EXT 2u
+#define REMIXAPI_INSTANCE_MASK_CUT_EXT 3u
 #define REMIXAPI_INSTANCE_MASK_MAX_GROUP_EXT 32u
 typedef struct remixapi_InstanceInfoMaskEXT {
   remixapi_StructType sType;

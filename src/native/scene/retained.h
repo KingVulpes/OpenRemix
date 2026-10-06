@@ -41,6 +41,9 @@ namespace remix::scene {
     Mask maskParameters;
     uint8_t maskGroup = 0;
     bool maskOutside = false;
+    // Role CUT: a scene instance like any other, with the group whose
+    // coverage hides it from the camera.
+    uint8_t cutGroup = 0;
   };
   // Throws the codes DrawInstance returns. Mesh-independent checks only.
   void describeInstance(const remixapi_InstanceInfo &info, InstanceDescription &out);

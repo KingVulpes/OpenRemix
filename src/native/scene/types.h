@@ -214,6 +214,10 @@ namespace remix {
       // set (or, maskOutside, clear). Never traced. 0: unmasked.
       uint8_t maskGroup = 0;
       bool maskOutside = false;
+      // remixapi_InstanceInfoMaskEXT CUT: an ordinary instance the camera does
+      // not see where the group's coverage is set. Traced: primary visibility
+      // skips it there. Rasterized: drawn only outside the coverage. 0: none.
+      uint8_t cutGroup = 0;
     };
     // remixapi_InstanceInfoHaloEXT, validated and clamped. Instances whose
     // parameters compare equal share one group (one silhouette mask).
@@ -235,6 +239,8 @@ namespace remix {
     // remixapi_InstanceInfoMaskEXT with role SOURCE, validated.
     struct Mask {
       static constexpr uint32_t maxGroup = 32;
+      // Groups that can cut traced instances in one frame (role CUT).
+      static constexpr uint32_t maxCutGroups = 8;
       uint32_t group = 0;  // 1..maxGroup
       uint32_t within = 0; // 0, or the group whose coverage (so far) limits these sources
       bool depthTest = false;

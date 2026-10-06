@@ -119,8 +119,12 @@ namespace remix::trace::detail {
     uint64_t orcaTable = 0, orcaReserved = 0;
     uint32_t orcaConfig[4] = {}; // entry capacity, sparse tile size, voxel levels, active
     float orcaParams[4] = {};    // smallest voxel (world units), level growth, minimum samples, reserved
+    // remixapi_InstanceInfoMaskEXT CUT. cutConfig: first coverage texture + 1
+    // (0: nothing cuts), coverage textures. cutSlots: four bits per mask
+    // group (1..32), its coverage texture (from the first) + 1 or 0.
+    uint32_t cutConfig[4] = {}, cutSlots[4] = {};
   };
-  static_assert(sizeof(Frame) == 816 && offsetof(Frame, orcaParams) == 800 && offsetof(Frame, regirConfig) == 752 && offsetof(Frame, restirCurrent) == 656 && offsetof(Frame, visibilityNodes) == 592 && offsetof(Frame, pathConfig) == 528 &&
+  static_assert(sizeof(Frame) == 848 && offsetof(Frame, cutConfig) == 816 && offsetof(Frame, orcaParams) == 800 && offsetof(Frame, regirConfig) == 752 && offsetof(Frame, restirCurrent) == 656 && offsetof(Frame, visibilityNodes) == 592 && offsetof(Frame, pathConfig) == 528 &&
                 offsetof(Frame, firefly) == 512 && offsetof(Frame, indirectResults) == 496 &&
                 offsetof(Frame, lightGuideRead) == 384 && offsetof(Frame, lightGuideConfig) == 400 &&
                 offsetof(Frame, lightNodes) == 336 && offsetof(Frame, localConfig) == 352 &&

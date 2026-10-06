@@ -49,8 +49,15 @@ namespace remix {
     };
     // The variants prepare() can choose for a draw: a masked draw's is tested
     // against its group's coverage; an OUTSIDE draw is drawn plainly while its
-    // group has no sources.
+    // group has no sources. A rasterized CUT instance is a scene draw, drawn
+    // plainly (waited for) until its masked variant and coverage exist.
     const auto variants = [&](const scene::Draw &draw) {
+      if (!draw.maskGroup && draw.cutGroup) {
+        request(draw, false);
+        if (draw.camera != REMIXAPI_CAMERA_TYPE_SKY && !m_masks.empty() && masksReady())
+          request(draw, true, false);
+        return;
+      }
       if (!draw.maskGroup)
         return request(draw, false);
       if (draw.camera == REMIXAPI_CAMERA_TYPE_SKY || !masksReady())

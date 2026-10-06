@@ -99,6 +99,13 @@ struct Hit { float t; vec3 p; vec3 n; vec4 color; bool blended; bool blendedDraw
 // traversal (same front-face definition), so their surfaces can be opaque.
 uint traceFlags() { return (frame.target.z&4u)!=0?gl_RayFlagsCullBackFacingTrianglesEXT:gl_RayFlagsNoneEXT; }
 uint traceMask=0xffu; // instance mask for closestGeometry (secondaryHit narrows it)
+// remixapi_InstanceInfoMaskEXT CUT: the camera does not see an instance where
+// its mask group's coverage is set. pixelCut: the coverage at this pixel's
+// camera sample (set by ray()). cameraCut: the same while a ray along the
+// camera's line of sight is traced (cameraHit), else zero: every other ray
+// meets the whole scene. Such a camera ray visits every candidate (no opaque
+// shortcut) so the cut surfaces can be rejected.
+uint pixelCut=0u,cameraCut=0u;
 // Angle between neighbouring pixel rays at the screen centre, scaled to output
 // pixels (visibilityProbe.z: render/output size, the upscaler's mip bias).
 // Orthographic cameras give zero: finest mip.
@@ -134,11 +141,12 @@ void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, ino
   rayQueryEXT query;
   profileRay(0);
   uvGradX=uvGradY=vec2(0); // candidates test coverage at the finest mip
-  rayQueryInitializeEXT(query, scene, traceFlags(), traceMask, origin, minimum, direction, hit.t);
+  rayQueryInitializeEXT(query, scene, traceFlags()|(cameraCut!=0u?gl_RayFlagsNoOpaqueEXT:gl_RayFlagsNoneEXT), traceMask, origin, minimum, direction, hit.t);
   while (rayQueryProceedEXT(query)) {
     if (rayQueryGetIntersectionTypeEXT(query,false)!=gl_RayQueryCandidateIntersectionTriangleEXT) continue;
     profileRay(1);
     Surface s=surfaces[rayQueryGetIntersectionInstanceCustomIndexEXT(query,false)+rayQueryGetIntersectionGeometryIndexEXT(query,false)];
+    if(cameraCut!=0u&&cutSurface(s.state.w,cameraCut))continue;
     s.indices=s.traceIndices;
     if ((s.state.w&4)==0 && !rayQueryGetIntersectionFrontFaceEXT(query,false)) {profileRay(4);continue;}
     profileAlpha(s,0);
@@ -266,6 +274,11 @@ Hit closest(vec3 origin,vec3 direction,float maximum,bool motion) {
   return resolveDecals(closestGeometry(origin,direction,maximum,motion),origin,direction,maximum,motion);
 }
 Hit closest(vec3 origin,vec3 direction) { return closest(origin,direction,1e30,true); }
+// A ray along the pixel's line of sight: the primary ray and its continuations
+// through transparent sheets. It does not see what the pixel's coverage cuts.
+Hit cameraHit(vec3 origin,vec3 direction) {
+  cameraCut=pixelCut;Hit hit=closest(origin,direction);cameraCut=0u;return hit;
+}
 // Bounce rays may ignore blended layers (frame.pathConfig.w; see
 // skipBlendedSecondaryRays). Camera and transparency rays keep every instance.
 Hit secondaryHit(vec3 origin,vec3 direction) {
@@ -296,7 +309,7 @@ Hit rasterPrimary(ivec2 pixel, vec3 origin) {
   // Re-query painted pixels to obtain the ray traversal's exact intersection
   // distance. Raster-interpolated positions can round to the other side of a
   // very close receiver; the common resolver advances tMin without an offset.
-  if(hit.decal)return closest(origin,normalize(hit.p-origin));
+  if(hit.decal)return cameraHit(origin,normalize(hit.p-origin));
   return hit;
 }
 // Geometry diagnostics show the first visible sheet. Lighting and temporal
@@ -619,6 +632,7 @@ void addPbrLocal(ivec2 pixel,Hit hit,vec3 total,vec3 specular,float distance) {
 }
 #endif
 void ray(vec2 ndc,mat4 inverseCamera,out vec3 origin,out vec3 direction) {
+  pixelCut=frame.cutConfig.x!=0u?cutCoverage(ndc*.5+.5):0u;
   vec4 nearPoint=inverseCamera*vec4(ndc,0,1),farPoint=inverseCamera*vec4(ndc,.99999,1);
   origin=nearPoint.xyz/nearPoint.w;direction=normalize(farPoint.xyz/farPoint.w-origin);
 }
@@ -839,9 +853,9 @@ void main() {
   rng=hash(uint(pixel.x)+uint(pixel.y)*frame.target.x+hash(frame.config.z^0x73706172u));
   vec3 origin,direction;
   ray((vec2(pixel)+.5+frame.jitter.xy)/vec2(frame.target.xy)*2-1,frame.inverseCamera,origin,direction);
-  Hit primary=frame.target.w!=0?rasterPrimary(pixel,origin):closest(origin,direction);
+  Hit primary=frame.target.w!=0?rasterPrimary(pixel,origin):cameraHit(origin,direction);
   for(uint layer=0;layer<32&&primary.blended;++layer) {
-    origin=offsetRay(primary.p,-primary.ng);primary=closest(origin,direction);
+    origin=offsetRay(primary.p,-primary.ng);primary=cameraHit(origin,direction);
   }
   if(primary.t<1e30&&!primary.blended) {
     vec3 firstDirection,specular;float firstDistance;
@@ -856,7 +870,7 @@ void main() {
   if(any(greaterThanEqual(pixel,ivec2(frame.target.xy))))return;
   vec3 origin,direction;
   ray((vec2(pixel)+.5+frame.jitter.xy)/vec2(frame.target.xy)*2-1,frame.inverseCamera,origin,direction);
-  Hit primary=frame.target.w!=0?rasterPrimary(pixel,origin):closest(origin,direction);
+  Hit primary=frame.target.w!=0?rasterPrimary(pixel,origin):cameraHit(origin,direction);
   frontGuides(primary,pixel);
   return;
 #elif defined(INDIRECT_PASS)
@@ -864,9 +878,9 @@ void main() {
   rng=hash(uint(pixel.x)+uint(pixel.y)*frame.target.x+hash(frame.config.z));
   vec3 origin,direction;
   ray((vec2(pixel)+.5+frame.jitter.xy)/vec2(frame.target.xy)*2-1,frame.inverseCamera,origin,direction);
-  Hit primary=frame.target.w!=0?rasterPrimary(pixel,origin):closest(origin,direction);
+  Hit primary=frame.target.w!=0?rasterPrimary(pixel,origin):cameraHit(origin,direction);
   for(uint layer=0;layer<32&&primary.blended;++layer) {
-    origin=offsetRay(primary.p,-primary.ng);primary=closest(origin,direction);
+    origin=offsetRay(primary.p,-primary.ng);primary=cameraHit(origin,direction);
   }
   vec3 diffuseFactor=vec3(1),specularFactor=vec3(1);
   if(primary.t<1e30&&primary.pbr)
@@ -891,8 +905,8 @@ void main() {
   if(normal.a>0) {
     vec3 origin,direction;
     ray((vec2(pixel)+.5+frame.jitter.xy)/vec2(frame.target.xy)*2-1,frame.inverseCamera,origin,direction);
-    Hit hit=frame.target.w!=0?rasterPrimary(pixel,origin):closest(origin,direction);
-    for(uint layer=0;layer<32&&hit.blended;++layer)hit=closest(offsetRay(hit.p,-hit.ng),direction);
+    Hit hit=frame.target.w!=0?rasterPrimary(pixel,origin):cameraHit(origin,direction);
+    for(uint layer=0;layer<32&&hit.blended;++layer)hit=cameraHit(offsetRay(hit.p,-hit.ng),direction);
     uint state=hash(uint(pixel.x)+uint(pixel.y)*frame.target.x+hash(frame.config.z^0x52455354u));
     initial=restirInitial(hit,state,imageLoad(guideDepth,pixel).x,pixel);
   }
@@ -907,8 +921,8 @@ void main() {
   if(normal.a>0) {
     vec3 origin,direction;
     ray((vec2(pixel)+.5+frame.jitter.xy)/vec2(frame.target.xy)*2-1,frame.inverseCamera,origin,direction);
-    Hit hit=frame.target.w!=0?rasterPrimary(pixel,origin):closest(origin,direction);
-    for(uint layer=0;layer<32&&hit.blended;++layer)hit=closest(offsetRay(hit.p,-hit.ng),direction);
+    Hit hit=frame.target.w!=0?rasterPrimary(pixel,origin):cameraHit(origin,direction);
+    for(uint layer=0;layer<32&&hit.blended;++layer)hit=cameraHit(offsetRay(hit.p,-hit.ng),direction);
     uint state=hash(uint(pixel.x)+uint(pixel.y)*frame.target.x+hash(frame.config.z));
     // The runtime check also keeps the unspecialized fallback correct if the
     // dedicated combined pipeline cannot be created.
@@ -958,8 +972,8 @@ void main() {
   vec3 origin,direction;
   ray((vec2(fullPixel)+.5+temporal.jitter.zw)/vec2(frame.target.xy)*2-1,temporal.previousInverseCamera,origin,direction);
   rng=hash(uint(fullPixel.x)+uint(fullPixel.y)*frame.target.x+hash(temporal.target.z));
-  Hit hit=closest(origin,direction);
-  for(uint layer=0;layer<32&&hit.blended;++layer){origin=offsetRay(hit.p,-hit.ng);hit=closest(origin,direction);}
+  Hit hit=cameraHit(origin,direction);
+  for(uint layer=0;layer<32&&hit.blended;++layer){origin=offsetRay(hit.p,-hit.ng);hit=cameraHit(origin,direction);}
   vec3 current=vec3(0);vec3 firstDir;float firstDist;
   if(hit.t<1e30)for(uint i=0;i<frame.config.x;++i)current+=continuation(hit,firstDir,firstDist)/float(frame.config.x);
   vec3 old=imageLoad(previousLighting,fullPixel).rgb;
@@ -982,12 +996,12 @@ void main() {
   vec2 jitter=frame.jitter.xy;
   vec3 origin,direction;ray((vec2(pixel)+.5+jitter)/vec2(frame.target.xy)*2-1,frame.inverseCamera,origin,direction);
 #ifndef TRANSPARENCY_PASS
-  Hit primary=frame.target.w!=0?rasterPrimary(pixel,origin):closest(origin,direction);
+  Hit primary=frame.target.w!=0?rasterPrimary(pixel,origin):cameraHit(origin,direction);
   vec3 diagnostic=frame.splitLocal.w!=0?debugGeometry(primary,pixel):vec3(0);
   // Opaque lighting owns the initial random sequence used by confidence retracing.
   uint sheetCount=0;
   while(sheetCount<32&&primary.blended) {
-    ++sheetCount;origin=offsetRay(primary.p,-primary.ng);primary=closest(origin,direction);
+    ++sheetCount;origin=offsetRay(primary.p,-primary.ng);primary=cameraHit(origin,direction);
   }
 #ifdef TEMPORAL
   if(temporal.translucency.x!=0&&sheetCount!=1) {
@@ -1182,7 +1196,7 @@ void main() {
 #ifdef SINGLE_SHEET_PASS
       &&sheetCount==1
 #endif
-     )primary=frame.target.w!=0?rasterPrimary(pixel,origin):closest(origin,direction);
+     )primary=frame.target.w!=0?rasterPrimary(pixel,origin):cameraHit(origin,direction);
   vec4 sharedIndirect=vec4(0);
 #ifdef SINGLE_SHEET_PASS
   uint directSeed=rng;
@@ -1248,7 +1262,7 @@ void main() {
       transparent+=tint*hit.color.a*surfaceLight;
       tint*=transmissionColor(hit.color.rgb,hit.tinted)*(1-hit.color.a);opacityProduct*=1-hit.color.a;
 #ifndef SINGLE_SHEET_PASS
-    if(layer+1<sheetCount)primary=closest(offsetRay(primary.p,-primary.ng),direction);
+    if(layer+1<sheetCount)primary=cameraHit(offsetRay(primary.p,-primary.ng),direction);
 #endif
   }
   if(frame.firefly.z!=0)imageStore(meterMaterial,pixel,vec4(transparentMaterial+tint*imageLoad(meterMaterial,pixel).rgb,1));
@@ -1279,8 +1293,13 @@ void main() {
     vec4 centerFar=frame.inverseCamera*vec4(centerNdc,0.99999,1);
     vec3 depthOrigin=centerNear.xyz/centerNear.w;
     vec3 depthDirection=normalize(centerFar.xyz/centerFar.w-depthOrigin);
+    // The centre sample has its own coverage: this depth is what raster
+    // overlays and depth-tested mask sources test.
+    uint centerCut=frame.cutConfig.x!=0u?cutCoverage(centerNdc*.5+.5):0u;
     for (uint layer=0;layer<32;++layer) {
+      cameraCut=centerCut;
       Hit hit=closestGeometry(depthOrigin,depthDirection,1e30,false);
+      cameraCut=0u;
       if (hit.t==1e30) break;
       if (!hit.blendedDraw) {
         vec4 clip=frame.camera*vec4(hit.p,1);

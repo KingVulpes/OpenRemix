@@ -176,8 +176,11 @@ namespace remix {
       };
       // Coverage at target resolution: the silhouette mask and two blur targets.
       Target targets[3];
-      // loadPass: maskPass keeping the target's contents.
+      // loadPass: maskPass keeping the target's contents. earlyPass,
+      // earlyLoadPass: the same two before the frame has a depth (the depth
+      // attachment is neither loaded nor stored; untested silhouettes only).
       VkRenderPass maskPass = VK_NULL_HANDLE, loadPass = VK_NULL_HANDLE, blurPass = VK_NULL_HANDLE;
+      VkRenderPass earlyPass = VK_NULL_HANDLE, earlyLoadPass = VK_NULL_HANDLE;
       VkPipelineLayout layout = VK_NULL_HANDLE; // blur and composite
       VkShaderModule maskFragment = VK_NULL_HANDLE, vertex = VK_NULL_HANDLE, blurFragment = VK_NULL_HANDLE,
                      compositeFragment = VK_NULL_HANDLE;
@@ -238,6 +241,7 @@ namespace remix {
         int32_t within = -1;           // the target limiting these sources
         bool clear = false;            // the target's first run
         uint32_t first = 0, count = 0; // in commands
+        bool early = false;            // also drawn before the scene is traced (cut)
       };
       std::vector<Run> runs;
       std::vector<Command> commands;
@@ -247,8 +251,23 @@ namespace remix {
       // Commands [0, split) are recorded before the coverage passes: every
       // world-layer draw that is not masked.
       size_t split = 0;
+      // Role CUT with a traced scene: the path tracer resolves primary
+      // visibility long before the coverage passes, so the runs of the groups
+      // that cut (and of the groups those are `within`) are marked early and
+      // drawn once more ahead of it, into the same targets, without the depth
+      // test (there is no depth yet). The tracer samples the targets; the
+      // coverage passes then draw every run again for the masked overlays.
+      struct Cut {
+        uint32_t count = 0;                             // groups that cut this frame
+        uint32_t targets[scene::Mask::maxCutGroups] = {}; // their targets, in slot order
+        // Four bits per group (1..32): its slot + 1, or 0 when it does not cut.
+        uint32_t slots[4] = {};
+        uint64_t digest = 0; // changes with the early sources
+      } cut;
     } mask;
     bool prepareMask();
+    // The coverage passes: every run, or (early) the runs marked early.
+    void recordMaskRuns(VkCommandBuffer command, bool early);
     void createMaskTargets(uint32_t count);
     void destroyMask();
     std::chrono::steady_clock::time_point epoch = std::chrono::steady_clock::now();

@@ -32,6 +32,16 @@ layout(location=5) out vec4 outPbr;
 #endif
 void main() {
   Surface s=surfaces[draw.surfaceIndex];
+  // A CUT instance is not seen where its mask group covers. The G-buffer is
+  // sampled at the jittered position; stable depth at the output pixel.
+  if(frame.cutConfig.x!=0u&&(s.state.w&0x3f0000u)!=0u) {
+#ifdef STABLE_DEPTH
+    vec2 screen=gl_FragCoord.xy/vec2(textureSize(textures[nonuniformEXT(frame.cutConfig.x-1u)],0));
+#else
+    vec2 screen=(gl_FragCoord.xy+draw.jitter)/vec2(frame.target.xy);
+#endif
+    if(cutSurface(s.state.w,cutCoverage(screen)))discard;
+  }
   // Match world-space ray facing independently of projection handedness.
   // The geometric normal includes mirrored instance transforms.
   vec4 projected=frame.camera*vec4(position,1);

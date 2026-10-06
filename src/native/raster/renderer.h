@@ -61,6 +61,21 @@ namespace remix {
     // first of them); then halos, then layers 2-3.
     uint32_t maskRuns() const;
     void recordMasks(VkCommandBuffer command);
+    // Role CUT (remixapi_InstanceInfoMaskEXT) with a traced scene: the
+    // coverage of the groups that hide traced instances from the camera, as
+    // the last prepare(command, true) planned it. count is zero when nothing
+    // cuts. Otherwise recordCutCoverage (own passes, outside a render pass)
+    // must precede the path tracer's passes, which sample images[slot] (zero
+    // or one, target resolution, no depth test) for the surfaces whose group
+    // has slots' nibble (group - 1) equal to slot + 1.
+    struct CutCoverage {
+      uint32_t count = 0;
+      VkDescriptorImageInfo images[scene::Mask::maxCutGroups] = {};
+      uint32_t slots[4] = {};
+      uint64_t digest = 0; // changes whenever the coverage may have
+    };
+    CutCoverage cutCoverage() const;
+    void recordCutCoverage(VkCommandBuffer command);
 
     // Halo outlines (remixapi_InstanceInfoHaloEXT). haloCount: groups the last
     // prepare() made ready, in composite order; zero when the frame has none.

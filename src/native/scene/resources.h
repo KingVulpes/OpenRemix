@@ -188,6 +188,9 @@ namespace remix {
     // in the order their coverage is drawn. Not part of draws().
     const std::vector<scene::MaskRun> &masks() const { return m_masks; }
     static constexpr size_t maxMaskRuns = 64, maxMaskDraws = 4096;
+    // Groups (bit group - 1) that this frame's traceable scene instances with
+    // role CUT name, wherever those instances are (draws() or the static set).
+    uint32_t cutGroups() const { return m_cutGroups; }
     const scene::Matrix &camera(uint32_t type = 0) const { return m_cameras[type]; }
     const scene::Matrix &view(uint32_t type = 0) const { return m_views[type]; }
     const scene::Matrix &projection(uint32_t type = 0) const { return m_projections[type]; }
@@ -279,6 +282,10 @@ namespace remix {
     void appendHalo(const scene::Halo &halo, std::vector<scene::Draw> &&draws, const float *origin = nullptr);
     std::vector<scene::MaskRun> m_masks;
     size_t m_maskDraws = 0;
+    uint32_t m_cutGroups = 0;
+    // Records the group of a scene instance with role CUT that can be traced
+    // (a rasterized one needs no coverage ahead of the frame).
+    void noteCut(const scene::InstanceDescription &description, const std::vector<scene::Draw> &draws);
     // Moves a mask source's draws into a run. It joins the latest run with
     // equal parameters unless a run after that one read this group's coverage
     // (its `within`) or wrote the coverage these sources are limited to: a

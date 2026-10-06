@@ -719,6 +719,12 @@ void RemixNativeRuntime::presented() {
                             [&] { return m_pathTracer->prepareScene(raster, m_traceOptions); });
         traceScene = &*prepared;
       }
+      // Role CUT (remixapi_InstanceInfoMaskEXT): the coverage that hides
+      // traced instances from the camera, ahead of primary visibility.
+      if (raster.cutCoverage().count) {
+        gpu::GpuScope scope(buffer, "Mask coverage (cut)", m_swapchainExtent);
+        raster.recordCutCoverage(buffer);
+      }
       // The tracer's passes nest in this range; its own time is what they
       // leave out (barriers, small uploads and readbacks between passes).
       gpu::GpuScope scope(buffer, "Path tracer: barriers, copies, other");

@@ -63,6 +63,39 @@ typedef struct remixapi_InstanceInfoHaloEXT {
   remixapi_Bool ignoreZ;    // visible through scene geometry; otherwise depth-tested against it
 } remixapi_InstanceInfoHaloEXT;
 
+// Optional InstanceInfo pNext: screen-space masking, what a host did with the
+// stencil buffer (a sight's reticle visible only through its lens, a tint
+// limited to a scope's opening). Groups are numbered by the host per frame.
+//   SOURCE  The instance only marks coverage for its group: it is not part of
+//           the scene (as a halo source). Coverage is its silhouette at
+//           display resolution, after alpha test, optionally depth-tested
+//           against the frame's opaque depth so nearer geometry cuts it.
+//           `within` (0: none) limits the coverage to that group's coverage
+//           (an intersection: stencil increments inside a marked area); that
+//           group's sources must precede.
+//   INSIDE / OUTSIDE  The instance is drawn as a raster-only overlay (with its
+//           blend and raster state), visible only where the group covers /
+//           does not cover. Not traced or lit.
+// UI draw commands can be masked the same way through their flags.
+#define REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_MASK_EXT ((remixapi_StructType)0x7fff100d)
+#define REMIXAPI_INSTANCE_MASK_SOURCE_EXT 0u
+#define REMIXAPI_INSTANCE_MASK_INSIDE_EXT 1u
+#define REMIXAPI_INSTANCE_MASK_OUTSIDE_EXT 2u
+#define REMIXAPI_INSTANCE_MASK_MAX_GROUP_EXT 32u
+typedef struct remixapi_InstanceInfoMaskEXT {
+  remixapi_StructType sType;
+  const void* pNext;
+  uint32_t group;           // 1..REMIXAPI_INSTANCE_MASK_MAX_GROUP_EXT
+  uint32_t role;            // REMIXAPI_INSTANCE_MASK_*_EXT
+  uint32_t within;          // SOURCE only: 0, or the group limiting this source's coverage
+  remixapi_Bool depthTest;  // SOURCE only
+} remixapi_InstanceInfoMaskEXT;
+// remixapi_UIDrawCommand::flags: bits 16..21 hold a mask group (0: unmasked);
+// the command is drawn only inside its coverage, or only outside with OUTSIDE.
+#define REMIXAPI_UI_NATIVE_MASK_GROUP_SHIFT 16u
+#define REMIXAPI_UI_NATIVE_MASK_GROUP_BITS 0x3f0000u
+#define REMIXAPI_UI_NATIVE_MASK_OUTSIDE 0x400000u
+
 // Optional TextureInfo pNext. With `generate` set and a single supplied level
 // (mipLevels = 1), the runtime completes the texture with a box-filtered mip
 // chain (sRGB colors averaged in linear space). For hosts that capture only a

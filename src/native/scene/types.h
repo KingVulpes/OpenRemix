@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <remix/remix_c.h>
 #include <unordered_map>
 #include <vector>
@@ -54,8 +55,18 @@ namespace remix {
       std::shared_ptr<CompressedPixels> compressed; // Set only for GPU-compressed textures.
       uint32_t levels() const { return compressed ? compressed->levels : uint32_t(mips.size()); }
     };
+    // In-place region updates of a texture (UI textures:
+    // remixapi_UpdateUITextureRegionEXT). `revision` counts them; `dirty`
+    // (x0, y0, x1, y1) is the union of regions not yet on the GPU. The lock
+    // guards both and the texels while they are written or uploaded.
+    struct TextureUpdates {
+      std::mutex lock;
+      uint64_t revision = 0;
+      uint32_t dirty[4] = {};
+    };
     struct Texture {
       Pixels pixels;
+      std::shared_ptr<TextureUpdates> updates; // Set for updatable textures only.
       mutable std::weak_ptr<Texture> linear;
       std::shared_ptr<Texture> encodedSource; // Keep a file-backed data view's weak path cache alive.
       mutable uint64_t contentHash = 0;

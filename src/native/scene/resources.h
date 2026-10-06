@@ -168,6 +168,8 @@ namespace remix {
     void setConcurrentConsumer(bool value) { m_concurrentConsumer = value; }
     void registerUiTexture(uint64_t id, uint32_t width, uint32_t height, remixapi_Format format,
                            const void *pixels, uint64_t size);
+    void updateUiTextureRegion(uint64_t id, uint32_t x, uint32_t y, uint32_t width, uint32_t height,
+                               remixapi_Format format, const void *pixels, uint32_t rowPitch);
     void freeUiTexture(uint64_t id);
     void submitUi(const remixapi_UIDrawList *info);
     void overlay(const void *pixels, uint32_t width, uint32_t height, remixapi_Format format, float opacity);

@@ -362,6 +362,18 @@ typedef struct remixapi_VisibilityPartitionEXT {
   uint32_t rowBytes;            // >= (clusterCount + 7) / 8
   const uint8_t* visibility;    // clusterCount rows; bit c of row s: cluster c potentially visible from s
 } remixapi_VisibilityPartitionEXT;
+// Rewrites a region of a texture registered with RegisterUITexture in place:
+// rows of width * 4 bytes, rowPitch apart, in R8G8B8A8 or B8G8R8A8 (the
+// registration's format family need not match). Only the region is uploaded
+// to the GPU, so hosts can forward partial updates of large UI surfaces
+// (e.g. an embedded browser's dirty rectangles) without re-registering them.
+typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_UpdateUITextureRegionEXT)(
+    remixapi_UITextureHandle id, uint32_t x, uint32_t y, uint32_t width, uint32_t height, remixapi_Format format,
+    const void* pixels, uint32_t rowPitch);
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_UpdateUITextureRegionEXT(
+    remixapi_UITextureHandle id, uint32_t x, uint32_t y, uint32_t width, uint32_t height, remixapi_Format format,
+    const void* pixels, uint32_t rowPitch);
+
 typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_SetVisibilityPartitionEXT)(const remixapi_VisibilityPartitionEXT* partition);
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_SetVisibilityPartitionEXT(const remixapi_VisibilityPartitionEXT* partition);
 typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_GetShadowStatisticsEXT)(remixapi_ShadowStatisticsEXT* statistics);

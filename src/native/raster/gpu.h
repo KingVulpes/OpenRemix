@@ -111,6 +111,7 @@ namespace remix {
       std::weak_ptr<scene::Texture> owner;
       std::unique_ptr<Image> data; // Null for a linear alias of another entry's image.
       VkImageView view = VK_NULL_HANDLE; // Sampled view: data->view or the alias.
+      uint64_t revision = 0;             // scene::TextureUpdates::revision uploaded
     };
     struct MaterialGpu {
       VkDevice device;
@@ -177,6 +178,9 @@ namespace remix {
                                  VkComponentMapping components = {});
     MeshGpu &mesh(const std::shared_ptr<scene::Surface> &source, VkCommandBuffer command);
     TextureGpu &texture(const std::shared_ptr<scene::Texture> &source, VkCommandBuffer command);
+    TextureGpu &createTexture(const std::shared_ptr<scene::Texture> &source, VkCommandBuffer command);
+    // Uploads the dirty region of an updatable texture into its image.
+    void refreshTexture(TextureGpu &value, const scene::Texture &source, VkCommandBuffer command);
     TextureGpu uploadPixels(const std::shared_ptr<scene::Texture> &owner, const scene::Pixels &p,
                             VkCommandBuffer command, VkImageCreateFlags flags);
     TextureGpu &compressedTexture(const std::shared_ptr<scene::Texture> &source, VkCommandBuffer command);

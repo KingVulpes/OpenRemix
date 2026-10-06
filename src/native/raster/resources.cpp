@@ -134,8 +134,69 @@ namespace remix {
                                                                 VkCommandBuffer command) {
     auto it = textures.find(source.get());
     if (it != textures.end()) {
+      if (source->updates)
+        refreshTexture(it->second, *source, command);
       return it->second;
     }
+    if (!source->updates)
+      return createTexture(source, command);
+    // An updatable texture's texels change under its lock: the image starts
+    // from a consistent state at the current revision.
+    auto &updates = *source->updates;
+    std::lock_guard lock(updates.lock);
+    auto &value = createTexture(source, command);
+    value.revision = updates.revision;
+    std::fill_n(updates.dirty, 4, 0u);
+    return value;
+  }
+
+  void RasterRenderer::Gpu::refreshTexture(TextureGpu &value, const Texture &source, VkCommandBuffer command) {
+    auto &updates = *source.updates;
+    std::lock_guard lock(updates.lock);
+    if (updates.revision == value.revision)
+      return;
+    value.revision = updates.revision;
+    const uint32_t x0 = updates.dirty[0], y0 = updates.dirty[1], x1 = updates.dirty[2], y1 = updates.dirty[3];
+    std::fill_n(updates.dirty, 4, 0u);
+    const auto &p = source.pixels;
+    // Region updates cover plain single-level RGBA8 images at full size.
+    if (x1 <= x0 || y1 <= y0 || !value.data || p.compressed || !p.hdrMips.empty() || p.mips.size() != 1 ||
+        value.data->width != p.width || value.data->height != p.height || x1 > p.width || y1 > p.height)
+      return;
+    const uint32_t width = x1 - x0, height = y1 - y0;
+    uploads.push_back(buffer(size_t(width) * height * 4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, [&](uint8_t *mapped) {
+      for (uint32_t y = 0; y < height; ++y)
+        std::memcpy(mapped + size_t(y) * width * 4, p.mips[0].data() + (size_t(y0 + y) * p.width + x0) * 4,
+                    size_t(width) * 4);
+    }));
+    // Earlier frames on this queue may still sample the image: wait for
+    // their reads, keep the untouched texels (no UNDEFINED transition).
+    VkImageMemoryBarrier barrier = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                                    .srcAccessMask = VK_ACCESS_SHADER_READ_BIT,
+                                    .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                    .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                    .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                    .image = value.data->image,
+                                    .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+                         nullptr, 1, &barrier);
+    const VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                    .imageOffset = {int32_t(x0), int32_t(y0), 0},
+                                    .imageExtent = {width, height, 1}};
+    vkCmdCopyBufferToImage(command, uploads.back()->buffer, value.data->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           1, &copy);
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0,
+                         nullptr, 1, &barrier);
+  }
+
+  RasterRenderer::Gpu::TextureGpu &RasterRenderer::Gpu::createTexture(const std::shared_ptr<Texture> &source,
+                                                                      VkCommandBuffer command) {
     const uint32_t limit = properties.limits.maxImageDimension2D;
     if (source->pixels.width > limit || source->pixels.height > limit)
       return textures.emplace(source.get(), uploadPixels(source, oversizedFallback(source->pixels, limit), command, 0))

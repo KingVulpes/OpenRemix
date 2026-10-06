@@ -22,6 +22,7 @@
 
 #include "api/state.h"
 #include "api/entrypoints.h"
+#include <remix/remix_native_ext.h>
 
 using namespace remix::api;
 
@@ -70,6 +71,16 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_RegisterUITexture(remixapi_UI
   }
   return resourceCall(
       [&](auto &raster) { raster.registerUiTexture(id, width, height, format, pixelData, dataSize); });
+}
+
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_UpdateUITextureRegionEXT(remixapi_UITextureHandle id, uint32_t x,
+                                                                            uint32_t y, uint32_t width,
+                                                                            uint32_t height, remixapi_Format format,
+                                                                            const void *pixels, uint32_t rowPitch) {
+  if (!id || !width || !height || !pixels)
+    return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+  return resourceCall(
+      [&](auto &raster) { raster.updateUiTextureRegion(id, x, y, width, height, format, pixels, rowPitch); });
 }
 
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_FreeUITexture(remixapi_UITextureHandle id) {

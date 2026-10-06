@@ -31,7 +31,54 @@ namespace remix {
     texture->pixels = decodeTexture(info);
     // Game UI uploads are display-color bytes, including legacy UNORM captures.
     texture->pixels.srgb = true;
+    texture->updates = std::make_shared<TextureUpdates>();
     m_uiTextures[id] = std::move(texture);
+  }
+
+  void NativeResources::updateUiTextureRegion(uint64_t id, uint32_t x, uint32_t y, uint32_t width, uint32_t height,
+                                              remixapi_Format format, const void *pixels, uint32_t rowPitch) {
+    const bool bgra = format == REMIXAPI_FORMAT_B8G8R8A8_UNORM || format == REMIXAPI_FORMAT_B8G8R8A8_SRGB;
+    if (!id || !width || !height || !pixels || uint64_t(rowPitch) < uint64_t(width) * 4 ||
+        (!bgra && format != REMIXAPI_FORMAT_R8G8B8A8_UNORM && format != REMIXAPI_FORMAT_R8G8B8A8_SRGB))
+      throw invalid;
+    auto it = m_uiTextures.find(id);
+    if (it == m_uiTextures.end() || !it->second->updates)
+      throw invalid;
+    auto &texture = *it->second;
+    auto &p = texture.pixels;
+    if (uint64_t(x) + width > p.width || uint64_t(y) + height > p.height || p.mips.size() != 1 ||
+        p.mips[0].size() != size_t(p.width) * p.height * 4)
+      throw invalid;
+    auto &updates = *texture.updates;
+    std::lock_guard lock(updates.lock);
+    const auto *source = static_cast<const uint8_t *>(pixels);
+    for (uint32_t row = 0; row < height; ++row) {
+      const uint8_t *from = source + size_t(row) * rowPitch;
+      uint8_t *to = p.mips[0].data() + (size_t(y + row) * p.width + x) * 4;
+      if (!bgra) {
+        std::memcpy(to, from, size_t(width) * 4);
+        continue;
+      }
+      for (uint32_t i = 0; i < width; ++i, from += 4, to += 4) {
+        to[0] = from[2];
+        to[1] = from[1];
+        to[2] = from[0];
+        to[3] = from[3];
+      }
+    }
+    texture.contentHash = 0;
+    if (updates.dirty[2] <= updates.dirty[0] || updates.dirty[3] <= updates.dirty[1]) {
+      updates.dirty[0] = x;
+      updates.dirty[1] = y;
+      updates.dirty[2] = x + width;
+      updates.dirty[3] = y + height;
+    } else {
+      updates.dirty[0] = std::min(updates.dirty[0], x);
+      updates.dirty[1] = std::min(updates.dirty[1], y);
+      updates.dirty[2] = std::max(updates.dirty[2], x + width);
+      updates.dirty[3] = std::max(updates.dirty[3], y + height);
+    }
+    ++updates.revision;
   }
 
   void NativeResources::freeUiTexture(uint64_t id) {

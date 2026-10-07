@@ -26,11 +26,13 @@ public:
 
 private:
   using Key = std::tuple<std::array<float, 3>, std::array<float, 4>,
-                         uint8_t, uint8_t, uint8_t, uint8_t, uint8_t>;
+                         uint8_t, uint8_t, uint8_t, uint8_t, uint8_t, uint8_t, std::array<float, 4>>;
   struct Entry {
     std::weak_ptr<Texture> texture;
     bool textured = false;
     std::shared_ptr<const Reduction> reduction;
+    std::weak_ptr<Texture> albedo; // self-illuminated materials only
+    bool colored = false;
   };
   struct SurfaceEntries {
     std::weak_ptr<Surface> owner;

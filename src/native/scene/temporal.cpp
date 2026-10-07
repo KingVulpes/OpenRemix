@@ -17,6 +17,8 @@ namespace remix::scene {
     add(m.tint);
     add(m.emission);
     add(m.suppressEmissionLight);
+    add(m.selfIllumination);
+    add(m.selfIlluminationScale);
     add(m.roughness);
     add(m.metallic);
     add(m.pbr);

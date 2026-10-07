@@ -51,7 +51,8 @@ void main() {
   // Footprint per output pixel (visibilityProbe.z: render/output size).
   uvGradX=dFdx(uv)*frame.visibilityProbe.z;
   uvGradY=dFdy(uv)*frame.visibilityProbe.z;
-  vec4 albedo=materialColor(s,uv,color);
+  vec3 emission,self;
+  vec4 albedo=materialSurface(s,uv,color,true,emission,self);
   if(!visibleAlpha(s,albedo.a))discard;
 #ifdef STABLE_DEPTH
   // Blended sheets do not occlude raster particles or coplanar feedback.
@@ -71,8 +72,8 @@ void main() {
   outNormal=vec4(materialNormal(s,uv,mat3(t,b,smoothNormal),normalize(-direction)),decalSurface(s)?4:blendedAtAlpha(s,albedo.a)?((s.state.w&32)!=0?3:2):1);
   vec2 rm=materialParameters(s,uv,albedo.rgb);
   outPbr=vec4(s.pbr.z!=0?rm.x:-1,rm.y,encodeGeometricNormal(n));
-  outAlbedo=albedo;
+  outAlbedo=vec4(albedo.rgb+self,albedo.a);
   outPrevious=vec4(previousPosition,s.previousVertices!=0?1:0);
-  outEmission=vec4(materialEmission(s,uv),triangleIdentity);
+  outEmission=vec4(emission,triangleIdentity>0?triangleIdentity:-selfShare(albedo.rgb,self));
 #endif
 }

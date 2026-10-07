@@ -28,14 +28,26 @@ namespace remix::scene {
   std::shared_ptr<const SurfaceEmissionCache::Reduction>
   SurfaceEmissionCache::reduce(const Draw &draw, const std::array<float, 4> &uv) {
     const auto &m = *draw.material;
-    const Key key{
-        {m.emission[0], m.emission[1], m.emission[2]}, uv, m.wrapU, m.wrapV, m.rows, m.columns, m.fps};
+    // Self-illumination also reads the albedo: its texture and tint are part
+    // of the entry (the scale is positive, so zero means "off").
+    const Key key{{m.emission[0], m.emission[1], m.emission[2]},
+                  uv,
+                  m.wrapU,
+                  m.wrapV,
+                  m.rows,
+                  m.columns,
+                  m.fps,
+                  m.selfIllumination,
+                  {m.selfIllumination ? m.selfIlluminationScale : 0, m.selfIllumination ? m.tint[0] : 0,
+                   m.selfIllumination ? m.tint[1] : 0, m.selfIllumination ? m.tint[2] : 0}};
+    const std::shared_ptr<Texture> albedo = m.selfIllumination ? m.texture : nullptr;
     auto &cache = surfaces[draw.surface.get()];
     if (cache.owner.lock() != draw.surface)
       cache = {draw.surface, {}};
     if (const auto found = cache.entries.find(key); found != cache.entries.end()) {
       const auto &entry = found->second;
-      if (entry.textured == bool(m.emissionTexture) && entry.texture.lock() == m.emissionTexture)
+      if (entry.textured == bool(m.emissionTexture) && entry.texture.lock() == m.emissionTexture &&
+          entry.colored == bool(albedo) && entry.albedo.lock() == albedo)
         return entry.reduction;
     }
     auto result = std::make_shared<Reduction>();
@@ -47,7 +59,7 @@ namespace remix::scene {
     // Bound sprite/setting variants without retaining old surfaces or textures.
     if (cache.entries.size() >= 8)
       cache.entries.clear();
-    cache.entries.insert_or_assign(key, Entry{m.emissionTexture, bool(m.emissionTexture), result});
+    cache.entries.insert_or_assign(key, Entry{m.emissionTexture, bool(m.emissionTexture), result, albedo, bool(albedo)});
     return result;
   }
 
@@ -127,7 +139,7 @@ namespace remix::scene {
     if (m.emission[0] == 0 && m.emission[1] == 0 && m.emission[2] == 0)
       return {};
     std::array<float, 3> result{};
-    if (!m.emissionTexture) {
+    if (!m.emissionTexture && !m.selfIllumination) {
       std::copy_n(m.emission, 3, result.begin());
       return result;
     }
@@ -139,16 +151,41 @@ namespace remix::scene {
     auto key = hashBytes(uv, sizeof(uv));
     if (auto it = m.emissionCache.find(key); it != m.emissionCache.end())
       return it->second;
-    const auto &p = m.emissionTexture->pixels;
     // Compressed textures keep no decoded mip 0; their <=64x64 preview level is
     // an area-filtered stand-in for these stratified triangle averages.
-    const auto *compressed = p.compressed.get();
-    const uint32_t width = compressed ? compressed->previewWidth : p.width;
-    const uint32_t height = compressed ? compressed->previewHeight : p.height;
-    const uint8_t *texels =
-        compressed ? compressed->preview.data() : p.mips.empty() ? nullptr : p.mips[0].data();
-    const float *hdrTexels = compressed ? (compressed->hdrPreview.empty() ? nullptr : compressed->hdrPreview.data())
-                                        : (p.hdrMips.empty() ? nullptr : p.hdrMips[0].data());
+    struct Map {
+      uint32_t width = 0, height = 0;
+      const uint8_t *texels = nullptr;
+      const float *hdrTexels = nullptr;
+      const std::array<float, 256> *channels = nullptr;
+      explicit operator bool() const { return width && height && (texels || hdrTexels); }
+      // Linear RGB and stored alpha.
+      std::array<float, 4> at(size_t index) const {
+        if (hdrTexels)
+          return {hdrTexels[index], hdrTexels[index + 1], hdrTexels[index + 2], hdrTexels[index + 3]};
+        return {(*channels)[texels[index]], (*channels)[texels[index + 1]], (*channels)[texels[index + 2]],
+                texels[index + 3] / 255.f};
+      }
+    };
+    auto open = [](const Texture *texture) {
+      Map map;
+      if (!texture)
+        return map;
+      const auto &p = texture->pixels;
+      const auto *compressed = p.compressed.get();
+      map.width = compressed ? compressed->previewWidth : p.width;
+      map.height = compressed ? compressed->previewHeight : p.height;
+      map.texels = compressed ? (compressed->preview.empty() ? nullptr : compressed->preview.data())
+                              : p.mips.empty() ? nullptr : p.mips[0].data();
+      map.hdrTexels = compressed ? (compressed->hdrPreview.empty() ? nullptr : compressed->hdrPreview.data())
+                                 : (p.hdrMips.empty() ? nullptr : p.hdrMips[0].data());
+      map.channels = &linearChannels[p.srgb];
+      return map;
+    };
+    const Map emissive = open(m.emissionTexture.get());
+    // remixapi_MaterialInfoSelfIlluminationEXT: the albedo colour (texture and
+    // constant; no vertex colours or texture stages here) and the mask.
+    const Map albedo = m.selfIllumination ? open(m.texture.get()) : Map{};
     auto coord = [](float value, uint32_t size, uint8_t wrap) {
       if (wrap <= 1)
         value -= std::floor(value);
@@ -161,7 +198,6 @@ namespace remix::scene {
     };
     // 16x16 stratified area samples, only on cache misses. Black texels count in
     // the average so small masks keep their coverage and do not gain energy.
-    const auto &channels = linearChannels[p.srgb];
     for (const auto &w : emissionSamples) {
       float u = 0, v = 0;
       for (unsigned i = 0; i < 3; ++i) {
@@ -170,11 +206,23 @@ namespace remix::scene {
       }
       if ((m.wrapU == 4 && (u < 0 || u > 1)) || (m.wrapV == 4 && (v < 0 || v > 1)))
         continue;
-      const auto index = 4 * (size_t(coord(v, height, m.wrapV)) * width + coord(u, width, m.wrapU));
-      for (unsigned c = 0; c < 3; ++c) {
-        const float value = hdrTexels ? hdrTexels[index + c] : channels[texels[index + c]];
-        result[c] += value * m.emission[c] / 256;
+      auto texel = [&](const Map &map) {
+        return map.at(4 * (size_t(coord(v, map.height, m.wrapV)) * map.width + coord(u, map.width, m.wrapU)));
+      };
+      std::array<float, 4> value{1, 1, 1, 1};
+      if (emissive)
+        value = texel(emissive);
+      if (m.selfIllumination) {
+        std::array<float, 4> color{1, 1, 1, 1};
+        if (albedo)
+          color = texel(albedo);
+        const float mask = m.selfIllumination == 2 ? color[3] : 1;
+        for (unsigned c = 0; c < 3; ++c)
+          value[c] = (m.selfIllumination == 3 ? value[3] : value[c]) * mask * m.selfIlluminationScale *
+                     std::clamp(color[c] * m.tint[c], 0.f, 1.f);
       }
+      for (unsigned c = 0; c < 3; ++c)
+        result[c] += value[c] * m.emission[c] / 256;
     }
     // Bound caches for arbitrary animated UVs; eviction affects only CPU work.
     if (m.emissionCache.size() >= 65536)

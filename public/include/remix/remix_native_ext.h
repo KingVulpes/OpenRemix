@@ -23,6 +23,41 @@ typedef struct remixapi_MaterialInfoEmissionEXT {
   remixapi_Bool suppressLightGeneration;
 } remixapi_MaterialInfoEmissionEXT;
 
+// Optional pNext on opaque MaterialInfo: self-illumination, as the "unlit" and
+// "self-illuminated" materials of rasterized games. A share of the surface
+// shows its own colour instead of reflecting light:
+//   m        = maskScale * mask * (emissive texture RGB, or 1 without one)
+//   emitted  = emissiveIntensity * emissiveColorConstant * colour * m
+//   albedo   = colour * (1 - clamp(mean of m's channels, 0, 1))
+// colour is the material's albedo as it would be lit (albedo texture and
+// constant, albedo tint, the draw's texture stages and vertex colours; linear).
+// mask is one (NONE), the albedo texture's alpha (ALBEDO_ALPHA: self-
+// illumination painted into the base texture's alpha channel) or the emissive
+// texture's alpha (EMISSIVE_ALPHA; its RGB is then not used). With this
+// extension the emissive texture is a mask: its values are used as stored, not
+// decoded from sRGB. m above one emits more than the colour (overbright).
+// So NONE without an emissive texture is a surface that only emits (unlit),
+// and emissiveIntensity * emissiveColorConstant = 1 emits what a white-lit
+// Lambertian surface of that colour reflects under uniform radiance 1.
+// The emitted light is seen directly and lights the scene like any emissive
+// material (MaterialInfoEmissionEXT can suppress the generated lights; their
+// power is estimated from the textures and constants, without vertex colours
+// or texture stages). Exposure metering and upscaler guides see `colour`.
+// Alpha test and blending still use the albedo alpha as without the extension.
+// Invalid arguments: a non-opaque material, an unknown mask, maskScale that is
+// not finite and positive, EMISSIVE_ALPHA without an emissive texture.
+// Path tracing only; the raster backend shows the colour as it always does.
+#define REMIXAPI_STRUCT_TYPE_MATERIAL_SELF_ILLUMINATION_EXT ((remixapi_StructType)0x7fff100e)
+#define REMIXAPI_SELF_ILLUMINATION_MASK_NONE_EXT 0u
+#define REMIXAPI_SELF_ILLUMINATION_MASK_ALBEDO_ALPHA_EXT 1u
+#define REMIXAPI_SELF_ILLUMINATION_MASK_EMISSIVE_ALPHA_EXT 2u
+typedef struct remixapi_MaterialInfoSelfIlluminationEXT {
+  remixapi_StructType sType;
+  const void* pNext;
+  uint32_t mask;    // REMIXAPI_SELF_ILLUMINATION_MASK_*_EXT
+  float maskScale;  // > 0
+} remixapi_MaterialInfoSelfIlluminationEXT;
+
 // Optional InstanceInfo pNext: the instance is a halo source. It is not part
 // of the scene (neither traced nor rasterized into the image; no identity,
 // motion or lights); the runtime draws its silhouette into a display-

@@ -524,6 +524,7 @@ namespace remix::trace {
                           : (material.normalEncoding == 3 ? 4 : 0) |
                                 uint32_t(material.normalTexture && material.normalTexture->pixels.twoChannel);
       std::copy_n(material.emission, 3, entry.emission);
+      entry.emission[3] = decode.selfIlluminationScale;
       return entry;
     }
 
@@ -585,6 +586,7 @@ namespace remix::trace {
         value.pbrTextures[i] = index->second + 1;
       }
       std::copy_n(material.emission, 3, value.emission);
+      value.emission[3] = decode.selfIlluminationScale;
       if (material.emissionTexture &&
           (material.emission[0] > 0 || material.emission[1] > 0 || material.emission[2] > 0)) {
         if (count() >= limit)

@@ -88,6 +88,10 @@ namespace remix {
       uint32_t normalEncoding = 0;
       float emission[3] = {};
       bool suppressEmissionLight = false;
+      // remixapi_MaterialInfoSelfIlluminationEXT: 0 off, else the mask + 1
+      // (1 none, 2 albedo alpha, 3 emissive alpha), and the mask scale.
+      uint8_t selfIllumination = 0;
+      float selfIlluminationScale = 1;
       mutable std::unordered_map<uint64_t, std::array<float, 3>> emissionCache;
       float tint[4] = {1, 1, 1, 1};
       uint32_t compare = 7;
@@ -122,7 +126,11 @@ namespace remix {
     struct MaterialDecode {
       static constexpr uint32_t roughnessFromSmoothness = 1, smoothnessInGreen = 2, metallicFromSpecular = 4,
                                 albedoTint = 8, albedoSrgb = 16;
+      // Self-illumination: enabled, and its mask (0 none, 1 albedo alpha,
+      // 2 emissive alpha) in the two bits above.
+      static constexpr uint32_t selfIllumination = 32, selfIlluminationMaskShift = 6;
       uint32_t flags = 0;
+      float selfIlluminationScale = 0;
       uint32_t specularMetal = 0;
       uint16_t tint[3] = {0x3c00, 0x3c00, 0x3c00}; // half bits
     };

@@ -63,6 +63,11 @@ namespace remix::scene {
       for (unsigned c = 0; c < 3; ++c)
         d.tint[c] = halfBits(m.albedoTint[c]);
     }
+    if (m.selfIllumination) {
+      d.flags |= MaterialDecode::selfIllumination |
+                 uint32_t(m.selfIllumination - 1) << MaterialDecode::selfIlluminationMaskShift;
+      d.selfIlluminationScale = m.selfIlluminationScale;
+    }
     return d;
   }
 } // namespace remix::scene
@@ -202,20 +207,37 @@ namespace remix {
         throw invalid;
       material->suppressEmissionLight = emission->suppressLightGeneration != 0;
     }
-    if (info.emissiveTexture && *info.emissiveTexture)
-      material->emissionTexture = texturePath(info.emissiveTexture);
+    const auto *self = static_cast<const remixapi_MaterialInfoSelfIlluminationEXT *>(
+        extension(info.pNext, REMIXAPI_STRUCT_TYPE_MATERIAL_SELF_ILLUMINATION_EXT));
+    const bool emissionMap = info.emissiveTexture && *info.emissiveTexture;
+    if (self) {
+      if (!opaque || self->mask > REMIXAPI_SELF_ILLUMINATION_MASK_EMISSIVE_ALPHA_EXT ||
+          !std::isfinite(self->maskScale) || !(self->maskScale > 0) ||
+          (self->mask == REMIXAPI_SELF_ILLUMINATION_MASK_EMISSIVE_ALPHA_EXT && !emissionMap))
+        throw invalid;
+      material->selfIllumination = uint8_t(self->mask + 1);
+      material->selfIlluminationScale = self->maskScale;
+    }
+    // A self-illumination mask holds values, not colours.
+    if (emissionMap)
+      material->emissionTexture = self ? dataTexturePath(info.emissiveTexture) : texturePath(info.emissiveTexture);
     auto previous = m_materials.find(info.hash);
     // A render thread may be filling the previous material's cache: it is
     // only carried over while frames render here (a CPU cache; the replacement
     // computes the same values on demand).
     if (!m_concurrentConsumer && previous != m_materials.end() &&
         previous->second->emissionTexture == material->emissionTexture &&
+        previous->second->selfIllumination == material->selfIllumination &&
+        previous->second->selfIlluminationScale == material->selfIlluminationScale &&
+        (!material->selfIllumination || (previous->second->texture == material->texture &&
+                                         std::equal(material->tint, material->tint + 3, previous->second->tint))) &&
         std::equal(material->emission, material->emission + 3, previous->second->emission) &&
         material->wrapU == previous->second->wrapU && material->wrapV == previous->second->wrapV)
       material->emissionCache = previous->second->emissionCache;
     auto equal = [&](const Material &a, const Material &b) {
       return a.texture == b.texture && a.emissionTexture == b.emissionTexture &&
-             a.suppressEmissionLight == b.suppressEmissionLight && a.roughnessTexture == b.roughnessTexture &&
+             a.suppressEmissionLight == b.suppressEmissionLight && a.selfIllumination == b.selfIllumination &&
+             a.selfIlluminationScale == b.selfIlluminationScale && a.roughnessTexture == b.roughnessTexture &&
              a.metallicTexture == b.metallicTexture && a.normalTexture == b.normalTexture &&
              a.normalEncoding == b.normalEncoding && a.roughness == b.roughness && a.metallic == b.metallic &&
              a.pbr == b.pbr && std::equal(a.emission, a.emission + 3, b.emission) &&

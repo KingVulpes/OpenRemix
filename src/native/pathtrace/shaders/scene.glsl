@@ -215,8 +215,7 @@ vec3 albedoTint(Surface s) {
   vec3 tint=vec3(unpackHalf2x16(s.material.z),unpackHalf2x16(s.material.w).x);
   return (s.material.x&16u)!=0?pow(tint,vec3(2.2)):tint;
 }
-vec4 materialColor(Surface s, vec2 uv, vec4 vertex) {
-  vec4 texel = materialTexel(s, s.textureState.x, uv);
+vec4 materialColor(Surface s, vec4 texel, vec4 vertex) {
   if ((s.material.x&8u)!=0) texel.rgb*=albedoTint(s);
   vertex.rgb = linearColor(vertex.rgb);
   uint op = s.state.x;
@@ -226,6 +225,32 @@ vec4 materialColor(Surface s, vec2 uv, vec4 vertex) {
   if ((s.state.w&8)!=0) result.a*=0.2; // Basic thin tinted-sheet approximation.
   if ((s.state.w&1)!=0) result.a=1;
   return clamp(result,0,1);
+}
+vec4 materialColor(Surface s, vec2 uv, vec4 vertex) {
+  return materialColor(s, materialTexel(s, s.textureState.x, uv), vertex);
+}
+// The colour a surface reflects, what it emits (when `emissive`) and `self`,
+// the part of its colour that emits instead of reflecting
+// (remixapi_MaterialInfoSelfIlluminationEXT: material.x bit 5, the mask in
+// bits 6-7, its scale in emission.w): colour = reflecting + self.
+vec4 materialSurface(Surface s, vec2 uv, vec4 vertex, bool emissive, out vec3 emission, out vec3 self) {
+  vec4 texel = materialTexel(s, s.textureState.x, uv);
+  vec4 color = materialColor(s, texel, vertex);
+  self = vec3(0);
+  if ((s.material.x&32u)==0) { emission = emissive ? materialEmission(s, uv) : vec3(0); return color; }
+  uint mask = (s.material.x>>6)&3u;
+  vec4 map = s.textureState.z==0 ? vec4(1) : materialTexel(s, s.textureState.z-1, uv);
+  vec3 m = (mask==2u ? vec3(map.a) : map.rgb) * (mask==1u ? texel.a : 1.) * s.emission.w;
+  emission = emissive ? s.emission.rgb*color.rgb*m : vec3(0);
+  self = color.rgb*clamp((m.r+m.g+m.b)/3, 0, 1);
+  color.rgb -= self;
+  return color;
+}
+// The G-buffer keeps the whole colour and, in the emission's alpha, the share
+// of it that is self-illuminated, negated (positive values are debug identities).
+float selfShare(vec3 reflecting, vec3 self) {
+  float whole = reflecting.r+reflecting.g+reflecting.b+self.r+self.g+self.b;
+  return whole>0 ? clamp((self.r+self.g+self.b)/whole, 0, 1) : 0;
 }
 bool decalSurface(Surface s) { return (s.state.w&64u)!=0; }
 bool coverageBlended(Surface s) { return (s.state.w&34u)==2u; }

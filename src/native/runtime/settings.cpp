@@ -156,6 +156,7 @@ namespace remix::config {
         TRACE(orcaMinSamples, 1, 64);
         TRACE(orcaMaxError, 0, 4);
         TRACE(indirectHistoryFrames, 0, 64);
+        TRACE(taaMotionRate, .05, 1);
         TRACE(movingGradients, 0, 1);
         TRACE(movingLightTolerance, .001, 10);
         TRACE(movingLightScale, .01, 1000);

@@ -114,6 +114,11 @@ namespace remix {
     float movingLightTolerance = .2f, movingLightScale = 3, movingGradientNoise = .5f;
     float movingHistoryStart = .5f, movingHistoryEnd = 3;
     float movingIndirectHistory = 1, movingNeighborHistory = 0, movingLocalHistory = 1;
+    // Native TAA: weight of the current frame where the reprojected history
+    // falls between texels (anything moving on screen). Resampling costs
+    // detail every frame; a higher rate keeps moving surfaces sharper and
+    // leaves fewer frames to anti-alias them (0.05 is the rate at rest).
+    float taaMotionRate = .15f;
     // Indirect-light denoiser history cap in frames (0 = NRD's default).
     uint32_t indirectHistoryFrames = 0;
     uint32_t restirCandidates = 8;     // initial light-tree candidates per pixel

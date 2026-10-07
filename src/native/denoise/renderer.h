@@ -85,7 +85,8 @@ namespace remix::denoise {
     // of the lighting's length scale in world units.
     float motionGradient[4] = {0, 1, .2f, 1 / 3.f};
     // A measured relative indirect change below this is sampling noise.
-    float motionNoise[4] = {.5f, 0, 0, 0};
+    // y: native TAA's current-frame weight where history is resampled half a texel off.
+    float motionNoise[4] = {.5f, .15f, 0, 0};
   };
   static_assert(sizeof(Frame) == 528 && offsetof(Frame, families) == 464 && offsetof(Frame, local) == 432 && offsetof(Frame, sun) == 400 && offsetof(Frame, shadow) == 416);
   // Local-light pass tuning (see trace::Options::localAntilag*).

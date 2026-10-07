@@ -39,6 +39,25 @@ vec4 historyFiltered(vec2 p) {
   ivec2 base=ivec2(floor(p));vec2 f=fract(p);
   return mix(mix(historyAt(base),historyAt(base+ivec2(1,0)),f.x),mix(historyAt(base+ivec2(0,1)),historyAt(base+1),f.x),f.y);
 }
+// Catmull-Rom over 4x4 history texels. Bilinear resampling low-passes the
+// history once per frame of subpixel motion: after the 20 frames a history
+// lasts, anything moving on screen (object or camera motion alike) had lost
+// about 40% of its texture detail. The lobes' overshoot is bounded by the
+// neighbourhood clip that follows; the blend rate (a) stays bilinear.
+vec4 historySharp(vec2 p) {
+  ivec2 base=ivec2(floor(p));vec2 f=fract(p);
+  vec4 wx=vec4(((-.5*f.x+1)*f.x-.5)*f.x,(1.5*f.x-2.5)*f.x*f.x+1,((-1.5*f.x+2)*f.x+.5)*f.x,(.5*f.x-.5)*f.x*f.x);
+  vec4 wy=vec4(((-.5*f.y+1)*f.y-.5)*f.y,(1.5*f.y-2.5)*f.y*f.y+1,((-1.5*f.y+2)*f.y+.5)*f.y,(.5*f.y-.5)*f.y*f.y);
+  vec3 sum=vec3(0),low=vec3(1e30),high=vec3(0);
+  for(int y=0;y<4;++y)for(int x=0;x<4;++x) {
+    vec3 c=historyAt(base+ivec2(x-1,y-1)).rgb;
+    sum+=c*wx[x]*wy[y];
+    if(x>0&&x<3&&y>0&&y<3){low=min(low,c);high=max(high,c);}
+  }
+  // No ringing past the four texels around the sample by more than their range.
+  vec3 range=high-low;
+  return vec4(clamp(sum,max(low-.5*range,vec3(0)),high+.5*range),historyFiltered(p).a);
+}
 bool guideHistoryValid(vec2 p,float z,vec3 normal) {
   ivec2 base=ivec2(floor(p));vec2 f=fract(p);float support=0;
   // A subpixel silhouette can land on the other side of a point-sampled guide.
@@ -265,10 +284,16 @@ void main() {
       valid=valid&&all(greaterThanEqual(guidePrev,vec2(-.5)))&&all(lessThan(guidePrev,vec2(size)-.5));
       valid=valid&&guideHistoryValid(guidePrev,minZ+mv.z,normalAt(nearest));
       if(valid) {
-        vec4 h=historyFiltered(prev);vec3 delta=h.rgb-m1;
+        vec4 h=historySharp(prev);vec3 delta=h.rgb-m1;
         float scale=max(1,max(abs(delta.x)/max(sigma.x,1e-5),max(abs(delta.y)/max(sigma.y,1e-5),abs(delta.z)/max(sigma.z,1e-5))));
         vec3 clipped=m1+delta/scale;
         rate=clamp(h.a/(1+h.a)+length(h.rgb-clipped),.05,1);
+        // Every resampling at a subpixel offset still costs detail, and a
+        // history of 20 frames compounds it: where the history lands between
+        // texels (most at half a texel) it is kept shorter
+        // (rtx.native.pathtrace.taaMotionRate).
+        vec2 between=1-abs(2*fract(prev)-1);
+        rate=max(rate,mix(.05,max(temporal.motionNoise.y,.05),max(between.x,between.y)));
         rate=max(rate,inputColor.a*.35);
         result=mix(clipped,current,rate);
       }

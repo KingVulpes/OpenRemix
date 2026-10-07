@@ -91,7 +91,7 @@ layout(set=1,binding=25,std140) uniform TemporalFrame {
   uvec4 families;
   vec4 motion; // moving surfaces: ramp start, end (pixels per frame), indirect floor, local floor
   vec4 motionGradient; // neighbour floor, gradients follow moving surfaces, tolerated change per frame, 1 / lighting length scale
-  vec4 motionNoise; // measured indirect change below this is sampling noise
+  vec4 motionNoise; // measured indirect change below this is sampling noise; native TAA blend rate under subpixel motion
 } temporal;
 // History confidence of a surface that moved `pixels` on its own this frame
 // (motion guide w - 1), never below `least`.

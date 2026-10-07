@@ -662,6 +662,7 @@ namespace remix {
     temporalFrame.motionGradient[2] = options.movingLightTolerance;
     temporalFrame.motionGradient[3] = options.sceneScale / options.movingLightScale;
     temporalFrame.motionNoise[0] = options.movingGradientNoise;
+    temporalFrame.motionNoise[1] = options.taaMotionRate;
     temporalFrame.flags[0] = history.reset() || frame.sun[2] != previousSun[7];
     temporalFrame.flags[1] = postReblur;
     temporalFrame.flags[2] = postTaa;

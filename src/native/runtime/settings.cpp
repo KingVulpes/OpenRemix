@@ -156,6 +156,15 @@ namespace remix::config {
         TRACE(orcaMinSamples, 1, 64);
         TRACE(orcaMaxError, 0, 4);
         TRACE(indirectHistoryFrames, 0, 64);
+        TRACE(movingGradients, 0, 1);
+        TRACE(movingLightTolerance, .001, 10);
+        TRACE(movingLightScale, .01, 1000);
+        TRACE(movingGradientNoise, 0, 100);
+        TRACE(movingHistoryStart, 0, 1000);
+        TRACE(movingHistoryEnd, 0, 1000);
+        TRACE(movingIndirectHistory, 0, 1);
+        TRACE(movingNeighborHistory, 0, 1);
+        TRACE(movingLocalHistory, 0, 1);
         TRACE(restirCandidates, 1, 32);
         TRACE(restirSpatialSamples, 0, 8);
         TRACE(restirSpatialRadius, 1, 100);

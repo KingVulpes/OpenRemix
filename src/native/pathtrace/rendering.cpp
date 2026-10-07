@@ -653,6 +653,15 @@ namespace remix {
     temporalFrame.jitter[2] = history.reset() ? temporalFrame.jitter[0] : previousJitter[0];
     temporalFrame.jitter[3] = history.reset() ? temporalFrame.jitter[1] : previousJitter[1];
     temporalFrame.hitDistance[3] = rrActive() ? 1.f : 0.f;
+    temporalFrame.motion[0] = options.movingHistoryStart;
+    temporalFrame.motion[1] = options.movingHistoryEnd;
+    temporalFrame.motion[2] = options.movingIndirectHistory;
+    temporalFrame.motion[3] = options.movingLocalHistory;
+    temporalFrame.motionGradient[0] = options.movingNeighborHistory;
+    temporalFrame.motionGradient[1] = options.movingGradients;
+    temporalFrame.motionGradient[2] = options.movingLightTolerance;
+    temporalFrame.motionGradient[3] = options.sceneScale / options.movingLightScale;
+    temporalFrame.motionNoise[0] = options.movingGradientNoise;
     temporalFrame.flags[0] = history.reset() || frame.sun[2] != previousSun[7];
     temporalFrame.flags[1] = postReblur;
     temporalFrame.flags[2] = postTaa;

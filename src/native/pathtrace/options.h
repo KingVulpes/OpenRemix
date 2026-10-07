@@ -87,6 +87,33 @@ namespace remix {
     // passed over for the next larger one (then SHARC, then tracing on):
     // a few disagreeing samples flash as a patch. 0 accepts any voxel.
     float orcaMaxError = .3f;
+    // Denoiser history of surfaces that move on their own (doors, characters,
+    // the view model; camera motion excluded). With movingGradients the
+    // indirect gradient pass follows such a surface along its motion vector
+    // and estimates how much its light changes per frame, relative to its
+    // level:
+    // - local lights: the unshadowed light of every local light at the
+    //   surface point's two poses (position and normal), exact up to shadows;
+    // - indirect light: the pose change itself, displacement over
+    //   movingLightScale (meters, see sceneScale: the distance over which
+    //   indirect light changes completely) plus half the normal's rotation in
+    //   radians; and the measured difference to last frame's sample (retraced
+    //   with the same random sequence) where it exceeds movingGradientNoise.
+    // History is kept as far as that change allows: confidence
+    // 1 - change / movingLightTolerance, which leaves 1 / (1 - confidence)
+    // frames, so the tolerance is about the relative lag error accepted on a
+    // moving surface (lower: less lag, more noise; higher: the reverse).
+    // On top of that a blanket rule can lower history with the surface's own
+    // speed on screen: confidence falls from 1 at movingHistoryStart to the
+    // values below at movingHistoryEnd (pixels per frame). 1 keeps the
+    // history, 0 drops it: movingIndirectHistory for the indirect passes on
+    // the moving surface, movingNeighborHistory for static surfaces within 16
+    // pixels of it at its depth (its contact shadow), movingLocalHistory for
+    // the local-light passes.
+    bool movingGradients = true;
+    float movingLightTolerance = .2f, movingLightScale = 3, movingGradientNoise = .5f;
+    float movingHistoryStart = .5f, movingHistoryEnd = 3;
+    float movingIndirectHistory = 1, movingNeighborHistory = 0, movingLocalHistory = 1;
     // Indirect-light denoiser history cap in frames (0 = NRD's default).
     uint32_t indirectHistoryFrames = 0;
     uint32_t restirCandidates = 8;     // initial light-tree candidates per pixel

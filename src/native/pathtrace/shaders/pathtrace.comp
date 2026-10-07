@@ -100,7 +100,7 @@ bool acceptCandidate(Surface s,uint triangle,vec2 bary) {
 }
 // color: what the surface reflects. self: the part of its colour that emits
 // instead (remixapi_MaterialInfoSelfIlluminationEXT), set with the emission.
-struct Hit { float t; vec3 p; vec3 n; vec4 color; bool blended; bool blendedDraw; bool decal; uint decalMode; bool tinted; bool cacheable; vec3 previousPosition; bool historyValid; vec3 emission; float identity; vec3 ng; vec3 wo; vec2 rm; bool pbr; vec3 self; };
+struct Hit { float t; vec3 p; vec3 n; vec4 color; bool blended; bool blendedDraw; bool decal; uint decalMode; bool tinted; bool cacheable; vec3 previousPosition; vec3 previousNormal; bool historyValid; vec3 emission; float identity; vec3 ng; vec3 wo; vec2 rm; bool pbr; vec3 self; };
 // Every query rejects back faces of one-sided surfaces ((state.w&4)==0 below).
 // With hardware face culling (target.z bit 2) one-sided instances enable
 // facing culling in the TLAS and this flag culls exactly those back faces in
@@ -144,6 +144,15 @@ void hitFootprint(vec3 direction,float t,vec3 e1,vec3 e2,vec2 du1,vec2 du2) {
   vec3 dx=axis*(r/max(abs(dot(direction,nh)),.02)),dy=cross(nh,axis)*r;
   uvGradX=(dot(cross(dx,e2),n)*du1+dot(cross(e1,dx),n)*du2)/nn;
   uvGradY=(dot(cross(dy,e2),n)*du1+dot(cross(e1,dy),n)*du2)/nn;
+}
+// A normal carried along with its triangle from one pose (edges e1, e2) to
+// another (f1, f2): rigid motion and skinning alike.
+vec3 carriedNormal(vec3 n,vec3 e1,vec3 e2,vec3 f1,vec3 f2) {
+  vec3 g=cross(e1,e2),h=cross(f1,f2);float g2=dot(g,g),h2=dot(h,h);
+  if(g2<=1e-30||h2<=1e-30)return n;
+  float d11=dot(e1,e1),d12=dot(e1,e2),d22=dot(e2,e2),r1=dot(n,e1),r2=dot(n,e2);
+  vec3 m=((r1*d22-r2*d12)*f1+(r2*d11-r1*d12)*f2)/g2+dot(n,g)*inversesqrt(g2)*inversesqrt(h2)*h;
+  float l=dot(m,m);return l>1e-12?m*inversesqrt(l):n;
 }
 void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, inout Hit hit,bool motion,float minimum) {
   rayQueryEXT query;
@@ -197,7 +206,7 @@ void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, ino
   }
   hit.decal=enableDecals&&decalSurface(s);hit.decalMode=(s.state.w>>7)&3u;hit.blendedDraw=(s.state.w&2)!=0;hit.blended=blendedAtAlpha(s,hit.color.a);hit.cacheable=(s.state.w&16)!=0;
   hit.tinted=(s.state.w&32)!=0;
-  hit.previousPosition=hit.p;hit.historyValid=false;
+  hit.previousPosition=hit.p;hit.previousNormal=hit.n;hit.historyValid=false;
 // The visibility pass captures foreground and background motion before shading.
 #if defined(TEMPORAL) && !defined(TRANSPARENCY_PASS)
   if(motion&&s.previousVertices!=0) {
@@ -206,12 +215,13 @@ void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, ino
     vec3 pb=previous.v[s.indices.i[tri+1]].position.xyz;
     vec3 pc=previous.v[s.indices.i[tri+2]].position.xyz;
     hit.previousPosition=(s.previousModel*vec4(pa+bary.x*(pb-pa)+bary.y*(pc-pa),1)).xyz;
+    hit.previousNormal=carriedNormal(hit.n,model*vec4(b-a,0),model*vec4(c-a,0),(s.previousModel*vec4(pb-pa,0)).xyz,(s.previousModel*vec4(pc-pa,0)).xyz);
     hit.historyValid=true;
   }
 #endif
 }
 Hit closestGeometry(vec3 origin,vec3 direction,float maximum,bool motion,float minimum) {
-  Hit hit; hit.t=maximum; hit.p=vec3(0);hit.n=vec3(0);hit.color=vec4(0);hit.blended=false;hit.blendedDraw=false;hit.decal=false;hit.decalMode=0u;hit.cacheable=false;hit.previousPosition=vec3(0);hit.historyValid=false;
+  Hit hit; hit.t=maximum; hit.p=vec3(0);hit.n=vec3(0);hit.color=vec4(0);hit.blended=false;hit.blendedDraw=false;hit.decal=false;hit.decalMode=0u;hit.cacheable=false;hit.previousPosition=vec3(0);hit.previousNormal=vec3(0);hit.historyValid=false;
   hit.emission=vec3(0);hit.self=vec3(0);hit.tinted=false;
   hit.identity=0;hit.ng=vec3(0);hit.wo=-direction;hit.rm=vec2(1,0);hit.pbr=false;
   if ((frame.target.z&1)!=0) queryScene(staticScene,origin,direction,hit,motion,minimum);
@@ -300,7 +310,7 @@ Hit rasterPrimary(ivec2 pixel, vec3 origin) {
   hit.t=normal.w==0?1e30:length(position.xyz-origin);
   hit.p=position.xyz;hit.n=normal.w==0?vec3(0):normalize(normal.xyz);
   hit.color=imageLoad(primaryAlbedo,pixel);hit.blended=normal.w>=2;hit.blendedDraw=hit.blended;hit.decal=normal.w==4;hit.decalMode=0u;hit.tinted=normal.w==3;hit.cacheable=false;
-  hit.previousPosition=previous.xyz;hit.historyValid=previous.w!=0;
+  hit.previousPosition=previous.xyz;hit.previousNormal=hit.n;hit.historyValid=previous.w!=0;
   hit.emission=imageLoad(primaryEmission,pixel).rgb;
   // Alpha: a debug identity, or minus the self-illuminated share of the colour.
   float identity=imageLoad(primaryEmission,pixel).a;
@@ -891,10 +901,27 @@ float movedLightEstimate(LightEmitter light,Hit hit) {
       *max(0,dot(hit.n,direction))*localFalloff(distance2)*frame.localScale.x;
 }
 // A surface moving on its own (a door swinging) changes the light it
-// receives; its reprojected history describes it at its old place. NRD
-// follows its motion vectors, and the gradient passes cannot compare it
-// (its depth changed), so lower its history with the motion itself.
-float movingSurfaceConfidence(float pixels) { return 1-smoothstep(.5,3.,pixels); }
+// receives; its reprojected history describes it at its old place and NRD
+// follows its motion vectors. The gradient pass measures that change on the
+// surface (below and CONFIDENCE_PASS); this blanket rule on its speed is
+// optional (rtx.native.pathtrace.movingLocalHistory below 1).
+float movingSurfaceConfidence(float pixels) { return movingConfidence(pixels,temporal.motion.w); }
+// Unshadowed local light on a surface point now and where it was a frame ago
+// (position and normal): its change relative to its level, summed over the
+// lights (a strided subset when there are more than 256).
+float movedReceiverLight(Hit hit,vec3 previousPoint,uint seed) {
+  uint count=frame.localConfig.x;
+  if(!enableLocalLights||count==0||frame.lightEmitters==0)return 0;
+  LightEmitters emitters=LightEmitters(frame.lightEmitters);
+  uint stride=(count+255u)/256u;
+  Hit before=hit;before.p=previousPoint;before.n=hit.previousNormal;
+  float change=0,level=0;
+  for(uint i=seed%stride;i<count;i+=stride) {
+    float now=movedLightEstimate(emitters.data[i],hit),was=movedLightEstimate(emitters.data[i],before);
+    change+=abs(now-was);level+=max(now,was);
+  }
+  return level>0?change/level:0;
+}
 float localHistoryConfidence(Hit hit,vec3 signal) {
   uint count=frame.visibilityConfig.y;
   if(count==0||frame.movedLights==0||hit.t>=1e30)return 1;
@@ -1089,10 +1116,42 @@ void main() {
   if(any(greaterThanEqual(pixel,imageSize(gradientA))))return;
   ivec2 fullPixel=min(pixel*5+2,ivec2(frame.target.xy)-1);
   vec3 origin,direction;
-  ray((vec2(fullPixel)+.5+temporal.jitter.zw)/vec2(frame.target.xy)*2-1,temporal.previousInverseCamera,origin,direction);
+  // Last frame's sample of this pixel, retraced in the current scene. A
+  // surface that stayed in place is under last frame's camera ray. One that
+  // moved on its own is not: it is found through the motion guide (the
+  // current pixel whose surface was here, by fixed-point iteration) and hit
+  // with a current camera ray at the place its sample point has now, so its
+  // path starts at the same point of the surface with the same random
+  // sequence and the difference to last frame is its change of lighting.
+  // Its tile goes to its own image (movingA): the signed difference (the
+  // filter averages sampling noise out and keeps a change of the whole
+  // surface) and the level it is relative to; the relative change of the
+  // unshadowed local light between the point's two poses; and how far the
+  // point moved through the light around it (its displacement over the
+  // lighting's length scale plus half its normal's rotation in radians), an
+  // estimate of the indirect change too small to measure from one sample.
+  // (Without this the depth test below discards every moving surface and its
+  // stale history is kept: a swinging door left a lit ghost of its arc.)
+  ivec2 targetSize=ivec2(frame.target.xy);
+  vec2 source=vec2(fullPixel);
+  for(int i=0;i<3;++i)source=vec2(fullPixel)-imageLoad(guideMotion,clamp(ivec2(round(source)),ivec2(0),targetSize-1)).xy;
+  ivec2 moved=clamp(ivec2(round(source)),ivec2(0),targetSize-1);
+  vec4 movedMotion=imageLoad(guideMotion,moved);
+  bool follow=temporal.motionGradient.y!=0&&temporal.flags.x==0&&movedMotion.w>1.1&&!loadMirror(moved).replaced;
+  vec2 previousSample=vec2(fullPixel)+.5+temporal.jitter.zw;
+  if(follow)ray((previousSample-movedMotion.xy)/vec2(targetSize)*2-1,frame.inverseCamera,origin,direction);
+  else ray(previousSample/vec2(targetSize)*2-1,temporal.previousInverseCamera,origin,direction);
   rng=hash(uint(fullPixel.x)+uint(fullPixel.y)*frame.target.x+hash(temporal.target.z));
   Hit hit=cameraHit(origin,direction);
   for(uint layer=0;layer<32&&hit.blended;++layer){origin=offsetRay(hit.p,-hit.ng);hit=cameraHit(origin,direction);}
+  // The followed surface point must be the one last frame's sample saw.
+  vec3 previousPoint=hit.p;
+  if(follow&&hit.t<1e30) {
+    previousPoint=hit.previousPosition;
+    vec4 clip=temporal.previousCamera*vec4(previousPoint,1);
+    vec2 offset=(clip.xy/clip.w*.5+.5)*vec2(targetSize)-previousSample;
+    if(!hit.historyValid||clip.w<=0||dot(offset,offset)>2.25)hit.t=1e30;
+  }
   vec3 current=vec3(0);vec3 firstDir,specular;float firstDist;
   // The previous frame's path: the same random sequence and lobe selection.
   if(hit.t<1e30)for(uint i=0;i<frame.config.x;++i) {
@@ -1102,10 +1161,21 @@ void main() {
   }
   vec3 old=imageLoad(previousLighting,fullPixel).rgb;
   float delta=dot(abs(current-old),vec3(.2126,.7152,.0722));
-  float z=hit.t<1e30?abs((temporal.previousView*vec4(hit.p,1)).z):65000;
+  float z=hit.t<1e30?abs((temporal.previousView*vec4(previousPoint,1)).z):65000;
   float prevZ=imageLoad(previousDepth,fullPixel).x;
   vec3 normal=hit.t<1e30?normalize(mat3(temporal.previousView)*hit.n):vec3(0,0,1);
   if(temporal.flags.x!=0||abs(z-prevZ)>max(.02*z,.01))delta=0;
+  vec4 movingDelta=vec4(0);
+  if(follow) {
+    if(hit.t<1e30&&temporal.flags.x==0&&abs(z-prevZ)<=max(.02*z,.01)) {
+      float now=dot(current,vec3(.2126,.7152,.0722)),was=dot(old,vec3(.2126,.7152,.0722));
+      // y > 0 marks a followed tile.
+      float pose=length(hit.p-previousPoint)*temporal.motionGradient.w+.5*acos(clamp(dot(hit.n,hit.previousNormal),-1,1));
+      movingDelta=vec4(now-was,max(now,was)+1e-6,movedReceiverLight(hit,previousPoint,rng),pose);
+    }
+    delta=0;
+  }
+  imageStore(movingA,pixel,movingDelta);
   imageStore(gradientA,pixel,vec4(delta,encodeNormal(normal),min(z,65000)));return;
 #else
 #ifdef TRANSPARENCY_PASS

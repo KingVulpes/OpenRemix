@@ -67,6 +67,12 @@ layout(set=1,binding=52,rgba32ui) uniform uimage2D psrMirror;
 layout(set=1,binding=53,rgba16f) uniform image2D pbrSpecularSh1;
 layout(set=1,binding=54,rgba16f) uniform image2D pbrDiffuseOutputSh1;
 layout(set=1,binding=55,rgba16f) uniform image2D pbrSpecularOutputSh1;
+// The gradient pass's tiles on surfaces that move on their own (ping-pong
+// with the gradient images): signed indirect difference to last frame, its
+// level (> 0: a followed tile), relative change of the unshadowed local
+// light, and the pose-change estimate of the indirect change.
+layout(set=1,binding=56,rgba16f) uniform image2D movingA;
+layout(set=1,binding=57,rgba16f) uniform image2D movingB;
 layout(set=1,binding=25,std140) uniform TemporalFrame {
   mat4 view;
   mat4 previousView;
@@ -83,7 +89,15 @@ layout(set=1,binding=25,std140) uniform TemporalFrame {
   uvec4 local;
   uvec4 translucency;
   uvec4 families;
+  vec4 motion; // moving surfaces: ramp start, end (pixels per frame), indirect floor, local floor
+  vec4 motionGradient; // neighbour floor, gradients follow moving surfaces, tolerated change per frame, 1 / lighting length scale
+  vec4 motionNoise; // measured indirect change below this is sampling noise
 } temporal;
+// History confidence of a surface that moved `pixels` on its own this frame
+// (motion guide w - 1), never below `least`.
+float movingConfidence(float pixels,float least) {
+  return max(least,1-smoothstep(temporal.motion.x,max(temporal.motion.y,temporal.motion.x+1e-3),pixels));
+}
 vec3 safeRadiance(vec3 v) { return any(isnan(v))||any(isinf(v))?vec3(0):clamp(v,vec3(0),vec3(65000)); }
 vec2 encodeNormal(vec3 n) {
   n/=max(abs(n.x)+abs(n.y)+abs(n.z),1e-10);

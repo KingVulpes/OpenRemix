@@ -53,10 +53,12 @@ namespace remix::denoise {
     // SH directions of the PBR pass (REBLUR_DIFFUSE_SPECULAR_SH). Its SH0
     // images are Sh0, PbrSpecularInput, PbrDiffuseOutput and PbrSpecularOutput.
     PbrSpecularSh1, PbrDiffuseOutputSh1, PbrSpecularOutputSh1,
+    // Gradient tiles of surfaces that move on their own (see inputs.glsl).
+    MovingA, MovingB,
     ImageCount
   };
   static_assert(BaseImageCount == 22 && PbrSpecularInput == 29 && FrontNormal == 37 && PbrSpecularSh1 == 49 &&
-                    ImageCount == 52,
+                    MovingA == 52 && ImageCount == 54,
                 "Update the matching inputs.glsl bindings when changing image slots");
   // Shared std140 constants. Matrices are nonjittered, in Vulkan framebuffer coordinates.
   struct Frame {
@@ -72,8 +74,20 @@ namespace remix::denoise {
     // foreground NRD, opaque lighting reuse, PSR mirrors, PBR lobe selection (set by Renderer::begin)
     uint32_t translucency[4] = {};
     uint32_t families[4] = {}; // torch/emissive counts, torch/emissive response frames
+    // History of surfaces that move on their own (TraceOptions::moving*):
+    // ramp start and end in pixels per frame, then the confidence kept at the
+    // ramp's end by the indirect passes on the moving surface itself, and by
+    // the local-light passes.
+    float motion[4] = {.5f, 3.f, 1, 1};
+    // The same for static surfaces next to a moving one (indirect passes);
+    // the gradient pass follows moving surfaces (0/1); the relative change of
+    // their light per frame at which their history is dropped; the inverse
+    // of the lighting's length scale in world units.
+    float motionGradient[4] = {0, 1, .2f, 1 / 3.f};
+    // A measured relative indirect change below this is sampling noise.
+    float motionNoise[4] = {.5f, 0, 0, 0};
   };
-  static_assert(sizeof(Frame) == 480 && offsetof(Frame, families) == 464 && offsetof(Frame, local) == 432 && offsetof(Frame, sun) == 400 && offsetof(Frame, shadow) == 416);
+  static_assert(sizeof(Frame) == 528 && offsetof(Frame, families) == 464 && offsetof(Frame, local) == 432 && offsetof(Frame, sun) == 400 && offsetof(Frame, shadow) == 416);
   // Local-light pass tuning (see trace::Options::localAntilag*).
   struct LocalTuning {
     float antilagSigma = 2, antilagSensitivity = 3;

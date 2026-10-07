@@ -13,6 +13,23 @@ vec3 viewPosition(vec2 uv,float z) {
   return ray.xyz*(z/max(abs(ray.z),1e-8));
 }
 vec4 gradient(ivec2 p) { return (pass.step&1u)!=0?imageLoad(gradientA,p):imageLoad(gradientB,p); }
+vec4 movingGradient(ivec2 p) { return (pass.step&1u)!=0?imageLoad(movingA,p):imageLoad(movingB,p); }
+// The filtered moving-surface tiles (movingB) at a full-resolution pixel:
+// bilinear over the followed ones. y == 0: none there.
+vec4 movingAt(vec2 pixel) {
+  ivec2 small=imageSize(movingB)-1;
+  vec2 at=(pixel+.5)/5-.5;ivec2 base=ivec2(floor(at));vec2 f=at-vec2(base);
+  vec4 sum=vec4(0);float weight=0;
+  for(int y=0;y<2;++y)for(int x=0;x<2;++x) {
+    vec4 v=imageLoad(movingB,clamp(base+ivec2(x,y),ivec2(0),small));
+    float w=(x==0?1-f.x:f.x)*(y==0?1-f.y:f.y)*step(1e-12,v.y);
+    sum+=v*w;weight+=w;
+  }
+  return weight>1e-4?sum/weight:vec4(0);
+}
+// History confidence for a relative change of light per frame: the history
+// length it leaves (1/(1-c) frames) lags by at most the tolerated error.
+float changeConfidence(float change) { return clamp(1-change/max(temporal.motionGradient.z,1e-4),0,1); }
 vec3 compressed(vec3 c) { return c/(1+max(c.r,max(c.g,c.b))); }
 float uncharted(float x) { return ((x*(.22*x+.03)+.002)/(x*(.22*x+.3)+.06))-(.01/.3); }
 float toSrgb(float x) { return x<=.0031308?12.92*x:1.055*pow(x,1.0/2.4)-.055; }
@@ -49,6 +66,7 @@ void main() {
     vec4 center=gradient(p);vec3 N=decodeNormal(center.yz);
     vec3 X=viewPosition((vec2(p)*5+2.5)/vec2(size),center.w);
     float sum=1;float value=center.x;
+    vec4 moving=movingGradient(p),movingValue=moving;float movingSum=1;
     for(int y=-2;y<=2;++y)for(int x=-2;x<=2;++x) {
       if(x==0&&y==0)continue;
       ivec2 q=clamp(p+ivec2(x,y)*int(pass.step),ivec2(0),small-1);vec4 v=gradient(q);
@@ -56,8 +74,15 @@ void main() {
       float distance=abs(dot(N,Xq-X));float scale=max(.02*abs(center.w),.02);
       float w=exp(-.5*float(x*x+y*y))*pow(max(dot(N,decodeNormal(v.yz)),0),2)*smoothstep(1,0,distance/scale);
       value+=v.x*w;sum+=w;
+      // Moving surfaces: followed tiles average among themselves.
+      if(moving.y>0) {
+        vec4 m=movingGradient(q);
+        if(m.y>0){movingValue+=m*w;movingSum+=w;}
+      }
     }
     center.x=value/sum;
+    moving=moving.y>0?movingValue/movingSum:vec4(0);
+    if((pass.step&1u)!=0)imageStore(movingB,p,moving);else imageStore(movingA,p,moving);
     if(pass.step==5) {
       center.x=1-toSrgb(clamp(uncharted(center.x)/uncharted(11.2),0,1));
       // The NRD sample's dither: a Bayer offset below one accumulated frame,
@@ -101,22 +126,46 @@ void main() {
                 mix(imageLoad(gradientB,clamp(base+ivec2(0,1),ivec2(0),small)).x,imageLoad(gradientB,clamp(base+1,ivec2(0),small)).x,f.x),f.y);
     // The current pixel whose surface was at p (inverse warp of the motion
     // guide, fixed-point iteration), then that surface's own motion: motion
-    // w is 0 when invalid, else 1 + the pixels it moved by itself. A moving
-    // surface's indirect history is stale (the gradient pass cannot compare
-    // it: its depth changed under the previous ray), and a moving object
-    // also changes the indirect light right next to it (the contact shadow
-    // under a swinging door) on static surfaces whose gradients the
-    // 1/5-resolution pass misses: rings up to 16 pixels, fading.
+    // w is 0 when invalid, else 1 + the pixels it moved by itself. The
+    // gradient pass followed such a surface: its tiles hold the change of its
+    // light per frame (the pose estimate plus what the measured difference
+    // exceeds sampling noise by), and history is kept as far as that change
+    // allows. PBR surfaces carry their local light in the same signal.
+    // A blanket reduction with the speed is optional (movingIndirectHistory).
+    // A moving object also changes the indirect light right next to it (the
+    // contact shadow under a swinging door) on static surfaces whose
+    // gradients the 1/5-resolution pass misses: rings up to 16 pixels, fading.
     vec2 source=vec2(p);
     for(int i=0;i<3;++i)source=vec2(p)-imageLoad(guideMotion,clamp(ivec2(round(source)),ivec2(0),size-1)).xy;
     ivec2 s=clamp(ivec2(round(source)),ivec2(0),size-1);
-    float moving=max(imageLoad(guideMotion,s).w-1,0);
-    for(int ring=1;ring<=3;++ring)for(int k=0;k<8;++k) {
+    float own=max(imageLoad(guideMotion,s).w-1,0),near=0,z=depthAt(s);
+    if(own>.1&&temporal.motionGradient.y!=0) {
+      vec4 m=movingAt(vec2(p));
+      if(m.y>0) {
+        c*=changeConfidence(m.w+max(abs(m.x)/m.y-temporal.motionNoise.x,0));
+        if(imageLoad(guideAlbedo,s).a>1.5&&temporal.local.x!=0)c=min(c,changeConfidence(m.z));
+      }
+    }
+    if(temporal.motionGradient.x<1)for(int ring=1;ring<=3;++ring)for(int k=0;k<8;++k) {
       float angle=.785398*float(k)+.4*float(ring);
       ivec2 q=clamp(s+ivec2(round(vec2(cos(angle),sin(angle))*float(ring*5+1))),ivec2(0),size-1);
-      moving=max(moving,max(imageLoad(guideMotion,q).w-1,0)*(1-.2*float(ring)));
+      // Only a mover at this surface's depth is next to it: not the view
+      // model in front of a distant wall.
+      float apart=abs(depthAt(q)-z)/max(z,1e-6);
+      near=max(near,max(imageLoad(guideMotion,q).w-1,0)*(1-.2*float(ring))*(1-smoothstep(.1,.25,apart)));
     }
-    c*=1-smoothstep(.5,3.,moving);
+    // A moving surface's own pixels take its rule alone (the rings would
+    // otherwise find its neighbouring pixels).
+    c*=own>temporal.motion.x?movingConfidence(own,temporal.motion.z)
+                            :min(movingConfidence(own,temporal.motion.z),movingConfidence(near,temporal.motionGradient.x));
+    // The local-light passes read their confidence at the current pixel: a
+    // moving surface there keeps history as far as the change of its
+    // unshadowed local light allows (the tiles are indexed by where it was).
+    vec4 here=imageLoad(guideMotion,p);
+    if(here.w>1.1&&temporal.motionGradient.y!=0&&temporal.flags.x==0) {
+      vec4 m=movingAt(vec2(p)+here.xy);
+      if(m.y>0)imageStore(localConfidence,p,vec4(min(imageLoad(localConfidence,p).x,changeConfidence(m.z))));
+    }
     imageStore(confidence,p,vec4(temporal.flags.x!=0?0:c));return;
   }
   if(pass.mode==2) {

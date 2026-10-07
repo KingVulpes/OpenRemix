@@ -16,7 +16,7 @@ bool translucentRadiance(Hit hit,out vec3 radiance) {
   float material;
   vec4 normal=NRD_FrontEnd_UnpackNormalAndRoughness(imageLoad(guideNormal,pixel),material);
   if(dot(normal.xyz,hit.n)<.999||dot(normal.xyz,hit.ng)<.98||
-     abs(normal.w-(hit.pbr?hit.rm.x:1))>.025||abs(material-(hit.pbr?1:0))>.1)return false;
+     abs(normal.w-(hit.pbr?hit.rm.x:1))>.025||abs(material-(hit.pbr?0:2))>.1)return false;
   vec3 diffuseFactor=hit.color.rgb,specularFactor=vec3(1);
   if(hit.pbr) {
     vec2 ndc=(vec2(pixel)+.5+frame.jitter.xy)/vec2(frame.target.xy)*2-1;

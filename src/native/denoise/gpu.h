@@ -111,6 +111,7 @@ namespace remix::denoise {
     float sigmaMilliseconds{}, localMilliseconds{};
     remixapi_ShadowStatisticsEXT shadowStats{.structSize = sizeof(shadowStats)};
     uint32_t quietFrames = 0, warmupFrames = 32;
+    float smoothedFrameMilliseconds = 0; // history lengths follow a smoothed frame rate
     remixapi_DenoisingStatisticsEXT stats{.structSize = sizeof(stats)};
 #ifdef REMIX_HAS_NRD
     std::unique_ptr<NrdPass> indirect, shadow, localDirect, emissiveDirect, pbr, foreground;

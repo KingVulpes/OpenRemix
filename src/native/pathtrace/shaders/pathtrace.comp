@@ -520,11 +520,28 @@ bool cacheRadiance(Hit hit,float footprint,out vec3 radiance) {
 // The sparse path's first opaque vertex: throughput and radiance so far.
 Hit orcaFirst;vec3 orcaDirection,orcaThroughput,orcaBefore;bool orcaRecorded=false;
 #endif
-vec3 continuation(Hit primary,out vec3 firstDirection,out float firstDistance,out vec3 specular) {
+// Indirect radiance at a primary surface, per unit of its material factor.
+// lobe -1 samples the BRDF mixture and returns the specular share of the
+// result; 0 (diffuse) or 1 (specular) samples that PBR lobe alone, chosen by
+// the caller with the given probability (NRD's probabilistic lobe selection).
+// pathDistance is the hit distance for the denoiser (NRD sample, TraceOpaque):
+// the first segment, then further segments only while the path keeps
+// reflecting in lit, mirror-like surfaces (the virtual image moves away), fading
+// out with the diffuse-like scattering so far (diffuseMotion: 0 mirror-like,
+// 1 diffuse). Zero without a valid sample. The sample's thin-lens shortening
+// behind curved reflectors is left out: hits carry no curvature.
+vec3 continuation(Hit primary,int lobe,float probability,out vec3 firstDirection,out float pathDistance,out vec3 specular) {
   profilePath(0u);
   uint rouletteState=enableRussianRoulette?hash(rng^0x726f756cu):0u;
-  vec3 specularWeight;
-  vec3 weight=materialSample(primary,firstDirection,specularWeight);firstDistance=0;specular=vec3(0);
+  vec3 specularWeight=vec3(0),weight;
+  if(lobe<0||!primary.pbr) {
+    lobe=-1;probability=1;
+    weight=materialSample(primary,firstDirection,specularWeight);
+  } else {
+    weight=lobeSample(primary,lobe==0,firstDirection)/probability;
+    if(lobe==1)specularWeight=weight;
+  }
+  pathDistance=0;specular=vec3(0);
   if(primary.pbr&&!any(greaterThan(weight,vec3(0)))){profilePath(6u);return vec3(0);}
   vec3 direction=firstDirection,origin=offsetRay(primary.p,primary.ng);
   vec3 throughput=primary.pbr?weight/max(materialFactor(primary),vec3(1e-6)):vec3(1),result=vec3(0);
@@ -534,14 +551,18 @@ vec3 continuation(Hit primary,out vec3 firstDirection,out float firstDistance,ou
     result=throughput*environmentRadiance(firstDirection)*shadow(origin,firstDirection);
   vec3 previousVertex=primary.p;
 #ifdef SHARC_QUERY
-  float footprintScale=cacheFootprint(primary);
+  // A diffuse-lobe ray has the footprint of a diffuse surface.
+  float footprintScale=lobe==0?1.:cacheFootprint(primary);
 #endif
+  const vec3 luma=vec3(.2126,.7152,.0722);
+  float diffuseMotion=0;
   uint bounce=0,layers=0;
   if(frame.config.y==0)profilePath(8u);
   for(uint step=0;step<164&&bounce<frame.config.y;++step) {
     if(layers==0)profilePath(1u+bounce);
     Hit hit=secondaryHit(origin,direction);
-    if(bounce==0)firstDistance+=hit.t;
+    // Also through blended layers, and to the sky (a reflection distance).
+    pathDistance+=hit.t*(1-smoothstep(0.,.2,diffuseMotion));
     if(hit.t==1e30) { if(frame.skyRadiance.w==0)result+=throughput*environmentRadiance(direction);profilePath(5u);break; }
     if(hit.blended&&random()>=hit.color.a) {
       if(++layers>=32){profilePath(9u);break;}
@@ -576,9 +597,23 @@ vec3 continuation(Hit primary,out vec3 firstDirection,out float firstDistance,ou
       result+=throughput*cached;profilePath(7u);break; // Cached outgoing radiance already includes this hit's direct light.
     }
 #endif
-    result+=throughput*direct(hit,false);
+    vec3 lighting=throughput*direct(hit,false);
+    result+=lighting;
+    if(diffuseMotion<.2) {
+      // The next segment counts by how much of the light so far comes from
+      // this vertex and how mirror-like the path is here: the vertex itself
+      // and the lobe that reached it (exact for a selected primary lobe).
+      float importance=dot(lighting,luma)/(dot(result,luma)+1e-6);
+      float like=diffuseLikeMotion(hit);
+      if(bounce==0)like=mix(like,1.,1-dot(specularWeight,luma)/max(dot(weight,luma),1e-20));
+      diffuseMotion+=1-importance*(1-like);
+    }
     if(++bounce>=frame.config.y){profilePath(8u);break;}
-    throughput*=materialSample(hit,direction);previousVertex=hit.p;origin=offsetRay(hit.p,hit.ng);layers=0;
+    vec3 hitSpecular;
+    vec3 hitWeight=materialSample(hit,direction,hitSpecular);
+    // A diffusely sampled continuation ends the distance as well.
+    diffuseMotion+=1-dot(hitSpecular,luma)/max(dot(hitWeight,luma),1e-20);
+    throughput*=hitWeight;previousVertex=hit.p;origin=offsetRay(hit.p,hit.ng);layers=0;
 #ifdef SHARC_QUERY
     footprintScale=cacheFootprint(hit);
 #endif
@@ -606,29 +641,66 @@ vec3 continuation(Hit primary,out vec3 firstDirection,out float firstDistance,ou
   if(orcaRecorded&&all(greaterThan(orcaThroughput,vec3(0))))
     orcaInsert(orcaFirst,orcaDirection,(result-orcaBefore)/orcaThroughput);
 #endif
-  clampLighting(primary,result,specular,frame.firefly.y);
+  // The firefly limit applies to the lobe's estimate, not to the compensation
+  // for the pixels that sampled the other lobe.
+  clampLighting(primary,result,specular,frame.firefly.y/probability);
   return result;
 }
-vec3 continuation(Hit primary,out vec3 firstDirection,out float firstDistance) {
-  vec3 specular;return continuation(primary,firstDirection,firstDistance,specular);
+vec3 continuation(Hit primary,out vec3 firstDirection,out float pathDistance,out vec3 specular) {
+  return continuation(primary,-1,1.,firstDirection,pathDistance,specular);
+}
+vec3 continuation(Hit primary,out vec3 firstDirection,out float pathDistance) {
+  vec3 specular;return continuation(primary,firstDirection,pathDistance,specular);
 }
 #ifdef TEMPORAL
 float nearestDistance(float a,float b) { return a>0&&b>0?min(a,b):max(a,b); }
+// NRD's probabilistic lobe selection at a PBR primary surface (NRD sample,
+// TraceOpaque): each path samples one lobe, 0 diffuse or 1 specular, and only
+// that lobe's signal receives its radiance (over the probability) and hit
+// distance; REBLUR reconstructs the other from the 3x3 neighbourhood. A Bayer
+// pattern guarantees both lobes in every such neighbourhood, and a per-frame
+// shift turns its fixed holes into temporal noise. -1: both lobes come from
+// one BRDF-mixture sample (legacy surfaces; no REBLUR; DLSS-RR; and while the
+// local firefly filter keeps REBLUR's diffuse prepass off, which probabilistic
+// signals require).
+int primaryLobe(Hit primary,ivec2 pixel,uint sequence,uint sampleIndex,out float probability) {
+  probability=1;
+  if(!primary.pbr||temporal.translucency.w==0)return -1;
+  float diffuseProbability=1-specularProbability(primary);
+  uvec2 p=uvec2(pixel)&3u;
+  uint bayer=(((p.y&1u)<<2)|((p.x&1u)<<3)|((p.y&2u)>>1)|(p.x&2u))+(bitfieldReverse(sequence)>>28);
+  // Several samples of one pixel are spread evenly over the choice.
+  float choice=fract((float(bayer&15u)+.5)/16+inversesqrt(7.)+float(sequence*10368889u)/16777216.
+                     +float(sampleIndex)/float(frame.config.x));
+  bool diffuseLobe=choice<diffuseProbability;
+  probability=diffuseLobe?diffuseProbability:1-diffuseProbability;
+  return diffuseLobe?0:1;
+}
 // Local NEE and continuation share one PBR diffuse/specular history. The same
 // selected light, visibility and PDF feed both lobes; no additional rays.
+// Their SH direction is the mean direction of the light samples.
 void addPbrLocal(ivec2 pixel,Hit hit,vec3 total,vec3 specular,float distance) {
   vec3 factor=materialFactor(hit);
   vec3 diffuseFactor=imageLoad(guideAlbedo,pixel).rgb;
   vec3 specularFactor=imageLoad(pbrSpecularFactor,pixel).rgb;
   vec4 diffuse=REBLUR_BackEnd_UnpackRadianceAndNormHitDist(imageLoad(sh0,pixel));
   vec4 reflected=REBLUR_BackEnd_UnpackRadianceAndNormHitDist(imageLoad(pbrSpecularInput,pixel));
-  diffuse.rgb+=max(total-specular,vec3(0))*factor/diffuseFactor;
-  reflected.rgb+=specular*factor/specularFactor;
+  vec3 addedDiffuse=safeRadiance(max(total-specular,vec3(0))*factor/diffuseFactor);
+  vec3 addedSpecular=safeRadiance(specular*factor/specularFactor);
+  diffuse.rgb+=addedDiffuse;
+  reflected.rgb+=addedSpecular;
   float z=imageLoad(guideDepth,pixel).x;
   diffuse.a=nearestDistance(diffuse.a,REBLUR_FrontEnd_GetNormHitDist(distance,z,temporal.hitDistance.xyz,1));
   reflected.a=nearestDistance(reflected.a,REBLUR_FrontEnd_GetNormHitDist(distance,z,temporal.hitDistance.xyz,hit.rm.x));
   imageStore(sh0,pixel,REBLUR_FrontEnd_PackRadianceAndNormHitDist(diffuse.rgb,diffuse.a,true));
   imageStore(pbrSpecularInput,pixel,REBLUR_FrontEnd_PackRadianceAndNormHitDist(reflected.rgb,reflected.a,true));
+  // SH1 is linear: luminance (YCoCg Y, as NRD packs it) times direction.
+  vec3 direction=localLightDirection.xyz/max(localLightDirection.w,1e-20);
+  Mirror mirror=loadMirror(pixel);
+  if(mirror.replaced)direction=mirrorVector(mirror,direction);
+  const vec3 luma=vec3(.25,.5,.25);
+  imageStore(sh1,pixel,imageLoad(sh1,pixel)+vec4(direction*dot(addedDiffuse,luma),0));
+  imageStore(pbrSpecularSh1,pixel,imageLoad(pbrSpecularSh1,pixel)+vec4(direction*dot(addedSpecular,luma),0));
 }
 #endif
 void ray(vec2 ndc,mat4 inverseCamera,out vec3 origin,out vec3 direction) {
@@ -715,38 +787,78 @@ vec3 rrSpecularAlbedo(vec3 f0,float roughness,float NoV) {
 }
 struct IndirectResult {
   vec3 radiance; uint state;
-  vec4 packed0; vec4 packed1;
-  vec3 specular; float distance;
+  float distance; // nearest specular path distance of a PBR surface (DLSS-RR)
 };
 struct IndirectTransport { vec3 radiance; uint state; };
 layout(buffer_reference, std430, buffer_reference_align=16) buffer IndirectResults {
   IndirectTransport pixels[];
 };
-IndirectResult traceIndirect(Hit primary,vec3 diffuseFactor,vec3 specularFactor) {
-  IndirectResult result=IndirectResult(vec3(0),rng,vec4(0),vec4(0),vec3(0),0);
+#ifdef TEMPORAL
+// REBLUR's indirect inputs of a pixel without samples: sky, blended primaries
+// and, with the specular path distance kept, DLSS-RR frames.
+void clearIndirect(ivec2 pixel,float specularHit) {
+  imageStore(sh0,pixel,vec4(0));imageStore(sh1,pixel,vec4(0));
+  imageStore(pbrSpecularInput,pixel,vec4(0,0,0,specularHit));
+  if(temporal.flags.y!=0)imageStore(pbrSpecularSh1,pixel,vec4(0));
+}
+#endif
+// Traces the indirect samples of an opaque primary surface and writes their
+// REBLUR inputs: diffuse SH in sh0/sh1 (the whole signal of a legacy surface)
+// and, for PBR surfaces, specular SH in pbrSpecularInput/pbrSpecularSh1. Each
+// sample is written as it is traced (later ones add to the images), so no
+// packed signal stays live across the next sample's ray queries. A zero hit
+// distance marks a sample its lobe did not receive; several samples keep the
+// nearest valid one.
+IndirectResult traceIndirect(Hit primary,ivec2 pixel,vec3 diffuseFactor,vec3 specularFactor) {
+  IndirectResult result=IndirectResult(vec3(0),rng,0);
   if(primary.t<1e30&&!primary.blended) {
     for(uint i=0;i<frame.config.x;++i) {
-      vec3 firstDir,sampleSpecular;float firstDist;vec3 sampleLight=continuation(primary,firstDir,firstDist,sampleSpecular);
+      vec3 firstDir,sampleSpecular;float pathDistance;
+#ifdef TEMPORAL
+      float probability;
+      int lobe=primaryLobe(primary,pixel,frame.config.z,i,probability);
+      vec3 sampleLight=continuation(primary,lobe,probability,firstDir,pathDistance,sampleSpecular);
+#else
+      vec3 sampleLight=continuation(primary,firstDir,pathDistance,sampleSpecular);
+#endif
       result.radiance+=sampleLight/float(frame.config.x);
 #ifdef TEMPORAL
-      if(temporal.hitDistance.w!=0) {
-        if(primary.pbr)result.distance=nearestDistance(result.distance,firstDist);
-        continue;
+      // The selection is a function of the pixel and frame: not carried
+      // through the path either.
+      lobe=primaryLobe(primary,pixel,frame.config.z,i,probability);
+      if(primary.pbr&&lobe!=0)result.distance=nearestDistance(result.distance,pathDistance);
+      if(temporal.hitDistance.w!=0)continue;
+      // A surface seen in a mirror is denoised in its virtual space, like its guides.
+      Mirror mirror=loadMirror(pixel);
+      if(mirror.replaced)firstDir=mirrorVector(mirror,firstDir);
+      float z=abs((temporal.view*vec4(primary.p,1)).z),scale=1/float(frame.config.x);
+      vec4 diffuse0=vec4(0),diffuse1=vec4(0),specular0=vec4(0),specular1=vec4(0);
+      if(lobe!=1) {
+        vec3 diffuse=primary.pbr?max(sampleLight-sampleSpecular,vec3(0))*materialFactor(primary)/diffuseFactor:sampleLight;
+        diffuse0=REBLUR_FrontEnd_PackSh(diffuse,REBLUR_FrontEnd_GetNormHitDist(pathDistance,z,temporal.hitDistance.xyz,1),firstDir,diffuse1,true);
+        diffuse0.rgb*=scale;diffuse1*=scale;
       }
-      float z=abs((temporal.view*vec4(primary.p,1)).z);
-      if(primary.pbr) {
-        vec3 factor=materialFactor(primary);
-        result.packed0+=REBLUR_FrontEnd_PackRadianceAndNormHitDist(max(sampleLight-sampleSpecular,vec3(0))*factor/diffuseFactor,
-          REBLUR_FrontEnd_GetNormHitDist(firstDist,z,temporal.hitDistance.xyz,1),true)/float(frame.config.x);
-        result.specular+=sampleSpecular*factor/specularFactor/float(frame.config.x);
-        // Preserve a first-bounce reflection distance, including sky misses.
-        result.distance=nearestDistance(result.distance,firstDist);
-      } else {
-        vec4 one;result.packed0+=REBLUR_FrontEnd_PackSh(sampleLight,REBLUR_FrontEnd_GetNormHitDist(firstDist,z,temporal.hitDistance.xyz,1),firstDir,one,true)/float(frame.config.x);
-        result.packed1+=one/float(frame.config.x);
+      if(primary.pbr&&lobe!=0) {
+        specular0=REBLUR_FrontEnd_PackSh(sampleSpecular*materialFactor(primary)/specularFactor,
+          REBLUR_FrontEnd_GetNormHitDist(pathDistance,z,temporal.hitDistance.xyz,primary.rm.x),firstDir,specular1,true);
+        specular0.rgb*=scale;specular1*=scale;
       }
+      if(i!=0) {
+        vec4 before=imageLoad(sh0,pixel);
+        diffuse0=vec4(before.rgb+diffuse0.rgb,nearestDistance(before.a,diffuse0.a));diffuse1+=imageLoad(sh1,pixel);
+        before=imageLoad(pbrSpecularInput,pixel);
+        specular0=vec4(before.rgb+specular0.rgb,nearestDistance(before.a,specular0.a));
+        if(temporal.flags.y!=0)specular1+=imageLoad(pbrSpecularSh1,pixel);
+      }
+      imageStore(sh0,pixel,diffuse0);imageStore(sh1,pixel,diffuse1);
+      imageStore(pbrSpecularInput,pixel,specular0);
+      if(temporal.flags.y!=0)imageStore(pbrSpecularSh1,pixel,specular1);
 #endif
     }
+#ifdef TEMPORAL
+    if(temporal.hitDistance.w!=0)
+      clearIndirect(pixel,primary.pbr?REBLUR_FrontEnd_GetNormHitDist(result.distance,abs((temporal.view*vec4(primary.p,1)).z),temporal.hitDistance.xyz,primary.rm.x):0);
+#endif
   }
   result.state=rng;
   return result;
@@ -795,9 +907,9 @@ float localHistoryConfidence(Hit hit,vec3 signal) {
 vec3 sheetIndirect(ivec2 pixel,Hit hit,vec3 direction) {
 #ifdef TEMPORAL
   if(temporal.flags.y==0)return vec3(0);
-  if(imageLoad(guideAlbedo,pixel).a>1.5)
-    return REBLUR_BackEnd_UnpackRadianceAndNormHitDist(imageLoad(pbrDiffuseOutput,pixel)).rgb;
-  NRD_SG sg=REBLUR_BackEnd_UnpackSh(imageLoad(outSh0,pixel),imageLoad(outSh1,pixel).xyz);
+  NRD_SG sg=imageLoad(guideAlbedo,pixel).a>1.5
+    ?REBLUR_BackEnd_UnpackSh(imageLoad(pbrDiffuseOutput,pixel),imageLoad(pbrDiffuseOutputSh1,pixel).xyz)
+    :REBLUR_BackEnd_UnpackSh(imageLoad(outSh0,pixel),imageLoad(outSh1,pixel).xyz);
   return max(NRD_SG_ResolveDiffuse(sg,hit.n,-direction,1),vec3(0));
 #else
   return vec3(0);
@@ -886,14 +998,10 @@ void main() {
   if(primary.t<1e30&&primary.pbr)
     NRD_MaterialFactors(primary.n,primary.wo,primary.color.rgb*(1-primary.rm.y),
       mix(vec3(.04),primary.color.rgb,primary.rm.y),primary.rm.x,diffuseFactor,specularFactor);
-  IndirectResult result=traceIndirect(primary,diffuseFactor,specularFactor);
+  IndirectResult result=traceIndirect(primary,pixel,diffuseFactor,specularFactor);
   IndirectResults(frame.indirectResults).pixels[uint(pixel.x)+uint(pixel.y)*frame.target.x]=
     IndirectTransport(result.radiance,result.state);
-  imageStore(sh0,pixel,result.packed0);imageStore(sh1,pixel,result.packed1);
-  bool opaque=primary.t<1e30&&!primary.blended;
-  float z=opaque?abs((temporal.view*vec4(primary.p,1)).z):1e10;
-  float specularHit=opaque&&primary.pbr?REBLUR_FrontEnd_GetNormHitDist(result.distance,z,temporal.hitDistance.xyz,primary.rm.x):0;
-  imageStore(pbrSpecularInput,pixel,REBLUR_FrontEnd_PackRadianceAndNormHitDist(result.specular,specularHit,true));
+  if(primary.t==1e30||primary.blended)clearIndirect(pixel,0);
   return;
 #elif defined(SPLIT_LIGHTING_PASS)
   if(any(greaterThanEqual(pixel,ivec2(frame.target.xy))))return;
@@ -974,8 +1082,13 @@ void main() {
   rng=hash(uint(fullPixel.x)+uint(fullPixel.y)*frame.target.x+hash(temporal.target.z));
   Hit hit=cameraHit(origin,direction);
   for(uint layer=0;layer<32&&hit.blended;++layer){origin=offsetRay(hit.p,-hit.ng);hit=cameraHit(origin,direction);}
-  vec3 current=vec3(0);vec3 firstDir;float firstDist;
-  if(hit.t<1e30)for(uint i=0;i<frame.config.x;++i)current+=continuation(hit,firstDir,firstDist)/float(frame.config.x);
+  vec3 current=vec3(0);vec3 firstDir,specular;float firstDist;
+  // The previous frame's path: the same random sequence and lobe selection.
+  if(hit.t<1e30)for(uint i=0;i<frame.config.x;++i) {
+    float probability;
+    int lobe=primaryLobe(hit,fullPixel,temporal.target.z,i,probability);
+    current+=continuation(hit,lobe,probability,firstDir,firstDist,specular)/float(frame.config.x);
+  }
   vec3 old=imageLoad(previousLighting,fullPixel).rgb;
   float delta=dot(abs(current-old),vec3(.2126,.7152,.0722));
   float z=hit.t<1e30?abs((temporal.previousView*vec4(hit.p,1)).z):65000;
@@ -1013,9 +1126,9 @@ void main() {
   if(frame.firefly.z!=0)imageStore(meterMaterial,pixel,vec4(primary.t<1e30?primary.color.rgb:vec3(1),1));
   vec3 local=vec3(0),localSpecular=vec3(0);float localDistance=0;
   vec3 emissive=vec3(0),emissiveSpecular=vec3(0);float emissiveDistance=0;
-  vec3 indirect=vec3(0),primaryDirect=vec3(0);vec4 packed0=vec4(0),packed1=vec4(0);
+  vec3 indirect=vec3(0),primaryDirect=vec3(0);
 #ifdef TEMPORAL
-  vec3 diffuseFactor=vec3(1),specularFactor=vec3(1),specularIndirect=vec3(0);
+  vec3 diffuseFactor=vec3(1),specularFactor=vec3(1);
   float specularDistance=0;
   if(primary.t<1e30&&primary.pbr)
     NRD_MaterialFactors(primary.n,primary.wo,primary.color.rgb*(1-primary.rm.y),
@@ -1044,14 +1157,13 @@ void main() {
     } else {
       IndirectResult result;
 #ifdef TEMPORAL
-      result=traceIndirect(primary,diffuseFactor,specularFactor);
+      result=traceIndirect(primary,pixel,diffuseFactor,specularFactor);
 #else
-      result=traceIndirect(primary,vec3(1),vec3(1));
+      result=traceIndirect(primary,pixel,vec3(1),vec3(1));
 #endif
       indirect=result.radiance;rng=result.state;
 #ifdef TEMPORAL
-      packed0=result.packed0;packed1=result.packed1;
-      specularIndirect=result.specular;specularDistance=result.distance;
+      specularDistance=result.distance;
 #endif
     }
   }
@@ -1120,13 +1232,12 @@ void main() {
     imageStore(rrHitDistance,pixel,vec4(opaque&&primary.pbr&&specularDistance>0?min(specularDistance,65504):65504));
   }
   imageStore(guideMotion,pixel,mv);imageStore(guideDepth,pixel,vec4(z));
-  imageStore(guideNormal,pixel,NRD_FrontEnd_PackNormalAndRoughness(N,opaque&&primary.pbr?primary.rm.x:1,opaque&&primary.pbr?(primary.rm.y>.5?2:1):0));
+  // NRD material IDs (NRD sample: default 0, metal 1): diffuse never mixes
+  // across them, specular does between PBR dielectrics and metals
+  // (minMaterialForSpecular = 1). Legacy surfaces have their own ID.
+  imageStore(guideNormal,pixel,NRD_FrontEnd_PackNormalAndRoughness(N,opaque&&primary.pbr?primary.rm.x:1,opaque&&primary.pbr?(primary.rm.y>.5?1:0):2));
   imageStore(guideAlbedo,pixel,opaque?vec4(primary.pbr?diffuseFactor:materialFactor(primary),primary.pbr?2:1):vec4(0));
-  if(!separateIndirect) {
-    imageStore(sh0,pixel,packed0);imageStore(sh1,pixel,packed1);
-    float specularHit=opaque&&primary.pbr?REBLUR_FrontEnd_GetNormHitDist(specularDistance,z,temporal.hitDistance.xyz,primary.rm.x):0;
-    imageStore(pbrSpecularInput,pixel,REBLUR_FrontEnd_PackRadianceAndNormHitDist(specularIndirect,specularHit,true));
-  }
+  if(!separateIndirect&&!opaque)clearIndirect(pixel,0); // traceIndirect wrote the others
   imageStore(pbrSpecularFactor,pixel,vec4(specularFactor,0));
 #ifdef SIGMA_PASS
   imageStore(shadowPenumbra,pixel,vec4(SIGMA_FrontEnd_PackPenumbra(blockerDistance,frame.sun.x)));

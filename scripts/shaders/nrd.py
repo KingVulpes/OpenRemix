@@ -1,4 +1,4 @@
-"""Pinned DXC diffuse SH, PBR radiance and SIGMA permutations."""
+"""Pinned DXC diffuse SH, PBR SH, radiance and SIGMA permutations."""
 from pathlib import Path
 import json, os, re, struct, subprocess, tempfile
 from storage_writes import widen
@@ -25,6 +25,9 @@ IDENTIFIERS += [s.replace("NRD_MODE_SH", "NRD_MODE_RADIANCE") for s in IDENTIFIE
 IDENTIFIERS += ['REBLUR_HitDistReconstruction.cs.hlsl|NRD_SIGNAL=NRD_SIGNAL_DIFF|NRD_MODE=NRD_MODE_RADIANCE|MODE_5X5=0']
 IDENTIFIERS += [s.replace('NRD_SIGNAL_DIFF|', 'NRD_SIGNAL_BOTH|')
                 for s in IDENTIFIERS if 'NRD_SIGNAL_DIFF|' in s and 'NRD_MODE_RADIANCE' in s]
+# REBLUR_DIFFUSE_SPECULAR_SH (PBR indirect); its hit distance reconstruction is the radiance one above.
+IDENTIFIERS += [s.replace('NRD_SIGNAL_DIFF|', 'NRD_SIGNAL_BOTH|')
+                for s in IDENTIFIERS if 'NRD_SIGNAL_DIFF|' in s and 'NRD_MODE_SH' in s]
 
 def process(check=False, validate=False):
     target = ROOT / 'src/native/denoise/shaders/nrd_embedded.h'

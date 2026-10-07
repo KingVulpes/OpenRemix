@@ -23,10 +23,10 @@ namespace remix::denoise {
     require(f.shaderStorageImageExtendedFormats, "extended storage-image formats");
     // The temporal set is used alongside the tracer set (ten storage images,
     // 4096 textures, two acceleration structures, a storage buffer and a UBO).
-    require(p.limits.maxPerStageDescriptorStorageImages >= BaseImageCount + 31 &&
-                p.limits.maxDescriptorSetStorageImages >= BaseImageCount + 31,
+    require(p.limits.maxPerStageDescriptorStorageImages >= BaseImageCount + 34 &&
+                p.limits.maxDescriptorSetStorageImages >= BaseImageCount + 34,
             "temporal storage-image descriptor limit");
-    require(p.limits.maxPerStageResources >= 4096 + BaseImageCount + 36, "temporal per-stage resource limit");
+    require(p.limits.maxPerStageResources >= 4096 + BaseImageCount + 39, "temporal per-stage resource limit");
     const VkFormat formats[] = {VK_FORMAT_R16G16B16A16_SFLOAT,
                                 VK_FORMAT_R32G32B32A32_SFLOAT,
                                 VK_FORMAT_R32_SFLOAT,
@@ -65,9 +65,9 @@ namespace remix::denoise {
       return false;
     VkPhysicalDeviceProperties p;
     vkGetPhysicalDeviceProperties(physical, &p);
-    if (p.limits.maxPerStageDescriptorStorageImages < SigmaImageCount + 31 ||
-        p.limits.maxDescriptorSetStorageImages < SigmaImageCount + 31 ||
-        p.limits.maxPerStageResources < 4096 + SigmaImageCount + 36)
+    if (p.limits.maxPerStageDescriptorStorageImages < SigmaImageCount + 34 ||
+        p.limits.maxDescriptorSetStorageImages < SigmaImageCount + 34 ||
+        p.limits.maxPerStageResources < 4096 + SigmaImageCount + 39)
       return false;
     for (auto format : {VK_FORMAT_R32_UINT, VK_FORMAT_R8G8_UNORM, VK_FORMAT_R8G8B8A8_UNORM}) {
       VkFormatProperties fp;
@@ -87,9 +87,9 @@ namespace remix::denoise {
     VkPhysicalDeviceProperties p;
     vkGetPhysicalDeviceProperties(physical, &p);
     const uint32_t count = BaseImageCount + (sigma ? 3 : 0) + (split ? 4 : 2);
-    return p.limits.maxPerStageDescriptorStorageImages >= count + 31 &&
-           p.limits.maxDescriptorSetStorageImages >= count + 31 &&
-           p.limits.maxPerStageResources >= 4096 + count + 36;
+    return p.limits.maxPerStageDescriptorStorageImages >= count + 34 &&
+           p.limits.maxDescriptorSetStorageImages >= count + 34 &&
+           p.limits.maxPerStageResources >= 4096 + count + 39;
   }
   uint32_t Renderer::Gpu::memoryType(uint32_t bits, VkMemoryPropertyFlags flags) {
     for (uint32_t i = 0; i < memory.memoryTypeCount; ++i)
@@ -253,7 +253,8 @@ namespace remix::denoise {
       if (i == ShadowInput || i == ShadowOutput)
         format = VK_FORMAT_R8G8B8A8_UNORM;
       VkExtent2D size = ((i >= RrDiffuse && i < FrontNormal && !rayReconstruction) ||
-                         (i >= FrontNormal && !foregroundDenoise)) ? VkExtent2D{1, 1} : extent;
+                         (i >= FrontNormal && !foregroundDenoise) || (i >= PbrSpecularSh1 && !reblur))
+                            ? VkExtent2D{1, 1} : extent;
       if (i == GradientA || i == GradientB)
         size = {(extent.width + 4) / 5, (extent.height + 4) / 5};
       g.images[i] = g.texture(format, size);
@@ -286,7 +287,7 @@ namespace remix::denoise {
                                               &g.inputLayout));
     VkDescriptorPoolSize sizes[] = {
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-         BaseImageCount + 23 + (sigma ? 3u : 0u) + (local ? 2u : 0u) + (g.split ? 2u : 0u)},
+         BaseImageCount + 26 + (sigma ? 3u : 0u) + (local ? 2u : 0u) + (g.split ? 2u : 0u)},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}};
     for (auto &size : sizes)
       size.descriptorCount *= gpuFrameCount;
@@ -396,6 +397,17 @@ namespace remix::denoise {
     g.frame = frame;
     g.localFireflyFilter = localFireflyFilter;
     g.frame.flags[0] |= !g.initialized;
+    // NRD's history lengths are seconds converted with a smoothed frame rate
+    // (a single hitch counts as at most twice the current frame time).
+    g.smoothedFrameMilliseconds =
+        g.smoothedFrameMilliseconds > 0
+            ? g.smoothedFrameMilliseconds +
+                  (std::min(frame.timing[0], 2 * g.smoothedFrameMilliseconds) - g.smoothedFrameMilliseconds) * .05f
+            : frame.timing[0];
+    // PBR paths select one lobe only where REBLUR_DIFFUSE_SPECULAR_SH consumes
+    // them with its prepass on (see prepareNrd): shaders and settings agree.
+    g.frame.translucency[3] =
+        g.frame.flags[1] && g.frame.hitDistance[3] == 0 && !(localFireflyFilter && g.frame.local[1]);
     if (g.timingPending) {
       uint64_t values[11];
       auto r = vkGetQueryPoolResults(g.device, g.timestamps, 0, 11, sizeof(values), values, 8,
@@ -551,7 +563,7 @@ namespace remix::denoise {
       g.recordNrd(*g.indirect, command);
     }
     if (g.frame.flags[1] && g.frame.shadow[2]) {
-      gpu::GpuScope scope(command, "NRD REBLUR_DIFFUSE_SPECULAR (PBR)", g.extent);
+      gpu::GpuScope scope(command, "NRD REBLUR_DIFFUSE_SPECULAR_SH (PBR)", g.extent);
       g.recordNrd(*g.pbr, command);
     }
 #endif

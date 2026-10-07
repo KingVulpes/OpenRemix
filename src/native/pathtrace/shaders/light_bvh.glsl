@@ -248,6 +248,17 @@ LocalCandidate localCandidate(LightEmitter light,Hit hit,inout uint state,bool a
   return result;
 }
 float localLuminance(vec3 value) { return dot(value,vec3(.2126,.7152,.0722)); }
+// Luminance-weighted direction (xyz) and weight (w) of the local-light samples
+// at the opaque primary vertex: the SH direction of their contribution to the
+// denoised PBR signal (addPbrLocal).
+vec4 localLightDirection=vec4(0);
+void localDirection(vec3 toward,vec3 contribution) {
+#ifdef TEMPORAL
+  float length2=dot(toward,toward),weight=localLuminance(contribution);
+  if(!(length2>0)||!(weight>0)||!(weight<1e30))return;
+  localLightDirection+=vec4(toward*(weight*inversesqrt(length2)),weight);
+#endif
+}
 // Stratified light candidates for very small sets (RT Gems II, ch. 22-23).
 // One sphere direction per light, then a weighted reservoir and ONE visibility
 // query. E[physical / p] is the sum of these candidates; their expectation is
@@ -279,6 +290,7 @@ vec3 smallLocalLighting(LightNodes nodes,LightEmitters emitters,Hit hit,uint sta
     vec3 contribution=estimate*visibility,specularContribution=selected.specular/pdf*visibility;
     clampLighting(hit,contribution,specularContribution,threshold);
     result+=contribution;specular+=specularContribution;
+    if(angular)localDirection(selected.endpoint-hit.p,contribution);
     if(enableLocalGuiding&&guideKey!=0&&(hash(state^0xd1b54a35u)&63u)==0)
       trainLightGuide(guideKey,selectedIndex,guided,visibility,selected.physical,false);
     float weight=localLuminance(estimate);lightDistance+=selected.distance*weight;distanceWeight+=weight;
@@ -354,6 +366,7 @@ vec3 resampledLocalLighting(LightNodes nodes,LightEmitters emitters,Hit hit,uint
     vec3 contribution=estimate*visibility,specularContribution=selected.specular*(total/(float(count)*localLuminance(selected.physical)))*visibility;
     clampLighting(hit,contribution,specularContribution,threshold);
     result+=contribution;specular+=specularContribution;
+    localDirection(selected.endpoint-hit.p,contribution);
     if(enableLocalGuiding&&guideKey!=0&&(hash(state^0xd1b54a35u)&63u)==0)
       trainLightGuide(guideKey,selectedIndex,selectedGuided,visibility,selectedPhysical,true);
     float weight=localLuminance(estimate);
@@ -491,6 +504,7 @@ vec3 localLighting(Hit hit,uint state,uint samples,out float lightDistance,bool 
       vec3 contribution=estimate*visibility,specularContribution=candidate.specular/selectionPdf*visibility;
       clampLighting(hit,contribution,specularContribution,threshold);
       result+=contribution;specular+=specularContribution;
+      if(useGuiding)localDirection(candidate.endpoint-hit.p,contribution);
       if(enableLocalGuiding&&useGuiding&&guideKey!=0&&(hash(state^0xd1b54a35u)&63u)==0)
         trainLightGuide(guideKey,index,guided,visibility,candidate.physical,false);
       float weight=localLuminance(estimate);
@@ -531,6 +545,7 @@ vec3 localLighting(Hit hit,uint state,uint samples,out float lightDistance,bool 
     vec3 contribution=estimate*visibility,specularContribution=specularResponse*scale/selectionPdf*visibility;
     clampLighting(hit,contribution,specularContribution,threshold);
     result+=contribution;specular+=specularContribution;
+    if(useGuiding)localDirection(direction,contribution);
     if(enableLocalGuiding&&useGuiding&&guideKey!=0&&(hash(state^0xd1b54a35u)&63u)==0)
       trainLightGuide(guideKey,index,guided,visibility,physical,false);
     float weight=dot(estimate,vec3(.2126,.7152,.0722));

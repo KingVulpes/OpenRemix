@@ -61,6 +61,12 @@ layout(set=1,binding=51,r32f) uniform image2D localConfidence;
 // (octahedral normal, distance from the origin) and its reflectance, applied
 // to the replaced surface's composed lighting. w=0 marks pixels without PSR.
 layout(set=1,binding=52,rgba32ui) uniform uimage2D psrMirror;
+// SH directions of the PBR pass (REBLUR_DIFFUSE_SPECULAR_SH): its diffuse SH
+// input is sh0/sh1, its specular SH0 is pbrSpecularInput, and its outputs'
+// SH0 are pbrDiffuseOutput/pbrSpecularOutput. Full size only with REBLUR.
+layout(set=1,binding=53,rgba16f) uniform image2D pbrSpecularSh1;
+layout(set=1,binding=54,rgba16f) uniform image2D pbrDiffuseOutputSh1;
+layout(set=1,binding=55,rgba16f) uniform image2D pbrSpecularOutputSh1;
 layout(set=1,binding=25,std140) uniform TemporalFrame {
   mat4 view;
   mat4 previousView;

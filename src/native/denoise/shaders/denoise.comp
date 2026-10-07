@@ -5,7 +5,8 @@
 layout(local_size_x=8,local_size_y=8) in;
 layout(push_constant) uniform Pass { uint mode; uint step; } pass;
 ivec2 bounded(ivec2 p) { return clamp(p,ivec2(0),ivec2(temporal.target.xy)-1); }
-vec3 normalAt(ivec2 p) { return NRD_FrontEnd_UnpackNormalAndRoughness(imageLoad(guideNormal,bounded(p))).xyz; }
+vec4 normalRoughnessAt(ivec2 p) { return NRD_FrontEnd_UnpackNormalAndRoughness(imageLoad(guideNormal,bounded(p))); }
+vec3 normalAt(ivec2 p) { return normalRoughnessAt(p).xyz; }
 float depthAt(ivec2 p) { return imageLoad(guideDepth,bounded(p)).x; }
 vec3 viewPosition(vec2 uv,float z) {
   vec4 ray=temporal.previousView*temporal.previousInverseCamera*vec4(uv*2-1,.99999,1);
@@ -57,7 +58,15 @@ void main() {
       value+=v.x*w;sum+=w;
     }
     center.x=value/sum;
-    if(pass.step==5)center.x=1-toSrgb(clamp(uncharted(center.x)/uncharted(11.2),0,1));
+    if(pass.step==5) {
+      center.x=1-toSrgb(clamp(uncharted(center.x)/uncharted(11.2),0,1));
+      // The NRD sample's dither: a Bayer offset below one accumulated frame,
+      // so equal confidences do not band into equal history lengths.
+      uvec2 cell=uvec2(p)&3u;
+      uint bayer=((((cell.y&1u)<<2)|((cell.x&1u)<<3)|((cell.y&2u)>>1)|(cell.x&2u))+(bitfieldReverse(temporal.target.z+1u)>>28))&15u;
+      float frames=2*clamp(500/max(temporal.timing.x,1),1,63);
+      center.x=clamp(center.x+((float(bayer)+.5)/16-.5)/frames,0,1);
+    }
     if((pass.step&1u)!=0)imageStore(gradientB,p,center);else imageStore(gradientA,p,center);
     return;
   }
@@ -84,7 +93,12 @@ void main() {
     // NRD samples IN_DIFF_CONFIDENCE at the history's (previous-frame) pixel
     // (REBLUR temporal accumulation, smbPixelUv), so this image is indexed by
     // previous-frame pixels p. The gradient pass already traces them.
-    float c=imageLoad(gradientB,clamp(p/5,ivec2(0),imageSize(gradientB)-1)).x;
+    // Bilinear from the 1/5-resolution filtered gradients (the NRD sample
+    // hands NRD that texture, which NRD samples linearly), not 5x5 blocks.
+    ivec2 small=imageSize(gradientB)-1;
+    vec2 at=(vec2(p)+.5)/5-.5;ivec2 base=ivec2(floor(at));vec2 f=at-vec2(base);
+    float c=mix(mix(imageLoad(gradientB,clamp(base,ivec2(0),small)).x,imageLoad(gradientB,clamp(base+ivec2(1,0),ivec2(0),small)).x,f.x),
+                mix(imageLoad(gradientB,clamp(base+ivec2(0,1),ivec2(0),small)).x,imageLoad(gradientB,clamp(base+1,ivec2(0),small)).x,f.x),f.y);
     // The current pixel whose surface was at p (inverse warp of the motion
     // guide, fixed-point iteration), then that surface's own motion: motion
     // w is 0 when invalid, else 1 + the pixels it moved by itself. A moving
@@ -110,21 +124,33 @@ void main() {
     if(z>=500000)color=imageLoad(skyColor,p).rgb;
     else {
       vec3 indirect=imageLoad(lighting,p).rgb,specular=vec3(0);
-      if(material.a>1.5) {
-        indirect=REBLUR_BackEnd_UnpackRadianceAndNormHitDist(temporal.flags.y!=0?imageLoad(pbrDiffuseOutput,p):imageLoad(sh0,p)).rgb;
-        specular=REBLUR_BackEnd_UnpackRadianceAndNormHitDist(temporal.flags.y!=0?imageLoad(pbrSpecularOutput,p):imageLoad(pbrSpecularInput,p)).rgb;
-        specular*=imageLoad(pbrSpecularFactor,p).rgb;
-      } else if(temporal.flags.y!=0) {
-        NRD_SG sg=REBLUR_BackEnd_UnpackSh(imageLoad(outSh0,p),imageLoad(outSh1,p).xyz);
-        vec3 N=normalAt(p);
+      bool pbr=material.a>1.5;
+      if(temporal.flags.y!=0) {
+        // SG resolve (NRD sample, Composition): the denoised directional
+        // signal is evaluated for this pixel's own normal and roughness, which
+        // regains the normal-map detail REBLUR filtered across, then
+        // re-jittered against the neighbouring normals.
+        NRD_SG diffuseSg=pbr?REBLUR_BackEnd_UnpackSh(imageLoad(pbrDiffuseOutput,p),imageLoad(pbrDiffuseOutputSh1,p).xyz)
+                            :REBLUR_BackEnd_UnpackSh(imageLoad(outSh0,p),imageLoad(outSh1,p).xyz);
+        NRD_SG specularSg=diffuseSg;
+        if(pbr)specularSg=REBLUR_BackEnd_UnpackSh(imageLoad(pbrSpecularOutput,p),imageLoad(pbrSpecularOutputSh1,p).xyz);
+        vec4 normalRoughness=normalRoughnessAt(p);
+        vec3 N=normalRoughness.xyz;float roughness=pbr?normalRoughness.w:1;
         vec4 nearPoint=temporal.inverseCamera*vec4((vec2(p)+.5+temporal.jitter.xy)/vec2(size)*2-1,0,1);
         vec4 farPoint=temporal.inverseCamera*vec4((vec2(p)+.5+temporal.jitter.xy)/vec2(size)*2-1,.99999,1);
         vec3 V=normalize(nearPoint.xyz/nearPoint.w-farPoint.xyz/farPoint.w);
-        indirect=NRD_SG_ResolveDiffuse(sg,N,V,1);
-        vec2 factor=NRD_SG_ReJitter(sg,sg,V,1,z,depthAt(p+ivec2(1,0)),depthAt(p-ivec2(1,0)),depthAt(p+ivec2(0,1)),depthAt(p-ivec2(0,1)),
+        indirect=NRD_SG_ResolveDiffuse(diffuseSg,N,V,roughness);
+        vec2 factor=NRD_SG_ReJitter(diffuseSg,specularSg,V,roughness,z,depthAt(p+ivec2(1,0)),depthAt(p-ivec2(1,0)),depthAt(p+ivec2(0,1)),depthAt(p-ivec2(0,1)),
           N,normalAt(p+ivec2(1,0)),normalAt(p-ivec2(1,0)),normalAt(p+ivec2(0,1)),normalAt(p-ivec2(0,1)));
         indirect*=factor.x;
+        if(pbr)specular=NRD_SG_ResolveSpecular(specularSg,N,V,roughness)*factor.y;
+      } else if(pbr) {
+        // Without REBLUR the packed inputs hold this frame's radiance (SH0 is
+        // the radiance packing).
+        indirect=REBLUR_BackEnd_UnpackRadianceAndNormHitDist(imageLoad(sh0,p)).rgb;
+        specular=REBLUR_BackEnd_UnpackRadianceAndNormHitDist(imageLoad(pbrSpecularInput,p)).rgb;
       }
+      if(pbr)specular*=imageLoad(pbrSpecularFactor,p).rgb;
       vec3 direct=imageLoad(directLight,p).rgb;
 #ifdef SIGMA_PASS
       direct*=SIGMA_BackEnd_UnpackShadow(imageLoad(shadowOutput,p)).yzw;

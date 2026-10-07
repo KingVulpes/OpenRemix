@@ -43,16 +43,32 @@ vec3 materialResponse(Hit hit,vec3 wi,out vec3 specular) {
   specular*=scale;
   return diffuse*scale+specular;
 }
-// Lobe selection by estimated reflectance at this view angle. Both lobes keep
-// at least a quarter of the samples for the denoiser, except that a lobe with
-// no energy (the diffuse lobe of a pure metal) gets none: its samples would all
-// be black, which reads as grain on mirrors.
-float specularProbability(Hit hit) {
+// Diffuse share of the reflectance at this view angle (NRD sample,
+// EstimateDiffuseProbability). A lobe with next to no energy (the diffuse lobe
+// of a metal) gets exactly zero: its samples would all be black, which reads
+// as grain on mirrors.
+float diffuseShare(Hit hit) {
+  if(!hit.pbr)return 1;
   vec3 f0=mix(vec3(.04),hit.color.rgb,hit.rm.y);
   float specular=dot(fresnel(f0,max(0,dot(hit.n,hit.wo))),vec3(.2126,.7152,.0722));
   float diffuse=dot(hit.color.rgb,vec3(.2126,.7152,.0722))*(1-hit.rm.y)*(1-specular);
-  if(diffuse<=0)return 1;
-  return clamp(specular/(specular+diffuse),.25,.75);
+  float share=diffuse/max(diffuse+specular,1e-6);
+  return share<.005?0:share>.995?1:share;
+}
+// Lobe selection probability: both lobes keep at least a quarter of the
+// samples for the denoiser (NRD: clamp to a sane range, zero stays zero).
+float specularProbability(Hit hit) {
+  float share=diffuseShare(hit);
+  return share==0?1:1-clamp(share,.25,.75);
+}
+// NRD's "magic curve": how diffuse-like a specular lobe of this roughness is.
+float specularSpread(float roughness) {
+  return (1-exp2(-200*roughness*roughness))*sqrt(clamp(roughness,0,1));
+}
+// How much reflections in this surface move like diffuse lighting (NRD
+// sample, EstimateDiffuseProbability with the roughness boost).
+float diffuseLikeMotion(Hit hit) {
+  return hit.pbr?mix(diffuseShare(hit),1,specularSpread(hit.rm.x)):1;
 }
 // Heitz 2018 GGX visible-normal sampling (isotropic), followed by reflection.
 vec3 sampleGgx(vec3 wo,float alpha,vec2 u) {
@@ -93,4 +109,23 @@ vec3 materialSample(Hit hit,out vec3 direction,out vec3 specularWeight) {
 vec3 materialSample(Hit hit,out vec3 direction) {
   vec3 specularWeight;
   return materialSample(hit,direction,specularWeight);
+}
+// One lobe of a PBR surface, sampled with that lobe's own PDF (EON for
+// diffuse, GGX visible normals for specular): NRD's probabilistic lobe
+// selection, where each denoised signal only receives in-lobe samples and hit
+// distances. The caller divides by the selection probability.
+vec3 lobeSample(Hit hit,bool diffuseLobe,out vec3 direction) {
+  mat3 basis=shadingBasis(hit.n);
+  vec3 wo=transpose(basis)*hit.wo;
+  if(wo.z<=0){direction=hit.n;return vec3(0);}
+  vec2 u=vec2(random(),random());
+  float alpha=max(.001,hit.rm.x*hit.rm.x);
+  vec3 wi=diffuseLobe?eonSample(wo,hit.rm.x,u.x,u.y).xyz:sampleGgx(wo,alpha,u);
+  direction=basis*wi;
+  if(wi.z<=0||dot(direction,hit.ng)<=0)return vec3(0);
+  vec3 diffuse,specular;materialLobes(hit,direction,diffuse,specular);
+  if(diffuseLobe)return diffuse*(wi.z/max(eonPdf(wo,wi,hit.rm.x),1e-20));
+  vec3 h=normalize(wi+wo);
+  float pdf=ggxD(max(0,h.z),alpha)*ggxG1(wo.z,alpha)/(4*wo.z);
+  return specular*(wi.z/max(pdf,1e-20));
 }

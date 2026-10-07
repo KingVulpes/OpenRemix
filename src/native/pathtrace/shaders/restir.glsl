@@ -290,6 +290,7 @@ vec3 restirShade(Hit hit,ivec2 pixel,uint state,float depth,out float lightDista
     vec3 physical=restirContribution(hit,emitters.data[r.light],vec2(r.u,r.v),specular,endpoint,lightDistance);
     vec3 visibility=localVisibility(offsetRay(hit.p,hit.ng),endpoint);
     radiance=physical*r.W*visibility;specular*=r.W*visibility;
+    localDirection(endpoint-hit.p,radiance);
     // Occluded samples are never reused (RTXDI discardInvisibleSamples); the
     // history keeps them flagged so a shadow that clears can be detected.
     r.pad=localLuminance(visibility)<=0?1:0;

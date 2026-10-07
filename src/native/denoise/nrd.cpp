@@ -45,10 +45,15 @@ namespace remix::denoise {
     pass.sigma = sigma;
     pass.local = local;
     pass.pbr = pbr;
-    const nrd::DenoiserDesc denoiser{0, sigma ? nrd::Denoiser::SIGMA_SHADOW_TRANSLUCENCY
-                                         : pbr ? nrd::Denoiser::REBLUR_DIFFUSE_SPECULAR
-                                               : local ? nrd::Denoiser::REBLUR_DIFFUSE
-                                                       : nrd::Denoiser::REBLUR_DIFFUSE_SH};
+    // Indirect light is denoised as SH and resolved per pixel (denoise.comp):
+    // legacy diffuse, and both lobes of PBR surfaces (with the direct local
+    // light routed into them). The translucent front layer and the separate
+    // direct local-light passes stay plain radiance.
+    const nrd::DenoiserDesc denoiser{
+        0, sigma ? nrd::Denoiser::SIGMA_SHADOW_TRANSLUCENCY
+                 : pbr ? (pass.foreground ? nrd::Denoiser::REBLUR_DIFFUSE_SPECULAR
+                                          : nrd::Denoiser::REBLUR_DIFFUSE_SPECULAR_SH)
+                       : local ? nrd::Denoiser::REBLUR_DIFFUSE : nrd::Denoiser::REBLUR_DIFFUSE_SH};
     nrd::InstanceCreationDesc create{};
     create.denoisers = &denoiser;
     create.denoisersNum = 1;
@@ -179,38 +184,63 @@ namespace remix::denoise {
       std::copy_n(frame.sun, 3, settings.lightDirection);
       settings.maxStabilizedFrameNum = std::clamp(
           nrd::GetMaxAccumulatedFrameNum(nrd::SIGMA_DEFAULT_ACCUMULATION_TIME,
-                                        1000.f / std::max(frame.timing[0], 1.f)),
+                                        1000.f / std::max(smoothedFrameMilliseconds, 1.f)),
           1u, nrd::SIGMA_MAX_HISTORY_FRAME_NUM);
       require(nrd::SetDenoiserSettings(*pass.instance, 0, &settings));
     } else {
       nrd::ReblurSettings settings{};
-      // Keep legacy diffuse, PBR dielectric and metallic receivers separate.
-      settings.minMaterialForDiffuse = settings.minMaterialForSpecular = 0;
+      // Indirect light: the legacy diffuse SH pass and the PBR SH pass. Their
+      // settings follow NRD-Sample (GetDefaultReblurSettings and its per-frame
+      // history lengths) unless a comment below says why not.
+      const bool indirect = !pass.local && !pass.foreground;
+      // Guide material IDs (pathtrace.comp): PBR dielectric 0, PBR metal 1,
+      // legacy 2. NRD compares max(id, minMaterial): diffuse never mixes across
+      // them (metals have none), specular mixes dielectrics with metals and
+      // keeps legacy surfaces, which have no specular signal, out. The
+      // translucent front layer has its own IDs (translucency.glsl), all apart.
+      settings.minMaterialForDiffuse = 0;
+      settings.minMaterialForSpecular = pass.foreground ? 0.f : 1.f;
+      settings.fastHistoryClampingSigmaScale = 1.5f;
+      if (indirect) {
+        // The SG resolve regains normal detail, which allows more relaxed
+        // normal weights in the filter.
+        settings.lobeAngleFraction *= 1.333f;
+      }
       if (frame.local[1]) {
         // Sparse torch samples need stronger outlier rejection in both the
         // direct signal and bounced SH, without increasing spatial blur.
         settings.fireflySuppressorMinRelativeScale = 1.5f;
-        settings.fastHistoryClampingSigmaScale = 1.5f;
         // Inverse-PDF light selection can produce isolated bright samples in
         // both direct radiance and bounced SH. NRD's prepass must be disabled
         // for this probabilistic signal: it otherwise expands outliers into
         // blobs before temporal accumulation and anti-firefly processing.
+        // (Legacy SH and local passes; the PBR pass sets its own below.)
         settings.diffusePrepassBlurRadius = 0.f;
       }
       settings.hitDistanceReconstructionMode = nrd::HitDistanceReconstructionMode::OFF;
       settings.hitDistanceParameters = {frame.hitDistance[0], frame.hitDistance[1], frame.hitDistance[2]};
       settings.maxAccumulatedFrameNum =
           std::clamp(nrd::GetMaxAccumulatedFrameNum(nrd::REBLUR_DEFAULT_ACCUMULATION_TIME,
-                                                    1000.f / std::max(frame.timing[0], 1.f)),
+                                                    1000.f / std::max(smoothedFrameMilliseconds, 1.f)),
                      1u, nrd::REBLUR_MAX_HISTORY_FRAME_NUM);
       if (pass.pbr) {
+        // PBR paths select one lobe per pixel (pathtrace.comp, primaryLobe):
+        // the skipped lobe has hit distance 0, which REBLUR reconstructs from
+        // its 3x3 neighbours, and NRD requires a prepass for such signals.
+        // The radii stay below NRD's GI defaults (30 and 50 pixels): this
+        // signal also carries direct local light (addPbrLocal), whose cast
+        // shadows a wide prepass spreads.
         settings.hitDistanceReconstructionMode = nrd::HitDistanceReconstructionMode::AREA_3X3;
         settings.diffusePrepassBlurRadius = 4.f;
         settings.specularPrepassBlurRadius = 8.f;
         if (localFireflyFilter && frame.local[1]) {
+          // Local firefly filter: temporal accumulation and anti-firefly
+          // receive the original radiance; the specular prepass only supplies
+          // the hit distance used for motion tracking. Without a prepass the
+          // signal must not be probabilistic, so lobe selection is off in this
+          // mode (Renderer::begin, Frame::translucency[3]): every pixel then
+          // has both lobes from one BRDF-mixture sample.
           settings.diffusePrepassBlurRadius = 0.f;
-          // Retain the specular prepass hit distance used for motion tracking,
-          // while temporal accumulation receives the original radiance.
           settings.usePrepassOnlyForSpecularMotionEstimation = true;
         }
         settings.maxBlurRadius = 16.f;
@@ -256,8 +286,14 @@ namespace remix::denoise {
         warmupFrames = std::max(32u, settings.maxAccumulatedFrameNum);
       // Indirect light (SH and PBR lobes): a shorter history trades noise for
       // faster response when lighting changes (rtx.native.pathtrace.indirectHistoryFrames).
-      if (!pass.local && !pass.foreground && localTuning.indirectHistoryFrames)
+      if (indirect && localTuning.indirectHistoryFrames)
         settings.maxAccumulatedFrameNum = std::min(settings.maxAccumulatedFrameNum, localTuning.indirectHistoryFrames);
+      if (indirect) {
+        // A fast history five times shorter than the main one, stabilized
+        // over the main history's length.
+        settings.maxFastAccumulatedFrameNum = settings.maxAccumulatedFrameNum / 5;
+        settings.maxStabilizedFrameNum = settings.maxAccumulatedFrameNum;
+      }
       settings.maxFastAccumulatedFrameNum =
           std::min(settings.maxFastAccumulatedFrameNum, settings.maxAccumulatedFrameNum);
       require(nrd::SetDenoiserSettings(*pass.instance, 0, &settings));
@@ -302,13 +338,21 @@ namespace remix::denoise {
         return *images[Sh0];
       case R::IN_DIFF_SH1:
         return *images[Sh1];
+      case R::IN_SPEC_SH0:
+        return *images[PbrSpecularInput];
+      case R::IN_SPEC_SH1:
+        return *images[PbrSpecularSh1];
       case R::IN_DIFF_CONFIDENCE:
       case R::IN_SPEC_CONFIDENCE:
         return *images[pass.foreground ? FrontConfidence : pass.local ? LocalConfidence : Confidence];
       case R::OUT_DIFF_SH0:
-        return *images[Out0];
+        return *images[pass.pbr ? PbrDiffuseOutput : Out0];
       case R::OUT_DIFF_SH1:
-        return *images[Out1];
+        return *images[pass.pbr ? PbrDiffuseOutputSh1 : Out1];
+      case R::OUT_SPEC_SH0:
+        return *images[PbrSpecularOutput];
+      case R::OUT_SPEC_SH1:
+        return *images[PbrSpecularOutputSh1];
       case R::OUT_VALIDATION:
         return *images[Validation];
       default:

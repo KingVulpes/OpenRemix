@@ -1,6 +1,7 @@
 #include "scene/light_visibility.h"
 
 #include <algorithm>
+#include <chrono>
 
 namespace remix::scene {
   int32_t VisibilityPartition::cluster(const float p[3]) const {
@@ -50,6 +51,19 @@ namespace remix::scene {
       m_unrestricted[light] = 1;
   }
 
+  namespace {
+    // In-place transpose of a 64x64 bit matrix: row r, bit c <-> row c, bit r.
+    void transpose(uint64_t rows[64]) {
+      uint64_t mask = 0x00000000ffffffffull;
+      for (unsigned j = 32; j; j >>= 1, mask ^= mask << j)
+        for (unsigned k = 0; k < 64; k = ((k | j) + 1) & ~j) {
+          const uint64_t t = ((rows[k] >> j) ^ rows[k | j]) & mask;
+          rows[k] ^= t << j;
+          rows[k | j] ^= t;
+        }
+    }
+  } // namespace
+
   bool LightVisibility::update(const std::shared_ptr<const VisibilityPartition> &partition, const LightBvh &tree,
                                bool enabled, float probe) {
     const auto &nodes = tree.nodes();
@@ -64,24 +78,27 @@ namespace remix::scene {
         ++m_version;
       return changed;
     }
-    // A rebuilt tree or a new partition assigns every light afresh; only
-    // lights that move afterwards become unrestricted.
+    // A rebuilt tree or a new partition assigns every static light afresh;
+    // only those that move afterwards become unrestricted. A light that left
+    // keeps its slot and its bits: a superset of the visible lights is safe.
+    const size_t statics = tree.staticEmitters();
     bool rebuild = partition->version != m_partitionVersion || tree.builds != m_treeBuilds ||
-                   m_unrestricted.size() != emitters.size();
+                   m_unrestricted.size() != statics;
     if (rebuild) {
       m_partition = partition;
       m_partitionVersion = partition->version;
       m_treeBuilds = tree.builds;
-      m_lightClusters.assign(emitters.size() * kClusters, -1);
-      m_unrestricted.assign(emitters.size(), 0);
-      m_positions.assign(emitters.size() * 3, 0);
-      for (size_t i = 0; i < emitters.size(); ++i) {
+      m_lightClusters.assign(statics * kClusters, -1);
+      m_unrestricted.assign(statics, 0);
+      m_positions.assign(statics * 3, 0);
+      for (size_t i = 0; i < statics; ++i) {
         const float *p = emitters[i].positionRadius;
         std::copy_n(p, 3, &m_positions[i * 3]);
-        locate(*partition, i, p, probe + emitters[i].positionRadius[3]);
+        if (tree.staticLights + tree.retiredSlots) // not the unlit slot of an empty static part
+          locate(*partition, i, p, probe + emitters[i].positionRadius[3]);
       }
     } else {
-      for (size_t i = 0; i < emitters.size(); ++i) {
+      for (size_t i = 0; i < statics; ++i) {
         const float *p = emitters[i].positionRadius;
         float *last = &m_positions[i * 3];
         if (!m_unrestricted[i] && (p[0] != last[0] || p[1] != last[1] || p[2] != last[2])) {
@@ -91,39 +108,92 @@ namespace remix::scene {
         std::copy_n(p, 3, last);
       }
     }
+    // Statistics: the dynamic part's lights are visible from everywhere.
+    clustered = 0;
+    unrestricted = tree.dynamicLights;
+    if (tree.staticLights + tree.retiredSlots)
+      for (uint8_t u : m_unrestricted)
+        ++(u ? unrestricted : clustered);
     if (!rebuild)
       return false;
-    clustered = unrestricted = 0;
-    for (uint8_t u : m_unrestricted)
-      ++(u ? unrestricted : clustered);
-    // Rows of node bits. Children always follow their parent in node order,
-    // so one reverse pass per cluster fills internal nodes from their leaves.
-    const uint32_t clusters = partition->clusterCount;
-    m_rowWords = uint32_t((nodes.size() + 31) / 32);
-    auto table = std::make_shared<std::vector<uint32_t>>(size_t(clusters) * m_rowWords, 0u);
-    std::vector<uint8_t> bits(nodes.size());
-    for (uint32_t s = 0; s < clusters; ++s) {
-      for (size_t n = nodes.size(); n-- > 0;) {
-        const auto &links = nodes[n].links;
-        if (links[3] <= 1) {
-          const size_t light = links[2];
-          if (light >= m_unrestricted.size() || m_unrestricted[light]) {
-            bits[n] = 1;
-          } else {
-            bits[n] = 0;
-            for (uint32_t k = 0; k < kClusters && m_lightClusters[light * kClusters + k] >= 0; ++k)
-              bits[n] |= partition->visible(int32_t(s), m_lightClusters[light * kClusters + k]);
-          }
-        } else {
-          bits[n] = bits[links[0]] | bits[links[1]];
-        }
-      }
-      uint32_t *row = table->data() + size_t(s) * m_rowWords;
-      for (size_t n = 0; n < nodes.size(); ++n)
-        row[n / 32] |= uint32_t(bits[n]) << (n % 32);
-    }
-    m_table = std::move(table);
+    const auto start = std::chrono::steady_clock::now();
+    build(*partition, tree);
+    tableMilliseconds = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    tableTotalMilliseconds += tableMilliseconds;
+    ++tableBuilds;
     ++m_version;
     return true;
+  }
+
+  // Rows of node bits, one per cluster. Made per node first (a node's set of
+  // clusters is the union of its children's: word operations), then turned
+  // into rows 64x64 bits at a time.
+  void LightVisibility::build(const VisibilityPartition &partition, const LightBvh &tree) {
+    const auto &nodes = tree.nodes();
+    const uint32_t clusters = partition.clusterCount, statics = tree.staticEmitters();
+    const uint32_t count = std::min<uint32_t>(tree.staticNodes(), uint32_t(nodes.size()));
+    const size_t words = (size_t(clusters) + 63) / 64;
+    if (!m_columns || m_columns->version != partition.version) {
+      m_columns = std::make_shared<Columns>();
+      m_columns->version = partition.version;
+      m_columns->slots.assign(clusters, -1);
+    }
+    auto &columns = *m_columns;
+    const auto column = [&](int32_t cluster) {
+      int32_t &slot = columns.slots[cluster];
+      if (slot < 0) {
+        slot = int32_t(columns.bits.size() / words);
+        columns.bits.resize(columns.bits.size() + words, 0);
+        uint64_t *bits = columns.bits.data() + size_t(slot) * words;
+        for (uint32_t from = 0; from < clusters; ++from)
+          bits[from / 64] |= uint64_t(partition.visible(int32_t(from), cluster)) << (from % 64);
+      }
+      return size_t(slot) * words;
+    };
+    // Gather first: the columns' storage must not move while it is read.
+    for (uint32_t light = 0; light < statics && light < m_unrestricted.size(); ++light)
+      for (uint32_t k = 0; k < kClusters && m_lightClusters[light * kClusters + k] >= 0; ++k)
+        column(m_lightClusters[light * kClusters + k]);
+    std::vector<uint64_t> sets(size_t(count) * words, 0);
+    // Children always follow their parent in node order.
+    for (size_t n = count; n-- > 0;) {
+      uint64_t *set = sets.data() + n * words;
+      const auto &links = nodes[n].links;
+      const auto merge = [&](const uint64_t *from) {
+        for (size_t w = 0; w < words; ++w)
+          set[w] |= from[w];
+      };
+      if (links[3] <= 1) {
+        const size_t light = links[2];
+        if (light >= statics || light >= m_unrestricted.size() || m_unrestricted[light])
+          std::fill_n(set, words, ~0ull); // dynamic part, or visible from everywhere
+        else
+          for (uint32_t k = 0; k < kClusters && m_lightClusters[light * kClusters + k] >= 0; ++k)
+            merge(columns.bits.data() + column(m_lightClusters[light * kClusters + k]));
+      } else {
+        for (unsigned child = 0; child < 2; ++child)
+          if (links[child] >= count)
+            std::fill_n(set, words, ~0ull); // the dynamic part's nodes
+          else
+            merge(sets.data() + size_t(links[child]) * words);
+      }
+    }
+    m_tableNodes = count;
+    m_rowWords = (count + 31) / 32;
+    auto table = std::make_shared<std::vector<uint32_t>>(size_t(clusters) * m_rowWords, 0u);
+    uint64_t block[64];
+    for (size_t first = 0; first < count; first += 64)
+      for (size_t w = 0; w < words; ++w) {
+        for (size_t i = 0; i < 64; ++i)
+          block[i] = first + i < count ? sets[(first + i) * words + w] : 0;
+        transpose(block);
+        for (size_t i = 0; i < 64 && w * 64 + i < clusters; ++i) {
+          uint32_t *row = table->data() + (w * 64 + i) * m_rowWords + first / 32;
+          row[0] = uint32_t(block[i]);
+          if (first / 32 + 1 < m_rowWords)
+            row[1] = uint32_t(block[i] >> 32);
+        }
+      }
+    m_table = std::move(table);
   }
 } // namespace remix::scene

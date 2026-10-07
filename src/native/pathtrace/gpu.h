@@ -109,7 +109,7 @@ namespace remix::trace::detail {
     float domeTransform[3][4] = {};
     uint64_t visibilityNodes = 0, visibilityLeaves = 0, visibilityTable = 0;
     uint64_t movedLights = 0; // scene::MovedLight pairs, count in visibilityConfig[1]
-    uint32_t visibilityConfig[4] = {}; // table row words, moved light count, reserved
+    uint32_t visibilityConfig[4] = {}; // table row words, moved light count, light-tree nodes in the table, reserved
     float visibilityProbe[4] = {};     // world units: probe offset above the surface, decal attachment distance; texture footprint scale (render/output size)
     uint64_t restirCurrent = 0, restirHistoryRead = 0, restirHistoryWrite = 0, restirRemap = 0;
     uint32_t restirConfig[4] = {}; // candidates, spatial samples, temporal M cap, flags (1 initial visibility)
@@ -336,6 +336,7 @@ namespace remix {
     // split by family or into a separate pass (API "torch" lights alone use
     // the combined local signal).
     bool emissiveSeen = false;
+    uint32_t emissiveHold = 0; // frames the emissive estimator outlasts the last emissive light
     bool postLocalDenoise = false, postLocalDenoiseRequested = false;
 
     float previousLocalIntensity = 0, previousLocalRange = 0;
@@ -364,6 +365,13 @@ namespace remix {
     scene::LightVisibility lightVisibility;
     std::unique_ptr<Buffer> visibilityNodes, visibilityLeaves, visibilityTable;
     uint64_t visibilityPartitionVersion = 0, visibilityTableVersion = 0;
+    // remixapi_LocalLightSetStatisticsEXT: table uploads; instances with
+    // emitters this frame; CPU time of the frame's light update (hierarchies
+    // and visibility table), last and longest of the last 300 to 600 frames.
+    uint64_t visibilityTableUploads = 0;
+    uint32_t emittingInstances = 0, dynamicEmittingInstances = 0;
+    double lightUpdateMilliseconds = 0, lightUpdatePeak[2] = {};
+    uint32_t lightUpdatePeakFrames = 0;
     scene::EmissionHistory emissionHistory;
     scene::LightBvh torchBvh, emissiveBvh;
     std::unique_ptr<Buffer> torchNodes, torchEmitters, emissiveNodes, emissiveEmitters;

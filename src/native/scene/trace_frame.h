@@ -95,7 +95,13 @@ struct TraceFrame {
     LightVisibility visibility; // for combined
     EmissionHistory history;
     bool hasEmissive = false;
+    // Statistics: see emittingInstances below; CPU time of the light update.
+    uint32_t emittingInstances = 0, dynamicEmittingInstances = 0;
+    double updateMilliseconds = 0;
   } lighting;
+  // Instances with emitters (outside the static set), and those among them
+  // the host identified as dynamic.
+  uint32_t emittingInstances = 0, dynamicEmittingInstances = 0;
 };
 
 // statics: a persistent static set traced alongside draws. Its identities

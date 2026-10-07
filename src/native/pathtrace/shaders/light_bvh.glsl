@@ -55,6 +55,8 @@ int visibilityCluster(vec3 p) {
 vec3 visibilityPoint=vec3(3.4e38);int visibilityRow=-1;bool visibilityCulling=false;
 bool lightNodeVisible(LightNodes nodes,uint index,vec3 p,vec3 n) {
   if(!visibilityCulling||frame.visibilityTable==0||uint64_t(nodes)!=frame.lightNodes)return true;
+  // The tree's dynamic part (lights that come and go) is not in the table.
+  if(index>=frame.visibilityConfig.z)return true;
   if(p!=visibilityPoint) {
     visibilityPoint=p;
     visibilityRow=visibilityCluster(p+n*frame.visibilityProbe.x);

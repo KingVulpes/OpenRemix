@@ -34,9 +34,11 @@ namespace remix::scene {
   static_assert(sizeof(VisibilityPartition::Node) == 32);
 
   // Per (cluster, light-tree node): whether the node holds a light potentially
-  // visible from the cluster. Lights without a cluster, and lights that moved
-  // since the tree was built (carried or animated, e.g. a flashlight), are
-  // visible from everywhere, so that moving lights never rebuild the table.
+  // visible from the cluster. The table covers the tree's static nodes
+  // (LightBvh::staticNodes); the dynamic part behind them is visible from
+  // everywhere, so lights that come, go or belong to moving instances never
+  // change it. Static lights without a cluster, and static lights that moved
+  // since the tree was built, are visible from everywhere as well.
   class LightVisibility {
   public:
     // Returns whether the table changed.
@@ -47,21 +49,35 @@ namespace remix::scene {
     const std::shared_ptr<const std::vector<uint32_t>> &table() const { return m_table; }
     const std::shared_ptr<const VisibilityPartition> &partition() const { return m_partition; }
     uint32_t rowWords() const { return m_rowWords; }
+    // Nodes from this index on are not in the table: always visible.
+    uint32_t tableNodes() const { return m_tableNodes; }
     uint64_t version() const { return m_version; }
     // Statistics: lights with clusters, lights visible from everywhere.
     uint32_t clustered = 0, unrestricted = 0;
+    // Tables made, and how long the last one took.
+    uint64_t tableBuilds = 0;
+    double tableMilliseconds = 0, tableTotalMilliseconds = 0;
 
   private:
+    // Per cluster with a light: the clusters it is potentially visible from
+    // (a column of the partition's matrix), gathered once per partition.
+    struct Columns {
+      uint64_t version = ~0ull;
+      std::vector<int32_t> slots; // per cluster: its column, or -1
+      std::vector<uint64_t> bits;
+    };
+    std::shared_ptr<Columns> m_columns; // shared by copies; used by update() only
     std::shared_ptr<const VisibilityPartition> m_partition;
     std::shared_ptr<const std::vector<uint32_t>> m_table;
     uint64_t m_partitionVersion = ~0ull, m_treeBuilds = ~0ull, m_version = 0;
-    uint32_t m_rowWords = 0;
-    // Per emitter: up to kClusters clusters it may occupy (-1: unused); all -1
+    uint32_t m_rowWords = 0, m_tableNodes = 0;
+    // Per static emitter: up to kClusters clusters it may occupy (-1: unused); all -1
     // with m_unrestricted set: visible from everywhere.
     static constexpr uint32_t kClusters = 4;
     std::vector<int32_t> m_lightClusters;
     std::vector<uint8_t> m_unrestricted;
     void locate(const VisibilityPartition &partition, size_t light, const float *position, float probe);
-    std::vector<float> m_positions;       // per emitter, since the tree was built
+    void build(const VisibilityPartition &partition, const LightBvh &tree);
+    std::vector<float> m_positions;       // per static emitter, since the tree was built
   };
 } // namespace remix::scene

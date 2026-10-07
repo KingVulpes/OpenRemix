@@ -316,11 +316,30 @@ namespace remix {
     // Emission constants, UVs and texture fingerprints already participate in
     // the scene signature above. Do not duplicate every triangle's reduction.
     auto &lighting = prepared.lighting;
-    const bool hasEmissiveLights = lighting.hasEmissive;
+    // Emissive sets select their own estimator (candidate count, solid-angle
+    // sampling, split signals), and switching it resets the guiding history.
+    // When the last emissive surface goes (the only glowing prop leaves the
+    // host's view) the selection stays for a while, so a prop that returns
+    // does not switch twice; the lights sampled are the frame's either way.
+    if (lighting.hasEmissive)
+      emissiveHold = 300;
+    else if (!options.emissiveLights || !options.localLights)
+      emissiveHold = 0;
+    else if (emissiveHold)
+      --emissiveHold;
+    const bool hasEmissiveLights = lighting.hasEmissive || emissiveHold;
     emissiveSeen |= hasEmissiveLights;
     emissionHistory = std::move(lighting.history);
     lightBvh = std::move(lighting.combined);
     lightVisibility = std::move(lighting.visibility);
+    emittingInstances = lighting.emittingInstances;
+    dynamicEmittingInstances = lighting.dynamicEmittingInstances;
+    lightUpdateMilliseconds = lighting.updateMilliseconds;
+    if (++lightUpdatePeakFrames >= 300) {
+      lightUpdatePeakFrames = 0;
+      lightUpdatePeak[1] = std::exchange(lightUpdatePeak[0], 0.);
+    }
+    lightUpdatePeak[0] = std::max(lightUpdatePeak[0], lighting.updateMilliseconds);
     // Potentially visible light table and the partition it indexes: replaced
     // only when they change (rare), like the light tree's buffers.
     if (!lightVisibility.table()) {
@@ -350,6 +369,7 @@ namespace remix {
         visibilityTableVersion = lightVisibility.version();
         const auto &table = *lightVisibility.table();
         place(visibilityTable, table.data(), std::max<size_t>(1, table.size()) * sizeof(uint32_t));
+        ++visibilityTableUploads;
       }
     }
     localAngularActive = hasEmissiveLights && options.emissiveSolidAngleSampling;
@@ -677,6 +697,7 @@ namespace remix {
     frame.visibilityLeaves = visibilityActive ? visibilityLeaves->address : 0;
     frame.visibilityTable = visibilityActive ? visibilityTable->address : 0;
     frame.visibilityConfig[0] = lightVisibility.rowWords();
+    frame.visibilityConfig[2] = lightVisibility.tableNodes();
     // Lights that changed since the previous frame: the local denoiser drops
     // history where they changed the light (a turning flashlight's trail).
     {
@@ -1122,6 +1143,7 @@ namespace remix {
     const auto mode = options.freezeEmissiveRadiance ? 2u : options.stabilizeEmissiveLighting ? 1u : 0u;
     staged.history.begin(resources.temporalEpoch().world, frame.seconds,
                          options.emissiveLights && options.localLights ? mode : 0u);
+    const auto lightStart = Clock::now();
     auto lights = options.torchLights ? resources.sphereLights() : std::vector<scene::SphereLight>{};
     const auto sphereCount = lights.size();
     for (const auto &source : frame.emitters) {
@@ -1144,6 +1166,9 @@ namespace remix {
     staged.visibility = m_gpu->lightVisibility;
     staged.visibility.update(resources.visibilityPartition(), staged.combined,
                              options.lightVisibilityCulling && options.localLights, .1f / options.sceneScale);
+    staged.emittingInstances = frame.emittingInstances;
+    staged.dynamicEmittingInstances = frame.dynamicEmittingInstances;
+    staged.updateMilliseconds = std::chrono::duration<double, std::milli>(Clock::now() - lightStart).count();
     if (profile) {
       const auto end = Clock::now();
       const auto count = m_gpu->opacityCache.takeStatistics();

@@ -34,8 +34,43 @@ namespace remix::scene {
       return e;
     }
   } // namespace
+  namespace {
+    using Key = std::pair<uint32_t, uint64_t>; // emitter order: type, identity
+    Key keyOf(const SphereLight &light) { return {light.triangle, light.id}; }
+    bool sameGeometry(const SphereLight &a, const SphereLight &b) {
+      bool same = a.coneCos == b.coneCos && a.softness == b.softness && a.focus == b.focus &&
+                  std::equal(a.direction, a.direction + 3, b.direction) && a.radius == b.radius &&
+                  std::equal(a.position, a.position + 3, b.position);
+      for (unsigned v = 0; v < 3; ++v)
+        same &= std::equal(a.corners[v], a.corners[v] + 3, b.corners[v]);
+      return same;
+    }
+    bool lit(const SphereLight &light) {
+      return light.radiance[0] > 0 || light.radiance[1] > 0 || light.radiance[2] > 0;
+    }
+  } // namespace
+
+  // The update a build is due in: once the lights waiting in the dynamic part
+  // (not those of dynamic instances) have come to rest, or the static part is
+  // mostly unlit slots; never sooner than kBuildInterval after the last one.
+  uint64_t LightBvh::due(uint64_t oldest, uint64_t newest, uint32_t retired) const {
+    if (oldest != ~0ull)
+      return std::max(m_builtAt + kBuildInterval, std::min(newest + kSettle, oldest + 4 * kSettle));
+    if (retired > 64 && retired > m_staticReal / 2)
+      return m_builtAt + kBuildInterval;
+    return ~0ull;
+  }
+
   bool LightBvh::update(std::vector<SphereLight> lights) {
     const auto start = std::chrono::steady_clock::now();
+    const uint64_t buildsBefore = builds;
+    const auto finish = [&] {
+      updateMilliseconds =
+          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+      if (builds != buildsBefore)
+        buildTotalMilliseconds += buildMilliseconds = updateMilliseconds;
+    };
+    ++m_update;
     bool orderChanged = lights.size() != m_sourceKeys.size();
     for (size_t i = 0; !orderChanged && i < lights.size(); ++i)
       orderChanged = m_sourceKeys[i] != std::pair{lights[i].id, lights[i].triangle};
@@ -66,143 +101,329 @@ namespace remix::scene {
       size_t a = 0, b = 0;
       while (m_moved.size() < kMaxMoved) {
         const bool hasA = a < lights.size() && lights[a].triangle == 0;
-        const bool hasB = b < m_lights.size() && m_lights[b].triangle == 0;
+        const bool hasB = b < m_sorted.size() && m_sorted[b].triangle == 0;
         if (!hasA && !hasB)
           break;
-        if (hasA && hasB && lights[a].id == m_lights[b].id) {
-          if (!(lights[a] == m_lights[b]))
-            m_moved.push_back({emitterOf(lights[a]), emitterOf(m_lights[b])});
+        if (hasA && hasB && lights[a].id == m_sorted[b].id) {
+          if (!(lights[a] == m_sorted[b]))
+            m_moved.push_back({emitterOf(lights[a]), emitterOf(m_sorted[b])});
           ++a, ++b;
-        } else if (hasA && (!hasB || lights[a].id < m_lights[b].id)) {
+        } else if (hasA && (!hasB || lights[a].id < m_sorted[b].id)) {
           const auto e = emitterOf(lights[a++]); // switched on
           m_moved.push_back({e, zero(e)});
         } else {
-          const auto e = emitterOf(m_lights[b++]); // switched off
+          const auto e = emitterOf(m_sorted[b++]); // switched off
           m_moved.push_back({zero(e), e});
         }
       }
     }
-    if (lights == m_lights) {
-      updateMilliseconds =
-          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    const bool unchanged = lights == m_sorted;
+    if (unchanged && m_update < m_due) {
+      finish();
       return false;
     }
-    bool rebuild = lights.size() != m_lights.size();
-    if (!rebuild)
-      for (size_t i = 0; i < lights.size(); ++i)
-        rebuild |= lights[i].id != m_lights[i].id || lights[i].triangle != m_lights[i].triangle;
-    bool geometryChanged = rebuild;
-    for (size_t i = 0; !geometryChanged && i < lights.size(); ++i) {
-      const auto &a = lights[i], &b = m_lights[i];
-      geometryChanged = a.coneCos != b.coneCos || a.softness != b.softness || a.focus != b.focus ||
-                        !std::equal(a.direction, a.direction + 3, b.direction) || a.radius != b.radius ||
-                        !std::equal(a.position, a.position + 3, b.position);
-      for (unsigned v = 0; v < 3; ++v)
-        geometryChanged |= !std::equal(a.corners[v], a.corners[v] + 3, b.corners[v]);
+    if (lights.empty()) {
+      m_nodes.clear();
+      m_parents.clear();
+      m_leaves.clear();
+      m_emitters.clear();
+      m_lights.clear();
+      m_stamps.clear();
+      m_present.clear();
+      m_split = false;
+      m_staticReal = m_dynamicReal = m_staticCount = m_staticNodes = m_staticDepth = 0;
+      active = depth = staticLights = dynamicLights = retiredSlots = instanceLights = 0;
+      m_due = ~0ull;
+      m_builtAt = m_update;
+      ++builds;
+      ++buildReasons[lastBuildReason = Cleared];
+      ++visibilityGeneration;
+      significance(lights);
+      m_sorted.clear();
+      ++generation;
+      finish();
+      return true;
+    }
+    Reason reason = m_nodes.empty() ? Initial : None;
+    bool geometryChanged = false;
+    // Lights without a static slot, and the update their geometry last changed in.
+    std::vector<SphereLight> extra;
+    std::vector<uint64_t> extraStamps;
+    uint64_t oldest = ~0ull, newest = 0;
+    uint32_t retired = 0;
+    if (reason == None) {
+      m_dirty.assign(m_nodes.size(), 0);
+      // Static slots are in emitter order, as the input: one pass matches them.
+      size_t in = 0;
+      for (uint32_t slot = 0; slot < m_staticReal; ++slot) {
+        auto &held = m_lights[slot];
+        const auto key = keyOf(held);
+        while (in < lights.size() && keyOf(lights[in]) < key)
+          extra.push_back(lights[in++]);
+        if (in < lights.size() && keyOf(lights[in]) == key) {
+          const auto &light = lights[in++];
+          if (!m_present[slot] || !(light == held)) {
+            if (!sameGeometry(light, held)) {
+              m_stamps[slot] = m_update;
+              geometryChanged = true;
+            }
+            held = light;
+            m_emitters[slot] = emitterOf(light);
+            m_dirty[m_leaves[slot]] = 1;
+            m_present[slot] = 1;
+          }
+        } else {
+          // Gone: the slot stays, unlit, for the light's return.
+          if (m_present[slot]) {
+            m_present[slot] = 0;
+            std::fill_n(held.radiance, 3, 0.f);
+            m_emitters[slot] = emitterOf(held);
+            m_dirty[m_leaves[slot]] = 1;
+          }
+          ++retired;
+        }
+      }
+      extra.insert(extra.end(), lights.begin() + in, lights.end());
+      const SphereLight *held = m_lights.data() + m_staticCount;
+      extraStamps.resize(extra.size());
+      bool sameKeys = extra.size() == m_dynamicReal;
+      for (size_t i = 0, d = 0; i < extra.size(); ++i) {
+        const auto key = keyOf(extra[i]);
+        while (d < m_dynamicReal && keyOf(held[d]) < key)
+          ++d;
+        if (d < m_dynamicReal && keyOf(held[d]) == key) {
+          extraStamps[i] = sameGeometry(extra[i], held[d]) ? m_stamps[m_staticCount + d] : m_update;
+          sameKeys &= d == i;
+          ++d;
+        } else {
+          extraStamps[i] = m_update;
+          sameKeys = false;
+        }
+        if (!extra[i].dynamic) {
+          oldest = std::min(oldest, extraStamps[i]);
+          newest = std::max(newest, extraStamps[i]);
+        }
+      }
+      if (!extra.empty() && !m_split)
+        reason = FirstDynamic; // the hierarchy gains its dynamic part
+      else if (m_update >= due(oldest, newest, retired))
+        reason = oldest != ~0ull ? Settled : Retired;
+      if (reason == None && unchanged) {
+        m_due = due(oldest, newest, retired);
+        finish();
+        return false;
+      }
+      if (reason == None) {
+        if (sameKeys) {
+          for (size_t i = 0; i < extra.size(); ++i) {
+            const size_t slot = m_staticCount + i;
+            if (extra[i] == m_lights[slot])
+              continue;
+            geometryChanged |= extraStamps[i] != m_stamps[slot];
+            m_lights[slot] = extra[i];
+            m_stamps[slot] = extraStamps[i];
+            m_emitters[slot] = emitterOf(extra[i]);
+            m_dirty[m_leaves[slot]] = 1;
+          }
+        } else {
+          m_lights.resize(m_staticCount);
+          m_stamps.resize(m_staticCount);
+          m_dynamicReal = uint32_t(extra.size());
+          m_lights.insert(m_lights.end(), extra.begin(), extra.end());
+          m_stamps.insert(m_stamps.end(), extraStamps.begin(), extraStamps.end());
+          buildDynamic();
+          ++dynamicBuilds;
+          geometryChanged = true;
+        }
+        for (size_t i = m_nodes.size(); i-- > 0;)
+          if (m_dirty[i]) {
+            bounds(uint32_t(i));
+            if (i)
+              m_dirty[m_parents[i]] = 1;
+          }
+        ++refits;
+      }
+    }
+    if (reason != None) {
+      // Lights at rest go to the static part; those of dynamic instances and
+      // those that appeared or moved lately form the dynamic part.
+      std::vector<std::pair<SphereLight, uint64_t>> statics, dynamics;
+      const auto place = [&](const SphereLight &light, uint64_t stamp) {
+        (!light.dynamic && m_update - stamp >= kSettle ? statics : dynamics).emplace_back(light, stamp);
+      };
+      if (reason == Initial) {
+        for (const auto &light : lights)
+          place(light, light.dynamic ? m_update : m_update - kSettle);
+      } else {
+        for (uint32_t slot = 0; slot < m_staticReal; ++slot)
+          if (m_present[slot])
+            place(m_lights[slot], m_stamps[slot]);
+        for (size_t i = 0; i < extra.size(); ++i)
+          place(extra[i], extraStamps[i]);
+        const auto byKey = [](const auto &a, const auto &b) { return keyOf(a.first) < keyOf(b.first); };
+        std::stable_sort(statics.begin(), statics.end(), byKey);
+        std::stable_sort(dynamics.begin(), dynamics.end(), byKey);
+      }
+      std::vector<SphereLight> parts[2];
+      std::vector<uint64_t> stamps[2];
+      for (unsigned part = 0; part < 2; ++part)
+        for (auto &[light, stamp] : part ? dynamics : statics) {
+          parts[part].push_back(light);
+          stamps[part].push_back(stamp);
+        }
+      build(std::move(parts[0]), std::move(stamps[0]), std::move(parts[1]), std::move(stamps[1]), reason);
+      geometryChanged = true;
+      retired = 0;
+      oldest = ~0ull, newest = 0;
+      for (uint32_t i = 0; i < m_dynamicReal; ++i)
+        if (!m_lights[m_staticCount + i].dynamic) {
+          oldest = std::min(oldest, m_stamps[m_staticCount + i]);
+          newest = std::max(newest, m_stamps[m_staticCount + i]);
+        }
     }
     if (geometryChanged)
       ++visibilityGeneration;
-    if (geometryChanged) {
-      m_powerScale.resize(lights.size());
-      for (size_t i = 0; i < lights.size(); ++i)
-        m_powerScale[i] = powerScale(lights[i]);
-    }
-    // Tiny animated-emission fluctuations still update the GPU light data, but
-    // must not keep every local-light filter/cache permanently in fast response.
-    // Compare against the last significant snapshot, not the preceding frame,
-    // so gradual ramps eventually cross the threshold too. A light that moved,
-    // reshaped or switched on/off counts with its whole power: one animated or
-    // carried light among many (a blinking siren, a bot's flashlight) must not
-    // reset the local denoiser every frame, while a dominant one still does.
-    bool significant = rebuild || lights.size() != m_temporalLights.size();
-    double changed = 0, totalOldEnergy = 0, totalNewEnergy = 0;
-    for (size_t i = 0; !significant && i < lights.size(); ++i) {
-      const auto &a = lights[i], &b = m_temporalLights[i];
-      double difference = 0, oldEnergy = 0, newEnergy = 0;
-      for (unsigned c = 0; c < 3; ++c) {
-        difference += std::abs(double(a.radiance[c]) - b.radiance[c]);
-        oldEnergy += b.radiance[c];
-        newEnergy += a.radiance[c];
-      }
-      bool moved = a.coneCos != b.coneCos || a.softness != b.softness || a.focus != b.focus ||
-                   !std::equal(a.direction, a.direction + 3, b.direction) || a.radius != b.radius ||
-                   !std::equal(a.position, a.position + 3, b.position);
-      for (unsigned v = 0; v < 3; ++v)
-        moved |= !std::equal(a.corners[v], a.corners[v] + 3, b.corners[v]);
-      moved |= (oldEnergy == 0) != (newEnergy == 0);
-      const double scale = m_powerScale[i];
-      changed += (moved ? std::max(oldEnergy, newEnergy) : difference) * scale;
-      totalOldEnergy += oldEnergy * scale;
-      totalNewEnergy += newEnergy * scale;
-    }
-    // This is a scene-wide fast-response switch, not a per-emitter filter.
-    // Small/local changes use NRD's ordinary history and anti-lag, rather
-    // than forcing unrelated torches back to two accumulated frames.
-    significant |= changed > .25 * std::max(totalOldEnergy, totalNewEnergy);
-    if (significant) {
-      ++lightingGeneration;
-      m_temporalLights = lights;
-    }
-    m_emitters.resize(lights.size());
-    m_dirty.assign(m_nodes.size(), geometryChanged);
-    active = 0;
-    for (size_t i = 0; i < lights.size(); ++i) {
-      const auto &light = lights[i];
-      active += light.radiance[0] > 0 || light.radiance[1] > 0 || light.radiance[2] > 0;
-      if (!geometryChanged && light == m_lights[i])
-        continue;
-      if (!rebuild)
-        m_dirty[m_leaves[i]] = 1;
-      auto &emitter = m_emitters[i];
-      std::copy_n(light.position, 3, emitter.positionRadius);
-      emitter.positionRadius[3] = light.radius;
-      std::copy_n(light.radiance, 3, emitter.radiance);
-      emitter.radiance[3] = float(light.triangle);
-      std::copy_n(light.direction, 3, emitter.directionCone);
-      emitter.directionCone[3] = light.coneCos;
-      emitter.shaping[0] = light.softness;
-      emitter.shaping[1] = light.focus;
-      for (unsigned v = 0; v < 3; ++v)
-        std::copy_n(light.corners[v], 3, emitter.corners[v]);
-    }
-    m_lights = std::move(lights);
-    if (rebuild) {
-      m_nodes.clear();
-      m_parents.clear();
-      m_leaves.resize(m_lights.size());
-      depth = 0;
-      if (!m_lights.empty()) {
-        m_nodes.reserve(2 * m_lights.size() - 1);
-        std::vector<uint32_t> order(m_lights.size());
-        for (uint32_t i = 0; i < order.size(); ++i)
-          order[i] = i;
-        build(order, 0, uint32_t(order.size()), 1);
-      }
-      ++builds;
-    } else {
-      for (size_t i = m_nodes.size(); i-- > 0;)
-        if (m_dirty[i]) {
-          bounds(uint32_t(i), geometryChanged);
-          if (i)
-            m_dirty[m_parents[i]] = 1;
-        }
-      ++refits;
-    }
+    m_due = due(oldest, newest, retired);
+    active = instanceLights = 0;
+    for (const auto &light : m_lights)
+      active += lit(light);
+    for (const auto &light : lights)
+      instanceLights += light.dynamic;
+    retiredSlots = retired;
+    staticLights = m_staticReal - retired;
+    dynamicLights = m_dynamicReal;
+    significance(lights);
+    m_sorted = std::move(lights);
     ++generation;
-    updateMilliseconds =
-        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    finish();
     return true;
+  }
+
+  // Tiny animated-emission fluctuations still update the GPU light data, but
+  // must not keep every local-light filter/cache permanently in fast response.
+  // Compare against the last significant snapshot, not the preceding frame,
+  // so gradual ramps eventually cross the threshold too. A light that moved,
+  // reshaped, appeared or went counts with its whole power: one animated or
+  // carried light among many (a blinking siren, a bot's flashlight) must not
+  // reset the local denoiser every frame, while a dominant one still does.
+  // This is a scene-wide fast-response switch, not a per-emitter filter.
+  void LightBvh::significance(const std::vector<SphereLight> &sorted) {
+    const auto &before = m_temporalLights;
+    double changed = 0, totalOld = 0, totalNew = 0;
+    const auto energy = [](const SphereLight &light) {
+      return (double(light.radiance[0]) + light.radiance[1] + light.radiance[2]) * powerScale(light);
+    };
+    size_t a = 0, b = 0;
+    while (a < sorted.size() || b < before.size()) {
+      if (a < sorted.size() && b < before.size() && keyOf(sorted[a]) == keyOf(before[b])) {
+        const auto &now = sorted[a++], &then = before[b++];
+        const double newEnergy = energy(now), oldEnergy = energy(then);
+        double difference = 0;
+        for (unsigned c = 0; c < 3; ++c)
+          difference += std::abs(double(now.radiance[c]) - then.radiance[c]);
+        const bool moved = !sameGeometry(now, then) || (oldEnergy == 0) != (newEnergy == 0);
+        changed += moved ? std::max(oldEnergy, newEnergy) : difference * powerScale(now);
+        totalOld += oldEnergy;
+        totalNew += newEnergy;
+      } else if (a < sorted.size() && (b == before.size() || keyOf(sorted[a]) < keyOf(before[b]))) {
+        const double value = energy(sorted[a++]);
+        changed += value;
+        totalNew += value;
+      } else {
+        const double value = energy(before[b++]);
+        changed += value;
+        totalOld += value;
+      }
+    }
+    if (sorted.empty() != before.empty() || changed > .25 * std::max(totalOld, totalNew)) {
+      ++lightingGeneration;
+      m_temporalLights = sorted;
+    }
   }
 
   // Nodes are laid out with both children of a node adjacent: the descent in
   // light_bvh.glsl reads both at every level, so one memory neighborhood per
-  // level instead of a far jump to every right subtree.
-  uint32_t LightBvh::build(std::vector<uint32_t> &order, uint32_t begin, uint32_t end, uint32_t level) {
-    const uint32_t index = uint32_t(m_nodes.size());
-    m_nodes.emplace_back();
-    m_parents.push_back(0);
-    buildInto(index, order, begin, end, level);
-    return index;
+  // level instead of a far jump to every right subtree. With a dynamic part
+  // the root's children are the two parts (nodes 1 and 2), the static part's
+  // nodes follow, and the dynamic part's come last; leaf ranks and emitters
+  // are in the same order (static, then dynamic).
+  void LightBvh::build(std::vector<SphereLight> statics, std::vector<uint64_t> staticStamps,
+                       std::vector<SphereLight> dynamics, std::vector<uint64_t> dynamicStamps, Reason reason) {
+    m_split |= !dynamics.empty();
+    m_staticReal = uint32_t(statics.size());
+    m_dynamicReal = uint32_t(dynamics.size());
+    m_lights = std::move(statics);
+    m_stamps = std::move(staticStamps);
+    if (m_split && m_lights.empty()) {
+      m_lights.emplace_back();
+      m_stamps.push_back(0);
+    }
+    m_staticCount = uint32_t(m_lights.size());
+    m_present.assign(m_staticCount, 1);
+    m_lights.insert(m_lights.end(), dynamics.begin(), dynamics.end());
+    m_stamps.insert(m_stamps.end(), dynamicStamps.begin(), dynamicStamps.end());
+    if (m_split && dynamics.empty()) {
+      m_lights.emplace_back();
+      m_stamps.push_back(0);
+    }
+    const uint32_t total = uint32_t(m_lights.size());
+    m_emitters.resize(total);
+    for (uint32_t i = 0; i < total; ++i)
+      m_emitters[i] = emitterOf(m_lights[i]);
+    m_nodes.clear();
+    m_parents.clear();
+    m_leaves.assign(total, 0);
+    m_nodes.reserve(2 * size_t(total) - 1);
+    depth = 0;
+    std::vector<uint32_t> order(total);
+    std::iota(order.begin(), order.end(), 0u);
+    if (!m_split) {
+      m_nodes.emplace_back();
+      m_parents.push_back(0);
+      buildInto(0, order, 0, total, 1);
+      m_staticNodes = uint32_t(m_nodes.size());
+      m_staticDepth = depth;
+    } else {
+      m_nodes.resize(3);
+      m_parents.assign(3, 0);
+      buildInto(1, order, 0, m_staticCount, 2);
+      m_staticNodes = uint32_t(m_nodes.size());
+      m_staticDepth = depth;
+      buildInto(2, order, m_staticCount, total, 2);
+      m_nodes[0].links[0] = 1;
+      m_nodes[0].links[1] = 2;
+      m_nodes[0].links[2] = 0;
+      m_nodes[0].links[3] = total;
+      bounds(0);
+    }
+    m_builtAt = m_update;
+    ++builds;
+    ++buildReasons[lastBuildReason = reason];
+  }
+
+  // The dynamic part again, from m_lights behind the static emitters. Static
+  // nodes, emitters and leaf ranks stay as they are.
+  void LightBvh::buildDynamic() {
+    if (m_lights.size() == m_staticCount) {
+      m_lights.emplace_back();
+      m_stamps.push_back(0);
+    }
+    const uint32_t total = uint32_t(m_lights.size());
+    m_emitters.resize(total);
+    for (uint32_t i = m_staticCount; i < total; ++i)
+      m_emitters[i] = emitterOf(m_lights[i]);
+    m_nodes.resize(m_staticNodes);
+    m_parents.resize(m_staticNodes);
+    m_leaves.resize(total);
+    m_nodes[2] = {};
+    depth = m_staticDepth;
+    std::vector<uint32_t> order(total);
+    std::iota(order.begin(), order.end(), 0u);
+    buildInto(2, order, m_staticCount, total, 2);
+    m_nodes[0].links[3] = total;
+    m_dirty.resize(m_nodes.size());
+    std::fill(m_dirty.begin() + m_staticNodes, m_dirty.end(), 0);
+    m_dirty[0] = 1;
   }
 
   void LightBvh::buildInto(uint32_t index, std::vector<uint32_t> &order, uint32_t begin, uint32_t end,
@@ -251,20 +472,18 @@ namespace remix::scene {
     bounds(index);
   }
 
-  void LightBvh::bounds(uint32_t index, bool geometry) {
+  void LightBvh::bounds(uint32_t index) {
     auto &node = m_nodes[index];
     if (node.links[3] == 1) {
       const auto &light = m_lights[node.links[2]];
-      if (geometry) {
-        for (unsigned c = 0; c < 3; ++c) {
-          node.minimumPower[c] = light.position[c] - light.radius;
-          node.maximum[c] = light.position[c] + light.radius;
-        }
-        node.maximum[3] = light.radius * light.radius;
+      for (unsigned c = 0; c < 3; ++c) {
+        node.minimumPower[c] = light.position[c] - light.radius;
+        node.maximum[c] = light.position[c] + light.radius;
       }
+      node.maximum[3] = light.radius * light.radius;
       // Common 4*pi*pi cancels in every selection probability.
       node.minimumPower[3] =
-          float(m_powerScale[node.links[2]] *
+          float(powerScale(light) *
                 (.2126 * light.radiance[0] + .7152 * light.radiance[1] + .0722 * light.radiance[2]));
     } else {
       const auto &a = m_nodes[node.links[0]], &b = m_nodes[node.links[1]];

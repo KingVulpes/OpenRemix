@@ -324,6 +324,47 @@ typedef struct remixapi_LocalLightStatisticsEXT {
   char unavailableReason[256];
 } remixapi_LocalLightStatisticsEXT;
 
+// The local light hierarchy's two parts and what keeping it up to date costs.
+// The static part holds the lights that were present and at rest when the
+// hierarchy was built: their emitter and node indices stay put until the next
+// build (a light that leaves keeps its slot, unlit: retiredSlots). Lights
+// that appear afterwards, and the emitters of instances submitted as
+// REMIXAPI_INSTANCE_DYNAMIC_EXT with an instanceId, form the dynamic part,
+// which is rebuilt alone (dynamicBuilds, counted in refits) whenever its
+// membership changes; it is visible from every cluster of a visibility
+// partition. Only a build (builds, by reason below) changes static indices,
+// remakes the visibility table and resets the guiding history. Lights that
+// wait in the dynamic part without belonging to a dynamic instance join the
+// static part once at rest (SETTLED), at most one build every 120 frames.
+#define REMIXAPI_LOCAL_LIGHT_BUILD_NONE_EXT 0u
+#define REMIXAPI_LOCAL_LIGHT_BUILD_INITIAL_EXT 1u       // first lights
+#define REMIXAPI_LOCAL_LIGHT_BUILD_FIRST_DYNAMIC_EXT 2u // the hierarchy gained its dynamic part
+#define REMIXAPI_LOCAL_LIGHT_BUILD_SETTLED_EXT 3u       // lights at rest joined the static part
+#define REMIXAPI_LOCAL_LIGHT_BUILD_RETIRED_EXT 4u       // most static slots had lost their light
+#define REMIXAPI_LOCAL_LIGHT_BUILD_CLEARED_EXT 5u       // no lights left
+#define REMIXAPI_LOCAL_LIGHT_BUILD_REASONS_EXT 6u
+typedef struct remixapi_LocalLightSetStatisticsEXT {
+  uint32_t structSize, lastBuildReason;
+  // Lights in static slots, lights in the dynamic part, static slots without
+  // their light, and emitters of dynamic instances (all in the dynamic part).
+  uint32_t staticLights, dynamicLights, retiredSlots, dynamicInstanceLights;
+  // Instances (outside the static set) with emitters this frame, and those
+  // among them identified as dynamic: more than the scene has glowing props
+  // means the same prop was submitted under several identities.
+  uint32_t emittingInstances, dynamicEmittingInstances;
+  uint64_t builds, refits, dynamicBuilds;
+  uint64_t buildsByReason[REMIXAPI_LOCAL_LIGHT_BUILD_REASONS_EXT];
+  // Visibility table (remixapi_VisibilityPartitionEXT): times made and
+  // uploaded, its size, light-tree nodes it covers.
+  uint64_t tableBuilds, tableUploads, tableBytes, tableNodes;
+  // CPU milliseconds: last table made, all tables; last hierarchy build, all
+  // builds; the frame's whole light update (hierarchies and table), and the
+  // longest of the last 300 to 600 frames.
+  double tableMilliseconds, tableTotalMilliseconds;
+  double buildMilliseconds, buildTotalMilliseconds;
+  double updateMilliseconds, updatePeakMilliseconds;
+} remixapi_LocalLightSetStatisticsEXT;
+
 // Optional visibility-guided local-light diagnostics. Query counters are sampled
 // at 1/64 of opaque-primary light samples; they are not full ray counts.
 typedef struct remixapi_LocalLightGuidingStatisticsEXT {
@@ -511,13 +552,17 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetPresentationCount(uint64_t
 typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_GetBackendCapabilitiesEXT)(remixapi_BackendCapabilitiesEXT* capabilities);
 typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_GetLocalLightStatisticsEXT)(remixapi_LocalLightStatisticsEXT* statistics);
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetLocalLightStatisticsEXT(remixapi_LocalLightStatisticsEXT* statistics);
+typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_GetLocalLightSetStatisticsEXT)(remixapi_LocalLightSetStatisticsEXT* statistics);
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetLocalLightSetStatisticsEXT(remixapi_LocalLightSetStatisticsEXT* statistics);
 typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_GetLocalLightGuidingStatisticsEXT)(remixapi_LocalLightGuidingStatisticsEXT* statistics);
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetLocalLightGuidingStatisticsEXT(remixapi_LocalLightGuidingStatisticsEXT* statistics);
 // A potentially-visible-set partition of the host's world (a BSP with
 // cluster-to-cluster visibility, as in id Tech and Source maps), in world
 // space. Local lights in clusters not potentially visible from a shading
 // point's cluster are excluded from light selection; lights without a
-// cluster, or that move, remain visible from everywhere. Points in leaves
+// cluster, lights that move, new lights until they have been at rest for a
+// while, and the emitters of REMIXAPI_INSTANCE_DYNAMIC_EXT instances remain
+// visible from everywhere (remixapi_LocalLightSetStatisticsEXT). Points in leaves
 // without a cluster are unrestricted. nullptr (or nodeCount 0) clears it.
 typedef struct remixapi_VisibilityPartitionEXT {
   uint32_t structSize;

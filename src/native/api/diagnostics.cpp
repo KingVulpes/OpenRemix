@@ -205,6 +205,16 @@ remixapi_GetLocalLightStatisticsEXT(remixapi_LocalLightStatisticsEXT *out) {
   }
 }
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL
+remixapi_GetLocalLightSetStatisticsEXT(remixapi_LocalLightSetStatisticsEXT *out) {
+  if (!out || out->structSize != sizeof(*out))
+    return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+  std::lock_guard lock(g_apiMutex);
+  if (!g_runtime.isInitialized())
+    return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+  *out = g_runtime.localLightSetStatistics();
+  return REMIXAPI_ERROR_CODE_SUCCESS;
+}
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL
 remixapi_GetLocalLightGuidingStatisticsEXT(remixapi_LocalLightGuidingStatisticsEXT *out) {
   if (!out || out->structSize != sizeof(*out))
     return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;

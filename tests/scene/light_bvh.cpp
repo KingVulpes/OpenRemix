@@ -1,4 +1,5 @@
 #include "scene/light_bvh.h"
+#include "scene/light_visibility.h"
 #include "scene/resources.h"
 #include <algorithm>
 #include <cmath>
@@ -361,5 +362,224 @@ int main() {
     }
     std::puts(
         "1331 torches: interior receiver energy and selection variance passed");
+  }
+  // Lights that come and go, and the emitters of dynamic instances, live in
+  // the hierarchy's dynamic part: the static part keeps its indices (no
+  // build), and the visibility table, which covers the static nodes only,
+  // stays as it is.
+  {
+    std::mt19937 random(1531);
+    auto partition = std::make_shared<VisibilityPartition>();
+    // A 4x4 grid of cells in x/y (0..40), one cluster each; a cell sees its
+    // column (and, not symmetrically, its row to the right).
+    std::function<int32_t(int, int, int, int)> split = [&](int x0, int x1, int y0, int y1) -> int32_t {
+      if (x1 - x0 == 1 && y1 - y0 == 1) {
+        partition->leafClusters.push_back(int32_t(partition->leafClusters.size()));
+        return -int32_t(partition->leafClusters.size());
+      }
+      const bool alongX = x1 - x0 >= y1 - y0;
+      const int middle = alongX ? (x0 + x1) / 2 : (y0 + y1) / 2;
+      const int32_t index = int32_t(partition->nodes.size());
+      partition->nodes.emplace_back();
+      // In front of the plane: the upper half.
+      const int32_t front = alongX ? split(middle, x1, y0, y1) : split(x0, x1, middle, y1);
+      const int32_t back = alongX ? split(x0, middle, y0, y1) : split(x0, x1, y0, middle);
+      VisibilityPartition::Node n{};
+      n.plane[alongX ? 0 : 1] = 1;
+      n.plane[3] = middle * 10.f;
+      n.children[0] = front;
+      n.children[1] = back;
+      partition->nodes[index] = n;
+      return index;
+    };
+    split(0, 4, 0, 4);
+    partition->clusterCount = 16;
+    partition->rowBytes = 2;
+    partition->visibility.assign(32, 0);
+    const auto cell = [&](int cluster) {
+      // Where the tree puts the cluster: probe its cells.
+      for (int x = 0; x < 4; ++x)
+        for (int y = 0; y < 4; ++y) {
+          const float p[3] = {x * 10 + 5.f, y * 10 + 5.f, 0};
+          if (partition->cluster(p) == cluster)
+            return std::pair{x, y};
+        }
+      return std::pair{-1, -1};
+    };
+    for (int a = 0; a < 16; ++a)
+      for (int b = 0; b < 16; ++b) {
+        const auto [ax, ay] = cell(a);
+        const auto [bx, by] = cell(b);
+        require(ax >= 0 && bx >= 0, "Test partition does not cover its grid");
+        if (ax == bx || (ay == by && bx > ax))
+          partition->visibility[a * 2 + b / 8] |= uint8_t(1u << (b % 8));
+      }
+    partition->version = 1;
+    std::vector<SphereLight> lamps;
+    for (unsigned i = 0; i < 40; ++i) {
+      SphereLight light;
+      light.id = 100 + i;
+      light.radius = .1f;
+      light.position[0] = float(random() % 400) / 10;
+      light.position[1] = float(random() % 400) / 10;
+      light.radiance[0] = 1 + float(i % 5);
+      lamps.push_back(light);
+    }
+    const auto prop = [&](uint64_t instance, float x, unsigned count) {
+      std::vector<SphereLight> lights;
+      for (unsigned i = 0; i < count; ++i) {
+        SphereLight light;
+        light.id = instance * 1000 + i;
+        light.triangle = 1;
+        light.dynamic = true;
+        light.radiance[1] = 2;
+        for (unsigned v = 0; v < 3; ++v) {
+          light.corners[v][0] = x + float(i % 5) + (v == 1);
+          light.corners[v][1] = 20 + float(i / 5) + (v == 2);
+          for (unsigned c = 0; c < 3; ++c)
+            light.position[c] += light.corners[v][c] / 3;
+        }
+        light.radius = 1;
+        lights.push_back(light);
+      }
+      return lights;
+    };
+    LightBvh bvh;
+    LightVisibility visibility;
+    std::vector<LightNode> staticNodes;
+    // The table against every (cluster, node) pair computed from the lights.
+    const auto checkTable = [&](const char *message) {
+      const auto &nodes = bvh.nodes();
+      const auto &table = *visibility.table();
+      require(visibility.tableNodes() == bvh.staticNodes() &&
+                  table.size() == 16 * size_t(visibility.rowWords()),
+              "Visibility table does not cover the static nodes");
+      std::vector<uint8_t> bits(nodes.size());
+      for (int from = 0; from < 16; ++from) {
+        for (size_t n = nodes.size(); n-- > 0;) {
+          const auto &links = nodes[n].links;
+          if (links[3] == 1) {
+            const auto &light = bvh.lights()[links[2]];
+            const int cluster = partition->cluster(light.position);
+            bits[n] = links[2] >= bvh.staticEmitters() || cluster < 0 || partition->visible(from, cluster);
+          } else {
+            bits[n] = bits[links[0]] | bits[links[1]];
+          }
+        }
+        for (uint32_t n = 0; n < visibility.tableNodes(); ++n)
+          require(((table[from * visibility.rowWords() + n / 32] >> (n % 32)) & 1) == bits[n], message);
+      }
+    };
+    const auto update = [&](std::vector<SphereLight> lights) {
+      std::shuffle(lights.begin(), lights.end(), random);
+      const bool changed = bvh.update(lights);
+      visibility.update(partition, bvh, true, .1f);
+      const auto &nodes = bvh.nodes();
+      require(nodes.empty() || (nodes.size() == 2 * bvh.emitters().size() - 1 &&
+                                nodes[0].links[3] == bvh.emitters().size()),
+              "Two-part hierarchy is not a full binary tree");
+      uint32_t lit = 0;
+      for (const auto &light : lights)
+        lit += light.radiance[0] > 0 || light.radiance[1] > 0 || light.radiance[2] > 0;
+      require(bvh.active == lit, "Hierarchy lights differ from the submitted ones");
+      return changed;
+    };
+    auto frame = lamps;
+    update(frame);
+    require(bvh.builds == 1 && bvh.staticNodes() == bvh.nodes().size() && bvh.dynamicLights == 0,
+            "Static lights alone need no dynamic part");
+    checkTable("Initial visibility table differs from the partition");
+    // The first emitters of a dynamic instance add the dynamic part: once.
+    for (unsigned step = 0; step < 300; ++step) {
+      frame = lamps;
+      // The prop moves every frame, changes identity every 7 frames, is away
+      // for 5 of every 40 frames and has a second copy for some.
+      if (step % 40 < 35) {
+        const auto first = prop(1 + step / 7, float(step % 30), 12);
+        frame.insert(frame.end(), first.begin(), first.end());
+        if (step % 3 == 0) {
+          const auto second = prop(900, 30 - float(step % 30), 7);
+          frame.insert(frame.end(), second.begin(), second.end());
+        }
+      }
+      const uint64_t tables = visibility.version();
+      update(frame);
+      if (step == 0) {
+        require(bvh.builds == 2 && bvh.lastBuildReason == LightBvh::FirstDynamic,
+                "The dynamic part was not added by one build");
+        staticNodes.assign(bvh.nodes().begin() + 3, bvh.nodes().begin() + bvh.staticNodes());
+        checkTable("Visibility table differs after the dynamic part was added");
+      } else {
+        require(bvh.builds == 2, "Dynamic-instance lights rebuilt the hierarchy");
+        require(visibility.version() == tables, "Dynamic-instance lights remade the visibility table");
+        require(bvh.staticNodes() == staticNodes.size() + 3 &&
+                    std::memcmp(staticNodes.data(), bvh.nodes().data() + 3,
+                                staticNodes.size() * sizeof(LightNode)) == 0,
+                "Dynamic-instance lights changed static nodes");
+      }
+      require(bvh.staticLights == lamps.size() && bvh.instanceLights == frame.size() - lamps.size() &&
+                  bvh.dynamicLights == bvh.instanceLights,
+              "Dynamic-instance lights are not all in the dynamic part");
+      const float p[] = {20, 20, 5}, n[] = {0, 0, -1};
+      double total = 0;
+      std::function<void(uint32_t, double)> visit = [&](uint32_t node, double probability) {
+        const auto &value = bvh.nodes()[node];
+        if (value.links[3] == 1) {
+          total += probability;
+          return;
+        }
+        const double a = LightBvh::weight(bvh.nodes()[value.links[0]], p, n);
+        const double b = LightBvh::weight(bvh.nodes()[value.links[1]], p, n);
+        if (a + b <= 0)
+          return;
+        visit(value.links[0], probability * a / (a + b));
+        visit(value.links[1], probability * b / (a + b));
+      };
+      visit(0, 1);
+      require(std::abs(total - 1) < 1.e-10, "Two-part traversal lost selection probability");
+    }
+    require(bvh.dynamicBuilds > 40 && bvh.refits >= 250, "Dynamic part was not rebuilt on its own");
+    checkTable("Visibility table differs after dynamic lights came and went");
+    // A static light that leaves keeps its slot and returns to it.
+    frame = lamps;
+    frame.erase(frame.begin() + 7);
+    update(frame);
+    require(bvh.builds == 2 && bvh.retiredSlots == 1 && bvh.active == lamps.size() - 1,
+            "A static light that left rebuilt the hierarchy or kept its power");
+    update(lamps);
+    require(bvh.builds == 2 && bvh.retiredSlots == 0 && bvh.active == lamps.size() &&
+                std::memcmp(staticNodes.data(), bvh.nodes().data() + 3, staticNodes.size() * sizeof(LightNode)) == 0,
+            "A returning static light did not take its slot");
+    // A new light of no dynamic instance waits in the dynamic part and joins
+    // the static part once at rest; a moving one stays.
+    SphereLight added = lamps[0], carried = lamps[1];
+    added.id = 5000;
+    added.position[0] = 33;
+    carried.id = 5001;
+    const uint64_t refits = bvh.refits;
+    // (While another new light keeps moving, the one at rest waits four times as long.)
+    for (unsigned step = 0; step < 5 * LightBvh::kSettle && bvh.builds == 2; ++step) {
+      frame = lamps;
+      frame.push_back(added);
+      carried.position[1] = float(step % 40);
+      frame.push_back(carried);
+      update(frame);
+      require(bvh.builds > 2 || bvh.dynamicLights == 2, "New lights did not wait in the dynamic part");
+    }
+    require(bvh.builds == 3 && bvh.lastBuildReason == LightBvh::Settled && bvh.staticLights == lamps.size() + 1 &&
+                bvh.dynamicLights == 1 && bvh.refits - refits >= LightBvh::kSettle,
+            "A light at rest did not join the static part by one build");
+    checkTable("Visibility table differs after a light joined the static part");
+    // A static light that moves is visible from everywhere from then on.
+    frame.back() = carried;
+    frame[3].position[0] += 15;
+    const uint64_t tables = visibility.version();
+    update(frame);
+    require(bvh.builds == 3 && visibility.version() == tables + 1 && visibility.unrestricted >= 2,
+            "A moved static light kept its clusters");
+    update({});
+    require(bvh.nodes().empty() && bvh.lastBuildReason == LightBvh::Cleared && !visibility.table(),
+            "Unloaded lights remained in the two-part hierarchy");
+    std::puts("Dynamic part: static indices, visibility table, slots and settling passed");
   }
 }

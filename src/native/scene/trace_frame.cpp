@@ -1,6 +1,7 @@
 #include "scene/trace_frame.h"
 #include "scene/emission.h"
 #include "scene/static_scene.h"
+#include <remix/remix_native_ext.h>
 #include <algorithm>
 #include <cmath>
 #include <tuple>
@@ -67,6 +68,7 @@ TraceFrame prepareTraceFrame(const std::vector<Draw> &draws, double seconds, boo
   frame.emitterFirst.reserve(frame.instances.size() + 1);
   for (auto instance : frame.instances) {
     frame.emitterFirst.push_back(uint32_t(frame.emitters.size()));
+    bool emitting = false, dynamicEmitting = false;
     for (auto &surface : instance) {
       const auto &draw = surface.draw;
       const auto &material = *draw.material;
@@ -81,11 +83,20 @@ TraceFrame prepareTraceFrame(const std::vector<Draw> &draws, double seconds, boo
         continue;
       const auto reduction = emissionCache.reduce(draw, surface.uv);
       const bool animated = filterEmission && bool(material.emissionTexture);
+      // An instance the host identified as dynamic: its emitters stay in the
+      // light tree's dynamic part (LightBvh).
+      const bool dynamic = draw.classification == REMIXAPI_INSTANCE_DYNAMIC_EXT &&
+                           frame.persistentIds.count(draw.instanceId) != 0;
       for (const auto &triangle : *reduction) {
         frame.emitters.push_back({triangleEmitter(draw, triangle.index, triangle.radiance),
                                   animated ? triangle.layout : 0, animated});
+        frame.emitters.back().light.dynamic = dynamic;
       }
+      emitting |= !reduction->empty();
+      dynamicEmitting |= dynamic && !reduction->empty();
     }
+    frame.emittingInstances += emitting;
+    frame.dynamicEmittingInstances += dynamicEmitting;
   }
   frame.emitterFirst.push_back(uint32_t(frame.emitters.size()));
   emissionCache.prune();

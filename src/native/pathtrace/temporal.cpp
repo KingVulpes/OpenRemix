@@ -447,6 +447,37 @@ namespace remix {
     std::strncpy(result.unavailableReason, g.postFailure.c_str(), sizeof(result.unavailableReason) - 1);
     return result;
   }
+  remixapi_LocalLightSetStatisticsEXT PathTracer::localLightSetStatistics() const {
+    const auto &g = *m_gpu;
+    const auto &tree = g.lightBvh;
+    const auto &table = g.lightVisibility;
+    remixapi_LocalLightSetStatisticsEXT result{.structSize = sizeof(result)};
+    result.lastBuildReason = tree.lastBuildReason;
+    result.staticLights = tree.staticLights;
+    result.dynamicLights = tree.dynamicLights;
+    result.retiredSlots = tree.retiredSlots;
+    result.dynamicInstanceLights = tree.instanceLights;
+    result.emittingInstances = g.emittingInstances;
+    result.dynamicEmittingInstances = g.dynamicEmittingInstances;
+    result.builds = tree.builds;
+    result.refits = tree.refits;
+    result.dynamicBuilds = tree.dynamicBuilds;
+    static_assert(REMIXAPI_LOCAL_LIGHT_BUILD_REASONS_EXT == scene::LightBvh::ReasonCount);
+    std::copy_n(tree.buildReasons, scene::LightBvh::ReasonCount, result.buildsByReason);
+    if (table.table()) {
+      result.tableBytes = table.table()->size() * sizeof(uint32_t);
+      result.tableNodes = table.tableNodes();
+    }
+    result.tableBuilds = table.tableBuilds;
+    result.tableUploads = g.visibilityTableUploads;
+    result.tableMilliseconds = table.tableMilliseconds;
+    result.tableTotalMilliseconds = table.tableTotalMilliseconds;
+    result.buildMilliseconds = tree.buildMilliseconds;
+    result.buildTotalMilliseconds = tree.buildTotalMilliseconds;
+    result.updateMilliseconds = g.lightUpdateMilliseconds;
+    result.updatePeakMilliseconds = std::max(g.lightUpdatePeak[0], g.lightUpdatePeak[1]);
+    return result;
+  }
   remixapi_LocalLightGuidingStatisticsEXT PathTracer::localLightGuidingStatistics() const {
     return m_gpu->lightGuiding.stats;
   }

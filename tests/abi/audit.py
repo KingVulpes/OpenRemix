@@ -20,6 +20,7 @@ for manifest, base in [(root / 'tests/abi/headers.sha256', root),
 required_exports = (root / 'tests/abi/exports.txt').read_text().splitlines()
 required_exports += ['remixapi_GetReconstructionDiagnosticsEXT', 'remixapi_GetBackendCapabilitiesEXT', 'remixapi_GetTracingStatisticsEXT', 'remixapi_GetFramePerformanceEXT', 'remixapi_GetFrameBreakdownEXT', 'remixapi_GetGpuPassTimingsEXT',
              'remixapi_GetLocalLightGuidingStatisticsEXT', 'remixapi_GetLocalLightStatisticsEXT',
+             'remixapi_GetLocalLightSetStatisticsEXT',
              'remixapi_GetShadowStatisticsEXT', 'remixapi_GetSharcStatisticsEXT',
              'remixapi_GetDenoisingCapabilitiesEXT', 'remixapi_GetDenoisingStatisticsEXT']
 required_exports += ['remixapi_CreateRetainedInstance', 'remixapi_UpdateRetainedInstance', 'remixapi_UpdateRetainedInstances',

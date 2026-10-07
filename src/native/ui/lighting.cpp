@@ -158,6 +158,14 @@ namespace remix {
                          local.treeDepth);
       ImGui::TextWrapped("BVH builds %llu / refits %llu | %.3f ms CPU", (unsigned long long)local.builds,
                          (unsigned long long)local.refits, local.cpuUpdateMilliseconds);
+      const auto set = localLightSetStatistics();
+      ImGui::TextWrapped("Static %u (+%u unlit slots) / dynamic %u (%u of %u dynamic instances) | dynamic part "
+                         "rebuilt %llu times",
+                         set.staticLights, set.retiredSlots, set.dynamicLights, set.dynamicInstanceLights,
+                         set.dynamicEmittingInstances, (unsigned long long)set.dynamicBuilds);
+      if (set.tableBuilds)
+        ImGui::TextWrapped("Visibility table made %llu times, last %.3f ms | %.1f KiB",
+                           (unsigned long long)set.tableBuilds, set.tableMilliseconds, double(set.tableBytes) / 1024);
       if (local.denoiserActive && local.gpuTimingsAvailable)
         ImGui::TextWrapped("Local light filter %.3f ms", local.gpuDenoiseMilliseconds);
       if (local.unavailableReason[0])

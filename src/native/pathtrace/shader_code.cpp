@@ -9,6 +9,7 @@ namespace remix::trace {
 #if defined(__clang__)
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wc23-extensions"
+#pragma clang diagnostic ignored "-Wc++11-narrowing"
 #endif
     // XZ streams listed by embeddedShaders (scripts/shaders/generate.py).
     constexpr unsigned char compressed[] = {

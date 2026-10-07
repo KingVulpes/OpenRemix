@@ -32,9 +32,9 @@ extern "C" {
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL
 remixapi_GetReconstructionDiagnosticsEXT(remixapi_ReconstructionDiagnosticsEXT *out) {
   if (!out || out->structSize < 8) return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
-  std::lock_guard lock(g_apiMutex);
-  if (!g_runtime.isInitialized()) return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
   try {
+    std::lock_guard lock(g_apiMutex);
+    if (!g_runtime.isInitialized()) return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
     const auto stats = g_runtime.reconstructionStatistics();
     remixapi_ReconstructionDiagnosticsEXT result{};
     result.structSize = sizeof(result); result.version = 1;
@@ -56,8 +56,8 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_RequestPresentedScreenshot(co
   if (absolutePath == nullptr || absolutePath[0] == '\0') {
     return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
   }
-  std::lock_guard lock(g_apiMutex);
   try {
+    std::lock_guard lock(g_apiMutex);
     return g_runtime.requestScreenshot(absolutePath);
   } catch (...) {
     return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
@@ -68,11 +68,15 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetPresentationCount(uint64_t
   if (!outCount)
     return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
   *outCount = 0;
-  std::lock_guard lock(g_apiMutex);
-  if (!g_runtime.isInitialized())
-    return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
-  *outCount = g_runtime.presentationCount();
-  return REMIXAPI_ERROR_CODE_SUCCESS;
+  try {
+    std::lock_guard lock(g_apiMutex);
+    if (!g_runtime.isInitialized())
+      return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+    *outCount = g_runtime.presentationCount();
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  } catch (...) {
+    return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+  }
 }
 
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL
@@ -80,31 +84,43 @@ remixapi_GetFeatureAvailability(remixapi_FeatureAvailability *outFeatures) {
   if (outFeatures == nullptr) {
     return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
   }
-  std::lock_guard lock(g_apiMutex);
-  *outFeatures = g_runtime.getFeatureAvailability();
-  return REMIXAPI_ERROR_CODE_SUCCESS;
+  try {
+    std::lock_guard lock(g_apiMutex);
+    *outFeatures = g_runtime.getFeatureAvailability();
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  } catch (...) {
+    return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+  }
 }
 
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL
 remixapi_GetBackendCapabilitiesEXT(remixapi_BackendCapabilitiesEXT *out) {
   if (!out || out->structSize != sizeof(*out))
     return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
-  std::lock_guard lock(g_apiMutex);
-  if (!g_runtime.isInitialized())
-    return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
-  *out = g_runtime.backendCapabilities();
-  return REMIXAPI_ERROR_CODE_SUCCESS;
+  try {
+    std::lock_guard lock(g_apiMutex);
+    if (!g_runtime.isInitialized())
+      return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+    *out = g_runtime.backendCapabilities();
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  } catch (...) {
+    return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+  }
 }
 
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL
 remixapi_GetFramePerformanceEXT(remixapi_FramePerformanceEXT *out) {
   if (!out || out->structSize != sizeof(*out))
     return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
-  std::lock_guard lock(g_apiMutex);
-  if (!g_runtime.isInitialized())
-    return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
-  *out = g_runtime.framePerformance();
-  return REMIXAPI_ERROR_CODE_SUCCESS;
+  try {
+    std::lock_guard lock(g_apiMutex);
+    if (!g_runtime.isInitialized())
+      return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+    *out = g_runtime.framePerformance();
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  } catch (...) {
+    return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+  }
 }
 
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL
@@ -164,70 +180,98 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL
 remixapi_GetTracingStatisticsEXT(remixapi_TracingStatisticsEXT *out) {
   if (!out || out->structSize != sizeof(*out))
     return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
-  std::lock_guard lock(g_apiMutex);
-  if (!g_runtime.isInitialized())
-    return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
-  *out = g_runtime.tracingStatistics();
-  return REMIXAPI_ERROR_CODE_SUCCESS;
+  try {
+    std::lock_guard lock(g_apiMutex);
+    if (!g_runtime.isInitialized())
+      return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+    *out = g_runtime.tracingStatistics();
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  } catch (...) {
+    return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+  }
 }
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL
 remixapi_GetLocalLightStatisticsEXT(remixapi_LocalLightStatisticsEXT *out) {
   if (!out || out->structSize != sizeof(*out))
     return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
-  std::lock_guard lock(g_apiMutex);
-  if (!g_runtime.isInitialized())
-    return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
-  *out = g_runtime.localLightStatistics();
-  return REMIXAPI_ERROR_CODE_SUCCESS;
+  try {
+    std::lock_guard lock(g_apiMutex);
+    if (!g_runtime.isInitialized())
+      return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+    *out = g_runtime.localLightStatistics();
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  } catch (...) {
+    return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+  }
 }
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL
 remixapi_GetLocalLightGuidingStatisticsEXT(remixapi_LocalLightGuidingStatisticsEXT *out) {
   if (!out || out->structSize != sizeof(*out))
     return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
-  std::lock_guard lock(g_apiMutex);
-  if (!g_runtime.isInitialized())
-    return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
-  *out = g_runtime.localLightGuidingStatistics();
-  return REMIXAPI_ERROR_CODE_SUCCESS;
+  try {
+    std::lock_guard lock(g_apiMutex);
+    if (!g_runtime.isInitialized())
+      return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+    *out = g_runtime.localLightGuidingStatistics();
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  } catch (...) {
+    return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+  }
 }
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL
 remixapi_GetShadowStatisticsEXT(remixapi_ShadowStatisticsEXT *out) {
   if (!out || out->structSize != sizeof(*out))
     return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
-  std::lock_guard lock(g_apiMutex);
-  if (!g_runtime.isInitialized())
-    return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
-  *out = g_runtime.shadowStatistics();
-  return REMIXAPI_ERROR_CODE_SUCCESS;
+  try {
+    std::lock_guard lock(g_apiMutex);
+    if (!g_runtime.isInitialized())
+      return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+    *out = g_runtime.shadowStatistics();
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  } catch (...) {
+    return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+  }
 }
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL
 remixapi_GetSharcStatisticsEXT(remixapi_SharcStatisticsEXT *out) {
   if (!out || out->structSize != sizeof(*out))
     return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
-  std::lock_guard lock(g_apiMutex);
-  if (!g_runtime.isInitialized())
-    return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
-  *out = g_runtime.sharcStatistics();
-  return REMIXAPI_ERROR_CODE_SUCCESS;
+  try {
+    std::lock_guard lock(g_apiMutex);
+    if (!g_runtime.isInitialized())
+      return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+    *out = g_runtime.sharcStatistics();
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  } catch (...) {
+    return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+  }
 }
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL
 remixapi_GetDenoisingCapabilitiesEXT(remixapi_DenoisingCapabilitiesEXT *out) {
   if (!out || out->structSize != sizeof(*out))
     return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
-  std::lock_guard lock(g_apiMutex);
-  if (!g_runtime.isInitialized())
-    return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
-  *out = g_runtime.denoisingCapabilities();
-  return REMIXAPI_ERROR_CODE_SUCCESS;
+  try {
+    std::lock_guard lock(g_apiMutex);
+    if (!g_runtime.isInitialized())
+      return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+    *out = g_runtime.denoisingCapabilities();
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  } catch (...) {
+    return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+  }
 }
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL
 remixapi_GetDenoisingStatisticsEXT(remixapi_DenoisingStatisticsEXT *out) {
   if (!out || out->structSize != sizeof(*out))
     return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
-  std::lock_guard lock(g_apiMutex);
-  if (!g_runtime.isInitialized())
-    return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
-  *out = g_runtime.denoisingStatistics();
-  return REMIXAPI_ERROR_CODE_SUCCESS;
+  try {
+    std::lock_guard lock(g_apiMutex);
+    if (!g_runtime.isInitialized())
+      return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+    *out = g_runtime.denoisingStatistics();
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  } catch (...) {
+    return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
+  }
 }
 }

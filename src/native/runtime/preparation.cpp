@@ -74,7 +74,7 @@ void PreparationQueue::stop() {
   }
   wake.notify_all();
   for (auto &worker : workers)
-    if (worker.joinable())
+    if (worker.joinable() && !onWorker())
       worker.join();
   // Captures may own SDK objects. Release them only after the executing SDK
   // call has returned, and without the queue mutex held.

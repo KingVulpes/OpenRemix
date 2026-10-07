@@ -28,20 +28,28 @@ using namespace remix::api;
 extern "C" {
 
 REMIXAPI remixapi_UIState REMIXAPI_CALL remixapi_GetUIState() {
-  std::lock_guard lock(g_apiMutex);
-  return g_runtime.uiState();
+  try {
+    std::lock_guard lock(g_apiMutex);
+    return g_runtime.uiState();
+  } catch (...) {
+    return REMIXAPI_UI_STATE_NONE;
+  }
 }
 
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_SetUIState(remixapi_UIState state) {
   if (state < REMIXAPI_UI_STATE_NONE || state > REMIXAPI_UI_STATE_ADVANCED) {
     return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
   }
-  std::lock_guard lock(g_apiMutex);
-  if (!g_runtime.isInitialized()) {
-    return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+  try {
+    std::lock_guard lock(g_apiMutex);
+    if (!g_runtime.isInitialized()) {
+      return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+    }
+    g_runtime.setUiState(state);
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  } catch (...) {
+    return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
   }
-  g_runtime.setUiState(state);
-  return REMIXAPI_ERROR_CODE_SUCCESS;
 }
 
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_SetScreenTint(float colorR, float colorG, float colorB,

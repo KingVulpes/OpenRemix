@@ -189,7 +189,9 @@ void main() {
   }
   if(pass.mode==2) {
     float z=depthAt(p);vec4 material=imageLoad(guideAlbedo,p);vec3 color;
-    if(z>=500000)color=imageLoad(skyColor,p).rgb;
+    // The tracer's resolved sky (directLight on sky pixels): the raster sky
+    // layer alone (skyColor) is its clear colour wherever a dome shows.
+    if(z>=500000)color=imageLoad(directLight,p).rgb;
     else {
       vec3 indirect=imageLoad(lighting,p).rgb,specular=vec3(0);
       bool pbr=material.a>1.5;

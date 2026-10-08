@@ -1346,7 +1346,9 @@ void main() {
 #else
   primaryDirect+=opaque?materialFactor(primary)*local:vec3(0);
 #endif
-  imageStore(directLight,pixel,vec4(safeRadiance(primaryDirect),1));imageStore(lighting,pixel,vec4(safeRadiance(indirect),1));
+  // Sky pixels carry the resolved sky here (the sky layer, or the dome where
+  // it drew nothing): the compose pass has no dome to sample.
+  imageStore(directLight,pixel,vec4(safeRadiance(opaque?primaryDirect:color),1));imageStore(lighting,pixel,vec4(safeRadiance(indirect),1));
 #endif
   // Motion has been consumed above. Reuse its scratch image for deterministic
   // visible emission so SIGMA/local filtering never shadows or blurs it.

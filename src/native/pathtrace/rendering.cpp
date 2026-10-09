@@ -425,11 +425,20 @@ namespace remix {
           !bvh.nodes().empty()) {
         uploadedGeneration = bvh.generation;
         if (deviceLocalScene) {
-          nodes = upload(command, bvh.nodes().data(), bvh.nodes().size() * sizeof(scene::LightNode),
-                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-          emitters =
-              upload(command, bvh.emitters().data(), bvh.emitters().size() * sizeof(scene::LightEmitter),
-                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+          // This slot's own buffers, whose fence has completed: rewritten in
+          // place while they are large enough. A new buffer per change (lights
+          // that flicker or come and go change the set every frame, and its
+          // size with it) allocated device memory on those frames, tens of ms
+          // at times.
+          const auto place = [&](std::unique_ptr<Buffer> &out, const void *data, size_t size) {
+            if (!out || out->host || out->size < size)
+              out = buffer(size + size / 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                           false, true);
+            const VkBufferCopy copy = {.srcOffset = stage(data, size), .size = size};
+            vkCmdCopyBuffer(command, staging.buffer->handle, out->handle, 1, &copy);
+          };
+          place(nodes, bvh.nodes().data(), bvh.nodes().size() * sizeof(scene::LightNode));
+          place(emitters, bvh.emitters().data(), bvh.emitters().size() * sizeof(scene::LightEmitter));
         } else {
           // This slot's fence has completed; replace GPU-only allocations before
           // hostBuffer tries to map them when a diagnostic switches back.

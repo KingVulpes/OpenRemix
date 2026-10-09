@@ -23,6 +23,7 @@ namespace remix {
     swap(tableVersion, frame.tableVersion);
     swap(retiredStates, frame.retiredStates);
     swap(tableUpload, frame.tableUpload);
+    swap(tableShadow, frame.tableShadow);
     swap(uniform, frame.uniform);
     swap(scratch, frame.scratch);
     swap(topScratch, frame.topScratch);

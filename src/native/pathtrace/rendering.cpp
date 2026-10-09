@@ -293,15 +293,49 @@ namespace remix {
     if (table && table->host == deviceLocalScene) {
       table.reset();
       tableVersion = 0;
+      tableShadow.clear();
     }
     if (deviceLocalScene) {
+      // Staged whole (a host write), copied to the device in the blocks that
+      // differ from what this slot's table holds: a static world costs no
+      // copy, and the kept static prefix is not even compared.
       if (!tableUpload || tableUpload->size < tableBytes)
         tableUpload = buffer(tableBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true);
-      write(*tableUpload, {{prefixData, prefixBytes}, {tailData, tableBytes - prefixBytes}});
-      if (!table || table->size < tableBytes)
+      if (!table || table->size < tableBytes) {
         table = buffer(tableBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
-      const VkBufferCopy copy{.size = tableBytes};
-      vkCmdCopyBuffer(command, tableUpload->handle, table->handle, 1, &copy);
+        tableShadow.clear(); // a new buffer holds nothing yet
+      }
+      const size_t held = tableShadow.size();
+      const bool kept = held >= prefixBytes && tableVersion && tableVersion == tables.prefixVersion();
+      const size_t from = kept ? prefixBytes : 0;
+      write(*tableUpload, {{prefixData, prefixBytes}, {tailData, tableBytes - prefixBytes}}, from);
+      if (tableShadow.size() < tableBytes)
+        tableShadow.resize(tableBytes);
+      std::vector<VkBufferCopy> regions;
+      auto changed = [&](const void *data, size_t bytes, size_t base) {
+        constexpr size_t block = 4096;
+        const auto *source = static_cast<const uint8_t *>(data);
+        for (size_t at = 0; at < bytes; at += block) {
+          const size_t size = std::min(block, bytes - at), offset = base + at;
+          if (offset + size <= held && !std::memcmp(tableShadow.data() + offset, source + at, size))
+            continue;
+          std::memcpy(tableShadow.data() + offset, source + at, size);
+          if (!regions.empty() && regions.back().srcOffset + regions.back().size == offset)
+            regions.back().size += size;
+          else
+            regions.push_back({.srcOffset = offset, .dstOffset = offset, .size = size});
+        }
+      };
+      if (!kept)
+        changed(prefixData, prefixBytes, 0);
+      changed(tailData, tableBytes - prefixBytes, prefixBytes);
+      if (regions.size() > 64) // scattered changes: one copy over their span
+        regions = {{.srcOffset = regions.front().srcOffset,
+                    .dstOffset = regions.front().srcOffset,
+                    .size = regions.back().srcOffset + regions.back().size - regions.front().srcOffset}};
+      if (!regions.empty())
+        vkCmdCopyBuffer(command, tableUpload->handle, table->handle, uint32_t(regions.size()), regions.data());
+      tableVersion = tables.prefixVersion();
     } else {
       // This slot's table may already hold the kept static prefix.
       bool kept = table && table->size >= tableBytes && tableVersion && tableVersion == tables.prefixVersion();
@@ -342,30 +376,37 @@ namespace remix {
     lightUpdatePeak[0] = std::max(lightUpdatePeak[0], lighting.updateMilliseconds);
     // Potentially visible light table and the partition it indexes: replaced
     // only when they change (rare), like the light tree's buffers.
+    // They are shared by the frame slots: a replaced buffer stays until the
+    // frames in flight that read it have completed.
+    auto retireBuffer = [&](std::unique_ptr<Buffer> &out) {
+      if (out)
+        retiredBuffers.push_back(std::move(out));
+    };
     if (!lightVisibility.table()) {
-      visibilityTable.reset();
-      visibilityNodes.reset();
-      visibilityLeaves.reset();
+      retireBuffer(visibilityTable);
+      retireBuffer(visibilityNodes);
+      retireBuffer(visibilityLeaves);
       visibilityTableVersion = visibilityPartitionVersion = 0;
     } else {
       const auto &partition = *lightVisibility.partition();
       auto place = [&](std::unique_ptr<Buffer> &out, const void *data, size_t size) {
-        if (deviceLocalScene)
+        if (deviceLocalScene) {
+          retireBuffer(out);
           out = upload(command, data, size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-        else {
+        } else {
           // As for the light tree (uploadLights): replace GPU-only allocations.
           if (out && !out->host)
-            out.reset();
+            retireBuffer(out);
           hostBuffer(out, data, size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
         }
       };
-      if (visibilityPartitionVersion != partition.version) {
+      if (visibilityPartitionVersion != partition.version || (visibilityNodes && visibilityNodes->host == deviceLocalScene)) {
         visibilityPartitionVersion = partition.version;
         place(visibilityNodes, partition.nodes.data(), partition.nodes.size() * sizeof(partition.nodes[0]));
         place(visibilityLeaves, partition.leafClusters.data(),
               std::max<size_t>(1, partition.leafClusters.size()) * sizeof(int32_t));
       }
-      if (visibilityTableVersion != lightVisibility.version()) {
+      if (visibilityTableVersion != lightVisibility.version() || (visibilityTable && visibilityTable->host == deviceLocalScene)) {
         visibilityTableVersion = lightVisibility.version();
         const auto &table = *lightVisibility.table();
         place(visibilityTable, table.data(), std::max<size_t>(1, table.size()) * sizeof(uint32_t));
@@ -715,7 +756,9 @@ namespace remix {
       const auto &moved = options.localHistoryConfidence ? lightBvh.moved() : none;
       if (movedLights)
         retiredBuffers.push_back(std::move(movedLights));
-      if (!moved.empty())
+      if (!moved.empty() && deviceLocalScene)
+        movedLights = upload(command, moved.data(), moved.size() * sizeof(moved[0]), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+      else if (!moved.empty())
         hostBuffer(movedLights, moved.data(), moved.size() * sizeof(moved[0]), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
       frame.movedLights = movedLights ? movedLights->address : 0;
       frame.visibilityConfig[1] = uint32_t(moved.size());
@@ -759,7 +802,22 @@ namespace remix {
       frame.config[2] += uint32_t(std::strtoul(seed, nullptr, 10));
     frame.config[3] = uint32_t(stats.accumulationCount);
     frame.firefly[2] = postProcessing->materialGuide() ? 1.f : 0.f;
-    hostBuffer(uniform, &frame, sizeof(frame), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+    if (uniform && uniform->host == deviceLocalScene)
+      uniform.reset(); // this completed slot's buffer, after a placement switch
+    if (deviceLocalScene) {
+      if (!uniform)
+        uniform = buffer(sizeof(frame), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+      const VkBufferCopy copy{.srcOffset = stage(&frame, sizeof(frame)), .size = sizeof(frame)};
+      vkCmdCopyBuffer(command, staging.buffer->handle, uniform->handle, 1, &copy);
+    } else {
+      hostBuffer(uniform, &frame, sizeof(frame), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+    }
+    // The frame constants and the moved lights staged since the table's barrier.
+    if (deviceLocalScene)
+      barrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+              VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT);
     stats.samplesPerPixel = options.samples;
     stats.indirectBounces = options.bounces;
     stats.accumulationEnabled = options.accumulate;

@@ -254,12 +254,21 @@ namespace remix {
     const char *stateProfile = stageProfile ? std::getenv("REMIX_TRACE_STATE") : nullptr;
     uint32_t selectedLightingKey = 0;
     std::string traceState;
-    // Opt-in placement experiment: stage frequently-read scene tables into VRAM.
+    // The tables every ray and light sample reads (surface table, light tree
+    // and emitters, potentially visible light table, frame constants) are
+    // kept in device memory and filled through staging copies of what
+    // changed. In host-visible memory, which is system RAM on discrete GPUs,
+    // each read crosses the bus: slower on average and by a different amount
+    // every frame. REMIX_DEVICE_LOCAL_SCENE=0 keeps the host placement for
+    // comparison.
     bool deviceLocalScene = [] {
       const auto *value = std::getenv("REMIX_DEVICE_LOCAL_SCENE");
-      return value && std::strcmp(value, "1") == 0;
+      return !value || std::strcmp(value, "0") != 0;
     }();
     std::unique_ptr<Buffer> tableUpload;
+    // What this slot's device-local surface table holds: only the blocks
+    // that differ from it are copied again.
+    std::vector<uint8_t> tableShadow;
     // Diagnostic replay must measure fresh lighting even after a static view
     // converges. Keep camera/history/cache contents intact and only bypass the
     // final-image reuse shortcut. Ordinary rendering retains that shortcut.
@@ -647,6 +656,7 @@ namespace remix {
       std::unique_ptr<Buffer> table, uniform, scratch, topScratch, instances[3];
       uint64_t combinedPrefix = 0; // Tlas::prefix of the combined TLAS's instances
       std::unique_ptr<Buffer> tableUpload;
+      std::vector<uint8_t> tableShadow;
       std::unique_ptr<Buffer> lightNodes, lightEmitters, torchNodes, torchEmitters, emissiveNodes,
           emissiveEmitters;
       std::unique_ptr<Buffer> sharcReadback, guidingReadback, reuseReadback, rayReadback;

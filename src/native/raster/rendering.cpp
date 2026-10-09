@@ -65,11 +65,14 @@ namespace remix {
       return std::isfinite(depth) ? depth : 0.0f;
     };
     // Sort references with keys evaluated once; draws themselves hold shared owners.
+    // `order` (remixapi_InstanceInfoRasterOrderEXT): a blended draw the host
+    // placed itself, after the layer's depth-sorted ones.
     struct Entry {
       int layer;
       bool blended;
       float distance;
       const Draw *draw;
+      uint32_t order = 0;
     };
     std::vector<Entry> ordered;
     ordered.reserve(m_draws.size() + m_overlay.size() + m_uiDraws.size() + 1);
@@ -89,7 +92,8 @@ namespace remix {
         // precede the coverage passes (their depth is what sources test). So
         // is a rasterized CUT instance, drawn outside its group's coverage.
         const bool late = draw.blend.enabled || draw.maskGroup || draw.cutGroup;
-        ordered.push_back({layer(draw), late, late ? distance(draw) : 0.f, source});
+        const uint32_t order = draw.blend.enabled && !draw.maskGroup && !draw.cutGroup ? draw.rasterOrder : 0;
+        ordered.push_back({layer(draw), late, late && !order ? distance(draw) : 0.f, source, order});
       }
     }
     std::stable_sort(ordered.begin(), ordered.end(), [](const Entry &a, const Entry &b) {
@@ -98,6 +102,9 @@ namespace remix {
       }
       if (a.blended != b.blended) {
         return !a.blended;
+      }
+      if (a.order || b.order) {
+        return a.order && b.order ? a.order < b.order : !a.order;
       }
       return a.blended && a.distance > b.distance;
     });

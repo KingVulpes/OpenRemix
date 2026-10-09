@@ -46,6 +46,8 @@ namespace remix::scene {
     uint8_t cutGroup = 0;
     // remixapi_InstanceInfoCameraCullingEXT flags (camera rays only).
     uint8_t cameraCull = 0;
+    // remixapi_InstanceInfoRasterOrderEXT (0: sorted by depth).
+    uint32_t rasterOrder = 0;
   };
   // Throws the codes DrawInstance returns. Mesh-independent checks only.
   void describeInstance(const remixapi_InstanceInfo &info, InstanceDescription &out);

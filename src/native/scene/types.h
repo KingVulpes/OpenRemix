@@ -232,6 +232,9 @@ namespace remix {
       // remixapi_InstanceInfoCameraCullingEXT flags: what camera rays skip of
       // a traced instance (1 back faces, 2 clusters the camera cannot see).
       uint8_t cameraCull = 0;
+      // remixapi_InstanceInfoRasterOrderEXT: the host's place for a blended
+      // raster-only draw among its layer's (0: sorted by depth).
+      uint32_t rasterOrder = 0;
     };
     // remixapi_InstanceInfoHaloEXT, validated and clamped. Instances whose
     // parameters compare equal share one group (one silhouette mask).

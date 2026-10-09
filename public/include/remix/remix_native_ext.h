@@ -334,6 +334,24 @@ typedef struct remixapi_InstanceIdentityEXT {
   remixapi_Bool rasterVisible;
 } remixapi_InstanceIdentityEXT;
 
+// Optional InstanceInfo pNext on a blended raster-only instance
+// (classification REMIXAPI_INSTANCE_RASTER_ONLY_EXT): its place among the
+// blended raster-only draws of its layer is the host's, not its depth. A
+// rasterizing host already drew its translucent effects in the order that
+// composes them (particles: back to front per system, a system's smoke before
+// the fire inside it): the centres of their per-frame meshes say little, and
+// sorting by them swaps layers as the camera moves. Instances with a nonzero
+// `order` are drawn after their layer's depth-sorted blended draws, in
+// ascending order (equal values: in submission order). Zero, an opaque or a
+// traced instance: ignored. Masked overlays (remixapi_InstanceInfoMaskEXT) keep
+// their depth-sorted place.
+#define REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_RASTER_ORDER_EXT ((remixapi_StructType)0x7fff1013)
+typedef struct remixapi_InstanceInfoRasterOrderEXT {
+  remixapi_StructType sType;
+  const void* pNext;
+  uint32_t order;
+} remixapi_InstanceInfoRasterOrderEXT;
+
 typedef enum remixapi_RenderBackendEXT {
   REMIXAPI_RENDER_BACKEND_RASTER_EXT = 0,
   REMIXAPI_RENDER_BACKEND_PATHTRACE_EXT = 1,

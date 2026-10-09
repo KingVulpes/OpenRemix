@@ -345,6 +345,7 @@ namespace remix {
         draw.maskOutside = d.maskOutside;
         draw.cutGroup = d.cutGroup;
         draw.cameraCull = d.cameraCull;
+        draw.rasterOrder = d.rasterOrder;
         draw.model = models[i];
         draw.bones = d.bones;
         if (d.hasRasterState) {
@@ -537,6 +538,13 @@ namespace remix::scene {
       if (!d.halo && !d.maskSource && !d.maskGroup)
         d.cameraCull = uint8_t(culling->flags &
                                (d.doubleSided ? known : uint32_t(REMIXAPI_INSTANCE_CAMERA_CULL_VISIBILITY_EXT)));
+    }
+    if (const auto *order = static_cast<const remixapi_InstanceInfoRasterOrderEXT *>(
+            extension(info.pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_RASTER_ORDER_EXT))) {
+      // Raster-only overlays that are not masked: a traced instance has no
+      // place in the raster order, a masked one keeps its depth-sorted place.
+      if (d.classification == REMIXAPI_INSTANCE_RASTER_ONLY_EXT && !d.halo && !d.maskSource && !d.maskGroup)
+        d.rasterOrder = order->order;
     }
     const auto *instances = static_cast<const remixapi_InstanceInfoGpuInstancingEXT *>(
         extension(info.pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_GPU_INSTANCING_EXT));

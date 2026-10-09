@@ -114,6 +114,12 @@ uint traceMask=0xffu; // instance mask for closestGeometry (secondaryHit narrows
 // meets the whole scene. Such a camera ray visits every candidate (no opaque
 // shortcut) so the cut surfaces can be rejected.
 uint pixelCut=0u,cameraCut=0u;
+// remixapi_InstanceInfoCameraCullingEXT: set while a ray along the camera's
+// line of sight is traced in a frame with camera culling (cameraHit, the
+// centre depth). Such a ray visits every candidate too, and skips back faces
+// and unseen clusters of the surfaces that ask (cameraCulled); every other
+// ray meets them whole.
+bool cameraRay=false;
 // Angle between neighbouring pixel rays at the screen centre, scaled to output
 // pixels (visibilityProbe.z: render/output size, the upscaler's mip bias).
 // Orthographic cameras give zero: finest mip.
@@ -158,12 +164,13 @@ void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, ino
   rayQueryEXT query;
   profileRay(0);
   uvGradX=uvGradY=vec2(0); // candidates test coverage at the finest mip
-  rayQueryInitializeEXT(query, scene, traceFlags()|(cameraCut!=0u?gl_RayFlagsNoOpaqueEXT:gl_RayFlagsNoneEXT), traceMask, origin, minimum, direction, hit.t);
+  rayQueryInitializeEXT(query, scene, traceFlags()|(cameraCut!=0u||cameraRay?gl_RayFlagsNoOpaqueEXT:gl_RayFlagsNoneEXT), traceMask, origin, minimum, direction, hit.t);
   while (rayQueryProceedEXT(query)) {
     if (rayQueryGetIntersectionTypeEXT(query,false)!=gl_RayQueryCandidateIntersectionTriangleEXT) continue;
     profileRay(1);
     Surface s=surfaces[rayQueryGetIntersectionInstanceCustomIndexEXT(query,false)+rayQueryGetIntersectionGeometryIndexEXT(query,false)];
     if(cameraCut!=0u&&cutSurface(s.state.w,cameraCut))continue;
+    if(cameraRay&&cameraCulled(s.state.w,rayQueryGetIntersectionFrontFaceEXT(query,false),origin,direction,rayQueryGetIntersectionTEXT(query,false)))continue;
     s.indices=s.traceIndices;
     if ((s.state.w&4)==0 && !rayQueryGetIntersectionFrontFaceEXT(query,false)) {profileRay(4);continue;}
     profileAlpha(s,0);
@@ -293,9 +300,10 @@ Hit closest(vec3 origin,vec3 direction,float maximum,bool motion) {
 }
 Hit closest(vec3 origin,vec3 direction) { return closest(origin,direction,1e30,true); }
 // A ray along the pixel's line of sight: the primary ray and its continuations
-// through transparent sheets. It does not see what the pixel's coverage cuts.
+// through transparent sheets. It does not see what the pixel's coverage cuts,
+// nor what camera culling hides (back faces, unseen clusters).
 Hit cameraHit(vec3 origin,vec3 direction) {
-  cameraCut=pixelCut;Hit hit=closest(origin,direction);cameraCut=0u;return hit;
+  cameraCut=pixelCut;cameraRay=frame.cameraCull.x!=0u;Hit hit=closest(origin,direction);cameraCut=0u;cameraRay=false;return hit;
 }
 // Bounce rays may ignore blended layers (frame.pathConfig.w; see
 // skipBlendedSecondaryRays). Camera and transparency rays keep every instance.
@@ -1492,9 +1500,9 @@ void main() {
     // overlays and depth-tested mask sources test.
     uint centerCut=frame.cutConfig.x!=0u?cutCoverage(centerNdc*.5+.5):0u;
     for (uint layer=0;layer<32;++layer) {
-      cameraCut=centerCut;
+      cameraCut=centerCut;cameraRay=frame.cameraCull.x!=0u;
       Hit hit=closestGeometry(depthOrigin,depthDirection,1e30,false);
-      cameraCut=0u;
+      cameraCut=0u;cameraRay=false;
       if (hit.t==1e30) break;
       if (!hit.blendedDraw) {
         vec4 clip=frame.camera*vec4(hit.p,1);

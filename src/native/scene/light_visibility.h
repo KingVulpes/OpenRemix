@@ -25,11 +25,21 @@ namespace remix::scene {
     std::vector<uint8_t> visibility; // clusterCount rows of rowBytes
     uint64_t version = 0;
 
+    // Every child names a node or a leaf that exists (checked when set), so a
+    // walk from the root needs no bounds checks.
+    bool closed = false;
     // Cluster of a point, or -1.
     int32_t cluster(const float point[3]) const;
     bool visible(int32_t from, int32_t to) const {
       return (visibility[size_t(from) * rowBytes + uint32_t(to) / 8] >> (uint32_t(to) % 8)) & 1;
     }
+    // The leaves potentially visible from cluster a or cluster b (both valid):
+    // a bit per leaf, in 32-bit words; leaves without a cluster are set.
+    // Returns the clusters and the leaves counted as visible.
+    struct VisibleCount {
+      uint32_t clusters = 0, leaves = 0;
+    };
+    VisibleCount visibleLeaves(int32_t a, int32_t b, std::vector<uint32_t> &bits) const;
   };
   static_assert(sizeof(VisibilityPartition::Node) == 32);
 

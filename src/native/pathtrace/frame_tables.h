@@ -730,7 +730,10 @@ namespace remix::trace {
                          (surface.decal ? detail::decalMode(b) : 0u) << 7 |
                          // remixapi_InstanceInfoMaskEXT CUT: the group (bits 16-21) whose
                          // coverage hides the surface from camera rays.
-                         uint32_t(surface.cutGroup) << 16;
+                         uint32_t(surface.cutGroup) << 16 |
+                         // remixapi_InstanceInfoCameraCullingEXT (bits 9-10): camera rays
+                         // skip its back faces / its parts in clusters the camera cannot see.
+                         uint32_t(surface.cameraCull & 3u) << 9;
         if (draw.classification == 0) {
           write(staticCursor, value.tint, sizeof(value.tint));
           write(staticCursor, value.factor, sizeof(value.factor));

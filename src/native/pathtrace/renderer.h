@@ -35,6 +35,7 @@ namespace remix {
     remixapi_LocalLightStatisticsEXT localLightStatistics() const;
     remixapi_LocalLightGuidingStatisticsEXT localLightGuidingStatistics() const;
     remixapi_LocalLightSetStatisticsEXT localLightSetStatistics() const;
+    remixapi_CameraCullingStatisticsEXT cameraCullingStatistics() const;
     remixapi_DenoisingStatisticsEXT denoisingStatistics() const;
     bool translucencyDenoiserActive() const;
     remixapi_SharcStatisticsEXT sharcStatistics() const;

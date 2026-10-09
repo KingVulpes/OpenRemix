@@ -186,6 +186,17 @@ namespace remix::usd {
               scene::extension(parent->pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_MASK_EXT));
           mask && mask->role == REMIXAPI_INSTANCE_MASK_CUT_EXT)
         cut = *mask;
+    // remixapi_InstanceInfoCameraCullingEXT: a replacement stays hidden where
+    // the camera cannot see its host instance's cluster. Its meshes have their
+    // own winding, so the host's back-face flag does not carry over.
+    remixapi_InstanceInfoCameraCullingEXT culling{};
+    if (parent)
+      if (auto *given = static_cast<const remixapi_InstanceInfoCameraCullingEXT *>(
+              scene::extension(parent->pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_CAMERA_CULLING_EXT));
+          given && (given->flags & REMIXAPI_INSTANCE_CAMERA_CULL_VISIBILITY_EXT)) {
+        culling.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_CAMERA_CULLING_EXT;
+        culling.flags = REMIXAPI_INSTANCE_CAMERA_CULL_VISIBILITY_EXT;
+      }
     for (size_t i = 0; meshes && i < instances_.size(); ++i) {
       if (!root.empty() && instance_origins_[i].first != root &&
           !instance_origins_[i].first.starts_with(root + "/"))
@@ -195,6 +206,10 @@ namespace remix::usd {
       if (cut.group) {
         cut.pNext = instance.pNext;
         instance.pNext = &cut;
+      }
+      if (culling.flags) {
+        culling.pNext = instance.pNext;
+        instance.pNext = &culling;
       }
       remixapi_InstanceIdentityEXT identity{};
       identity.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_IDENTITY_EXT;

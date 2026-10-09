@@ -48,6 +48,12 @@ void main() {
   vec4 nearPoint=frame.inverseCamera*vec4(projected.xy/projected.w,0,1);
   vec3 direction=position-nearPoint.xyz/nearPoint.w;
   if((s.state.w&4)==0&&dot(normal,direction)<=0)discard;
+  // What the camera does not see of the instance (back faces, parts in
+  // clusters outside its visible set), as cameraHit rejects them.
+  if(frame.cameraCull.x!=0u) {
+    float distance=length(direction);
+    if(cameraCulled(s.state.w,dot(normal,direction)>0,nearPoint.xyz/nearPoint.w,direction/distance,distance))discard;
+  }
   // Footprint per output pixel (visibilityProbe.z: render/output size).
   uvGradX=dFdx(uv)*frame.visibilityProbe.z;
   uvGradY=dFdy(uv)*frame.visibilityProbe.z;

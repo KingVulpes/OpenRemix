@@ -133,6 +133,9 @@ namespace remix {
     bool restirPermutation = true;
     bool restirInitialVisibility = true; // shadow-test the initial winner before reuse
     bool lightVisibilityCulling = false; // opt-in: ~3 ms on L4D2 c1m1, no gain where the PVS is broad
+    // remixapi_InstanceInfoCameraCullingEXT: honour the instances' flags.
+    // Camera rays only; lighting is the same either way.
+    bool cameraBackFaceCulling = true, cameraVisibilityCulling = true;
     // Meters per world unit. Scales meter-based defaults: denoiser hit
     // distances and guiding cells (Source engine inches: 0.0254).
     float sceneScale = 1;

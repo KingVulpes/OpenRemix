@@ -286,9 +286,12 @@ namespace remix {
   }
 
   void NativeResources::noteCut(const InstanceDescription &description, const std::vector<Draw> &draws) {
-    if (description.cutGroup &&
-        std::any_of(draws.begin(), draws.end(), [](const Draw &draw) { return draw.traced(); }))
+    if (!(description.cutGroup || description.cameraCull) ||
+        std::none_of(draws.begin(), draws.end(), [](const Draw &draw) { return draw.traced(); }))
+      return;
+    if (description.cutGroup)
       m_cutGroups |= 1u << (description.cutGroup - 1);
+    m_cameraCull |= description.cameraCull;
   }
 
   void NativeResources::appendMask(const Mask &mask, std::vector<Draw> &&draws, const float *origin) {
@@ -341,6 +344,7 @@ namespace remix {
         draw.maskGroup = d.maskGroup;
         draw.maskOutside = d.maskOutside;
         draw.cutGroup = d.cutGroup;
+        draw.cameraCull = d.cameraCull;
         draw.model = models[i];
         draw.bones = d.bones;
         if (d.hasRasterState) {
@@ -521,6 +525,18 @@ namespace remix::scene {
         // Neither is a scene instance: no identity, duplicate check or lineage.
         d.traceIdentity = false;
       }
+    }
+    if (const auto *culling = static_cast<const remixapi_InstanceInfoCameraCullingEXT *>(
+            extension(info.pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_CAMERA_CULLING_EXT))) {
+      constexpr uint32_t known =
+          REMIXAPI_INSTANCE_CAMERA_CULL_BACK_FACES_EXT | REMIXAPI_INSTANCE_CAMERA_CULL_VISIBILITY_EXT;
+      if (culling->flags & ~known)
+        throw invalid;
+      // A scene instance like any other; sources and masked overlays are not
+      // in the scene, and a one-sided instance has no back faces left to hide.
+      if (!d.halo && !d.maskSource && !d.maskGroup)
+        d.cameraCull = uint8_t(culling->flags &
+                               (d.doubleSided ? known : uint32_t(REMIXAPI_INSTANCE_CAMERA_CULL_VISIBILITY_EXT)));
     }
     const auto *instances = static_cast<const remixapi_InstanceInfoGpuInstancingEXT *>(
         extension(info.pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_GPU_INSTANCING_EXT));

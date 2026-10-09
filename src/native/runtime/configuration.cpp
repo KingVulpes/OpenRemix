@@ -410,6 +410,11 @@ namespace remix {
     return busy ? busy->localLightSet : m_pathTracer ? m_pathTracer->localLightSetStatistics()
         : remixapi_LocalLightSetStatisticsEXT{.structSize = sizeof(remixapi_LocalLightSetStatisticsEXT)};
   }
+  remixapi_CameraCullingStatisticsEXT RemixNativeRuntime::cameraCullingStatistics() const {
+    const auto *busy = busyState();
+    return busy ? busy->cameraCulling : m_pathTracer ? m_pathTracer->cameraCullingStatistics()
+        : remixapi_CameraCullingStatisticsEXT{.structSize = sizeof(remixapi_CameraCullingStatisticsEXT)};
+  }
   remixapi_LocalLightStatisticsEXT RemixNativeRuntime::localLightStatistics() const {
     const auto *busy = busyState();
     auto result = busy ? busy->localLight : m_pathTracer ? m_pathTracer->localLightStatistics()
@@ -497,6 +502,7 @@ namespace remix {
       s.shadow = m_pathTracer->shadowStatistics();
       s.localLight = m_pathTracer->localLightStatistics();
       s.localLightSet = m_pathTracer->localLightSetStatistics();
+      s.cameraCulling = m_pathTracer->cameraCullingStatistics();
       s.guiding = m_pathTracer->localLightGuidingStatistics();
       s.denoising = m_pathTracer->denoisingStatistics();
     } else {
@@ -505,6 +511,7 @@ namespace remix {
       s.shadow = {.structSize = sizeof(remixapi_ShadowStatisticsEXT)};
       s.localLight = {.structSize = sizeof(remixapi_LocalLightStatisticsEXT)};
       s.localLightSet = {.structSize = sizeof(remixapi_LocalLightSetStatisticsEXT)};
+      s.cameraCulling = {.structSize = sizeof(remixapi_CameraCullingStatisticsEXT)};
       s.guiding = {.structSize = sizeof(remixapi_LocalLightGuidingStatisticsEXT)};
       s.denoising = {.structSize = sizeof(remixapi_DenoisingStatisticsEXT)};
     }

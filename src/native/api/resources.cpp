@@ -211,6 +211,11 @@ remixapi_SetVisibilityPartitionEXT(const remixapi_VisibilityPartitionEXT *info) 
     partition->clusterCount = info->clusterCount;
     partition->rowBytes = info->rowBytes;
     partition->visibility.assign(info->visibility, info->visibility + size_t(info->clusterCount) * info->rowBytes);
+    partition->closed = true;
+    for (const auto &node : partition->nodes)
+      for (int32_t child : node.children)
+        partition->closed &= child >= 0 ? uint32_t(child) < info->nodeCount
+                                        : uint64_t(-1 - int64_t(child)) < info->leafCount;
     partition->version = ++version;
   } else if (info && info->structSize != sizeof(*info)) {
     return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;

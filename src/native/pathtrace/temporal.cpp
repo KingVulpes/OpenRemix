@@ -433,6 +433,8 @@ namespace remix {
     if (g.lightVisibility.table())
       result.reserved = std::min(g.lightVisibility.clustered, 0xffffu) |
                         std::min(g.lightVisibility.unrestricted, 0xffffu) << 16;
+    result.memoryBytes += (g.cameraCulling.nodes ? g.cameraCulling.nodes->size : 0) +
+                          (g.cameraCulling.leaves ? g.cameraCulling.leaves->size : 0);
     result.memoryBytes += (g.visibilityNodes ? g.visibilityNodes->size : 0) +
                           (g.visibilityLeaves ? g.visibilityLeaves->size : 0) +
                           (g.visibilityTable ? g.visibilityTable->size : 0);
@@ -446,6 +448,9 @@ namespace remix {
     }
     std::strncpy(result.unavailableReason, g.postFailure.c_str(), sizeof(result.unavailableReason) - 1);
     return result;
+  }
+  remixapi_CameraCullingStatisticsEXT PathTracer::cameraCullingStatistics() const {
+    return m_gpu->cameraCulling.statistics;
   }
   remixapi_LocalLightSetStatisticsEXT PathTracer::localLightSetStatistics() const {
     const auto &g = *m_gpu;

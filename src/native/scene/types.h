@@ -229,6 +229,9 @@ namespace remix {
       // not see where the group's coverage is set. Traced: primary visibility
       // skips it there. Rasterized: drawn only outside the coverage. 0: none.
       uint8_t cutGroup = 0;
+      // remixapi_InstanceInfoCameraCullingEXT flags: what camera rays skip of
+      // a traced instance (1 back faces, 2 clusters the camera cannot see).
+      uint8_t cameraCull = 0;
     };
     // remixapi_InstanceInfoHaloEXT, validated and clamped. Instances whose
     // parameters compare equal share one group (one silhouette mask).

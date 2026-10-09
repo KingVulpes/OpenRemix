@@ -123,8 +123,15 @@ namespace remix::trace::detail {
     // (0: nothing cuts), coverage textures. cutSlots: four bits per mask
     // group (1..32), its coverage texture (from the first) + 1 or 0.
     uint32_t cutConfig[4] = {}, cutSlots[4] = {};
+    // remixapi_InstanceInfoCameraCullingEXT. cameraNodes: the visibility
+    // partition's nodes; cameraLeaves: a bit per leaf, set where the camera
+    // sees the leaf (both zero unless visibility culling is active).
+    // cameraCull: active flags (1 back faces, 2 visibility), the distance
+    // before a surface at which a camera ray is located (float bits).
+    uint64_t cameraNodes = 0, cameraLeaves = 0;
+    uint32_t cameraCull[4] = {};
   };
-  static_assert(sizeof(Frame) == 848 && offsetof(Frame, cutConfig) == 816 && offsetof(Frame, orcaParams) == 800 && offsetof(Frame, regirConfig) == 752 && offsetof(Frame, restirCurrent) == 656 && offsetof(Frame, visibilityNodes) == 592 && offsetof(Frame, pathConfig) == 528 &&
+  static_assert(sizeof(Frame) == 880 && offsetof(Frame, cameraCull) == 864 && offsetof(Frame, cutConfig) == 816 && offsetof(Frame, orcaParams) == 800 && offsetof(Frame, regirConfig) == 752 && offsetof(Frame, restirCurrent) == 656 && offsetof(Frame, visibilityNodes) == 592 && offsetof(Frame, pathConfig) == 528 &&
                 offsetof(Frame, firefly) == 512 && offsetof(Frame, indirectResults) == 496 &&
                 offsetof(Frame, lightGuideRead) == 384 && offsetof(Frame, lightGuideConfig) == 400 &&
                 offsetof(Frame, lightNodes) == 336 && offsetof(Frame, localConfig) == 352 &&
@@ -374,6 +381,21 @@ namespace remix {
     scene::LightVisibility lightVisibility;
     std::unique_ptr<Buffer> visibilityNodes, visibilityLeaves, visibilityTable;
     uint64_t visibilityPartitionVersion = 0, visibilityTableVersion = 0;
+    // remixapi_InstanceInfoCameraCullingEXT: the partition's nodes and the
+    // leaves the camera sees (a bit per leaf), replaced when the partition or
+    // the camera's cluster changes; shared by the frame slots like the above.
+    struct CameraCulling {
+      std::unique_ptr<Buffer> nodes, leaves;
+      uint64_t nodesVersion = 0, leavesVersion = 0; // partition versions held (0: none)
+      int32_t leavesClusters[2] = {-1, -1};         // the clusters whose united set `leaves` holds
+      uint64_t lastVersion = 0;                     // previous traced frame: partition and
+      int32_t lastCluster = -1;                     // camera cluster
+      uint32_t visibleClusters = 0, visibleLeaves = 0; // of `leaves`
+      remixapi_CameraCullingStatisticsEXT statistics{.structSize = sizeof(remixapi_CameraCullingStatisticsEXT)};
+    } cameraCulling;
+    // Sets the frame's camera culling constants; uploads what they refer to.
+    void configureCameraCulling(VkCommandBuffer command, Frame &frame, const TraceOptions &options,
+                                const RasterRenderer &resources);
     // remixapi_LocalLightSetStatisticsEXT: table uploads; instances with
     // emitters this frame; CPU time of the frame's light update (hierarchies
     // and visibility table), last and longest of the last 300 to 600 frames.

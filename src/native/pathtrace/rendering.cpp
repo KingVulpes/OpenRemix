@@ -546,6 +546,12 @@ namespace remix {
       textures.insert(textures.end(), cut.images, cut.images + cut.count);
       append(&cut.digest, sizeof(cut.digest));
     }
+    // remixapi_InstanceInfoCameraCullingEXT: what the camera sees of the scene
+    // is part of its signature (the flags applied, the visible set).
+    configureCameraCulling(command, frame, options, resources);
+    append(frame.cameraCull, sizeof(frame.cameraCull));
+    if (frame.cameraLeaves)
+      append(cameraCulling.leavesClusters, sizeof(cameraCulling.leavesClusters));
     frame.config[0] = options.samples;
     frame.config[1] = options.bounces;
     frame.target[0] = extent.width;

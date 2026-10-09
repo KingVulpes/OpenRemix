@@ -17,6 +17,7 @@ namespace remix {
     frame.m_masks = std::move(m_masks);
     frame.m_maskDraws = m_maskDraws;
     frame.m_cutGroups = m_cutGroups;
+    frame.m_cameraCull = m_cameraCull;
     frame.m_overlay = m_overlay;
     std::copy(std::begin(m_tint), std::end(m_tint), frame.m_tint);
     frame.m_cameras = m_cameras;

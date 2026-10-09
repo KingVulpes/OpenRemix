@@ -138,6 +138,7 @@ public:
   remixapi_LocalLightStatisticsEXT localLightStatistics() const;
   remixapi_LocalLightGuidingStatisticsEXT localLightGuidingStatistics() const;
   remixapi_LocalLightSetStatisticsEXT localLightSetStatistics() const;
+  remixapi_CameraCullingStatisticsEXT cameraCullingStatistics() const;
   remixapi_DenoisingStatisticsEXT denoisingStatistics() const;
   remixapi_ErrorCode selectBackend(const char *value);
   remixapi_ErrorCode configureTracing(const char *key, const char *value);
@@ -205,6 +206,7 @@ private:
     remixapi_ShadowStatisticsEXT shadow{};
     remixapi_LocalLightStatisticsEXT localLight{};
     remixapi_LocalLightSetStatisticsEXT localLightSet{};
+    remixapi_CameraCullingStatisticsEXT cameraCulling{};
     remixapi_LocalLightGuidingStatisticsEXT guiding{};
     remixapi_DenoisingStatisticsEXT denoising{};
     RasterRenderer::MemoryStatistics memory;

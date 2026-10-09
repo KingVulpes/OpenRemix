@@ -75,6 +75,8 @@ layout(set=0,binding=3,std140) uniform Frame {
   vec4 orcaParams; // smallest voxel (world units), level growth, minimum samples, maximum relative error (0: any)
   uvec4 cutConfig; // first cut coverage texture + 1 (0: nothing cuts), coverage textures
   uvec4 cutSlots; // four bits per mask group (1..32): its coverage texture (from the first) + 1, or 0
+  uint64_t cameraNodes, cameraLeaves; // visibility partition nodes; a bit per leaf, set where the camera sees it
+  uvec4 cameraCull; // active camera culling (1 back faces, 2 visibility), probe distance before a surface (float bits)
 } frame;
 layout(set=0,binding=6) uniform sampler2D textures[4096];
 // remixapi_InstanceInfoMaskEXT CUT: the camera does not see a surface where
@@ -98,6 +100,35 @@ bool cutSurface(uint flags,uint bits) {
   if(bits==0u||group==0u)return false;
   uint slot=(frame.cutSlots[(group-1u)>>3]>>(((group-1u)&7u)*4u))&15u;
   return slot!=0u&&((bits>>(slot-1u))&1u)!=0u;
+}
+// remixapi_InstanceInfoCameraCullingEXT (state.w bits 9-10: back faces,
+// visibility): what rays along the camera's lines of sight skip of a surface
+// that every other ray meets whole.
+struct CameraNode { vec4 plane; ivec4 children; };
+layout(buffer_reference,std430,buffer_reference_align=16) readonly buffer CameraNodes { CameraNode data[]; };
+layout(buffer_reference,std430,buffer_reference_align=4) readonly buffer CameraLeaves { uint data[]; };
+// Whether p lies in a leaf of the host's partition that the camera's cluster
+// does not see (leaves without a cluster are seen).
+bool cameraUnseen(vec3 p) {
+  CameraNodes nodes=CameraNodes(frame.cameraNodes);
+  int index=0;
+  for(uint guard=0u;guard<1024u&&index>=0;++guard) {
+    CameraNode node=nodes.data[index];
+    index=dot(node.plane.xyz,p)-node.plane.w>=0?node.children.x:node.children.y;
+  }
+  if(index>=0)return false;
+  uint leaf=uint(-1-index);
+  return ((CameraLeaves(frame.cameraLeaves).data[leaf>>5]>>(leaf&31u))&1u)==0u;
+}
+// A camera ray (origin, unit direction) meets a surface with these state
+// flags at distance t, on its front face or not: hidden from it? The ray is
+// located just before the surface, where it is still in the space it came
+// through: a line of sight within the visible set never loses its surface.
+bool cameraCulled(uint flags,bool front,vec3 origin,vec3 direction,float t) {
+  uint cull=(flags>>9)&frame.cameraCull.x;
+  if(cull==0u)return false;
+  if((cull&1u)!=0u&&!front)return true;
+  return (cull&2u)!=0u&&cameraUnseen(origin+direction*max(t-uintBitsToFloat(frame.cameraCull.y),0.));
 }
 // UV change per output pixel along two footprint axes at the surface being
 // shaded (ray differentials, or dFdx/dFdy when rasterized). Zero selects the

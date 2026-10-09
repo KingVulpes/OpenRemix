@@ -24,6 +24,22 @@ namespace remix::scene {
     return c >= 0 && uint32_t(c) < clusterCount ? c : -1;
   }
 
+  VisibilityPartition::VisibleCount VisibilityPartition::visibleLeaves(int32_t a, int32_t b,
+                                                                       std::vector<uint32_t> &bits) const {
+    VisibleCount count;
+    bits.assign(std::max<size_t>(1, (leafClusters.size() + 31) / 32), 0u);
+    for (uint32_t c = 0; c < clusterCount; ++c)
+      count.clusters += visible(a, int32_t(c)) || visible(b, int32_t(c));
+    for (size_t leaf = 0; leaf < leafClusters.size(); ++leaf) {
+      const int32_t c = leafClusters[leaf];
+      if (c >= 0 && uint32_t(c) < clusterCount && !visible(a, c) && !visible(b, c))
+        continue;
+      bits[leaf / 32] |= 1u << (leaf % 32);
+      ++count.leaves;
+    }
+    return count;
+  }
+
   void LightVisibility::locate(const VisibilityPartition &partition, size_t light, const float *p, float probe) {
     int32_t *clusters = &m_lightClusters[light * kClusters];
     std::fill_n(clusters, kClusters, -1);

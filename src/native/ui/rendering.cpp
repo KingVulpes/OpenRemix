@@ -183,6 +183,22 @@ namespace remix {
                           "breakdown. Costs about what the setting saves.");
       ImGui::EndDisabled();
     }
+    // remixapi_InstanceInfoCameraCullingEXT: what the camera does not see of
+    // instances that ask; lighting is the same either way.
+    if (ImGui::CollapsingHeader("Camera culling")) {
+      ui::Checkbox("Hide back faces from the camera", &options.cameraBackFaceCulling);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Instances the host marks for it (a map's walls, floors and props) show the camera\n"
+                          "their front faces only, as the game's rasterizer does. Shadows, bounces and\n"
+                          "reflections still meet both sides, so no light leaks.\n"
+                          "rtx.native.pathtrace.cameraBackFaceCulling");
+      ui::Checkbox("Hide what the camera's cluster cannot see", &options.cameraVisibilityCulling);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Marked instances are not shown where they lie in a cluster of the host's visibility\n"
+                          "partition that is not potentially visible from the camera's (the game's PVS).\n"
+                          "Outside the world everything is shown. Lighting is unchanged.\n"
+                          "rtx.native.pathtrace.cameraVisibilityCulling");
+    }
     // Path tracing GPU cost; each is off by default and renders the same image.
     if (ImGui::CollapsingHeader("GPU optimizations")) {
       ui::Checkbox("Hardware face culling", &options.hardwareFaceCulling);

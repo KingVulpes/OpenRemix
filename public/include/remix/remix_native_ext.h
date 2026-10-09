@@ -191,6 +191,58 @@ typedef struct remixapi_InstanceInfoMaskEXT {
 #define REMIXAPI_UI_NATIVE_MASK_GROUP_BITS 0x3f0000u
 #define REMIXAPI_UI_NATIVE_MASK_OUTSIDE 0x400000u
 
+// Optional InstanceInfo pNext: what the camera does not see of a path-traced
+// scene instance that every other ray still meets whole. The instance stays
+// the instance it would be without this extension (doubleSided, material,
+// blend state, identity, classification, shadows, bounces, reflections and
+// light sampling unchanged): only rays along the camera's own lines of sight
+// skip parts of it, so hiding them changes no lighting. Those rays are the
+// primary ray, its straight continuations through blended sheets and painted
+// (decal) layers, the previous-frame and confidence re-traces of the same
+// lines, the centre-sample depth, and, with raster primary visibility, the
+// G-buffer and stable-depth passes. Rays that leave a mirror (primary surface
+// replacement), a surface or a light are not camera rays.
+//   BACK_FACES  Camera rays skip the instance's back faces: the faces a
+//               doubleSided = 0 instance hides from every ray. A triangle
+//               (a, b, c) is front-facing to a viewer for whom
+//               cross(b - a, c - a) points away, i.e. whose vertices run
+//               clockwise seen from the front in a right-handed world (D3D's
+//               default front face); a mirroring instance transform swaps the
+//               two, as it does for doubleSided = 0. Vertex normals take no
+//               part. Without effect on an instance that is not doubleSided.
+//   VISIBILITY  Camera rays skip the instance where it lies in a cluster of
+//               the visibility partition (remixapi_SetVisibilityPartitionEXT)
+//               that is not potentially visible from the camera's cluster.
+//               Tested per point: the point a short distance (5 cm, by
+//               rtx.native.pathtrace.sceneScale) before the surface along the
+//               camera ray is located in the partition; a line of sight that
+//               stays inside the visible set therefore never loses a surface,
+//               whichever leaves the surface itself spans. Points in leaves
+//               without a cluster (solid, outside) are always seen. While the
+//               camera's own position has no cluster (outside the world or in
+//               solid space), or no partition is set, everything is seen. The
+//               visible set of a frame is that of the camera's cluster united
+//               with the previous frame's, so last frame's lines of sight
+//               stay whole across a cluster boundary.
+// Both are evaluated per rendered sample, by ray-traced and raster primary
+// visibility alike. flags with unknown bits are invalid arguments. Halo and
+// mask sources and INSIDE/OUTSIDE overlays ignore the extension, as do
+// instances that are rasterized instead of traced (the raster backend, a
+// raster-only classification, SKY and VIEW_MODEL categories). A USD mod's
+// replacement of the instance keeps VISIBILITY and drops BACK_FACES (its
+// meshes carry their own winding). rtx.native.pathtrace.cameraBackFaceCulling
+// and cameraVisibilityCulling (default 1) switch each off for every instance.
+// A frame without such instances costs nothing; one with them traces its
+// camera rays without the opaque-geometry shortcut.
+#define REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_CAMERA_CULLING_EXT ((remixapi_StructType)0x7fff100f)
+#define REMIXAPI_INSTANCE_CAMERA_CULL_BACK_FACES_EXT 1u
+#define REMIXAPI_INSTANCE_CAMERA_CULL_VISIBILITY_EXT 2u
+typedef struct remixapi_InstanceInfoCameraCullingEXT {
+  remixapi_StructType sType;
+  const void* pNext;
+  uint32_t flags;  // REMIXAPI_INSTANCE_CAMERA_CULL_*_EXT
+} remixapi_InstanceInfoCameraCullingEXT;
+
 // Optional TextureInfo pNext. With `generate` set and a single supplied level
 // (mipLevels = 1), the runtime completes the texture with a box-filtered mip
 // chain (sRGB colors averaged in linear space). For hosts that capture only a
@@ -364,6 +416,25 @@ typedef struct remixapi_LocalLightSetStatisticsEXT {
   double buildMilliseconds, buildTotalMilliseconds;
   double updateMilliseconds, updatePeakMilliseconds;
 } remixapi_LocalLightSetStatisticsEXT;
+
+// remixapi_InstanceInfoCameraCullingEXT in the last traced frame. Clusters and
+// leaves are those of the visibility partition; -1: no cluster.
+typedef struct remixapi_CameraCullingStatisticsEXT {
+  uint32_t structSize;
+  // Bits of REMIXAPI_INSTANCE_CAMERA_CULL_*_EXT: asked for by traced instances
+  // of the frame, and applied to its camera rays (a bit asked for but not
+  // applied: switched off, or VISIBILITY without a partition or with the
+  // camera outside every cluster).
+  uint32_t requested, active;
+  // The partition is set; the camera (this frame's or the previous one's) is
+  // in a leaf without a cluster, so everything is seen.
+  uint32_t partition, outside;
+  int32_t cameraCluster, previousCluster;
+  uint32_t clusterCount, visibleClusters;  // visible: in the frame's united set
+  uint32_t leafCount, visibleLeaves;       // leaves without a cluster count as visible
+  uint32_t reserved;
+  uint64_t updates;  // times the visible set changed (camera crossed a cluster boundary)
+} remixapi_CameraCullingStatisticsEXT;
 
 // Optional visibility-guided local-light diagnostics. Query counters are sampled
 // at 1/64 of opaque-primary light samples; they are not full ray counts.
@@ -589,6 +660,8 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_UpdateUITextureRegionEXT(
 
 typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_SetVisibilityPartitionEXT)(const remixapi_VisibilityPartitionEXT* partition);
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_SetVisibilityPartitionEXT(const remixapi_VisibilityPartitionEXT* partition);
+typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_GetCameraCullingStatisticsEXT)(remixapi_CameraCullingStatisticsEXT* statistics);
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetCameraCullingStatisticsEXT(remixapi_CameraCullingStatisticsEXT* statistics);
 typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_GetShadowStatisticsEXT)(remixapi_ShadowStatisticsEXT* statistics);
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetShadowStatisticsEXT(remixapi_ShadowStatisticsEXT* statistics);
 

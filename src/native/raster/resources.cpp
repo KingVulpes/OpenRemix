@@ -119,14 +119,18 @@ namespace remix {
       return it->second;
     }
     const size_t offset = source->vertices.size() * sizeof(Vertex);
-    std::vector<uint8_t> data(offset + source->indices.size() * sizeof(uint32_t));
+    // Sprite vertices (remixapi_MeshInfoSpriteVerticesEXT) follow the indices.
+    const size_t spriteOffset = offset + source->indices.size() * sizeof(uint32_t);
+    std::vector<uint8_t> data(spriteOffset + source->sprite.size() * sizeof(SpriteVertex));
     std::memcpy(data.data(), source->vertices.data(), offset);
     std::memcpy(data.data() + offset, source->indices.data(), source->indices.size() * sizeof(uint32_t));
+    if (!source->sprite.empty())
+      std::memcpy(data.data() + spriteOffset, source->sprite.data(), source->sprite.size() * sizeof(SpriteVertex));
     MeshGpu value{source,
                   geometryBuffer(data.data(), data.size(),
                                  VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
                                  command),
-                  offset};
+                  offset, spriteOffset};
     return meshes.emplace(source.get(), std::move(value)).first->second;
   }
 

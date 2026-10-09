@@ -28,6 +28,10 @@ namespace remix {
     const auto *motion = static_cast<const remixapi_MeshInfoMotionEXT *>(
         extension(info.pNext, REMIXAPI_STRUCT_TYPE_MESH_MOTION_EXT));
     if (motion && (motion->enabled > 1 || (motion->enabled && (!update || !update->enabled)))) throw invalid;
+    const auto *sprites = static_cast<const remixapi_MeshInfoSpriteVerticesEXT *>(
+        extension(info.pNext, REMIXAPI_STRUCT_TYPE_MESH_SPRITE_VERTICES_EXT));
+    if (sprites && sprites->enabled > 1) throw invalid;
+    const bool spriteVertices = sprites && sprites->enabled;
     auto mesh = std::make_shared<Mesh>();
     mesh->motionCorrespondence = motion && motion->enabled;
     uint64_t bytes = 0;
@@ -49,6 +53,8 @@ namespace remix {
       auto surface = std::make_shared<Surface>();
       surface->material = source.material;
       surface->vertices.resize(size_t(source.vertices_count));
+      if (spriteVertices)
+        surface->sprite.resize(size_t(source.vertices_count));
       std::array<float, 3> low{INFINITY, INFINITY, INFINITY}, high{-INFINITY, -INFINITY, -INFINITY};
       for (size_t v = 0; v < surface->vertices.size(); ++v) {
         const auto &src = source.vertices_values[v];
@@ -59,7 +65,18 @@ namespace remix {
         std::copy_n(src.texcoord, 2, dst.uv);
         // Legacy callers may omit normals. Invalid/zero normals retain flat
         // shading; a valid authored normal must survive scene ownership.
-        if (std::isfinite(src.normal[0]) && std::isfinite(src.normal[1]) && std::isfinite(src.normal[2])) {
+        if (spriteVertices) {
+          // remixapi_MeshInfoSpriteVerticesEXT: sprite parameters, no normal.
+          auto &sprite = surface->sprite[v];
+          std::copy_n(src.normal, 3, sprite.frame);
+          const uint32_t pads[5] = {src._pad0, src._pad1, src._pad2, src._pad3, src._pad4};
+          float values[5];
+          std::memcpy(values, pads, sizeof(values));
+          std::copy_n(values, 4, sprite.sequence);
+          sprite.weight2 = values[4];
+          finite(sprite.frame, 3);
+          finite(values, 5);
+        } else if (std::isfinite(src.normal[0]) && std::isfinite(src.normal[1]) && std::isfinite(src.normal[2])) {
           const float length = std::hypot(src.normal[0], src.normal[1], src.normal[2]);
           if (length > 1e-12f)
             for (int c = 0; c < 3; ++c) dst.normal[c] = src.normal[c] / length;
@@ -152,7 +169,9 @@ namespace remix {
         const auto &x = *a.surfaces[i], &y = *b.surfaces[i];
         if (x.material != y.material || x.vertices.size() != y.vertices.size() || x.indices != y.indices ||
             x.weights != y.weights || x.bones != y.bones || x.bonesPerVertex != y.bonesPerVertex ||
-            std::memcmp(x.vertices.data(), y.vertices.data(), x.vertices.size() * sizeof(Vertex)))
+            std::memcmp(x.vertices.data(), y.vertices.data(), x.vertices.size() * sizeof(Vertex)) ||
+            x.sprite.size() != y.sprite.size() ||
+            std::memcmp(x.sprite.data(), y.sprite.data(), x.sprite.size() * sizeof(SpriteVertex)))
           return false;
       }
       return true;

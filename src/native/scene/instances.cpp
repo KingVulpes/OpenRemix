@@ -346,6 +346,12 @@ namespace remix {
         draw.cutGroup = d.cutGroup;
         draw.cameraCull = d.cameraCull;
         draw.rasterOrder = d.rasterOrder;
+        draw.spriteFlags = d.spriteFlags;
+        std::copy_n(d.spriteSoft, 3, draw.spriteSoft);
+        // Frames and sequences come from the mesh's sprite vertices.
+        if (surface->sprite.empty())
+          draw.spriteFlags &= REMIXAPI_SPRITE_SOFT_DEPTH_EXT | REMIXAPI_SPRITE_MODULATE_EXT |
+                              REMIXAPI_SPRITE_MODULATE_FADE_EXT;
         draw.model = models[i];
         draw.bones = d.bones;
         if (d.hasRasterState) {
@@ -545,6 +551,20 @@ namespace remix::scene {
       // place in the raster order, a masked one keeps its depth-sorted place.
       if (d.classification == REMIXAPI_INSTANCE_RASTER_ONLY_EXT && !d.halo && !d.maskSource && !d.maskGroup)
         d.rasterOrder = order->order;
+    }
+    if (const auto *sprite = static_cast<const remixapi_InstanceInfoSpriteEXT *>(
+            extension(info.pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_SPRITE_EXT))) {
+      constexpr uint32_t known = 0x1ff;
+      const bool soft = (sprite->flags & REMIXAPI_SPRITE_SOFT_DEPTH_EXT) != 0;
+      if ((sprite->flags & ~known) || !std::isfinite(sprite->softDistance) || !std::isfinite(sprite->softFadeStart) ||
+          !std::isfinite(sprite->softFadeEnd) || (soft && !(sprite->softDistance > 0)))
+        throw invalid;
+      if (d.classification == REMIXAPI_INSTANCE_RASTER_ONLY_EXT && !d.halo && !d.maskSource && !d.maskGroup) {
+        d.spriteFlags = sprite->flags;
+        d.spriteSoft[0] = sprite->softDistance;
+        d.spriteSoft[1] = sprite->softFadeStart;
+        d.spriteSoft[2] = sprite->softFadeEnd;
+      }
     }
     const auto *instances = static_cast<const remixapi_InstanceInfoGpuInstancingEXT *>(
         extension(info.pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_GPU_INSTANCING_EXT));

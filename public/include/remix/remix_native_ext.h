@@ -352,6 +352,90 @@ typedef struct remixapi_InstanceInfoRasterOrderEXT {
   uint32_t order;
 } remixapi_InstanceInfoRasterOrderEXT;
 
+// Sprite overlays: what a rasterizing host's particle shaders do beyond
+// texture x vertex colour, for blended raster-only instances (classification
+// REMIXAPI_INSTANCE_RASTER_ONLY_EXT, not masked). Other instances ignore both
+// structures.
+//
+// Optional MeshInfo pNext. With `enabled`, the vertices of every surface carry
+// sprite parameters where a lit mesh has normals and padding (such a mesh has
+// no normals: it is for raster-only instances):
+//   normal            (u1, v1, weight1): the second frame of the sprite sheet
+//                     and its weight
+//   _pad0 .. _pad4    as floats (u2, v2, u3, v3, weight2): the two frames of a
+//                     second sequence and the second one's weight
+// Values must be finite. They are interpolated like texture coordinates.
+#define REMIXAPI_STRUCT_TYPE_MESH_SPRITE_VERTICES_EXT ((remixapi_StructType)0x7fff1014)
+typedef struct remixapi_MeshInfoSpriteVerticesEXT {
+  remixapi_StructType sType;
+  const void* pNext;
+  remixapi_Bool enabled;
+} remixapi_MeshInfoSpriteVerticesEXT;
+
+// Optional InstanceInfo pNext. T(uv) is the material's albedo texel (decoded
+// to linear), lum(c) = dot(c, (0.3, 0.59, 0.11)). In this order:
+//   FRAME_BLEND          texel = mix(T(uv), T(uv1), weight1)
+//   FRAME_MAX_LUMINANCE  texel = lum(T(uv1) * weight1) >= lum(T(uv) * (1 -
+//                        weight1)) ? T(uv1) : T(uv)   (instead of the blend)
+//   GREEN_ALPHA          the green and alpha channels of the two frames are
+//                        four alpha-only images, cross-faded by weight1 (w):
+//                        with k = w < 1/4 ? (1/2 - 2w, 2w + 1/2, 0, 0)
+//                               : w < 3/4 ? (0, 3/2 - 2w, 2w - 1/2, 0)
+//                                         : (0, 0, 5/2 - 2w, 2w - 3/2),
+//                        a = T(uv).r w + T(uv).g k.x + T(uv).a k.y + T(uv1).g
+//                        k.z + T(uv1).a k.w and texel = (a, a, a, a)
+//                        (Source's $extractgreenalpha, its red term included).
+//   SEQUENCE_*           a second sequence s = mix(T(uv2), T(uv3), weight2)
+//                        (with SEQUENCE_MAX_LUMINANCE the brighter of the two
+//                        as above, weighted by weight1 as Source does):
+//                        ADD      texel = (texel + s) / 2
+//                        REPLACE  texel.rgb = s.rgb
+//                        OVER     texel.rgb = mix(texel.rgb, s.rgb, s.a)
+// The texel then goes through the instance's texture stages (texture x vertex
+// colour, ...) and alpha test as usual, and
+//   SOFT_DEPTH           alpha *= saturate(max(smoothstep(softFadeStart,
+//                        softFadeEnd, scene), |scene - fragment| /
+//                        softDistance)): the sprite fades out where it meets
+//                        the scene. `scene` is the view-space depth of the
+//                        frame's opaque surfaces (the traced primary surfaces)
+//                        at the pixel, `fragment` the sprite's, in world
+//                        units; softFadeEnd <= softFadeStart leaves the first
+//                        term out. Ignored (a hard intersection, as without
+//                        the flag) while the scene is not traced, and on SKY
+//                        and VIEW_MODEL instances.
+//   MODULATE             for blend factors DST_COLOR / SRC_COLOR (k = 2) or
+//                        DST_COLOR / ZERO, ZERO / SRC_COLOR (k = 1): the
+//                        product dst x src x k is taken on display-encoded
+//                        values, as hosts that blend into an 8-bit frame
+//                        buffer define it (mid grey is neutral for k = 2),
+//                        whatever space the target blends in. src = T(uv).rgb
+//                        (display-encoded) x vertex colour, texture stages
+//                        aside; a target that blends linear values cannot
+//                        brighten by more than k.
+//   MODULATE_FADE        with MODULATE: src = mix(1 / k, src, alpha), the
+//                        sprite fading to no effect with its alpha.
+// softDistance must be positive with SOFT_DEPTH. The frame and sequence flags
+// need a mesh with sprite vertices and are ignored without.
+#define REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_SPRITE_EXT ((remixapi_StructType)0x7fff1015)
+#define REMIXAPI_SPRITE_FRAME_BLEND_EXT 0x1u
+#define REMIXAPI_SPRITE_FRAME_MAX_LUMINANCE_EXT 0x2u
+#define REMIXAPI_SPRITE_GREEN_ALPHA_EXT 0x4u
+#define REMIXAPI_SPRITE_SEQUENCE_ADD_EXT 0x8u
+#define REMIXAPI_SPRITE_SEQUENCE_REPLACE_EXT 0x10u
+#define REMIXAPI_SPRITE_SEQUENCE_OVER_EXT 0x18u
+#define REMIXAPI_SPRITE_SEQUENCE_MAX_LUMINANCE_EXT 0x20u
+#define REMIXAPI_SPRITE_SOFT_DEPTH_EXT 0x40u
+#define REMIXAPI_SPRITE_MODULATE_EXT 0x80u
+#define REMIXAPI_SPRITE_MODULATE_FADE_EXT 0x100u
+typedef struct remixapi_InstanceInfoSpriteEXT {
+  remixapi_StructType sType;
+  const void* pNext;
+  uint32_t flags;
+  float softDistance;
+  float softFadeStart;
+  float softFadeEnd;
+} remixapi_InstanceInfoSpriteEXT;
+
 typedef enum remixapi_RenderBackendEXT {
   REMIXAPI_RENDER_BACKEND_RASTER_EXT = 0,
   REMIXAPI_RENDER_BACKEND_PATHTRACE_EXT = 1,

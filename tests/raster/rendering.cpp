@@ -40,7 +40,7 @@ namespace {
     VkImageView view;
     VkDeviceMemory imageMemory, readMemory;
     VkBuffer readBuffer;
-    VkRenderPass pass;
+    VkRenderPass pass, resumePass;
     VkFramebuffer framebuffer;
     VkCommandPool pool;
     VkCommandBuffer command;
@@ -159,7 +159,7 @@ namespace {
           {.format = raster.depthFormat(),
            .samples = VK_SAMPLE_COUNT_1_BIT,
            .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-           .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+           .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
            .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL}};
       const VkAttachmentReference colorRef = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
@@ -191,6 +191,16 @@ namespace {
                                          .dependencyCount = 2,
                                          .pDependencies = deps};
       vk(remix::pipeline::createRenderPass(device, &rp, nullptr, &pass));
+      {
+        // Re-entered after the scene's depth was captured (soft sprites):
+        // clears colour, keeps the depth.
+        auto resumed = rp;
+        VkAttachmentDescription kept[2] = {attachments[0], attachments[1]};
+        kept[1].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+        kept[1].initialLayout = kept[1].finalLayout;
+        resumed.pAttachments = kept;
+        vk(remix::pipeline::createRenderPass(device, &resumed, nullptr, &resumePass));
+      }
       raster.configureTarget(pass, {64, 64});
       const VkImageView views[] = {view, raster.depthView()};
       const VkFramebufferCreateInfo fb = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
@@ -227,6 +237,7 @@ namespace {
       vkDestroyFramebuffer(device, framebuffer, nullptr);
       raster.shutdownGpu();
       remix::pipeline::destroyRenderPass(device, pass, nullptr);
+      remix::pipeline::destroyRenderPass(device, resumePass, nullptr);
       vkDestroyImageView(device, view, nullptr);
       vkDestroyImage(device, color, nullptr);
       vkFreeMemory(device, imageMemory, nullptr);
@@ -254,7 +265,9 @@ namespace {
                                           .layers = 1};
       vk(vkCreateFramebuffer(device, &fb, nullptr, &framebuffer));
     }
-    std::vector<uint8_t> render() {
+    // captureDepth: as a traced frame does for soft sprites, the scene's depth
+    // (here: what the first pass drew) is captured and the frame drawn again.
+    std::vector<uint8_t> render(bool captureDepth = false) {
       vk(vkResetCommandBuffer(command, 0));
       const VkCommandBufferBeginInfo begin = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
       vk(vkBeginCommandBuffer(command, &begin));
@@ -272,6 +285,26 @@ namespace {
       vkCmdBeginRenderPass(command, &rp, VK_SUBPASS_CONTENTS_INLINE);
       raster.record(command);
       vkCmdEndRenderPass(command);
+      if (captureDepth) {
+        require(raster.wantsSceneDepth(), "Soft sprite asks for the scene depth");
+        raster.captureSceneDepth(command);
+        // The colour image again as an attachment.
+        const VkImageMemoryBarrier back = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                                           .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                                           .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                                           .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                           .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                           .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                           .image = color,
+                                           .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr, 1, &back);
+        auto again = rp;
+        again.renderPass = resumePass;
+        vkCmdBeginRenderPass(command, &again, VK_SUBPASS_CONTENTS_INLINE);
+        raster.record(command);
+        vkCmdEndRenderPass(command);
+      }
       const VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                                       .imageExtent = {64, 64, 1}};
       vkCmdCopyImageToBuffer(command, color, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readBuffer, 1, &copy);
@@ -305,6 +338,203 @@ namespace {
                    g, b);
       std::exit(1);
     }
+  }
+  // Sprite overlays (remixapi_InstanceInfoSpriteEXT): a blended raster-only
+  // quad over the whole target whose vertices all sample one texel, so every
+  // pixel is the shader's value for those texels.
+  struct Sprite {
+    float uv[2], frame[3], sequence[4], weight2;
+    uint32_t color = 0xffffffff;
+  };
+  remixapi_MeshHandle spriteQuad(RasterRenderer &r, uint64_t hash, remixapi_MaterialHandle mat, const Sprite &sprite) {
+    remixapi_HardcodedVertex vertices[4] = {};
+    const float positions[4][3] = {{-.8f, -.8f, .5f}, {.8f, -.8f, .5f}, {.8f, .8f, .5f}, {-.8f, .8f, .5f}};
+    for (int i = 0; i < 4; ++i) {
+      std::copy_n(positions[i], 3, vertices[i].position);
+      vertices[i].color = sprite.color;
+      std::copy_n(sprite.uv, 2, vertices[i].texcoord);
+      std::copy_n(sprite.frame, 3, vertices[i].normal);
+      const float extra[5] = {sprite.sequence[0], sprite.sequence[1], sprite.sequence[2], sprite.sequence[3],
+                              sprite.weight2};
+      uint32_t bits[5];
+      std::memcpy(bits, extra, sizeof(bits));
+      vertices[i]._pad0 = bits[0], vertices[i]._pad1 = bits[1], vertices[i]._pad2 = bits[2];
+      vertices[i]._pad3 = bits[3], vertices[i]._pad4 = bits[4];
+    }
+    const uint32_t indices[] = {0, 2, 1, 0, 3, 2};
+    remixapi_MeshInfoSurfaceTriangles surface = {};
+    surface.vertices_values = vertices;
+    surface.vertices_count = 4;
+    surface.indices_values = indices;
+    surface.indices_count = 6;
+    surface.material = mat;
+    remixapi_MeshInfoSpriteVerticesEXT sprites = {};
+    sprites.sType = REMIXAPI_STRUCT_TYPE_MESH_SPRITE_VERTICES_EXT;
+    sprites.enabled = 1;
+    remixapi_MeshInfo info = {};
+    info.sType = REMIXAPI_STRUCT_TYPE_MESH_INFO;
+    info.pNext = &sprites;
+    info.hash = hash;
+    info.surfaces_values = &surface;
+    info.surfaces_count = 1;
+    remixapi_MeshHandle result;
+    r.createMesh(info, result);
+    return result;
+  }
+  // Draws `mesh` as a sprite overlay with Vulkan blend factors src / dst.
+  void drawSprite(RasterRenderer &r, remixapi_MeshHandle mesh, uint32_t flags, uint32_t src, uint32_t dst, float z = 0,
+                  float softDistance = 0, float fadeStart = 0, float fadeEnd = 0) {
+    remixapi_InstanceInfoBlendEXT blend = {};
+    blend.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_BLEND_EXT;
+    blend.alphaTestCompareOp = 7;
+    blend.alphaBlendEnabled = 1;
+    blend.srcColorBlendFactor = blend.srcAlphaBlendFactor = src;
+    blend.dstColorBlendFactor = blend.dstAlphaBlendFactor = dst;
+    blend.writeMask = 15;
+    // Colour: texture x vertex; alpha: texture x vertex.
+    blend.textureColorOperation = 3, blend.textureColorArg1Source = 1, blend.textureColorArg2Source = 2;
+    blend.textureAlphaOperation = 3, blend.textureAlphaArg1Source = 1, blend.textureAlphaArg2Source = 2;
+    remixapi_InstanceIdentityEXT identity = {};
+    identity.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_IDENTITY_EXT;
+    identity.pNext = &blend;
+    identity.classification = REMIXAPI_INSTANCE_RASTER_ONLY_EXT;
+    identity.rasterVisible = 1;
+    remixapi_InstanceInfoSpriteEXT sprite = {};
+    sprite.sType = REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_SPRITE_EXT;
+    sprite.pNext = &identity;
+    sprite.flags = flags;
+    sprite.softDistance = softDistance;
+    sprite.softFadeStart = fadeStart;
+    sprite.softFadeEnd = fadeEnd;
+    auto info = instance(mesh, z);
+    info.pNext = &sprite;
+    info.doubleSided = 1;
+    r.drawInstance(info);
+  }
+  void spriteTests(Target &target) {
+    auto &r = target.raster;
+    camera(r);
+    // Four texels in a row (linear values): A, B, C, D at u = 1/8, 3/8, 5/8, 7/8.
+    const uint8_t texels[] = {26, 51, 0, 102, /* A */ 0, 153, 0, 204, /* B */ 255, 0, 0, 255, /* C */ 0, 255, 0, 128 /* D */};
+    remixapi_TextureInfo tex = {};
+    tex.hash = 0x51;
+    tex.width = 4;
+    tex.height = 1;
+    tex.format = REMIXAPI_FORMAT_R8G8B8A8_UNORM;
+    tex.data = texels;
+    tex.dataSize = sizeof(texels);
+    remixapi_TextureHandle handle;
+    r.createTexture(tex, handle);
+#if defined(_WIN32)
+    const auto sheet = material(r, 0x52, 1, 1, 1, 1, L"0x51");
+#else
+    const auto sheet = material(r, 0x52, 1, 1, 1, 1, "0x51");
+#endif
+    constexpr uint32_t one = 1, srcAlpha = 6, invSrcAlpha = 7, dstColor = 4, srcColor = 2;
+    const float a[2] = {.125f, .5f}, b[2] = {.375f, .5f}, c[2] = {.625f, .5f}, d[2] = {.875f, .5f};
+    uint64_t hash = 0x60;
+    const auto shot = [&](const Sprite &sprite, uint32_t flags, uint32_t src = one, uint32_t dst = one) {
+      drawSprite(r, spriteQuad(r, hash++, sheet, sprite), flags, src, dst);
+      return target.render();
+    };
+    // Frames C (red) and D (green), additive.
+    pixel(shot({{c[0], c[1]}, {d[0], d[1], .25f}}, REMIXAPI_SPRITE_FRAME_BLEND_EXT), 32, 32, 191, 64, 0,
+          "Sprite frame blend 1/4");
+    pixel(shot({{c[0], c[1]}, {d[0], d[1], .75f}}, REMIXAPI_SPRITE_FRAME_BLEND_EXT), 32, 32, 64, 191, 0,
+          "Sprite frame blend 3/4");
+    pixel(shot({{c[0], c[1]}, {d[0], d[1], .75f}}, 0), 32, 32, 255, 0, 0, "Sprite without flags: first frame");
+    // Alpha over: the blended alpha (1, 128/255 -> 0.749 at 1/2) covers black.
+    pixel(shot({{c[0], c[1]}, {d[0], d[1], .5f}}, REMIXAPI_SPRITE_FRAME_BLEND_EXT, srcAlpha, invSrcAlpha), 32, 32, 96,
+          96, 0, "Sprite frame blend, alpha over");
+    // The brighter frame: 0.59 w against 0.3 (1 - w).
+    pixel(shot({{c[0], c[1]}, {d[0], d[1], .25f}}, REMIXAPI_SPRITE_FRAME_MAX_LUMINANCE_EXT), 32, 32, 255, 0, 0,
+          "Sprite max-luminance frame, first");
+    pixel(shot({{c[0], c[1]}, {d[0], d[1], .75f}}, REMIXAPI_SPRITE_FRAME_MAX_LUMINANCE_EXT), 32, 32, 0, 255, 0,
+          "Sprite max-luminance frame, second");
+    // Green/alpha images of A (g .2, a .4, r .102) and B (g .6, a .8).
+    const auto green = [&](float w, float expected, const char *what) {
+      const int value = int(std::lround(expected * 255));
+      pixel(shot({{a[0], a[1]}, {b[0], b[1], w}}, REMIXAPI_SPRITE_GREEN_ALPHA_EXT), 32, 32, value, value, value, what);
+    };
+    green(.1f, .102f * .1f + .2f * .3f + .4f * .7f, "Sprite green/alpha, first pair");
+    green(.5f, .102f * .5f + .4f * .5f + .6f * .5f, "Sprite green/alpha, across the frames");
+    green(.9f, .102f * .9f + .6f * .7f + .8f * .3f, "Sprite green/alpha, second pair");
+    // A second sequence (C, D at 1/4: (.75, .25, 0, .875)) on the first frame A.
+    const Sprite second = {{a[0], a[1]}, {b[0], b[1], 0}, {c[0], c[1], d[0], d[1]}, .25f};
+    pixel(shot(second, REMIXAPI_SPRITE_SEQUENCE_ADD_EXT), 32, 32, 109, 57, 0, "Sprite second sequence, added");
+    pixel(shot(second, REMIXAPI_SPRITE_SEQUENCE_REPLACE_EXT), 32, 32, 191, 64, 0, "Sprite second sequence, replacing");
+    pixel(shot(second, REMIXAPI_SPRITE_SEQUENCE_OVER_EXT), 32, 32, 171, 62, 0, "Sprite second sequence, over");
+    // The brighter of C and D, weighed by weight1 (0: C).
+    pixel(shot(second, REMIXAPI_SPRITE_SEQUENCE_REPLACE_EXT | REMIXAPI_SPRITE_SEQUENCE_MAX_LUMINANCE_EXT), 32, 32, 255,
+          0, 0, "Sprite second sequence, brighter frame");
+    // Soft depth: a red wall 2.5 from the eye, a white sprite 2.3 from it.
+    remixapi_CameraInfoParameterizedEXT params = {};
+    params.sType = REMIXAPI_STRUCT_TYPE_CAMERA_INFO_PARAMETERIZED_EXT;
+    params.position = {0, 0, -2};
+    params.forward = {0, 0, 1};
+    params.right = {1, 0, 0};
+    params.up = {0, 1, 0};
+    params.aspect = 1;
+    params.fovYInDegrees = 90;
+    params.nearPlane = .1f;
+    params.farPlane = 10;
+    remixapi_CameraInfo cam = {};
+    cam.sType = REMIXAPI_STRUCT_TYPE_CAMERA_INFO;
+    cam.pNext = &params;
+    r.setupCamera(cam);
+    const auto wall = quad(r, 0x53, material(r, 0x54, 1, 0, 0));
+    const auto white = quad(r, 0x55, material(r, 0x56, 1, 1, 1));
+    const auto soft = [&](float distance, float start, float end, bool capture) {
+      r.drawInstance(instance(wall));
+      drawSprite(r, white, REMIXAPI_SPRITE_SOFT_DEPTH_EXT, srcAlpha, invSrcAlpha, -.2f, distance, start, end);
+      return target.render(capture);
+    };
+    pixel(soft(.4f, 0, 0, true), 32, 32, 255, 128, 128, "Soft sprite: half way into its distance");
+    pixel(soft(.1f, 0, 0, true), 32, 32, 255, 255, 255, "Soft sprite: beyond its distance");
+    pixel(soft(.8f, 0, 0, true), 32, 32, 255, 64, 64, "Soft sprite: a quarter of its distance");
+    pixel(soft(.4f, 1, 2, true), 32, 32, 255, 255, 255, "Soft sprite: scene beyond the fade range");
+    pixel(soft(.8f, 2, 3, true), 32, 32, 255, 128, 128, "Soft sprite: scene half way through the fade range");
+    pixel(soft(.4f, 0, 0, false), 32, 32, 255, 255, 255, "Soft sprite without a captured depth: hard");
+    rejected([&] { drawSprite(r, white, REMIXAPI_SPRITE_SOFT_DEPTH_EXT, srcAlpha, invSrcAlpha); });
+    rejected([&] { drawSprite(r, white, 0x200, srcAlpha, invSrcAlpha); });
+    camera(r);
+    // Modulate: grey (display 64/255, alpha 1 or 0) on a mid-grey surface.
+    const uint8_t dark[] = {64, 64, 64, 255, 64, 64, 64, 0};
+    tex.hash = 0x57;
+    tex.width = 2;
+    tex.format = REMIXAPI_FORMAT_R8G8B8A8_SRGB;
+    tex.data = dark;
+    tex.dataSize = sizeof(dark);
+    r.createTexture(tex, handle);
+#if defined(_WIN32)
+    const auto blood = material(r, 0x58, 1, 1, 1, 1, L"0x57");
+#else
+    const auto blood = material(r, 0x58, 1, 1, 1, 1, "0x57");
+#endif
+    const auto modulate = [&](remixapi_MaterialHandle ground, float u, uint32_t flags, uint32_t src, uint32_t dst) {
+      r.drawInstance(instance(quad(r, hash++, ground), .2f));
+      drawSprite(r, spriteQuad(r, hash++, blood, {{u, .5f}}), flags, src, dst);
+      return target.render();
+    };
+    // A target that blends linear values: dst (k src)^2.2.
+    const auto half = material(r, 0x59, .5f, .5f, .5f);
+    constexpr uint32_t fade = REMIXAPI_SPRITE_MODULATE_EXT | REMIXAPI_SPRITE_MODULATE_FADE_EXT;
+    const int mod2x = int(std::lround(.5 * std::pow(2 * 64 / 255., 2.2) * 255));
+    const int multiply = int(std::lround(.5 * std::pow(64 / 255., 2.2) * 255));
+    pixel(modulate(half, .25f, fade, dstColor, srcColor), 32, 32, mod2x, mod2x, mod2x, "Mod2x sprite, linear target");
+    pixel(modulate(half, .75f, fade, dstColor, srcColor), 32, 32, 128, 128, 128, "Mod2x sprite faded out is neutral");
+    pixel(modulate(half, .75f, REMIXAPI_SPRITE_MODULATE_EXT, dstColor, srcColor), 32, 32, mod2x, mod2x, mod2x,
+          "Mod2x sprite without the fade");
+    pixel(modulate(half, .25f, fade, dstColor, 0), 32, 32, multiply, multiply, multiply, "Multiplying sprite");
+    pixel(modulate(half, .75f, fade, dstColor, 0), 32, 32, 128, 128, 128, "Multiplying sprite faded out");
+    // A target that blends display values: dst x src x 2 as the host has it.
+    target.outputEncoding(true);
+    const auto display = material(r, 0x5a, .21404114f, .21404114f, .21404114f);
+    pixel(modulate(display, .25f, fade, dstColor, srcColor), 32, 32, 64, 64, 64, "Mod2x sprite, display target");
+    pixel(modulate(display, .75f, fade, dstColor, srcColor), 32, 32, 128, 128, 128,
+          "Mod2x sprite faded out, display target");
+    target.outputEncoding(false);
+    std::puts("Sprite overlays: frames, green/alpha, sequences, soft depth and modulation passed");
   }
   void gpuTests(const std::filesystem::path &directory) {
     Target target;
@@ -514,6 +744,8 @@ namespace {
     r.drawInstance(instance(quad(r, 101, greyMaterial)));
     pixel(target.render(), 32, 32, 128, 128, 128, "UNORM-only output encoding");
     target.outputEncoding(false);
+    spriteTests(target);
+    camera(r);
     // Persistent scene + UI reference artifact.
     r.drawInstance(instance(farMesh));
     ui(r, 0, 0x800000ff);

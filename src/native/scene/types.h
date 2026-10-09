@@ -135,8 +135,15 @@ namespace remix {
       uint16_t tint[3] = {0x3c00, 0x3c00, 0x3c00}; // half bits
     };
     MaterialDecode materialDecode(const Material &material);
+    // remixapi_MeshInfoSpriteVerticesEXT: a vertex's sprite parameters.
+    struct SpriteVertex {
+      float frame[3];    // u1, v1, weight1
+      float sequence[4]; // u2, v2, u3, v3
+      float weight2;
+    };
     struct Surface {
       std::vector<Vertex> vertices;
+      std::vector<SpriteVertex> sprite; // empty, or one per vertex
       std::vector<uint32_t> indices;
       std::vector<float> weights;
       std::vector<uint32_t> bones;
@@ -235,6 +242,9 @@ namespace remix {
       // remixapi_InstanceInfoRasterOrderEXT: the host's place for a blended
       // raster-only draw among its layer's (0: sorted by depth).
       uint32_t rasterOrder = 0;
+      // remixapi_InstanceInfoSpriteEXT (0: none), on blended raster-only draws.
+      uint32_t spriteFlags = 0;
+      float spriteSoft[3] = {}; // softDistance, softFadeStart, softFadeEnd
     };
     // remixapi_InstanceInfoHaloEXT, validated and clamped. Instances whose
     // parameters compare equal share one group (one silhouette mask).

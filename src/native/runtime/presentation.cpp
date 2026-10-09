@@ -801,6 +801,17 @@ void RemixNativeRuntime::presented() {
       if (!m_loading && m_pathTracer) {
         m_pathTracer->record(buffer);
         scope.close();
+        // Soft sprite overlays (remixapi_InstanceInfoSpriteEXT) sample the
+        // scene's depth, which the composite just wrote to the target's depth
+        // attachment at output resolution (whatever traced or rasterized it,
+        // upscaled or not): the pass is left for a copy of it.
+        if (raster.wantsSceneDepth()) {
+          gpu::GpuScope depthTime(buffer, "Scene depth for soft overlays", m_swapchainExtent);
+          vkCmdEndRenderPass(buffer);
+          raster.captureSceneDepth(buffer);
+          pass.renderPass = m_resumePass;
+          vkCmdBeginRenderPass(buffer, &pass, VK_SUBPASS_CONTENTS_INLINE);
+        }
         gpu::GpuScope overlay(buffer, "Raster overlay (HUD, effects)", m_swapchainExtent);
         raster.record(buffer, false, true, nullptr, {}, 0, sceneLayers, masks ? 1 : 0);
       } else if (!m_loading)

@@ -106,6 +106,7 @@ namespace remix {
       std::weak_ptr<scene::Surface> owner;
       std::unique_ptr<Buffer> data;
       VkDeviceSize indexOffset;
+      VkDeviceSize spriteOffset = 0; // scene::Surface::sprite, after the indices (when it has any)
       // Object-space bounds of the vertices, computed on first halo use.
       bool bounded = false;
       float low[3] = {}, high[3] = {};
@@ -144,6 +145,13 @@ namespace remix {
       // of mask.layout, and the pixels the draw is confined to.
       VkDescriptorSet coverage;
       VkRect2D area;
+      // A sprite overlay (raster/sprite.cpp): the mesh's sprite vertices as
+      // binding 1 (same buffer as its indices), and its parameters, which
+      // replace push.factor (1 / softDistance, fade start, fade end, modulate k).
+      bool sprite = false;
+      VkBuffer spriteBuffer = VK_NULL_HANDLE;
+      VkDeviceSize spriteOffset = 0;
+      float spriteParameters[4] = {};
     };
     std::unordered_map<const scene::Surface *, MeshGpu> meshes;
     std::unordered_map<const scene::Texture *, TextureGpu> textures;
@@ -265,6 +273,20 @@ namespace remix {
         uint64_t digest = 0; // changes with the early sources
       } cut;
     } mask;
+    // Sprite overlays (remixapi_InstanceInfoSpriteEXT, raster/sprite.cpp).
+    struct Sprite {
+      VkPipelineLayout layout = VK_NULL_HANDLE; // the raster layout and, set 1, the scene's depth
+      VkShaderModule vertex = VK_NULL_HANDLE, fragment = VK_NULL_HANDLE;
+      std::unique_ptr<Image> depth; // copy of the target's depth attachment
+      VkSampler sampler = VK_NULL_HANDLE;
+      VkDescriptorSet set = VK_NULL_HANDLE;
+      bool failed = false;
+      uint32_t soft = 0;     // this frame's commands with SOFT_DEPTH
+      bool captured = false; // this frame's depth is in the copy
+    } sprite;
+    // The layout and shader modules; false when they cannot be created.
+    bool prepareSprite();
+    void destroySprite();
     bool prepareMask();
     // The coverage passes: every run, or (early) the runs marked early.
     void recordMaskRuns(VkCommandBuffer command, bool early);
@@ -308,6 +330,7 @@ namespace remix {
     uint32_t textureMipSkip(uint32_t width, uint32_t height, uint32_t levels) const;
     VkDescriptorSet material(const std::shared_ptr<scene::Material> &source, VkCommandBuffer command);
     // masked: the variant tested against a group's coverage (mask.layout).
-    VkPipeline pipeline(const scene::Draw &draw, bool masked = false);
+    // sprite: the sprite overlay variant (sprite.layout), not for masked draws.
+    VkPipeline pipeline(const scene::Draw &draw, bool masked = false, bool sprite = false);
   };
 } // namespace remix

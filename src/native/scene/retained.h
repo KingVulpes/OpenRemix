@@ -48,6 +48,9 @@ namespace remix::scene {
     uint8_t cameraCull = 0;
     // remixapi_InstanceInfoRasterOrderEXT (0: sorted by depth).
     uint32_t rasterOrder = 0;
+    // remixapi_InstanceInfoSpriteEXT (0: none).
+    uint32_t spriteFlags = 0;
+    float spriteSoft[3] = {};
   };
   // Throws the codes DrawInstance returns. Mesh-independent checks only.
   void describeInstance(const remixapi_InstanceInfo &info, InstanceDescription &out);

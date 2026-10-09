@@ -42,6 +42,7 @@ namespace remix {
     pipelines.clear();
     destroyMask();
     destroyHalo();
+    destroySprite();
     depth.reset();
     pass = VK_NULL_HANDLE;
     extent = {};

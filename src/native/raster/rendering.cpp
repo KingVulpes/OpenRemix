@@ -1,4 +1,5 @@
 #include "raster/gpu.h"
+#include <remix/remix_native_ext.h>
 #include <deque>
 #include <limits>
 
@@ -23,6 +24,8 @@ namespace remix {
       }
     } finish{m_profile, g.uploadBytes};
     g.commands.clear();
+    g.sprite.soft = 0;
+    g.sprite.captured = false;
     for (auto &buffer : g.uploads)
       g.recycle(std::move(buffer));
     g.uploads.clear();
@@ -165,8 +168,11 @@ namespace remix {
         return;
       Gpu::Command out = {};
       const bool tested = silhouette && silhouette->depthTest && draw.camera == REMIXAPI_CAMERA_TYPE_WORLD;
+      // A sprite overlay (raster/sprite.cpp): a blended draw that is not masked.
+      const bool sprite = !silhouette && draw.spriteFlags && draw.blend.enabled && !draw.maskGroup && !draw.cutGroup &&
+                          !draw.ui && g.sprite.layout && g.sprite.vertex && g.sprite.fragment && !g.sprite.failed;
       try {
-        out.pipeline = silhouette ? silhouette->pipelines[tested] : g.pipeline(draw, slot >= 0);
+        out.pipeline = silhouette ? silhouette->pipelines[tested] : g.pipeline(draw, slot >= 0, sprite);
       } catch (VkResult result) {
         // A masked draw's variant is still compiling (preparePipelines does
         // not wait for it): left out of this frame, a CUT instance drawn whole.
@@ -186,6 +192,25 @@ namespace remix {
       const size_t firstSkinned = skinned.size();
       out.vertices = out.indices = mesh.data->buffer;
       out.indexOffset = mesh.indexOffset;
+      if (sprite) {
+        out.sprite = true;
+        out.spriteBuffer = mesh.data->buffer;
+        // A mesh without sprite vertices: any data (its flags that read them are off).
+        out.spriteOffset = draw.surface->sprite.empty() ? 0 : mesh.spriteOffset;
+        const auto &blend = draw.blend;
+        out.spriteParameters[0] = draw.spriteSoft[0] > 0 ? 1 / draw.spriteSoft[0] : 0;
+        out.spriteParameters[1] = draw.spriteSoft[1];
+        out.spriteParameters[2] = draw.spriteSoft[2];
+        // MODULATE's k: dst x src + src x dst, or dst x src alone.
+        out.spriteParameters[3] = blend.src == VK_BLEND_FACTOR_DST_COLOR && blend.dst == VK_BLEND_FACTOR_SRC_COLOR ? 2.f : 1.f;
+      }
+      // The captured depth is the world camera's.
+      const uint32_t spriteFlags =
+          !sprite ? 0u
+                  : draw.spriteFlags & (draw.camera == REMIXAPI_CAMERA_TYPE_WORLD
+                                            ? 0x1ffu
+                                            : 0x1ffu & ~uint32_t(REMIXAPI_SPRITE_SOFT_DEPTH_EXT));
+      g.sprite.soft += (spriteFlags & REMIXAPI_SPRITE_SOFT_DEPTH_EXT) != 0;
       out.firstIndex = draw.firstIndex;
       out.count = draw.indexCount ? draw.indexCount : uint32_t(draw.surface->indices.size());
       out.baseVertex = draw.vertexOffset;
@@ -239,7 +264,7 @@ namespace remix {
       out.push.state[3] =
           uint32_t(draw.ignoreAlpha) |
           (g.encodeOutput && !(g.skyPass && draw.camera == REMIXAPI_CAMERA_TYPE_SKY) ? 2u : 0u) |
-          (slot >= 0 && outside ? 16u : 0u);
+          (slot >= 0 && outside ? 16u : 0u) | spriteFlags << 5;
       // Albedo tint (fork extension) as halves in the unused high words; the
       // roughness/metal decodes have no raster (unlit) counterpart.
       if (const auto decode = materialDecode(mat); decode.flags & MaterialDecode::albedoTint) {
@@ -543,20 +568,30 @@ namespace remix {
       previousLayer = draw.layer;
       // A masked overlay: its group's coverage as set 1, confined to the
       // pixels the coverage can be set in.
-      const auto layout = draw.coverage ? g.mask.layout : g.layout;
+      const auto layout = draw.coverage ? g.mask.layout : draw.sprite ? g.sprite.layout : g.layout;
       const auto &wanted = draw.coverage ? draw.area : scissor;
       if (!same(wanted, confined)) {
         vkCmdSetScissor(command, 0, 1, &wanted);
         confined = wanted;
       }
       vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, draw.pipeline);
-      const VkDescriptorSet sets[] = {draw.set, draw.coverage};
-      vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, draw.coverage ? 2 : 1, sets, 0,
-                              nullptr);
+      // A sprite overlay: the scene's depth as set 1 (its own texture stands in
+      // while there is none), its sprite vertices as binding 1.
+      const bool soft = draw.sprite && g.sprite.captured && g.sprite.set;
+      const VkDescriptorSet sets[] = {draw.set, draw.sprite ? (soft ? g.sprite.set : draw.set) : draw.coverage};
+      vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0,
+                              draw.coverage || draw.sprite ? 2 : 1, sets, 0, nullptr);
       vkCmdBindVertexBuffers(command, 0, 1, &draw.vertices, &draw.vertexOffset);
+      if (draw.sprite)
+        vkCmdBindVertexBuffers(command, 1, 1, &draw.spriteBuffer, &draw.spriteOffset);
       vkCmdBindIndexBuffer(command, draw.indices, draw.indexOffset, VK_INDEX_TYPE_UINT32);
       vkCmdSetBlendConstants(command, draw.push.factor);
       auto push = draw.push;
+      if (draw.sprite) {
+        std::copy_n(draw.spriteParameters, 4, push.factor);
+        if (!soft)
+          push.state[3] &= ~(REMIXAPI_SPRITE_SOFT_DEPTH_EXT << 5);
+      }
       if (skyJitter && draw.layer == 0) {
         // Match the primary ray sample; raster overlays keep their center sample.
         for (int column = 0; column < 4; ++column) {

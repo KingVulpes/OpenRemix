@@ -88,6 +88,17 @@ namespace remix {
     void recordHaloMask(VkCommandBuffer command, uint32_t group);
     void recordHaloComposite(VkCommandBuffer command, uint32_t group);
 
+    // Sprite overlays with SOFT_DEPTH (remixapi_InstanceInfoSpriteEXT) sample
+    // the frame's opaque depth. wantsSceneDepth: the last prepare() made such
+    // draws. A frame that has them leaves the target pass once the scene's
+    // depth is in the target's depth attachment (stored) and before record()
+    // draws the world layer's overlays, calls captureSceneDepth (a copy of
+    // the attachment, outside a render pass; the attachment is in its
+    // attachment layout before and after) and re-enters a pass that loads
+    // colour and depth. Without the capture those draws are hard-edged.
+    bool wantsSceneDepth() const;
+    void captureSceneDepth(VkCommandBuffer command);
+
     VkDescriptorImageInfo sampledMaterial(const std::shared_ptr<scene::Material> &material,
                                           VkCommandBuffer command);
     VkDescriptorImageInfo sampledEmission(const std::shared_ptr<scene::Material> &material,

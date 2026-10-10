@@ -116,6 +116,7 @@ namespace remix {
       std::unique_ptr<Image> data; // Null for a linear alias of another entry's image.
       VkImageView view = VK_NULL_HANDLE; // Sampled view: data->view or the alias.
       uint64_t revision = 0;             // scene::TextureUpdates::revision uploaded
+      bool updatable = false;            // owner has TextureUpdates: refreshed by prepare()
     };
     struct MaterialGpu {
       VkDevice device;
@@ -170,6 +171,10 @@ namespace remix {
     } frames[gpuFrameCount];
     uint32_t frameIndex = 0;
     uint64_t uploadBytes = 0; // Staged by buffer(), for RasterRenderer::profile().
+    // Counts the uploads that changed a dynamic texture's image
+    // (remixapi_UpdateTextureEXT): what the images show, for the traced
+    // scene's signature.
+    uint64_t dynamicTextureUploads = 0;
     std::vector<Command> commands;
     // Halo outlines (remixapi_InstanceInfoHaloEXT, raster/halo.cpp). Nothing
     // here exists until a frame submits a halo instance; the objects are

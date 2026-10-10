@@ -42,8 +42,15 @@ namespace remix {
       if (it->second.owner.expired()) {
         retired.retiredImages.push_back(std::move(it->second.data));
         it = g.textures.erase(it);
-      } else
+      } else {
+        // Textures rewritten in place: their changed regions reach the image
+        // here, ahead of everything this frame records (raster and traced),
+        // whichever of its tables holds the texture's descriptor.
+        if (it->second.updatable)
+          if (const auto owner = it->second.owner.lock())
+            g.refreshTexture(it->second, *owner, command);
         ++it;
+      }
     }
     for (auto it = g.meshes.begin(); it != g.meshes.end();) {
       if (it->second.owner.expired()) {

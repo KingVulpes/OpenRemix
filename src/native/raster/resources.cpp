@@ -150,6 +150,7 @@ namespace remix {
     std::lock_guard lock(updates.lock);
     auto &value = createTexture(source, command);
     value.revision = updates.revision;
+    value.updatable = true;
     std::fill_n(updates.dirty, 4, 0u);
     return value;
   }
@@ -168,6 +169,10 @@ namespace remix {
         value.data->width != p.width || value.data->height != p.height || x1 > p.width || y1 > p.height)
       return;
     const uint32_t width = x1 - x0, height = y1 - y0;
+    CounterTicks time{textureCounters.uploadTicks};
+    dynamicTextureUploads += source.dynamic;
+    textureCounters.uploads.fetch_add(1, std::memory_order_relaxed);
+    textureCounters.uploadBytes.fetch_add(uint64_t(width) * height * 4, std::memory_order_relaxed);
     uploads.push_back(buffer(size_t(width) * height * 4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, [&](uint8_t *mapped) {
       for (uint32_t y = 0; y < height; ++y)
         std::memcpy(mapped + size_t(y) * width * 4, p.mips[0].data() + (size_t(y0 + y) * p.width + x0) * 4,
@@ -201,6 +206,12 @@ namespace remix {
 
   RasterRenderer::Gpu::TextureGpu &RasterRenderer::Gpu::createTexture(const std::shared_ptr<Texture> &source,
                                                                       VkCommandBuffer command) {
+    CounterTicks time{textureCounters.gpuCreateTicks};
+    textureCounters.gpuTexturesCreated.fetch_add(1, std::memory_order_relaxed);
+    struct Staged {
+      const uint64_t &bytes, before = bytes;
+      ~Staged() { textureCounters.gpuCreateBytes.fetch_add(bytes - before, std::memory_order_relaxed); }
+    } staged{uploadBytes};
     const uint32_t limit = properties.limits.maxImageDimension2D;
     if (source->pixels.width > limit || source->pixels.height > limit)
       return textures.emplace(source.get(), uploadPixels(source, oversizedFallback(source->pixels, limit), command, 0))
@@ -409,6 +420,8 @@ namespace remix {
       return it->second->set;
     }
     auto &tex = texture(source->texture, command);
+    CounterTicks time{textureCounters.gpuCreateTicks};
+    textureCounters.gpuMaterialsCreated.fetch_add(1, std::memory_order_relaxed);
     auto value = std::make_unique<MaterialGpu>();
     value->device = device;
     value->pool = pool;
@@ -455,6 +468,8 @@ namespace remix {
     materials.emplace(source.get(), std::move(value));
     return set;
   }
+
+  uint64_t RasterRenderer::dynamicTextureGeneration() const { return m_gpu ? m_gpu->dynamicTextureUploads : 0; }
 
   VkDescriptorImageInfo RasterRenderer::sampledMaterial(const std::shared_ptr<Material> &source,
                                                         VkCommandBuffer command) {

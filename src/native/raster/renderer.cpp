@@ -62,10 +62,18 @@ namespace remix {
     for (auto &buffer : next.retiredBuffers)
       g.recycle(std::move(buffer));
     next.retiredBuffers.clear();
-    next.retiredMaterials.clear();
-    for (auto &image : next.retiredImages)
-      g.recycle(std::move(image));
-    next.retiredImages.clear();
+    if (!next.retiredMaterials.empty() || !next.retiredImages.empty()) {
+      // Samplers, descriptor sets, images and their memory of materials and
+      // textures the host destroyed (remixapi_TextureStatisticsEXT).
+      CounterTicks time{textureCounters.gpuDestroyTicks};
+      textureCounters.gpuMaterialsDestroyed.fetch_add(next.retiredMaterials.size(), std::memory_order_relaxed);
+      next.retiredMaterials.clear();
+      for (auto &image : next.retiredImages) {
+        textureCounters.gpuTexturesDestroyed.fetch_add(image != nullptr, std::memory_order_relaxed);
+        g.recycle(std::move(image));
+      }
+      next.retiredImages.clear();
+    }
     g.uploads = std::move(next.uploads);
     g.skin = std::move(next.skin);
   }

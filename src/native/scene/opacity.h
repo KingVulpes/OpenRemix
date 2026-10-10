@@ -67,7 +67,12 @@ private:
     // Summed-area counts of texels whose alpha is not exactly 255. This gives
     // the same conservative rectangle predicate as scanning the RGBA bytes.
     std::vector<uint32_t> prefix;
+    // remixapi_TextureInfoDynamicEXT: pixels change in place, so no texel is
+    // ever proven opaque (and none is read here).
+    bool dynamic = false;
     bool solid(const Region &r) const {
+      if (dynamic)
+        return false;
       if (prefix.empty())
         return true; // Compressed texture without any non-opaque texel.
       const size_t stride = size_t(width) + 1;

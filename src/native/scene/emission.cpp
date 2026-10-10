@@ -1,6 +1,8 @@
 #include "scene/emission.h"
 #include <algorithm>
 #include <cmath>
+#include <functional>
+#include <mutex>
 
 namespace remix::scene {
   namespace {
@@ -24,6 +26,31 @@ namespace remix::scene {
         }
       return weights;
     }();
+    // The dynamic textures (remixapi_TextureInfoDynamicEXT) a material's
+    // emission reads, locked: their texels change under these locks.
+    struct DynamicTextures {
+      std::unique_lock<std::mutex> locks[2];
+      uint64_t revision = 0; // sum of the textures' revisions
+      bool any = false;
+      explicit DynamicTextures(const Material &m) {
+        TextureUpdates *updates[2] = {
+            m.emissionTexture && m.emissionTexture->dynamic ? m.emissionTexture->updates.get() : nullptr,
+            m.selfIllumination && m.texture && m.texture->dynamic ? m.texture->updates.get() : nullptr};
+        if (updates[0] == updates[1])
+          updates[1] = nullptr;
+        if (updates[1] && (!updates[0] || std::less<>()(updates[1], updates[0])))
+          std::swap(updates[0], updates[1]); // one lock order
+        for (unsigned i = 0; i < 2; ++i)
+          if (updates[i]) {
+            locks[i] = std::unique_lock(updates[i]->lock);
+            revision += updates[i]->revision;
+            any = true;
+          }
+      }
+    };
+    // A triangle's emission; `cached`: through Material::emissionCache. The
+    // caller holds the locks of the material's dynamic textures.
+    std::array<float, 3> emission(const Draw &draw, uint32_t triangle, const float *transform, bool cached = true);
   } // namespace
   std::shared_ptr<const SurfaceEmissionCache::Reduction>
   SurfaceEmissionCache::reduce(const Draw &draw, const std::array<float, 4> &uv) {
@@ -41,25 +68,54 @@ namespace remix::scene {
                   {m.selfIllumination ? m.selfIlluminationScale : 0, m.selfIllumination ? m.tint[0] : 0,
                    m.selfIllumination ? m.tint[1] : 0, m.selfIllumination ? m.tint[2] : 0}};
     const std::shared_ptr<Texture> albedo = m.selfIllumination ? m.texture : nullptr;
+    // Dynamic textures: the material's estimates (Material::emissionCache)
+    // belong to one image. Once the pixels changed and those estimates are old
+    // enough they are dropped; the surfaces' reductions follow.
+    const DynamicTextures dynamic(m);
+    const auto now = dynamic.any ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    if (dynamic.any &&
+        (!m.emissionSerial || (m.emissionRevision != dynamic.revision &&
+                               std::chrono::duration<double>(now - m.emissionMade).count() >= m.emissionKeepSeconds))) {
+      m.emissionCache.clear();
+      m.emissionRevision = dynamic.revision;
+      m.emissionMade = now;
+      m.emissionKeepSeconds = dynamicEmissionSeconds;
+      ++m.emissionSerial;
+    }
     auto &cache = surfaces[draw.surface.get()];
     if (cache.owner.lock() != draw.surface)
       cache = {draw.surface, {}};
+    bool refresh = false;
     if (const auto found = cache.entries.find(key); found != cache.entries.end()) {
       const auto &entry = found->second;
       if (entry.textured == bool(m.emissionTexture) && entry.texture.lock() == m.emissionTexture &&
-          entry.colored == bool(albedo) && entry.albedo.lock() == albedo)
-        return entry.reduction;
+          entry.colored == bool(albedo) && entry.albedo.lock() == albedo) {
+        if (!dynamic.any || entry.serial == m.emissionSerial)
+          return entry.reduction;
+        refresh = true;
+      }
     }
     auto result = std::make_shared<Reduction>();
     for (uint32_t triangle = 0; triangle < draw.surface->indices.size() / 3; ++triangle) {
-      const auto radiance = triangleEmission(draw, triangle, uv.data());
+      const auto radiance = emission(draw, triangle, uv.data());
       if (radiance[0] > 0 || radiance[1] > 0 || radiance[2] > 0)
         result->push_back({triangle, radiance, m.emissionTexture ? emissionHistoryKey(draw, triangle) : 0});
+    }
+    if (dynamic.any) {
+      // What this cost bounds how soon the material's estimates are remade.
+      const auto spent = std::chrono::steady_clock::now() - now;
+      m.emissionKeepSeconds = std::max(m.emissionKeepSeconds, 100 * std::chrono::duration<double>(spent).count());
+      if (refresh) {
+        textureCounters.emissionRefreshes.fetch_add(1, std::memory_order_relaxed);
+        textureCounters.emissionRefreshTicks.fetch_add(
+            uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(spent).count()), std::memory_order_relaxed);
+      }
     }
     // Bound sprite/setting variants without retaining old surfaces or textures.
     if (cache.entries.size() >= 8)
       cache.entries.clear();
-    cache.entries.insert_or_assign(key, Entry{m.emissionTexture, bool(m.emissionTexture), result, albedo, bool(albedo)});
+    cache.entries.insert_or_assign(
+        key, Entry{m.emissionTexture, bool(m.emissionTexture), result, albedo, bool(albedo), m.emissionSerial});
     return result;
   }
 
@@ -135,6 +191,14 @@ namespace remix::scene {
     std::erase_if(entries, [&](const auto &item) { return item.second.seen != sequence; });
   }
   std::array<float, 3> triangleEmission(const Draw &draw, uint32_t triangle, const float *transform) {
+    // A dynamic texture's texels are read under its lock, and its estimates
+    // are kept only by SurfaceEmissionCache::reduce, which ages them.
+    const auto &m = *draw.material;
+    const DynamicTextures dynamic(m);
+    return emission(draw, triangle, transform, !dynamic.any);
+  }
+  namespace {
+  std::array<float, 3> emission(const Draw &draw, uint32_t triangle, const float *transform, bool cached) {
     const auto &m = *draw.material;
     if (m.emission[0] == 0 && m.emission[1] == 0 && m.emission[2] == 0)
       return {};
@@ -148,9 +212,10 @@ namespace remix::scene {
     for (unsigned i = 0; i < 3; ++i)
       for (unsigned c = 0; c < 2; ++c)
         uv[i][c] = s.vertices[s.indices[triangle * 3 + i]].uv[c] * transform[c] + transform[c + 2];
-    auto key = hashBytes(uv, sizeof(uv));
-    if (auto it = m.emissionCache.find(key); it != m.emissionCache.end())
-      return it->second;
+    const auto key = cached ? hashBytes(uv, sizeof(uv)) : 0;
+    if (cached)
+      if (auto it = m.emissionCache.find(key); it != m.emissionCache.end())
+        return it->second;
     // Compressed textures keep no decoded mip 0; their <=64x64 preview level is
     // an area-filtered stand-in for these stratified triangle averages.
     struct Map {
@@ -224,12 +289,15 @@ namespace remix::scene {
       for (unsigned c = 0; c < 3; ++c)
         result[c] += value[c] * m.emission[c] / 256;
     }
+    if (!cached)
+      return result;
     // Bound caches for arbitrary animated UVs; eviction affects only CPU work.
     if (m.emissionCache.size() >= 65536)
       m.emissionCache.clear();
     m.emissionCache.emplace(key, result);
     return result;
   }
+  } // namespace
 
   SphereLight triangleEmitter(const Draw &draw, uint32_t triangle, const std::array<float, 3> &radiance) {
     SphereLight light;

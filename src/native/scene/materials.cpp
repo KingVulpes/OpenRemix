@@ -255,6 +255,7 @@ namespace remix {
       }
       m_materials[info.hash] = std::move(material);
       ++m_resourceGeneration;
+      textureCounters.materialsCreated.fetch_add(1, std::memory_order_relaxed);
     }
     handle = reinterpret_cast<remixapi_MaterialHandle>(uintptr_t(info.hash));
   }
@@ -264,6 +265,7 @@ namespace remix {
       it->second->retired = true;
       ++m_retireGeneration;
       m_materials.erase(it);
+      textureCounters.materialsDestroyed.fetch_add(1, std::memory_order_relaxed);
     }
   }
 } // namespace remix

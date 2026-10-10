@@ -96,9 +96,44 @@ namespace remix {
     return linear;
   }
 
+  namespace {
+    // remixapi_TextureInfoDynamicEXT, validated.
+    bool dynamicTexture(const remixapi_TextureInfo &info) {
+      const auto *dynamic = static_cast<const remixapi_TextureInfoDynamicEXT *>(
+          extension(info.pNext, REMIXAPI_STRUCT_TYPE_TEXTURE_DYNAMIC_EXT));
+      if (!dynamic || !dynamic->dynamic)
+        return false;
+      const auto *mips = static_cast<const remixapi_TextureInfoGenerateMipsEXT *>(
+          extension(info.pNext, REMIXAPI_STRUCT_TYPE_TEXTURE_GENERATE_MIPS_EXT));
+      if (dynamic->dynamic > 1 || info.mipLevels != 1 || (mips && mips->generate) ||
+          (info.format != REMIXAPI_FORMAT_R8G8B8A8_UNORM && info.format != REMIXAPI_FORMAT_R8G8B8A8_SRGB &&
+           info.format != REMIXAPI_FORMAT_B8G8R8A8_UNORM && info.format != REMIXAPI_FORMAT_B8G8R8A8_SRGB))
+        throw invalid;
+      return true;
+    }
+  } // namespace
+
   void NativeResources::createTexture(const remixapi_TextureInfo &info, remixapi_TextureHandle &handle) {
     if (!info.hash) {
       throw invalid;
+    }
+    if (dynamicTexture(info)) {
+      auto pixels = decodeTexture(info);
+      if (pixels.mips.size() != 1 || !pixels.hdrMips.empty() || pixels.compressed ||
+          pixels.mips[0].size() != size_t(pixels.width) * pixels.height * 4)
+        throw invalid;
+      auto texture = std::make_shared<Texture>();
+      texture->pixels = std::move(pixels);
+      texture->dynamic = true;
+      texture->updates = std::make_shared<TextureUpdates>();
+      // Identity, never contents (fingerprint() returns it as it is).
+      static std::atomic<uint64_t> serial{0};
+      const uint64_t identity[] = {0x64796e616d696374ull, serial.fetch_add(1) + 1};
+      texture->contentHash = hashBytes(identity, sizeof(identity)) | 1;
+      m_textures[info.hash] = std::move(texture);
+      textureCounters.texturesCreated.fetch_add(1, std::memory_order_relaxed);
+      handle = reinterpret_cast<remixapi_TextureHandle>(uintptr_t(info.hash));
+      return;
     }
     const auto *mips = static_cast<const remixapi_TextureInfoGenerateMipsEXT *>(
         extension(info.pNext, REMIXAPI_STRUCT_TYPE_TEXTURE_GENERATE_MIPS_EXT));
@@ -133,17 +168,101 @@ namespace remix {
       return a.compressed->format == b.compressed->format && a.compressed->levels == b.compressed->levels &&
              a.compressed->hash == b.compressed->hash;
     };
+    // (A dynamic texture's pixels change under its lock: it is always replaced.)
     auto previous = m_textures.find(hash);
-    if (previous == m_textures.end() || previous->second->pixels.width != texture->pixels.width ||
+    if (previous == m_textures.end() || previous->second->dynamic ||
+        previous->second->pixels.width != texture->pixels.width ||
         previous->second->pixels.height != texture->pixels.height ||
         previous->second->pixels.srgb != texture->pixels.srgb ||
         previous->second->pixels.twoChannel != texture->pixels.twoChannel ||
         previous->second->pixels.mips != texture->pixels.mips ||
         previous->second->pixels.hdrMips != texture->pixels.hdrMips ||
-        !sameCompressed(previous->second->pixels, texture->pixels))
+        !sameCompressed(previous->second->pixels, texture->pixels)) {
       m_textures[hash] = std::move(texture);
+      textureCounters.texturesCreated.fetch_add(1, std::memory_order_relaxed);
+    }
     handle = reinterpret_cast<remixapi_TextureHandle>(uintptr_t(hash));
   }
 
-  void NativeResources::destroyTexture(remixapi_TextureHandle handle) { m_textures.erase(key(handle)); }
+  void NativeResources::updateTexture(remixapi_TextureHandle handle, uint32_t x, uint32_t y, uint32_t width,
+                                      uint32_t height, remixapi_Format format, const void *pixels,
+                                      uint32_t rowPitch) {
+    textureCounters.updateCalls.fetch_add(1, std::memory_order_relaxed);
+    CounterTicks time{textureCounters.updateTicks};
+    const bool bgra = format == REMIXAPI_FORMAT_B8G8R8A8_UNORM || format == REMIXAPI_FORMAT_B8G8R8A8_SRGB;
+    if (!width || !height || !pixels || uint64_t(rowPitch) < uint64_t(width) * 4 ||
+        (!bgra && format != REMIXAPI_FORMAT_R8G8B8A8_UNORM && format != REMIXAPI_FORMAT_R8G8B8A8_SRGB))
+      throw invalid;
+    const auto it = m_textures.find(key(handle));
+    if (it == m_textures.end() || !it->second->dynamic)
+      throw invalid;
+    auto &texture = *it->second;
+    auto &p = texture.pixels;
+    if (uint64_t(x) + width > p.width || uint64_t(y) + height > p.height)
+      throw invalid;
+    // Rows that differ, and the columns they differ in. Only this thread
+    // writes the texels, so they are compared without the lock; the lock
+    // (shared with the upload and the emission estimates) covers the copy.
+    const size_t bytes = size_t(width) * 4;
+    const auto *source = static_cast<const uint8_t *>(pixels);
+    uint8_t *const texels = p.mips[0].data();
+    std::vector<uint8_t> converted;
+    if (bgra)
+      converted.resize(bytes);
+    auto row = [&](uint32_t r) {
+      const uint8_t *from = source + size_t(r) * rowPitch;
+      if (!bgra)
+        return from;
+      for (size_t i = 0; i < bytes; i += 4) {
+        converted[i] = from[i + 2];
+        converted[i + 1] = from[i + 1];
+        converted[i + 2] = from[i];
+        converted[i + 3] = from[i + 3];
+      }
+      return static_cast<const uint8_t *>(converted.data());
+    };
+    auto stored = [&](uint32_t r) { return texels + (size_t(y + r) * p.width + x) * 4; };
+    uint32_t first = 0, last = height;
+    while (first < height && std::memcmp(stored(first), row(first), bytes) == 0)
+      ++first;
+    if (first == height)
+      return;
+    while (last > first + 1 && std::memcmp(stored(last - 1), row(last - 1), bytes) == 0)
+      --last;
+    uint32_t x0 = width, x1 = 0;
+    auto &updates = *texture.updates;
+    {
+      std::lock_guard lock(updates.lock);
+      for (uint32_t r = first; r < last; ++r) {
+        const uint8_t *from = row(r);
+        uint8_t *to = stored(r);
+        size_t begin = 0, end = bytes;
+        while (begin < end && to[begin] == from[begin])
+          ++begin;
+        if (begin == end)
+          continue;
+        while (to[end - 1] == from[end - 1])
+          --end;
+        std::memcpy(to + begin, from + begin, end - begin);
+        x0 = std::min(x0, uint32_t(begin / 4));
+        x1 = std::max(x1, uint32_t((end + 3) / 4));
+      }
+      const uint32_t region[4] = {x + x0, y + first, x + x1, y + last};
+      if (updates.dirty[2] <= updates.dirty[0] || updates.dirty[3] <= updates.dirty[1]) {
+        std::copy_n(region, 4, updates.dirty);
+      } else {
+        updates.dirty[0] = std::min(updates.dirty[0], region[0]);
+        updates.dirty[1] = std::min(updates.dirty[1], region[1]);
+        updates.dirty[2] = std::max(updates.dirty[2], region[2]);
+        updates.dirty[3] = std::max(updates.dirty[3], region[3]);
+      }
+      ++updates.revision;
+    }
+    textureCounters.updates.fetch_add(1, std::memory_order_relaxed);
+    textureCounters.updateBytes.fetch_add(uint64_t(last - first) * (x1 - x0) * 4, std::memory_order_relaxed);
+  }
+
+  void NativeResources::destroyTexture(remixapi_TextureHandle handle) {
+    textureCounters.texturesDestroyed.fetch_add(m_textures.erase(key(handle)), std::memory_order_relaxed);
+  }
 } // namespace remix

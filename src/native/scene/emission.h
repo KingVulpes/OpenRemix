@@ -1,5 +1,7 @@
 #pragma once
 #include "scene/types.h"
+#include <chrono>
+#include <remix/remix_native_ext.h>
 #include <map>
 #include <tuple>
 
@@ -13,6 +15,12 @@ uint64_t emissionHistoryKey(const Draw &draw, uint32_t triangle);
 // Reduce immutable geometry once per emission/UV snapshot. Keep only luminous
 // triangles: a shared terrain atlas usually leaves most of the mesh black.
 // World transforms, skinning, identities and sidedness are applied per frame.
+// Emissive estimates that read a dynamic texture
+// (remixapi_TextureInfoDynamicEXT) follow its pixels at a low rate: once they
+// changed, a material's estimates are made again when they are this old, or
+// older when making them was expensive (under 1% of the time between two).
+// Until then every surface of the material keeps the previous image's values.
+inline constexpr double dynamicEmissionSeconds = REMIXAPI_DYNAMIC_TEXTURE_EMISSION_SECONDS_EXT;
 class SurfaceEmissionCache {
 public:
   struct Triangle {
@@ -33,6 +41,8 @@ private:
     std::shared_ptr<const Reduction> reduction;
     std::weak_ptr<Texture> albedo; // self-illuminated materials only
     bool colored = false;
+    // Material::emissionSerial the reduction was made from (dynamic textures).
+    uint64_t serial = 0;
   };
   struct SurfaceEntries {
     std::weak_ptr<Surface> owner;

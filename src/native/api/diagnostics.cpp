@@ -134,6 +134,40 @@ remixapi_GetFrameBreakdownEXT(remixapi_FrameBreakdownEXT *out) {
   return REMIXAPI_ERROR_CODE_SUCCESS;
 }
 
+static_assert(sizeof(remixapi_TextureStatisticsEXT) == 168);
+
+// Process-wide counters: no runtime state is read, so no API lock is taken.
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL
+remixapi_GetTextureStatisticsEXT(remixapi_TextureStatisticsEXT *out) {
+  if (!out || out->structSize != sizeof(*out))
+    return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+  const auto &c = remix::scene::textureCounters;
+  auto count = [](const std::atomic<uint64_t> &value) { return value.load(std::memory_order_relaxed); };
+  auto milliseconds = [&](const std::atomic<uint64_t> &ticks) { return double(count(ticks)) * 1e-6; };
+  *out = {.structSize = sizeof(*out)};
+  out->texturesCreated = count(c.texturesCreated);
+  out->texturesDestroyed = count(c.texturesDestroyed);
+  out->materialsCreated = count(c.materialsCreated);
+  out->materialsDestroyed = count(c.materialsDestroyed);
+  out->updateCalls = count(c.updateCalls);
+  out->updates = count(c.updates);
+  out->updateBytes = count(c.updateBytes);
+  out->updateMilliseconds = milliseconds(c.updateTicks);
+  out->uploads = count(c.uploads);
+  out->uploadBytes = count(c.uploadBytes);
+  out->uploadMilliseconds = milliseconds(c.uploadTicks);
+  out->gpuTexturesCreated = count(c.gpuTexturesCreated);
+  out->gpuTexturesDestroyed = count(c.gpuTexturesDestroyed);
+  out->gpuMaterialsCreated = count(c.gpuMaterialsCreated);
+  out->gpuMaterialsDestroyed = count(c.gpuMaterialsDestroyed);
+  out->gpuCreateBytes = count(c.gpuCreateBytes);
+  out->gpuCreateMilliseconds = milliseconds(c.gpuCreateTicks);
+  out->gpuDestroyMilliseconds = milliseconds(c.gpuDestroyTicks);
+  out->emissionRefreshes = count(c.emissionRefreshes);
+  out->emissionRefreshMilliseconds = milliseconds(c.emissionRefreshTicks);
+  return REMIXAPI_ERROR_CODE_SUCCESS;
+}
+
 static_assert(sizeof(remixapi_GpuPassTimingEXT) == 88 && sizeof(remixapi_GpuPassTimingsEXT) == 80 + 88 * 128);
 static_assert(REMIXAPI_GPU_PASS_TIMING_CAPACITY_EXT >= remix::gpu::GpuTimers::maxPasses);
 

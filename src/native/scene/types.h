@@ -1,6 +1,7 @@
 #pragma once
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -64,9 +65,36 @@ namespace remix {
       uint64_t revision = 0;
       uint32_t dirty[4] = {};
     };
+    // Texture and material turnover (remixapi_TextureStatisticsEXT), counted
+    // wherever it happens: API calls, the rendering thread, scene preparation.
+    struct TextureCounters {
+      std::atomic<uint64_t> texturesCreated{0}, texturesDestroyed{0}, materialsCreated{0}, materialsDestroyed{0};
+      std::atomic<uint64_t> updateCalls{0}, updates{0}, updateBytes{0}, updateTicks{0};
+      std::atomic<uint64_t> uploads{0}, uploadBytes{0}, uploadTicks{0};
+      std::atomic<uint64_t> gpuTexturesCreated{0}, gpuTexturesDestroyed{0}, gpuMaterialsCreated{0},
+          gpuMaterialsDestroyed{0}, gpuCreateBytes{0}, gpuCreateTicks{0}, gpuDestroyTicks{0};
+      std::atomic<uint64_t> emissionRefreshes{0}, emissionRefreshTicks{0};
+    };
+    inline TextureCounters textureCounters;
+    // Adds the steady-clock ticks since construction to a counter.
+    struct CounterTicks {
+      std::atomic<uint64_t> &out;
+      std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+      ~CounterTicks() {
+        out.fetch_add(uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                   std::chrono::steady_clock::now() - start)
+                                   .count()),
+                      std::memory_order_relaxed);
+      }
+    };
     struct Texture {
       Pixels pixels;
       std::shared_ptr<TextureUpdates> updates; // Set for updatable textures only.
+      // remixapi_TextureInfoDynamicEXT: a scene texture rewritten in place
+      // (NativeResources::updateTexture). One RGBA8 level; `updates` is set and
+      // its lock guards the texels. Its fingerprint is its identity, not its
+      // contents; CPU consumers of the texels follow the rules in the header.
+      bool dynamic = false;
       mutable std::weak_ptr<Texture> linear;
       std::shared_ptr<Texture> encodedSource; // Keep a file-backed data view's weak path cache alive.
       mutable uint64_t contentHash = 0;
@@ -93,6 +121,13 @@ namespace remix {
       uint8_t selfIllumination = 0;
       float selfIlluminationScale = 1;
       mutable std::unordered_map<uint64_t, std::array<float, 3>> emissionCache;
+      // With a dynamic emission or self-illumination texture, emissionCache
+      // holds the estimates of one image: the texture revisions it was filled
+      // from, when, how long it is kept although they changed, and a count of
+      // the times it was emptied for a newer image (scene/emission.cpp).
+      mutable uint64_t emissionRevision = 0, emissionSerial = 0;
+      mutable std::chrono::steady_clock::time_point emissionMade{};
+      mutable double emissionKeepSeconds = 0;
       float tint[4] = {1, 1, 1, 1};
       uint32_t compare = 7;
       float reference = 0;

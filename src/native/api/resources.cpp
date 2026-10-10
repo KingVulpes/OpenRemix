@@ -144,8 +144,10 @@ namespace remix::api {
     auto prepareError = REMIXAPI_ERROR_CODE_SUCCESS;
     const auto *mips = static_cast<const remixapi_TextureInfoGenerateMipsEXT *>(
         scene::extension(info->pNext, REMIXAPI_STRUCT_TYPE_TEXTURE_GENERATE_MIPS_EXT));
+    // (A dynamic texture is never compressed: the resource table rejects it.)
     if (info->hash && g_runtime.raster().keepCompressedTextures() && scene::isBlockCompressed(info->format) &&
-        !(mips && mips->generate && info->mipLevels <= 1)) {
+        !(mips && mips->generate && info->mipLevels <= 1) &&
+        !scene::extension(info->pNext, REMIXAPI_STRUCT_TYPE_TEXTURE_DYNAMIC_EXT)) {
       try {
         prepared = scene::compressTexture(*info);
       } catch (remixapi_ErrorCode code) {
@@ -188,6 +190,16 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_UpdateLightDefinition(remixap
     return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
   }
   return resourceCall([&](auto &resources) { resources.updateLight(handle, *info); });
+}
+
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_UpdateTextureEXT(remixapi_TextureHandle handle, uint32_t x,
+                                                                    uint32_t y, uint32_t width, uint32_t height,
+                                                                    remixapi_Format format, const void *pixels,
+                                                                    uint32_t rowPitch) {
+  if (!handle || !width || !height || !pixels)
+    return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+  return resourceCall(
+      [&](auto &resources) { resources.updateTexture(handle, x, y, width, height, format, pixels, rowPitch); });
 }
 
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL

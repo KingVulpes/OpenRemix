@@ -84,6 +84,9 @@ namespace remix {
     void createTexture(const remixapi_TextureInfo &info, remixapi_TextureHandle &handle);
     // Stores pixels prepared outside the API mutex (see scene::compressTexture).
     void createTexture(const remixapi_TextureInfo &info, scene::Pixels &&pixels, remixapi_TextureHandle &handle);
+    // remixapi_UpdateTextureEXT: rewrites a region of a dynamic texture.
+    void updateTexture(remixapi_TextureHandle handle, uint32_t x, uint32_t y, uint32_t width, uint32_t height,
+                       remixapi_Format format, const void *pixels, uint32_t rowPitch);
     void destroyTexture(remixapi_TextureHandle handle);
     // "Keep BC textures compressed": applies to textures created afterwards.
     // Atomic so the API layer can choose the preparation path before locking.

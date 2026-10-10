@@ -22,6 +22,11 @@ namespace remix::scene {
       ++statistics.textures;
     const auto &p = texture->pixels;
     TextureEntries next{texture, p.width, {}};
+    if (texture->dynamic) {
+      next.dynamic = true;
+      cache = std::move(next);
+      return cache;
+    }
     // Compressed textures carry only a mip-0 bitmask of non-opaque texels. A
     // fully opaque one needs no summed-area table (empty prefix = all solid).
     if (p.compressed && p.compressed->transparent.empty()) {

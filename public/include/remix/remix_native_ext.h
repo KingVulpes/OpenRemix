@@ -256,6 +256,43 @@ typedef struct remixapi_TextureInfoGenerateMipsEXT {
   remixapi_Bool generate;
 } remixapi_TextureInfoGenerateMipsEXT;
 
+// Optional TextureInfo pNext: a texture whose pixels the host rewrites with
+// remixapi_UpdateTextureEXT (a render target the game redraws, a video, a
+// screen). The texture is one object for its whole life: updates change its
+// pixels, never its identity, so the materials made from it, their descriptor
+// slots, and everything the runtime keys by texture or material stay as they
+// are, and an update costs one copy of the changed rows and one staged upload
+// of them. What the runtime derives from a texture's contents on the CPU is
+// defined for a dynamic one as follows:
+//   - Emissive light estimates (the triangle lights of emissive and
+//     self-illuminated materials that sample it) follow the pixels at a low
+//     rate: once the pixels changed, a material's estimates are made again
+//     when they are REMIXAPI_DYNAMIC_TEXTURE_EMISSION_SECONDS_EXT old (older
+//     when they are expensive: making them takes under 1% of the time between
+//     two). Until then the lights keep the previous image's power, also on
+//     meshes the host creates anew every frame. What the camera and rays see
+//     of the surface itself is the current image, every frame. An instance
+//     of the persistent static set (retained instances) keeps the estimate
+//     made when it joined the set.
+//   - Opacity: every texel counts as possibly transparent, whatever the pixels
+//     are. Alpha-tested surfaces are tested per ray; none is ever proven
+//     opaque from a past image.
+//   - It has no content hash: the scene counts as changed whenever one of its
+//     dynamic textures was updated (accumulation restarts, a still frame is
+//     rendered again).
+// Requirements (INVALID_ARGUMENTS otherwise): dynamic is 0 or 1; with 1, the
+// format is R8G8B8A8 or B8G8R8A8 (UNORM or SRGB), mipLevels is 1 and
+// remixapi_TextureInfoGenerateMipsEXT is absent or off: a dynamic texture has
+// one level. CreateTexture under the hash of an existing texture makes a new
+// texture, as it always does: materials created before keep the old one.
+#define REMIXAPI_STRUCT_TYPE_TEXTURE_DYNAMIC_EXT ((remixapi_StructType)0x7fff1016)
+#define REMIXAPI_DYNAMIC_TEXTURE_EMISSION_SECONDS_EXT 0.25
+typedef struct remixapi_TextureInfoDynamicEXT {
+  remixapi_StructType sType;
+  const void* pNext;
+  remixapi_Bool dynamic;
+} remixapi_TextureInfoDynamicEXT;
+
 // Optional MeshInfo pNext. An opt-in replacement of the same mesh hash may
 // reuse update-capable geometry when all surface vertex counts and index values
 // match. DestroyMesh ends that lifetime. This is a storage hint, not object or
@@ -759,6 +796,66 @@ typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_UpdateUITextureRegionEXT)
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_UpdateUITextureRegionEXT(
     remixapi_UITextureHandle id, uint32_t x, uint32_t y, uint32_t width, uint32_t height, remixapi_Format format,
     const void* pixels, uint32_t rowPitch);
+
+// Rewrites a region of a dynamic texture (remixapi_TextureInfoDynamicEXT) in
+// place: rows of width * 4 bytes, rowPitch apart, in R8G8B8A8 or B8G8R8A8 (the
+// byte order may differ from the creation's; the texture keeps the colour
+// space it was created with). The region must lie inside the texture.
+// The pixels are copied before the call returns. Rows equal to the texture's
+// current ones are skipped: an update that changes nothing costs a comparison
+// and counts as no update (no upload, no scene change). Otherwise the smallest
+// rectangle that holds the changed pixels is uploaded once, by the first frame
+// recorded after the call, ahead of everything that frame draws (traced,
+// rasterized, UI), into the same image; several updates before that frame
+// make one upload of their union. Frames already recorded keep the pixels
+// they were recorded with: on the GPU the copy waits for their reads. With
+// asynchronous presentation ("rtx.native.asyncPresent") a frame that was
+// submitted but not yet recorded when the call was made shows the new pixels
+// (they are at most one Present early). INVALID_ARGUMENTS: an unknown handle,
+// a texture that was not created dynamic, a region outside it, another
+// format, rowPitch < width * 4.
+// Optional named export: resolve "remixapi_UpdateTextureEXT"; a runtime
+// without it ignores remixapi_TextureInfoDynamicEXT as well.
+typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_UpdateTextureEXT)(
+    remixapi_TextureHandle handle, uint32_t x, uint32_t y, uint32_t width, uint32_t height, remixapi_Format format,
+    const void* pixels, uint32_t rowPitch);
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_UpdateTextureEXT(
+    remixapi_TextureHandle handle, uint32_t x, uint32_t y, uint32_t width, uint32_t height, remixapi_Format format,
+    const void* pixels, uint32_t rowPitch);
+
+// Texture and material turnover, cumulative since Startup (a host reports the
+// difference between two calls, e.g. per frame). Creating a texture or a
+// material costs GPU objects on the first frame that uses it and their
+// destruction a few frames after its last one: a host that makes new ones
+// every frame pays both every frame (gpuCreateMilliseconds within the frame's
+// recording, gpuDestroyMilliseconds within Present's setup).
+typedef struct remixapi_TextureStatisticsEXT {
+  uint32_t structSize, reserved;
+  // CreateTexture calls that stored a new image (not an identical
+  // resubmission), DestroyTexture calls that removed one; likewise materials.
+  uint64_t texturesCreated, texturesDestroyed;
+  uint64_t materialsCreated, materialsDestroyed;
+  // remixapi_UpdateTextureEXT: calls, those that changed pixels, the bytes
+  // they copied, and the CPU time of all calls (comparison and copy).
+  uint64_t updateCalls, updates, updateBytes;
+  double updateMilliseconds;
+  // Changed regions staged to the GPU (one per updated texture and frame that
+  // uses it), their bytes, and the CPU time of staging them.
+  uint64_t uploads, uploadBytes;
+  double uploadMilliseconds;
+  // GPU objects made for new textures (image, memory, view, staged pixels)
+  // and new materials (sampler, descriptor set), and those released.
+  uint64_t gpuTexturesCreated, gpuTexturesDestroyed;
+  uint64_t gpuMaterialsCreated, gpuMaterialsDestroyed;
+  uint64_t gpuCreateBytes; // pixels staged for new textures
+  double gpuCreateMilliseconds, gpuDestroyMilliseconds;
+  // Emissive light estimates made again because a dynamic texture changed
+  // (surfaces), and their CPU time.
+  uint64_t emissionRefreshes;
+  double emissionRefreshMilliseconds;
+} remixapi_TextureStatisticsEXT;
+typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_GetTextureStatisticsEXT)(remixapi_TextureStatisticsEXT* statistics);
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetTextureStatisticsEXT(remixapi_TextureStatisticsEXT* statistics);
 
 typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_SetVisibilityPartitionEXT)(const remixapi_VisibilityPartitionEXT* partition);
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_SetVisibilityPartitionEXT(const remixapi_VisibilityPartitionEXT* partition);

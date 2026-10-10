@@ -1,7 +1,11 @@
 // Fork material extensions (remix_fo4_ext.h): spec/gloss roughness maps, albedo
 // tint and the per-instance material override, as the dxvk-remix fork parses them.
 #include "scene/fixtures.h"
+#include "scene/emission.h"
+#include "scene/opacity.h"
 #include "scene/temporal.h"
+#include <chrono>
+#include <thread>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -266,12 +270,149 @@ namespace {
     r.drawInstance(info);
     require(r.draws().empty(), "Hidden override drawn");
   }
+  // remixapi_TextureInfoDynamicEXT / remixapi_UpdateTextureEXT: the texture
+  // and what was made from it stay; only the pixels change.
+  void dynamicTexture() {
+    remix::NativeResources r;
+    const uint8_t red[4][4] = {{0, 0, 255, 255}, {0, 0, 255, 255}, {0, 0, 255, 255}, {0, 0, 255, 255}}; // B8G8R8A8
+    remixapi_TextureInfoDynamicEXT dynamic{};
+    dynamic.sType = REMIXAPI_STRUCT_TYPE_TEXTURE_DYNAMIC_EXT;
+    dynamic.dynamic = 1;
+    remixapi_TextureInfoGenerateMipsEXT mips{};
+    mips.sType = REMIXAPI_STRUCT_TYPE_TEXTURE_GENERATE_MIPS_EXT;
+    mips.generate = 1;
+    remixapi_TextureInfo info{};
+    info.sType = REMIXAPI_STRUCT_TYPE_TEXTURE_INFO;
+    info.pNext = &dynamic;
+    info.hash = 0x51;
+    info.format = REMIXAPI_FORMAT_B8G8R8A8_SRGB;
+    info.width = info.height = 2;
+    info.depth = info.mipLevels = 1;
+    info.data = red;
+    info.dataSize = sizeof(red);
+    remixapi_TextureHandle handle{}, plain{};
+    // One uncompressed level only.
+    dynamic.pNext = &mips;
+    rejected([&] { r.createTexture(info, handle); });
+    dynamic.pNext = nullptr;
+    info.format = REMIXAPI_FORMAT_BC1_RGB_SRGB;
+    rejected([&] { r.createTexture(info, handle); });
+    info.format = REMIXAPI_FORMAT_B8G8R8A8_SRGB;
+    r.createTexture(info, handle);
+    info.pNext = nullptr;
+    info.hash = 0x52;
+    r.createTexture(info, plain);
+
+    // An unlit material of it (self-illuminated, emitting), alpha-tested.
+    remixapi_MaterialInfoSelfIlluminationEXT self{};
+    self.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_SELF_ILLUMINATION_EXT;
+    self.maskScale = 1;
+    remixapi_MaterialInfoOpaqueEXT opaque{};
+    opaque.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_EXT;
+    opaque.pNext = &self;
+    opaque.albedoConstant = {1, 1, 1};
+    opaque.opacityConstant = 1;
+    opaque.alphaTestType = 4; // greater
+    opaque.alphaReferenceValue = 128;
+    remixapi_MaterialInfo materialInfo{};
+    materialInfo.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO;
+    materialInfo.pNext = &opaque;
+    materialInfo.hash = 0x53;
+#ifdef _WIN32
+    materialInfo.albedoTexture = L"0x51";
+#else
+    materialInfo.albedoTexture = "0x51";
+#endif
+    materialInfo.emissiveIntensity = 1;
+    materialInfo.emissiveColorConstant = {1, 1, 1};
+    remixapi_MaterialHandle material{};
+    r.createMaterial(materialInfo, material);
+    const auto mesh = quad(r, 0x54, material);
+    auto info2 = instance(mesh);
+    info2.doubleSided = 1;
+    r.drawInstance(info2);
+    const scene::Draw draw = r.draws().back();
+    const auto texture = draw.material->texture;
+    require(texture->dynamic && texture->updates && texture->pixels.mips.size() == 1 &&
+                texture->pixels.mips[0][0] == 255 && texture->pixels.mips[0][2] == 0,
+            "Dynamic texture creation");
+    const uint64_t fingerprint = texture->fingerprint(), signature = scene::TemporalHistory::materialSignature(draw);
+
+    // Estimates of the first image.
+    scene::SurfaceEmissionCache emission;
+    const std::array<float, 4> uv{1, 1, 0, 0};
+    const auto first = emission.reduce(draw, uv);
+    require(first->size() == 2 && (*first)[0].radiance[0] > .9f && (*first)[0].radiance[1] == 0,
+            "Dynamic texture emission of the first image");
+    scene::OpacityCache opacity;
+    const auto partition = opacity.partition(draw, uv);
+    require(partition->reasons[scene::OpacityPartition::Solid] == 0 &&
+                partition->reasons[scene::OpacityPartition::TextureCutout] == 2,
+            "A dynamic texture's opaque texels were proven opaque");
+
+    // The same pixels: no update. Other handles, regions and formats: rejected.
+    r.updateTexture(handle, 0, 0, 2, 2, REMIXAPI_FORMAT_B8G8R8A8_SRGB, red, 8);
+    require(texture->updates->revision == 0, "An unchanged image counted as an update");
+    rejected([&] { r.updateTexture(plain, 0, 0, 2, 2, REMIXAPI_FORMAT_B8G8R8A8_SRGB, red, 8); });
+    rejected([&] { r.updateTexture(handle, 1, 0, 2, 2, REMIXAPI_FORMAT_B8G8R8A8_SRGB, red, 8); });
+    rejected([&] { r.updateTexture(handle, 0, 0, 2, 2, REMIXAPI_FORMAT_BC1_RGB_SRGB, red, 8); });
+    rejected([&] { r.updateTexture(handle, 0, 0, 2, 2, REMIXAPI_FORMAT_B8G8R8A8_SRGB, red, 4); });
+
+    // The bottom row turns green (R8G8B8A8 this time, with a row pitch).
+    const uint8_t rows[2][12] = {{255, 0, 0, 255, 255, 0, 0, 255, 9, 9, 9, 9}, {0, 255, 0, 255, 0, 255, 0, 255, 9, 9, 9, 9}};
+    r.updateTexture(handle, 0, 0, 2, 2, REMIXAPI_FORMAT_R8G8B8A8_UNORM, rows, 12);
+    {
+      std::lock_guard lock(texture->updates->lock);
+      const auto &u = *texture->updates;
+      require(u.revision == 1 && u.dirty[0] == 0 && u.dirty[1] == 1 && u.dirty[2] == 2 && u.dirty[3] == 2,
+              "Changed region of an update");
+      const uint8_t expected[16] = {255, 0, 0, 255, 255, 0, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255};
+      require(std::memcmp(texture->pixels.mips[0].data(), expected, 16) == 0, "Updated pixels");
+    }
+    // Nothing else changed: the same texture and material objects, the same
+    // fingerprint and material signature.
+    r.finishFrame();
+    r.drawInstance(info2);
+    require(r.draws().back().material == draw.material && r.draws().back().material->texture == texture &&
+                texture->fingerprint() == fingerprint &&
+                scene::TemporalHistory::materialSignature(r.draws().back()) == signature && texture->pixels.srgb,
+            "An update changed the texture's identity");
+    // The emissive estimate is the first image's until it is old enough, for
+    // this surface and for a new one of the same material.
+    require(emission.reduce(draw, uv) == first, "Emission was estimated again at once");
+    scene::Draw other = draw;
+    other.surface = std::make_shared<scene::Surface>(*draw.surface);
+    const auto fresh = emission.reduce(other, uv);
+    require(fresh->size() == 2 && (*fresh)[0].radiance == (*first)[0].radiance && (*fresh)[1].radiance == (*first)[1].radiance,
+            "A new surface did not keep the material's estimate");
+    std::this_thread::sleep_for(std::chrono::milliseconds(int(REMIXAPI_DYNAMIC_TEXTURE_EMISSION_SECONDS_EXT * 1000) + 50));
+    const auto second = emission.reduce(draw, uv);
+    float sum[3] = {};
+    for (const auto &triangle : *second)
+      for (int c = 0; c < 3; ++c)
+        sum[c] += triangle.radiance[c];
+    require(second != first && sum[0] > .5f && sum[1] > .5f && sum[2] == 0, "Emission did not follow the new image");
+    require(emission.reduce(draw, uv) == second, "Emission of an unchanged image was estimated again");
+    // A direct estimate reads the current pixels.
+    r.updateTexture(handle, 0, 0, 2, 2, REMIXAPI_FORMAT_B8G8R8A8_SRGB, red, 8);
+    const float transform[4] = {1, 1, 0, 0};
+    const auto direct = scene::triangleEmission(draw, 0, transform);
+    require(direct[0] > .9f && direct[1] == 0, "Direct emission estimate of a dynamic texture");
+    // CreateTexture under the hash is a new texture; the material keeps its own.
+    info.pNext = &dynamic;
+    info.hash = 0x51;
+    r.createTexture(info, handle);
+    r.finishFrame();
+    r.drawInstance(info2);
+    require(r.draws().back().material->texture == texture, "CreateTexture replaced a material's dynamic texture");
+  }
 } // namespace
 
 int main() {
   halves();
   specGloss();
   materialOverride();
+  dynamicTexture();
   std::puts("Spec/gloss, albedo tint and material override passed");
   return 0;
 }

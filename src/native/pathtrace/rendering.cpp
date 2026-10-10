@@ -88,6 +88,12 @@ namespace remix {
         }
       }
     sceneBytes = &signature.frame;
+    // Dynamic textures (remixapi_UpdateTextureEXT) keep their fingerprint:
+    // what their images show is part of the scene through this count.
+    {
+      const uint64_t dynamicTextures = resources.dynamicTextureGeneration();
+      append(&dynamicTextures, sizeof(dynamicTextures));
+    }
     // Units of a static set that is not traced any more: once no committed
     // frame needs their history, let them go.
     if (!prepared.staticUnits && !resources.persistentStatic() && !statics.units().empty() &&

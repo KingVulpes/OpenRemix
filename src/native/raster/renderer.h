@@ -107,6 +107,10 @@ namespace remix {
                                          const std::shared_ptr<scene::Texture> &texture,
                                          VkCommandBuffer command);
 
+    // Changes whenever prepare() uploaded new pixels of a dynamic texture
+    // (remixapi_UpdateTextureEXT): the images are not what the last frame saw.
+    uint64_t dynamicTextureGeneration() const;
+
   private:
     struct Gpu;
     std::unique_ptr<Gpu> m_gpu;

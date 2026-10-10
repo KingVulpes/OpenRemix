@@ -693,9 +693,12 @@ void NgxFrameGeneration::record([[maybe_unused]] VkCommandBuffer command, [[mayb
   for (int i = 0; i < 4; ++i)
     for (int j = 0; j < 4; ++j)
       options.clipToLensClip[i][j] = i == j; // no lens distortion
-  // Motion is in render pixels; NGX takes it as a fraction of the frame.
-  options.mvecScale[0] = 1.f / float(m->render.width);
-  options.mvecScale[1] = 1.f / float(m->render.height);
+  // Motion is in pixels of its own image, current to previous, which is what
+  // NGX takes with a scale of one (as Super Resolution does). The header's
+  // wording ("normalize to [-1,1]") suggests a fraction of the frame, but
+  // scaled by 1 / size the vectors were as good as absent and generated
+  // frames warped whenever the camera turned; negated they warp far worse.
+  options.mvecScale[0] = options.mvecScale[1] = 1;
   for (int i = 0; i < 3; ++i) {
     options.cameraPos[i] = camera.position[i];
     options.cameraUp[i] = camera.up[i];

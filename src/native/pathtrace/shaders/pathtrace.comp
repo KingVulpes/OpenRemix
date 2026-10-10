@@ -273,8 +273,15 @@ Hit resolveDecals(Hit first,vec3 origin,vec3 direction,float maximum,bool motion
   // plane without meeting that surface behind it left the painted surface
   // itself (bounce, sky and light rays from under the paint): it must not see
   // the paint, which would otherwise shade its own receiver.
+  // The gap is measured across the paint, not along the ray: a grazing ray
+  // travels 1/cos further between the paint and its receiver, and paint lifted
+  // an inch stopped being attached from 60 degrees off the normal (mod2x paint
+  // then stood as an opaque grey quad). The facing term is floored so a ray
+  // skimming past the paint's edge cannot attach it to a surface far behind
+  // (at most 20 x attach along the ray).
   const float attach=frame.visibilityProbe.y;
-  const bool attached=hit.t<1e30&&!hit.decal&&hit.t-lastDecal<=attach;
+  const float facing=max(abs(dot(direction,first.ng)),.05);
+  const bool attached=hit.t<1e30&&!hit.decal&&(hit.t-lastDecal)*facing<=attach;
   if(!attached&&!hit.decal&&abs(dot(direction,first.ng))*first.t<=attach)return hit;
   // Multiplicative paint over glass tints what is seen through it (a sheet
   // without coverage of its own) instead of standing as an opaque quad.

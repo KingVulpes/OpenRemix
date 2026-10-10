@@ -10,4 +10,5 @@ ui_sources = files(
   'profiles.cpp',
   'style.cpp',
   'integration.cpp',
+  'textures.cpp',
 )

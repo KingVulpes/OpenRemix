@@ -242,6 +242,13 @@ private:
   void drawLightingTab(config::Settings &settings);
   void drawPostProcessingTab(config::Settings &settings);
   void drawDiagnosticsTab(config::Settings &settings);
+  void drawTexturesTab(config::Settings &settings);
+  VkImageView textureView(const scene::Texture *texture) const {
+    const VkImageView view = m_raster.textureView(texture);
+    return view != VK_NULL_HANDLE ? view : (m_asyncActive && m_frameScene ? m_frameScene->textureView(texture) : VK_NULL_HANDLE);
+  }
+  const std::unordered_map<uint64_t, std::shared_ptr<scene::Texture>> &textures() const { return m_raster.textures(); }
+  const std::unordered_map<std::filesystem::path, std::weak_ptr<scene::Texture>> &texturePaths() const { return m_raster.paths(); }
   void drawGpuPassTimings(bool enabled);
   void applySettings();
   void updateMemoryPressure();

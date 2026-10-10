@@ -78,6 +78,9 @@ namespace remix {
             case 3:
               runtime.drawDiagnosticsTab(settings);
               break;
+            case 4:
+              runtime.drawTexturesTab(settings);
+              break;
             }
           });
       if (!open)

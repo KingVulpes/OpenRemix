@@ -60,7 +60,8 @@ namespace remix::scene {
     m_handles.erase(found);
   }
 
-  void StaticScene::build(const RetainedInstance &entry, SurfaceEmissionCache &emission) {
+  void StaticScene::build(const RetainedInstance &entry, SurfaceEmissionCache &emission,
+                          const NativeResources *resources) {
     auto &slots = m_handles[entry.handle];
     const uint32_t count = entry.instanceCount();
     const uint32_t surfaces = entry.surfaceCount;
@@ -99,6 +100,8 @@ namespace remix::scene {
       unit.emitters.clear();
       for (uint32_t s = 0; s < surfaces; ++s) {
         const auto &draw = records[s];
+        if (resources && resources->isDrawHidden(draw))
+          continue;
         TraceFrame::Surface surface{draw};
         // As prepareTraceFrame: paint only where blending is on.
         surface.draw.decal = draw.decal && draw.blend.enabled && !draw.material->transmission;
@@ -157,13 +160,13 @@ namespace remix::scene {
           removeUnit(slot);
       m_handles.clear();
       m_epoch = resources.staticEpoch();
-      resources.forEachStatic([&](const RetainedInstance &entry) { build(entry, emission); });
+      resources.forEachStatic([&](const RetainedInstance &entry) { build(entry, emission, &resources); });
       ++m_statistics.resyncs;
     } else {
       for (const uint64_t handle : m_changes) {
         const auto *entry = resources.retained(handle);
         if (entry && entry->member)
-          build(*entry, emission);
+          build(*entry, emission, &resources);
         else
           remove(handle);
       }

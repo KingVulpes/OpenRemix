@@ -118,7 +118,8 @@ namespace remix::scene {
     struct KeyHash {
       size_t operator()(const std::pair<uint64_t, uint32_t> &k) const { return size_t(key(k.first, k.second)); }
     };
-    void build(const struct RetainedInstance &entry, SurfaceEmissionCache &emission);
+    void build(const struct RetainedInstance &entry, SurfaceEmissionCache &emission,
+               const class NativeResources *resources = nullptr);
     void remove(uint64_t handle);
     void removeUnit(uint32_t slot);
     uint32_t allocate();

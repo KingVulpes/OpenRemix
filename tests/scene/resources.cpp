@@ -329,6 +329,9 @@ namespace {
       }
       auto path = save("raster-texture.dds", dds);
       auto image = remix::scene::loadTexture(path);
+      if (image.compressed) {
+        image = remix::scene::decodeCompressed(image);
+      }
       require(image.width == 3 && image.height == 3 && image.mips[0][0] == 255 && image.mips[0][3] == 255,
               "DDS block decode");
       dds.pop_back();

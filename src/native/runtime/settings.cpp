@@ -72,6 +72,12 @@ namespace remix::config {
                 return true;
               }};
     }
+    std::string_view trim(std::string_view text) {
+      const auto start = text.find_first_not_of(" \t\r");
+      if (start == text.npos)
+        return {};
+      return text.substr(start, text.find_last_not_of(" \t\r") - start + 1);
+    }
     const std::vector<Entry> &registry() {
       static const std::vector<Entry> entries = [] {
         std::vector<Entry> result;
@@ -225,17 +231,48 @@ namespace remix::config {
             scalar("rtx.native.scene.persistentStaticValidation", FIELD(persistentStaticValidation), 0, 1));
         result.push_back(scalar("rtx.native.asyncPresent", FIELD(asyncPresent), 0, 1));
         result.push_back(scalar("rtx.native.gpuPassTimers", FIELD(gpuPassTimers), 0, 1));
+        result.push_back({
+            "rtx.hideInstanceTextures",
+            [](const Settings &s) {
+              std::string text;
+              for (size_t i = 0; i < s.hideTextures.size(); ++i) {
+                if (i > 0)
+                  text += ", ";
+                char buf[32];
+                snprintf(buf, sizeof(buf), "0x%llX", (unsigned long long)s.hideTextures[i]);
+                text += buf;
+              }
+              return text;
+            },
+            [](Settings &s, std::string_view text) {
+              s.hideTextures.clear();
+              while (!text.empty()) {
+                auto comma = text.find(',');
+                auto item = trim(comma == text.npos ? text : text.substr(0, comma));
+                if (comma == text.npos)
+                  text = {};
+                else
+                  text = text.substr(comma + 1);
+                if (item.empty())
+                  continue;
+                uint64_t hash = 0;
+                if (item.size() > 2 && item[0] == '0' && (item[1] == 'x' || item[1] == 'X')) {
+                  auto res = std::from_chars(item.data() + 2, item.data() + item.size(), hash, 16);
+                  if (res.ec == std::errc{})
+                    s.hideTextures.push_back(hash);
+                } else {
+                  auto res = std::from_chars(item.data(), item.data() + item.size(), hash, 10);
+                  if (res.ec == std::errc{})
+                    s.hideTextures.push_back(hash);
+                }
+              }
+              return true;
+            }});
 #undef TRACE
 #undef FIELD
         return result;
       }();
       return entries;
-    }
-    std::string_view trim(std::string_view text) {
-      const auto start = text.find_first_not_of(" \t\r");
-      if (start == text.npos)
-        return {};
-      return text.substr(start, text.find_last_not_of(" \t\r") - start + 1);
     }
   } // namespace
 

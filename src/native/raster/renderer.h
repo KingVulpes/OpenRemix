@@ -106,6 +106,7 @@ namespace remix {
     VkDescriptorImageInfo sampledTexture(const std::shared_ptr<scene::Material> &material,
                                          const std::shared_ptr<scene::Texture> &texture,
                                          VkCommandBuffer command);
+    VkImageView textureView(const scene::Texture *texture) const;
 
     // Changes whenever prepare() uploaded new pixels of a dynamic texture
     // (remixapi_UpdateTextureEXT): the images are not what the last frame saw.

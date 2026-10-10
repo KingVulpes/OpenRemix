@@ -400,7 +400,14 @@ namespace remix {
         continue;
       }
       const size_t first = m_draws.size();
-      m_draws.insert(m_draws.end(), e.records.begin(), e.records.end());
+      if (m_hiddenTextures.empty()) {
+        m_draws.insert(m_draws.end(), e.records.begin(), e.records.end());
+      } else {
+        for (const auto &rec : e.records) {
+          if (!isDrawHidden(rec))
+            m_draws.push_back(rec);
+        }
+      }
       if (rebase)
         for (size_t i = first; i < m_draws.size(); ++i)
           for (int c = 0; c < 3; ++c)
@@ -466,7 +473,14 @@ namespace remix {
                     std::make_move_iterator(m_draws.begin() + position));
       next = position;
       const auto &records = m_retained[index].records;
-      merged.insert(merged.end(), records.begin(), records.end());
+      if (m_hiddenTextures.empty()) {
+        merged.insert(merged.end(), records.begin(), records.end());
+      } else {
+        for (const auto &r : records) {
+          if (!isDrawHidden(r))
+            merged.push_back(r);
+        }
+      }
     }
     merged.insert(merged.end(), std::make_move_iterator(m_draws.begin() + next),
                   std::make_move_iterator(m_draws.end()));

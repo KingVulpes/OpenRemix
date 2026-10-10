@@ -48,7 +48,7 @@ namespace remix {
     info.Device = m_device;
     info.QueueFamily = m_queueFamily;
     info.Queue = m_queue;
-    info.DescriptorPoolSize = 32;
+    info.DescriptorPoolSize = 4096;
     info.MinImageCount = 2;
     info.ImageCount = static_cast<uint32_t>(m_swapchainImages.size());
     info.PipelineInfoMain.RenderPass = m_renderPass;
@@ -62,6 +62,7 @@ namespace remix {
       return;
     }
     UiScope scope(m_gui);
+    ui::resetTextureUiCache();
     if (ImGui::GetIO().BackendRendererUserData) {
       ImGui_ImplVulkan_Shutdown();
     }

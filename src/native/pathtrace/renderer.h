@@ -23,6 +23,16 @@ namespace remix {
                          VkImageView depthView, bool hardwareSrgb = false);
     VkRenderPass skyPass() const;
     upscale::Statistics upscalingStatistics() const;
+    // What frame generation needs of the frame just prepared: the upscaler's
+    // depth and motion and the cameras of this and the previous frame
+    // (unjittered). Not valid without an upscaler.
+    struct FrameGenerationInputs {
+      upscale::FrameGenerationInputs images;
+      scene::Matrix view{}, projection{}, previousView{}, previousProjection{};
+      bool reset = true; // no usable previous frame
+      bool valid = false;
+    };
+    FrameGenerationInputs frameGeneration() const;
     void setNgx(std::shared_ptr<upscale::Ngx> ngx);
     void prepareConfiguration(const TraceOptions &options, bool perspective,
                               bool local, uint32_t failedBackends = 0,

@@ -371,6 +371,7 @@ namespace remix {
     scene::Matrix previousCamera{}, pendingCamera{}, previousView{}, previousProjection{},
         pendingProjection{};
     float previousJitter[2] = {};
+    PathTracer::FrameGenerationInputs frameGeneration; // of the frame being prepared
     denoise::Frame temporalFrame{};
     uint32_t previousSeed{};
     std::chrono::steady_clock::time_point previousTime{}, pendingTime{};

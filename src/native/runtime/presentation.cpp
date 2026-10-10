@@ -24,6 +24,8 @@
 #include "runtime/frame_snapshot.h"
 #include "runtime/runtime.h"
 
+#include <SDL3/SDL_timer.h>
+
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -99,7 +101,54 @@ void RemixNativeRuntime::presented() {
       }
     };
   } // namespace
+  void RemixNativeRuntime::applyLatencyMode() {
+    if (!m_lowLatencySupported || !m_swapchain)
+      return;
+    const VkLatencySleepModeInfoNV mode = {.sType = VK_STRUCTURE_TYPE_LATENCY_SLEEP_MODE_INFO_NV,
+                                           .lowLatencyMode = m_lowLatencyRequested ? VK_TRUE : VK_FALSE,
+                                           .lowLatencyBoost = VK_FALSE,
+                                           .minimumIntervalUs = 0};
+    if (m_setLatencySleepMode(m_device, m_swapchain, &mode) == VK_SUCCESS)
+      m_lowLatencyActive = m_lowLatencyRequested;
+  }
+
+  void RemixNativeRuntime::latencyMarker(VkLatencyMarkerNV marker, uint64_t frame) {
+    if (!m_lowLatencyActive || !m_swapchain)
+      return;
+    const VkSetLatencyMarkerInfoNV info = {.sType = VK_STRUCTURE_TYPE_SET_LATENCY_MARKER_INFO_NV,
+                                           .presentID = frame,
+                                           .marker = marker};
+    m_setLatencyMarker(m_device, m_swapchain, &info);
+  }
+
+  void RemixNativeRuntime::latencySleep() {
+    if (!m_lowLatencyActive || !m_swapchain)
+      return;
+    const VkLatencySleepInfoNV sleep = {.sType = VK_STRUCTURE_TYPE_LATENCY_SLEEP_INFO_NV,
+                                        .signalSemaphore = m_latencySemaphore,
+                                        .value = ++m_latencyValue};
+    if (m_latencySleep(m_device, m_swapchain, &sleep) == VK_SUCCESS) {
+      // Bounded: a driver that never signals must not hold the host.
+      const VkSemaphoreWaitInfo wait = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+                                        .semaphoreCount = 1,
+                                        .pSemaphores = &m_latencySemaphore,
+                                        .pValues = &m_latencyValue};
+      vkWaitSemaphores(m_device, &wait, 100000000);
+    }
+    // The host's next frame begins here.
+    ++m_latencyFrame;
+    latencyMarker(VK_LATENCY_MARKER_SIMULATION_START_NV, m_latencyFrame);
+  }
+
+  // Present, then the driver's pacing of the host (NVIDIA Reflex).
   remixapi_ErrorCode RemixNativeRuntime::present(const remixapi_PresentInfo *info) {
+    latencyMarker(VK_LATENCY_MARKER_SIMULATION_END_NV, m_latencyFrame);
+    const auto status = presentUnpaced(info);
+    latencySleep();
+    return status;
+  }
+
+  remixapi_ErrorCode RemixNativeRuntime::presentUnpaced(const remixapi_PresentInfo *info) {
     if (info && info->sType != REMIXAPI_STRUCT_TYPE_PRESENT_INFO) {
       return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
     }
@@ -109,12 +158,21 @@ void RemixNativeRuntime::presented() {
     // "rtx.native.asyncPresent". The headless editor acknowledges each frame
     // only once it is complete, so it always presents synchronously.
     const bool async = m_profiles.current().asyncPresent && !m_headless;
-    if (!async && !m_asyncActive)
+    if (!async && !m_asyncActive) {
+      finishDeferredPresent();
+      if (m_lowLatencyRequested != m_lowLatencyActive)
+        applyLatencyMode();
+      m_latencyRenderFrame = m_latencyFrame;
       return presentFrame(info);
+    }
     // At most one frame in flight on the CPU side: the render thread finishes
     // the previous one before this Present touches anything it owns.
     const auto start = std::chrono::steady_clock::now();
     const double waited = waitRenderThread();
+    finishDeferredPresent();
+    if (m_lowLatencyRequested != m_lowLatencyActive)
+      applyLatencyMode();
+    m_latencyRenderFrame = m_latencyFrame;
     if (async != m_asyncActive) {
       try {
         switchPresentation(async);
@@ -214,6 +272,7 @@ void RemixNativeRuntime::presented() {
     }
     try {
       if (m_recreateSurface || m_rebuild || !m_swapchain || m_vsync != m_presenterVsync ||
+          m_frameGenerationRequested != m_presenterFrameGeneration ||
           state.drawableWidth != m_swapchainExtent.width || state.drawableHeight != m_swapchainExtent.height) {
         status = recreateSwapchain();
         if (status != REMIXAPI_ERROR_CODE_SUCCESS) {
@@ -247,6 +306,7 @@ void RemixNativeRuntime::presented() {
       m_rasterPreparing = !frame.preparePipelines(m_backend != 0);
       m_loading |= m_rasterPreparing;
       if (m_loading && m_postProcessing) m_postProcessing->freeze();
+      prepareFrameGeneration();
       // The developer UI reads and edits settings and statistics, and SDL
       // input capture belongs to this thread: build its frame here. The
       // render thread only records the finished draw data (and ImGui's
@@ -361,8 +421,11 @@ void RemixNativeRuntime::presented() {
       }
       m_rebuild |= result == VK_SUBOPTIMAL_KHR;
       m_frameStarted = true;
-      const auto status = measured(p.recordMilliseconds,
-                                   [&] { return recordFrame(imageIndex, traceScene ? &*traceScene : nullptr); });
+      latencyMarker(VK_LATENCY_MARKER_RENDERSUBMIT_START_NV, m_latencyRenderFrame);
+      const GeneratedImages generated = acquireGenerated();
+      const auto status = measured(p.recordMilliseconds, [&] {
+        return recordFrame(imageIndex, traceScene ? &*traceScene : nullptr, generated);
+      });
       if (status != REMIXAPI_ERROR_CODE_SUCCESS) {
         fail();
         return;
@@ -374,15 +437,24 @@ void RemixNativeRuntime::presented() {
       }
       const VkPipelineStageFlags waitStage =
           VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
+      // With generated frames: every acquired image, and a semaphore for each present.
+      VkSemaphore waits[1 + FrameGeneration::maxGenerated] = {m_frames[m_frameIndex].imageAvailable};
+      VkPipelineStageFlags waitStages[1 + FrameGeneration::maxGenerated] = {waitStage};
+      VkSemaphore signals[1 + FrameGeneration::maxGenerated] = {m_renderFinished[imageIndex]};
+      for (uint32_t i = 0; i < generated.count; ++i) {
+        waits[1 + i] = m_frames[m_frameIndex].generatedAvailable[i];
+        waitStages[1 + i] = waitStage;
+        signals[1 + i] = m_renderFinished[generated.index[i]];
+      }
       const VkSubmitInfo submit = {
           .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-          .waitSemaphoreCount = 1,
-          .pWaitSemaphores = &m_frames[m_frameIndex].imageAvailable,
-          .pWaitDstStageMask = &waitStage,
+          .waitSemaphoreCount = 1 + generated.count,
+          .pWaitSemaphores = waits,
+          .pWaitDstStageMask = waitStages,
           .commandBufferCount = 1,
           .pCommandBuffers = &m_commandBuffers[m_frameIndex],
-          .signalSemaphoreCount = 1,
-          .pSignalSemaphores = &m_renderFinished[imageIndex],
+          .signalSemaphoreCount = 1 + generated.count,
+          .pSignalSemaphores = signals,
       };
       result = measured(p.submitMilliseconds,
                         [&] { return vkQueueSubmit(m_queue, 1, &submit, m_frames[m_frameIndex].fence); });
@@ -390,18 +462,11 @@ void RemixNativeRuntime::presented() {
         fail(result);
         return;
       }
+      latencyMarker(VK_LATENCY_MARKER_RENDERSUBMIT_END_NV, m_latencyRenderFrame);
       m_screenshot.submitted(m_frames[m_frameIndex].fence);
       if (m_pathTracer && !m_loading)
         measured(m_frameBreakdown.presentReleaseMilliseconds, [&] { m_pathTracer->submitted(); });
-      const VkPresentInfoKHR present = {
-          .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-          .waitSemaphoreCount = 1,
-          .pWaitSemaphores = &m_renderFinished[imageIndex],
-          .swapchainCount = 1,
-          .pSwapchains = &m_swapchain,
-          .pImageIndices = &imageIndex,
-      };
-      result = measured(p.queuePresentMilliseconds, [&] { return vkQueuePresentKHR(m_queue, &present); });
+      result = measured(p.queuePresentMilliseconds, [&] { return presentImages(imageIndex, generated); });
       m_frameIndex = (m_frameIndex + 1) % m_frameCount;
       if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) {
         presented();
@@ -478,6 +543,7 @@ void RemixNativeRuntime::presented() {
     }
     try {
       if (!m_headless && (m_recreateSurface || m_rebuild || !m_swapchain || m_vsync != m_presenterVsync ||
+                          m_frameGenerationRequested != m_presenterFrameGeneration ||
                           state.drawableWidth != m_swapchainExtent.width ||
                           state.drawableHeight != m_swapchainExtent.height)) {
         status = recreateSwapchain();
@@ -509,6 +575,7 @@ void RemixNativeRuntime::presented() {
       m_rasterPreparing = !m_raster.preparePipelines(m_backend != 0);
       m_loading |= m_rasterPreparing;
       if (m_loading && m_postProcessing) m_postProcessing->freeze();
+      prepareFrameGeneration();
       // Scene snapshots, emission reduction and staged light hierarchies use
       // no GPU resources. Prepare while submitted frames run; commit lighting,
       // upload and retire resources only after the reused slot's fence.
@@ -574,8 +641,11 @@ void RemixNativeRuntime::presented() {
       }
       m_rebuild |= result == VK_SUBOPTIMAL_KHR;
       m_frameStarted = true;
-      status = measured(p.recordMilliseconds,
-                        [&] { return recordFrame(imageIndex, traceScene ? &*traceScene : nullptr); });
+      latencyMarker(VK_LATENCY_MARKER_RENDERSUBMIT_START_NV, m_latencyRenderFrame);
+      const GeneratedImages generated = m_headless ? GeneratedImages{} : acquireGenerated();
+      status = measured(p.recordMilliseconds, [&] {
+        return recordFrame(imageIndex, traceScene ? &*traceScene : nullptr, generated);
+      });
       if (status != REMIXAPI_ERROR_CODE_SUCCESS) {
         return fail();
       }
@@ -587,21 +657,33 @@ void RemixNativeRuntime::presented() {
           m_headless ? VK_PIPELINE_STAGE_ALL_COMMANDS_BIT
                      : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
                            VK_PIPELINE_STAGE_TRANSFER_BIT;
+      // With generated frames: every acquired image, and a semaphore for each present.
+      VkSemaphore waits[1 + FrameGeneration::maxGenerated] = {m_headless ? m_sharedReleased
+                                                                         : m_frames[m_frameIndex].imageAvailable};
+      VkPipelineStageFlags waitStages[1 + FrameGeneration::maxGenerated] = {waitStage};
+      VkSemaphore signals[1 + FrameGeneration::maxGenerated] = {m_headless ? m_sharedReady
+                                                                           : m_renderFinished[imageIndex]};
+      for (uint32_t i = 0; i < generated.count; ++i) {
+        waits[1 + i] = m_frames[m_frameIndex].generatedAvailable[i];
+        waitStages[1 + i] = waitStage;
+        signals[1 + i] = m_renderFinished[generated.index[i]];
+      }
       const VkSubmitInfo submit = {
           .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-          .waitSemaphoreCount = m_headless ? uint32_t(m_sharedPresented) : 1u,
-          .pWaitSemaphores = m_headless ? &m_sharedReleased : &m_frames[m_frameIndex].imageAvailable,
-          .pWaitDstStageMask = &waitStage,
+          .waitSemaphoreCount = m_headless ? uint32_t(m_sharedPresented) : 1 + generated.count,
+          .pWaitSemaphores = waits,
+          .pWaitDstStageMask = waitStages,
           .commandBufferCount = 1,
           .pCommandBuffers = &m_commandBuffers[m_frameIndex],
-          .signalSemaphoreCount = 1,
-          .pSignalSemaphores = m_headless ? &m_sharedReady : &m_renderFinished[imageIndex],
+          .signalSemaphoreCount = 1 + generated.count,
+          .pSignalSemaphores = signals,
       };
       result = measured(p.submitMilliseconds,
                         [&] { return vkQueueSubmit(m_queue, 1, &submit, m_frames[m_frameIndex].fence); });
       if (result != VK_SUCCESS) {
         return fail(result);
       }
+      latencyMarker(VK_LATENCY_MARKER_RENDERSUBMIT_END_NV, m_latencyRenderFrame);
       m_screenshot.submitted(m_frames[m_frameIndex].fence);
       if (m_pathTracer && !m_loading)
         measured(m_frameBreakdown.presentReleaseMilliseconds, [&] { m_pathTracer->submitted(); });
@@ -616,15 +698,7 @@ void RemixNativeRuntime::presented() {
         m_frameIndex = (m_frameIndex + 1) % m_frameCount;
         return REMIXAPI_ERROR_CODE_SUCCESS;
       }
-      const VkPresentInfoKHR present = {
-          .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-          .waitSemaphoreCount = 1,
-          .pWaitSemaphores = &m_renderFinished[imageIndex],
-          .swapchainCount = 1,
-          .pSwapchains = &m_swapchain,
-          .pImageIndices = &imageIndex,
-      };
-      result = measured(p.queuePresentMilliseconds, [&] { return vkQueuePresentKHR(m_queue, &present); });
+      result = measured(p.queuePresentMilliseconds, [&] { return presentImages(imageIndex, generated); });
       m_frameIndex = (m_frameIndex + 1) % m_frameCount;
       if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR)
         presented();
@@ -660,6 +734,11 @@ void RemixNativeRuntime::presented() {
       auto result = vkCreateSemaphore(m_device, &semaphore, nullptr, &frame.imageAvailable);
       if (result != VK_SUCCESS)
         return fail(result);
+      for (auto &generated : frame.generatedAvailable) {
+        result = vkCreateSemaphore(m_device, &semaphore, nullptr, &generated);
+        if (result != VK_SUCCESS)
+          return fail(result);
+      }
       result = vkCreateFence(m_device, &fence, nullptr, &frame.fence);
       if (result != VK_SUCCESS)
         return fail(result);
@@ -667,7 +746,193 @@ void RemixNativeRuntime::presented() {
     return REMIXAPI_ERROR_CODE_SUCCESS;
   }
 
-  remixapi_ErrorCode RemixNativeRuntime::recordFrame(uint32_t imageIndex, scene::TraceFrame *traceScene) {
+  void RemixNativeRuntime::prepareFrameGeneration() {
+    m_frameGenerationReady = false;
+    m_generateCount = 0;
+    if (!m_frameGenerationRequested || !m_presenterFrameGeneration || !m_swapchain || !m_ngx)
+      return;
+    if (m_frameGenerationFailed)
+      return; // the status says why; a new swapchain (or toggling the setting) tries again
+    if (!m_pathTracer || !m_targetBackend || m_backend == 0 || m_loading) {
+      m_frameGenerationStatus = "waiting for the path tracer";
+      return;
+    }
+    if (m_swapchainImages.size() < 2 + m_presenterFrameGeneration) {
+      m_frameGenerationStatus = "the surface gives too few swapchain images";
+      return;
+    }
+    // The finished frame is copied out of its swapchain image and the
+    // generated one into another: the usages screenshots and snapshots need.
+    if (!m_screenshotSupported || !m_snapshotSupported) {
+      m_frameGenerationStatus = "the swapchain's images cannot be copied from and to";
+      return;
+    }
+    try {
+      auto capabilities = m_ngx->capabilities();
+      if (capabilities.sdk && !capabilities.initializationComplete) {
+        m_ngx->initializeDevice();
+        capabilities = m_ngx->capabilities();
+      }
+      if (!capabilities.fg) {
+        m_frameGenerationStatus = capabilities.fgReason.empty() ? "DLSS Frame Generation unavailable" : capabilities.fgReason;
+        return;
+      }
+      const auto upscaling = m_pathTracer->upscalingStatistics();
+      if (upscaling.backend == upscale::Backend::Native || !upscaling.render.width || !upscaling.render.height) {
+        m_frameGenerationStatus = "needs an upscaler (DLSS or FSR; their native-resolution preset counts)";
+        return;
+      }
+      if (m_frameGeneration &&
+          !m_frameGeneration->matches(m_swapchainExtent, m_swapchainFormat, upscaling.render)) {
+        // Its images may still be in use by frames in flight: the next
+        // Present recreates the swapchain, which waits for the device.
+        m_rebuild = true;
+        m_frameGenerationStatus = "render size changed";
+        return;
+      }
+      if (!m_frameGeneration)
+        m_frameGeneration = std::make_unique<FrameGeneration>(m_ngx, m_physicalDevice, m_device, m_queueFamily,
+                                                              m_swapchainExtent, m_swapchainFormat, upscaling.render);
+      m_frameGenerationReady = m_frameGeneration->ready(m_queue);
+      m_generateCount = std::min(m_presenterFrameGeneration, std::max(capabilities.fgMultiFrameMax, 1u));
+      m_frameGenerationStatus = !m_frameGenerationReady ? "starting"
+                                : m_generateCount == 1  ? "active (2x)"
+                                : m_generateCount == 2  ? "active (3x)"
+                                                        : "active (4x)";
+    } catch (const std::exception &e) {
+      m_frameGenerationFailed = true;
+      m_frameGenerationStatus = e.what();
+    } catch (VkResult result) {
+      if (result == VK_ERROR_DEVICE_LOST)
+        throw;
+      m_frameGenerationFailed = true;
+      m_frameGenerationStatus = "Vulkan error " + std::to_string(int(result));
+    }
+  }
+
+  GeneratedImages RemixNativeRuntime::acquireGenerated() {
+    GeneratedImages generated;
+    if (!m_frameGenerationReady || !m_frameGeneration)
+      return generated;
+    // Short waits: without free images the frame is presented with fewer
+    // generated frames, or alone.
+    while (generated.count < m_generateCount) {
+      uint32_t index = 0;
+      const VkResult result =
+          vkAcquireNextImageKHR(m_device, m_swapchain, 4000000,
+                                m_frames[m_frameIndex].generatedAvailable[generated.count], VK_NULL_HANDLE, &index);
+      if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
+        if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_ERROR_SURFACE_LOST_KHR) {
+          m_rebuild = true;
+          m_recreateSurface |= result == VK_ERROR_SURFACE_LOST_KHR;
+        }
+        break;
+      }
+      generated.index[generated.count++] = index;
+    }
+    return generated;
+  }
+
+  void RemixNativeRuntime::recordFrameGeneration(VkCommandBuffer command, uint32_t realIndex,
+                                                 const GeneratedImages &generated) {
+    const auto real = m_swapchainImages[realIndex];
+    VkImage images[FrameGeneration::maxGenerated] = {};
+    for (uint32_t i = 0; i < generated.count; ++i)
+      images[i] = m_swapchainImages[generated.index[i]];
+    const auto inputs = m_pathTracer && !m_loading ? m_pathTracer->frameGeneration()
+                                                   : PathTracer::FrameGenerationInputs{};
+    if (inputs.valid) {
+      try {
+        m_frameGeneration->record(command, real, images, generated.count, inputs);
+        m_generatedFrames += generated.count;
+      } catch (const std::exception &e) {
+        // The images hold the rendered frame again (record()).
+        m_frameGenerationFailed = true;
+        m_frameGenerationStatus = e.what();
+        m_duplicatedFrames += generated.count;
+      }
+      return;
+    }
+    // Nothing to interpolate with (a debug view, the upscaler just went away).
+    m_frameGeneration->duplicate(command, real, images, generated.count);
+    m_duplicatedFrames += generated.count;
+  }
+
+  VkResult RemixNativeRuntime::presentImages(uint32_t realIndex, const GeneratedImages &generated) {
+    using Clock = std::chrono::steady_clock;
+    auto presentOne = [this](uint32_t index) {
+      const VkPresentInfoKHR present = {
+          .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+          .waitSemaphoreCount = 1,
+          .pWaitSemaphores = &m_renderFinished[index],
+          .swapchainCount = 1,
+          .pSwapchains = &m_swapchain,
+          .pImageIndices = &index,
+      };
+      return vkQueuePresentKHR(m_queue, &present);
+    };
+    // The pace of rendered frames, for placing the rendered one halfway.
+    const auto now = Clock::now();
+    if (m_lastRenderedPresent != Clock::time_point{}) {
+      const double elapsed = std::chrono::duration<double, std::milli>(now - m_lastRenderedPresent).count();
+      if (elapsed < 250)
+        m_renderedInterval = m_renderedInterval > 0 ? m_renderedInterval * 0.9 + elapsed * 0.1 : elapsed;
+      else
+        m_renderedInterval = 0; // a pause: no pacing from before it
+    }
+    m_lastRenderedPresent = now;
+    latencyMarker(VK_LATENCY_MARKER_PRESENT_START_NV, m_latencyRenderFrame);
+    struct PresentEnd {
+      RemixNativeRuntime &runtime;
+      ~PresentEnd() { runtime.latencyMarker(VK_LATENCY_MARKER_PRESENT_END_NV, runtime.m_latencyRenderFrame); }
+    } presentEnd{*this};
+    if (!generated.count)
+      return presentOne(realIndex);
+    // The generated frames show the moments between the previous rendered
+    // frame and this one, so the first is due now. The others and then the
+    // rendered frame follow at even steps of the frame, from the presenter
+    // thread, so that this thread (and the host) go on.
+    const VkResult first = presentOne(generated.index[0]);
+    if (first != VK_SUCCESS && first != VK_SUBOPTIMAL_KHR) {
+      for (uint32_t i = 1; i < generated.count; ++i)
+        presentOne(generated.index[i]); // hand the images back whatever happened
+      presentOne(realIndex);
+      return first;
+    }
+    const double step = std::min(m_renderedInterval / (generated.count + 1), 50.0);
+    m_presenter.submit([this, realIndex, generated, now, step, presentOne] {
+      VkResult worst = VK_SUCCESS;
+      for (uint32_t i = 1; i <= generated.count; ++i) {
+        const auto deadline = now + std::chrono::duration_cast<Clock::duration>(
+                                        std::chrono::duration<double, std::milli>(step * i));
+        const auto left = std::chrono::duration_cast<std::chrono::nanoseconds>(deadline - Clock::now()).count();
+        if (left > 0)
+          SDL_DelayPrecise(Uint64(left));
+        const VkResult result = presentOne(i < generated.count ? generated.index[i] : realIndex);
+        if (result != VK_SUCCESS && (worst == VK_SUCCESS || worst == VK_SUBOPTIMAL_KHR))
+          worst = result;
+      }
+      m_deferredResult.store(int(worst));
+    });
+    return first;
+  }
+
+  void RemixNativeRuntime::finishDeferredPresent() {
+    if (!m_presenter.started())
+      return;
+    m_presenter.wait();
+    m_presenter.takeError();
+    const auto result = VkResult(m_deferredResult.exchange(int(VK_SUCCESS)));
+    if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || result == VK_ERROR_SURFACE_LOST_KHR) {
+      m_rebuild = true;
+      m_recreateSurface |= result == VK_ERROR_SURFACE_LOST_KHR;
+    } else if (result != VK_SUCCESS) {
+      fail(result);
+    }
+  }
+
+  remixapi_ErrorCode RemixNativeRuntime::recordFrame(uint32_t imageIndex, scene::TraceFrame *traceScene,
+                                                     const GeneratedImages &generated) {
     auto buffer = m_commandBuffers[m_frameIndex];
     VkResult result = vkResetCommandBuffer(buffer, 0);
     if (result != VK_SUCCESS) {
@@ -795,7 +1060,9 @@ void RemixNativeRuntime::presented() {
       // world layer: the coverage passes follow its unmasked draws.
       const uint32_t halos = m_loading ? 0 : raster.haloCount();
       const bool masks = !m_loading && raster.maskRuns() != 0;
-      const bool split = halos || masks;
+      // Frame generation takes the frame as it is before the UI layer.
+      const bool hudless = generated.count && m_frameGeneration && !m_loading;
+      const bool split = halos || masks || hudless;
       const int sceneLayers = split ? 1 : 3;
       const bool skipSky = m_pathTracer != nullptr;
       if (!m_loading && m_pathTracer) {
@@ -842,9 +1109,21 @@ void RemixNativeRuntime::presented() {
           }
         }
       }
-      if (split) {
+      if (split && !hudless) {
         gpu::GpuScope overlay(buffer, "Raster overlay (view model, HUD)", m_swapchainExtent);
         raster.record(buffer, false, true, nullptr, {}, 2, 3);
+      } else if (split) {
+        {
+          gpu::GpuScope overlay(buffer, "Raster overlay (view model)", m_swapchainExtent);
+          raster.record(buffer, false, true, nullptr, {}, 2, 2);
+        }
+        // The scene's depth stays in the target's depth attachment.
+        vkCmdEndRenderPass(buffer);
+        m_frameGeneration->captureHudless(buffer, image);
+        pass.renderPass = m_resumePass;
+        vkCmdBeginRenderPass(buffer, &pass, VK_SUBPASS_CONTENTS_INLINE);
+        gpu::GpuScope overlay(buffer, "Raster overlay (HUD)", m_swapchainExtent);
+        raster.record(buffer, false, true, nullptr, {}, 3, 3);
       }
     }
     lap(breakdown.compositeMilliseconds);
@@ -867,6 +1146,8 @@ void RemixNativeRuntime::presented() {
       m_screenshot.record(m_physicalDevice, m_device, buffer, m_swapchainImages[imageIndex],
                           m_swapchainExtent, m_swapchainFormat);
     }
+    if (generated.count)
+      recordFrameGeneration(buffer, imageIndex, generated);
     if (m_headless)
       sharedBarrier(buffer, false);
     m_gpuTimers.endFrame(buffer);

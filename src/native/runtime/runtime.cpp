@@ -33,6 +33,8 @@ namespace remix {
   RemixNativeRuntime::~RemixNativeRuntime() {
     // Without a Shutdown: the render thread's frame completes first.
     waitRenderThread();
+    finishDeferredPresent();
+    m_presenter.stop();
     if (m_asyncActive)
       switchPresentation(false);
     m_renderThread.stop();
@@ -150,6 +152,8 @@ namespace remix {
     // state returns to the API's renderer and the thread is joined before
     // anything it uses is released.
     waitRenderThread();
+    finishDeferredPresent();
+    m_presenter.stop();
     if (m_asyncActive)
       switchPresentation(false);
     m_renderThread.stop();
@@ -242,11 +246,18 @@ namespace remix {
           vkDestroyFence(m_device, frame.fence, nullptr);
         if (frame.imageAvailable)
           vkDestroySemaphore(m_device, frame.imageAvailable, nullptr);
+        for (auto semaphore : frame.generatedAvailable)
+          if (semaphore)
+            vkDestroySemaphore(m_device, semaphore, nullptr);
         frame = {};
       }
       if (m_commandPool) {
         vkDestroyCommandPool(m_device, m_commandPool, nullptr);
       }
+      if (m_latencySemaphore)
+        vkDestroySemaphore(m_device, m_latencySemaphore, nullptr);
+      m_latencySemaphore = VK_NULL_HANDLE;
+      m_lowLatencySupported = m_lowLatencyActive = false;
       m_gpuTimers.shutdown();
       vkDestroyDevice(m_device, nullptr);
     }

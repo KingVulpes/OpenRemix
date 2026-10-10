@@ -1,5 +1,6 @@
 #include "runtime/runtime.h"
 #include "ui/widgets.h"
+#include "upscale/ngx.h"
 #include <algorithm>
 #include <cmath>
 #include <imgui.h>
@@ -128,6 +129,39 @@ namespace remix {
       if (rrActive)
         ImGui::TextWrapped("Ray Reconstruction manages denoising and independent sampling. Saved settings "
                            "resume when it is disabled.");
+      ImGui::BeginDisabled(!m_lowLatencySupported || settings.frameGeneration);
+      bool lowLatency = m_lowLatencySupported && (settings.lowLatency || settings.frameGeneration);
+      if (ui::Checkbox("NVIDIA Reflex low latency", &lowLatency))
+        settings.lowLatency = lowLatency;
+      ImGui::EndDisabled();
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("%s", !m_lowLatencySupported
+                                    ? "Needs an NVIDIA GPU and driver with VK_NV_low_latency2, and the path tracer."
+                                    : settings.frameGeneration
+                                          ? "Always on with frame generation."
+                                          : "The driver holds the game back so that frames are not queued ahead of\n"
+                                            "the GPU: input reaches the screen sooner when the GPU is the limit.");
+      ui::Checkbox("DLSS Frame Generation", &settings.frameGeneration);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Shows generated frames between each pair of rendered frames (2x to 4x).\n"
+                          "Needs a supported RTX GPU, the path tracer and an upscaler (DLSS or FSR; their\n"
+                          "native-resolution preset counts). Adds latency: the rendered frame is shown after\n"
+                          "its generated ones.");
+      if (settings.frameGeneration) {
+        int frames = int(settings.frameGenerationFrames) - 1;
+        if (ui::Combo("Generated frames", &frames, "2x (one generated)\0003x (two generated)\0004x (three generated)\0"))
+          settings.frameGenerationFrames = uint32_t(frames) + 1;
+      }
+      if (settings.frameGeneration)
+        ImGui::TextWrapped("Frame generation: %s | generated %llu, shown twice instead %llu | rendered frame interval %.1f ms",
+                           m_frameGenerationStatus.empty() ? "applies at the next frame" : m_frameGenerationStatus.c_str(),
+                           (unsigned long long)m_generatedFrames, (unsigned long long)m_duplicatedFrames,
+                           m_renderedInterval);
+      else if (m_ngx) {
+        const auto ngx = m_ngx->capabilities();
+        if (ngx.initializationComplete && !ngx.fg)
+          ImGui::TextWrapped("Frame generation unavailable: %s", ngx.fgReason.c_str());
+      }
     }
     if (ImGui::CollapsingHeader("Memory")) {
       ui::Checkbox("Keep BC textures compressed", &settings.compressedTextures);

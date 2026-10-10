@@ -88,6 +88,9 @@ namespace remix {
     }
 
     uint32_t imageCount = std::max(2u, capabilities.minImageCount + 1);
+    // Frame generation holds its generated frames' images and the rendered
+    // one's at a time; they are presented over the course of the frame.
+    imageCount += m_frameGenerationRequested;
     if (capabilities.maxImageCount != 0) {
       imageCount = std::min(imageCount, capabilities.maxImageCount);
     }
@@ -123,8 +126,13 @@ namespace remix {
       }
     }
 
+    // NVIDIA Reflex: the swapchain is created for it; the mode itself is
+    // switched by applyLatencyMode.
+    const VkSwapchainLatencyCreateInfoNV latency = {.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_LATENCY_CREATE_INFO_NV,
+                                                    .latencyModeEnable = VK_TRUE};
     const VkSwapchainCreateInfoKHR createInfo = {
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+        .pNext = m_lowLatencySupported ? &latency : nullptr,
         .surface = m_surface,
         .minImageCount = imageCount,
         .imageFormat = format.format,
@@ -145,7 +153,12 @@ namespace remix {
       return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
     }
 
+    m_lowLatencyActive = false; // a new swapchain starts without it
+    applyLatencyMode();
     m_presenterVsync = m_vsync;
+    m_presenterFrameGeneration = m_frameGenerationRequested;
+    m_frameGenerationFailed = false;
+    m_frameGenerationStatus.clear();
     m_swapchainFormat = format.format;
     m_swapchainExtent = extent;
     if (vkGetSwapchainImagesKHR(m_device, m_swapchain, &imageCount, nullptr) != VK_SUCCESS ||
@@ -328,6 +341,9 @@ namespace remix {
     // Callers have waited for the device, except after device loss.
     if (m_device && !m_deviceLost)
       completeScreenshot();
+    // Sized to the swapchain; made again when a frame next generates.
+    m_frameGeneration.reset();
+    m_frameGenerationReady = false;
     m_screenshot.reset(m_device, true);
     shutdownUiVulkan();
     if (!m_commandBuffers.empty()) {

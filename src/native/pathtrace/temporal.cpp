@@ -362,6 +362,7 @@ namespace remix {
     if (g.denoiser) g.denoiser->selectFrame(g.frameIndex);
     if (g.upscaler) g.upscaler->selectFrame(g.frameIndex);
   }
+  PathTracer::FrameGenerationInputs PathTracer::frameGeneration() const { return m_gpu->frameGeneration; }
   upscale::Statistics PathTracer::upscalingStatistics() const {
     const auto &g = *m_gpu;
     auto result = g.upscaler ? g.upscaler->statistics() : upscale::Statistics{};

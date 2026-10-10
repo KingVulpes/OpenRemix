@@ -7,7 +7,7 @@ if has_dlss
     compile_args : ['-DREMIX_HAS_DLSS=1'],
     link_args : [meson.current_source_dir() / ngx_library], dependencies : dl_dep)
   dlss_runtime_dir = system == 'linux' ? 'lib/Linux_x86_64/rel' : 'lib/Windows_x86_64/rel'
-  dlss_binaries = system == 'linux' ? ['libnvidia-ngx-dlss.so.310.9.1', 'libnvidia-ngx-dlssd.so.310.9.1'] : ['nvngx_dlss.dll', 'nvngx_dlssd.dll']
+  dlss_binaries = system == 'linux' ? ['libnvidia-ngx-dlss.so.310.9.1', 'libnvidia-ngx-dlssd.so.310.9.1'] : ['nvngx_dlss.dll', 'nvngx_dlssd.dll', 'nvngx_dlssg.dll']
 endif
 if has_dlss
   dlss_install_dir = (system == 'windows' ? get_option('bindir') : get_option('libdir')) / 'dlss/310.9.1'

@@ -5,7 +5,8 @@ Unmodified NGX headers, Linux x86-64 and Windows x86-64 release libraries from
 revision `374959484e79a640feaba44c93ac8cfb0a03f5b5`.
 `sources.sha256` records the downloaded artifacts; their Git blob hashes were
 checked against that revision's tree. `LICENSE.txt` is the upstream license.
-Frame-generation and development libraries are intentionally excluded.
+The Windows frame-generation library (`nvngx_dlssg.dll`) is included for DLSS Frame
+Generation; the Linux one and the development libraries are excluded.
 
 Linux links `libnvsdk_ngx.a`; native Windows clang-cl links `nvsdk_ngx_d.lib`
 (the dynamic CRT variant). These are dispatch libraries, with no load-time NGX

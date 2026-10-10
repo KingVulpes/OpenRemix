@@ -16,6 +16,14 @@ struct Input {
 struct ReconstructionGuides {
   Input diffuse, specular, normalRoughness, hitDistance;
 };
+// What frame generation takes from the upscaler: the device depth and motion
+// vectors (render pixels) it prepared for this frame, both in GENERAL.
+struct FrameGenerationInputs {
+  Input depth, motion;
+  VkExtent2D render{};
+  bool depthInverted{}; // nearer is larger (the FSR path's depth)
+  bool valid{};
+};
 struct Statistics {
   Backend backend{};
   Mode requested{};
@@ -41,6 +49,7 @@ public:
   void selectFrame(uint32_t slot);
   void composite(VkCommandBuffer command, bool encodeOutput, bool prism, bool gamma22, bool hardwareSrgb, VkDescriptorSet post);
   Input output() const;
+  FrameGenerationInputs frameGenerationInputs() const;
   void record(VkCommandBuffer command, Input color, Input depth, Input motion, Input transmission,
               const scene::Matrix &projection, const float *jitter, float milliseconds, float sharpness,
               bool reset, const ReconstructionGuides &guides = {}, const scene::Matrix &view = {});

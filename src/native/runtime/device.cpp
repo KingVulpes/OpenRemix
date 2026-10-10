@@ -312,6 +312,16 @@ namespace remix {
         VK_EXT_PIPELINE_CREATION_FEEDBACK_EXTENSION_NAME);
     if (pipelineFeedback)
       extensions.push_back(VK_EXT_PIPELINE_CREATION_FEEDBACK_EXTENSION_NAME);
+    // NVIDIA Reflex. Its sleep is signalled on a timeline semaphore (core in
+    // Vulkan 1.2, enabled through the 1.2 features the tracer's chain holds).
+    m_lowLatencySupported = !m_headless && m_traceSupported && m_instanceApiVersion >= VK_API_VERSION_1_2 &&
+                            supportsDeviceExtension(selection.physicalDevice, VK_NV_LOW_LATENCY_2_EXTENSION_NAME);
+    if (m_lowLatencySupported) {
+      vulkan12.timelineSemaphore = VK_TRUE;
+      if (std::none_of(extensions.begin(), extensions.end(),
+                       [](auto p) { return std::strcmp(p, VK_NV_LOW_LATENCY_2_EXTENSION_NAME) == 0; }))
+        extensions.push_back(VK_NV_LOW_LATENCY_2_EXTENSION_NAME);
+    }
     const VkDeviceCreateInfo createInfo = {
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
         .pNext = &features,
@@ -329,6 +339,20 @@ namespace remix {
     vkGetPhysicalDeviceProperties(m_physicalDevice, &m_properties);
     m_queueFamily = selection.family;
     vkGetDeviceQueue(m_device, m_queueFamily, 0, &m_queue);
+    if (m_lowLatencySupported) {
+      m_setLatencySleepMode =
+          reinterpret_cast<PFN_vkSetLatencySleepModeNV>(vkGetDeviceProcAddr(m_device, "vkSetLatencySleepModeNV"));
+      m_latencySleep = reinterpret_cast<PFN_vkLatencySleepNV>(vkGetDeviceProcAddr(m_device, "vkLatencySleepNV"));
+      m_setLatencyMarker =
+          reinterpret_cast<PFN_vkSetLatencyMarkerNV>(vkGetDeviceProcAddr(m_device, "vkSetLatencyMarkerNV"));
+      const VkSemaphoreTypeCreateInfo timeline{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+                                               .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
+                                               .initialValue = 0};
+      const VkSemaphoreCreateInfo semaphore{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &timeline};
+      m_latencyValue = 0;
+      m_lowLatencySupported = m_setLatencySleepMode && m_latencySleep && m_setLatencyMarker &&
+                              vkCreateSemaphore(m_device, &semaphore, nullptr, &m_latencySemaphore) == VK_SUCCESS;
+    }
     m_gpuTimers.initialize(m_physicalDevice, m_device, m_queueFamily);
     m_pipelines = std::make_unique<pipeline::Service>(m_device, m_properties,
                                                       pipelineFeedback);

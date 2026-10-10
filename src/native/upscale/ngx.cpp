@@ -3,6 +3,7 @@
 #include <SDL3/SDL_stdinc.h>
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <mutex>
 #include <stdexcept>
@@ -10,6 +11,7 @@
 #include <nvsdk_ngx_helpers_vk.h>
 // RR helpers depend on declarations in the SR helpers above.
 #include <nvsdk_ngx_helpers_dlssd_vk.h>
+#include <nvsdk_ngx_helpers_dlssg_vk.h>
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -71,7 +73,9 @@ struct Ngx::Impl {
   NgxCapabilities caps;
 #if REMIX_HAS_DLSS
   VkDevice device{};
-  bool initialized{}, attempted{}, instanceReady[2]{}, deviceReady[2]{};
+  // Features by index: 0 Super Resolution, 1 Ray Reconstruction, 2 Frame Generation.
+  static constexpr unsigned featureCount = 3;
+  bool initialized{}, attempted{}, instanceReady[featureCount]{}, deviceReady[featureCount]{};
   NVSDK_NGX_Parameter *parameters{};
   std::filesystem::path libraries;
   std::wstring libraryPath, cachePath;
@@ -100,16 +104,20 @@ struct Ngx::Impl {
   bool packaged(unsigned feature) const {
     std::error_code error;
 #ifdef _WIN32
-    return std::filesystem::is_regular_file(libraries / (feature ? "nvngx_dlssd.dll" : "nvngx_dlss.dll"), error);
+    static constexpr const char *names[featureCount] = {"nvngx_dlss.dll", "nvngx_dlssd.dll", "nvngx_dlssg.dll"};
 #else
-    return std::filesystem::is_regular_file(
-        libraries / (feature ? "libnvidia-ngx-dlssd.so.310.9.1" : "libnvidia-ngx-dlss.so.310.9.1"), error);
+    static constexpr const char *names[featureCount] = {"libnvidia-ngx-dlss.so.310.9.1",
+                                                        "libnvidia-ngx-dlssd.so.310.9.1",
+                                                        "libnvidia-ngx-dlssg.so.310.9.1"};
 #endif
+    return std::filesystem::is_regular_file(libraries / names[feature], error);
   }
   NVSDK_NGX_FeatureDiscoveryInfo discovery(unsigned feature) const {
     NVSDK_NGX_FeatureDiscoveryInfo result{};
     result.SDKVersion = NVSDK_NGX_Version_API;
-    result.FeatureID = feature ? NVSDK_NGX_Feature_RayReconstruction : NVSDK_NGX_Feature_SuperSampling;
+    result.FeatureID = feature == 2   ? NVSDK_NGX_Feature_FrameGeneration
+                       : feature == 1 ? NVSDK_NGX_Feature_RayReconstruction
+                                      : NVSDK_NGX_Feature_SuperSampling;
     result.Identifier.IdentifierType = NVSDK_NGX_Application_Identifier_Type_Project_Id;
     result.Identifier.v.ProjectDesc = {project, NVSDK_NGX_ENGINE_TYPE_CUSTOM, "0.1003"};
     result.ApplicationDataPath = cachePath.c_str();
@@ -153,7 +161,7 @@ std::vector<std::string> Ngx::instanceExtensions() {
   vkEnumerateInstanceExtensionProperties(nullptr, &count, nullptr);
   std::vector<VkExtensionProperties> supported(count);
   vkEnumerateInstanceExtensionProperties(nullptr, &count, supported.data());
-  for (unsigned feature = 0; feature < 2; ++feature) {
+  for (unsigned feature = 0; feature < Impl::featureCount; ++feature) {
     if (!m->caps.reason.empty() || !m->packaged(feature))
       continue;
     auto info = m->discovery(feature);
@@ -186,7 +194,7 @@ std::vector<std::string> Ngx::deviceExtensions([[maybe_unused]] VkInstance insta
   vkEnumerateDeviceExtensionProperties(physical, nullptr, &count, nullptr);
   std::vector<VkExtensionProperties> supported(count);
   vkEnumerateDeviceExtensionProperties(physical, nullptr, &count, supported.data());
-  for (unsigned feature = 0; feature < 2; ++feature) {
+  for (unsigned feature = 0; feature < Impl::featureCount; ++feature) {
     if (!m->instanceReady[feature])
       continue;
     auto info = m->discovery(feature);
@@ -217,7 +225,7 @@ void Ngx::initialize([[maybe_unused]] VkInstance instance, [[maybe_unused]] VkPh
   m->attempted = true;
   m->device = device;
   try {
-    if (!m->deviceReady[0] && !m->deviceReady[1])
+    if (!m->deviceReady[0] && !m->deviceReady[1] && !m->deviceReady[2])
       throw std::runtime_error("Packaged DLSS libraries or required Vulkan extensions unavailable");
     if (fault("init"))
       throw std::runtime_error("Injected NGX initialization failure");
@@ -239,8 +247,33 @@ void Ngx::initialize([[maybe_unused]] VkInstance instance, [[maybe_unused]] VkPh
       m->caps.reason = "DLSS Super Resolution unavailable";
     if (!m->caps.sr && !m->caps.rr)
       m->caps.reason = "DLSS SR and Ray Reconstruction unavailable";
+    // Frame Generation: its own library, extensions, GPU and driver floor.
+    available = 0;
+    m->parameters->Get(NVSDK_NGX_Parameter_FrameGeneration_Available, &available);
+    m->caps.fg = m->deviceReady[2] && available && !fault("fg-unavailable");
+    if (m->caps.fg) {
+      unsigned int generated = 0;
+      m->parameters->Get(NVSDK_NGX_DLSSG_Parameter_MultiFrameCountMax, &generated);
+      m->caps.fgMultiFrameMax = std::max(generated, 1u);
+    } else if (!m->packaged(2)) {
+      m->caps.fgReason = "nvngx_dlssg library not packaged";
+    } else if (!m->deviceReady[2]) {
+      m->caps.fgReason = "Vulkan extensions required by DLSS Frame Generation unavailable";
+    } else {
+      int updateDriver = 0, initResult = 0;
+      unsigned int major = 0, minor = 0;
+      m->parameters->Get(NVSDK_NGX_Parameter_FrameGeneration_NeedsUpdatedDriver, &updateDriver);
+      m->parameters->Get(NVSDK_NGX_Parameter_FrameGeneration_MinDriverVersionMajor, &major);
+      m->parameters->Get(NVSDK_NGX_Parameter_FrameGeneration_MinDriverVersionMinor, &minor);
+      m->parameters->Get(NVSDK_NGX_Parameter_FrameGeneration_FeatureInitResult, &initResult);
+      m->caps.fgReason = updateDriver ? "DLSS Frame Generation needs driver " + std::to_string(major) + "." +
+                                            std::to_string(minor) + " or newer"
+                                      : "DLSS Frame Generation unsupported on this GPU (NGX " +
+                                            std::to_string(uint32_t(initResult)) + ")";
+    }
   } catch (const std::exception &e) {
     m->caps.reason = e.what();
+    m->caps.fgReason = e.what();
   }
 #endif
   std::lock_guard publish(capabilitiesMutex);
@@ -505,6 +538,183 @@ void NgxFeature::record([[maybe_unused]] VkCommandBuffer command, [[maybe_unused
     desc.InFrameTimeDeltaInMsec = milliseconds;
     check(NGX_VULKAN_EVALUATE_DLSS_EXT(command, m->feature, m->parameters, &desc), "DLSS SR evaluation");
   }
+#else
+  unavailable();
+#endif
+}
+
+struct NgxFrameGeneration::Impl {
+#if REMIX_HAS_DLSS
+  std::shared_ptr<Ngx> context;
+  NVSDK_NGX_Parameter *parameters{};
+  NVSDK_NGX_Handle *feature{};
+  VkExtent2D render{}, display{};
+  VkFormat format{};
+  VkCommandPool initializationPool{};
+  VkCommandBuffer initializationCommand{};
+  VkFence initializationFence{};
+  bool initializationSubmitted = false;
+  ~Impl() {
+    std::lock_guard lock(ngxMutex);
+    if (context) {
+      const auto device = context->m->device;
+      if (initializationFence)
+        vkDestroyFence(device, initializationFence, nullptr);
+      if (initializationPool)
+        vkDestroyCommandPool(device, initializationPool, nullptr);
+    }
+    if (feature)
+      NVSDK_NGX_VULKAN_ReleaseFeature(feature);
+    if (parameters)
+      NVSDK_NGX_VULKAN_DestroyParameters(parameters);
+  }
+#endif
+};
+NgxFrameGeneration::NgxFrameGeneration() : m(std::make_unique<Impl>()) {}
+NgxFrameGeneration::~NgxFrameGeneration() = default;
+void NgxFrameGeneration::initialize([[maybe_unused]] std::shared_ptr<Ngx> context, [[maybe_unused]] uint32_t family,
+                                    [[maybe_unused]] VkExtent2D display, [[maybe_unused]] VkFormat format,
+                                    [[maybe_unused]] VkExtent2D render) {
+  std::lock_guard lock(ngxMutex);
+#if REMIX_HAS_DLSS
+  m->context = std::move(context);
+  m->render = render;
+  m->display = display;
+  m->format = format;
+  if (!m->context->m->caps.fg)
+    throw std::runtime_error(m->context->m->caps.fgReason.empty() ? "DLSS Frame Generation unavailable"
+                                                                  : m->context->m->caps.fgReason);
+  if (fault("fg-create"))
+    throw std::runtime_error("Injected NGX feature creation failure");
+  auto device = m->context->m->device;
+  check(NVSDK_NGX_VULKAN_AllocateParameters(&m->parameters), "NGX parameters");
+  VkCommandPool pool{};
+  VkCommandBuffer command{};
+  VkFence fence{};
+  try {
+    VkCommandPoolCreateInfo pi{.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, .queueFamilyIndex = family};
+    vkCheck(vkCreateCommandPool(device, &pi, nullptr, &pool));
+    VkCommandBufferAllocateInfo ai{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                                   .commandPool = pool,
+                                   .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+                                   .commandBufferCount = 1};
+    vkCheck(vkAllocateCommandBuffers(device, &ai, &command));
+    VkCommandBufferBeginInfo bi{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+    vkCheck(vkBeginCommandBuffer(command, &bi));
+    NVSDK_NGX_DLSSG_Create_Params desc{};
+    desc.Width = display.width;
+    desc.Height = display.height;
+    desc.NativeBackbufferFormat = uint32_t(format);
+    desc.RenderWidth = render.width;
+    desc.RenderHeight = render.height;
+    desc.DynamicResolutionScaling = false;
+    check(NGX_VK_CREATE_DLSSG(command, 1, 1, &m->feature, m->parameters, &desc), "DLSS Frame Generation creation");
+    vkCheck(vkEndCommandBuffer(command));
+    VkFenceCreateInfo fi{.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    vkCheck(vkCreateFence(device, &fi, nullptr, &fence));
+    m->initializationPool = pool;
+    m->initializationCommand = command;
+    m->initializationFence = fence;
+  } catch (...) {
+    if (fence)
+      vkDestroyFence(device, fence, nullptr);
+    if (pool)
+      vkDestroyCommandPool(device, pool, nullptr);
+    throw;
+  }
+#else
+  unavailable();
+#endif
+}
+bool NgxFrameGeneration::finishInitialization(VkQueue queue) {
+#if REMIX_HAS_DLSS
+  if (!m->initializationPool)
+    return true;
+  const auto device = m->context->m->device;
+  if (!m->initializationSubmitted) {
+    VkSubmitInfo submit{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                        .commandBufferCount = 1,
+                        .pCommandBuffers = &m->initializationCommand};
+    vkCheck(vkQueueSubmit(queue, 1, &submit, m->initializationFence));
+    m->initializationSubmitted = true;
+  }
+  const auto status = vkGetFenceStatus(device, m->initializationFence);
+  if (status == VK_NOT_READY)
+    return false;
+  vkCheck(status);
+  vkDestroyFence(device, m->initializationFence, nullptr);
+  vkDestroyCommandPool(device, m->initializationPool, nullptr);
+  m->initializationFence = VK_NULL_HANDLE;
+  m->initializationPool = VK_NULL_HANDLE;
+#else
+  (void)queue;
+#endif
+  return true;
+}
+void NgxFrameGeneration::record([[maybe_unused]] VkCommandBuffer command, [[maybe_unused]] Input backbuffer,
+                                [[maybe_unused]] Input depth, [[maybe_unused]] Input motion,
+                                [[maybe_unused]] Input hudless, [[maybe_unused]] Input output,
+                                [[maybe_unused]] const FrameGenerationCamera &camera,
+                                [[maybe_unused]] uint32_t generated, [[maybe_unused]] uint32_t index) {
+  std::lock_guard lock(ngxMutex);
+#if REMIX_HAS_DLSS
+  if (fault("fg-evaluate"))
+    throw std::runtime_error("Injected NGX evaluation failure");
+  auto resource = [](Input input, VkFormat format, VkExtent2D size, bool output = false) {
+    return NVSDK_NGX_Create_ImageView_Resource_VK(input.view, input.image,
+                                                  {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}, format, size.width,
+                                                  size.height, output);
+  };
+  auto color = resource(backbuffer, m->format, m->display);
+  auto d = resource(depth, VK_FORMAT_R32_SFLOAT, m->render);
+  auto mv = resource(motion, VK_FORMAT_R32G32_SFLOAT, m->render);
+  auto out = resource(output, m->format, m->display, true);
+  auto withoutHud = resource(hudless, m->format, m->display);
+  NVSDK_NGX_VK_DLSSG_Eval_Params eval{};
+  eval.pBackbuffer = &color;
+  eval.pDepth = &d;
+  eval.pMVecs = &mv;
+  eval.pOutputInterpFrame = &out;
+  NVSDK_NGX_DLSSG_Opt_Eval_Params options{};
+  options.multiFrameCount = std::max(generated, 1u);
+  options.multiFrameIndex = std::clamp(index, 1u, options.multiFrameCount);
+  if (hudless.image) {
+    eval.pHudless = &withoutHud;
+    options.hudLessSubrectSize = {m->display.width, m->display.height};
+  }
+  // scene::Matrix (column vectors, column-major) is byte for byte the
+  // row-vector, row-major matrix NGX takes, as for Ray Reconstruction.
+  static_assert(sizeof(options.cameraViewToClip) == sizeof(scene::Matrix));
+  std::memcpy(options.cameraViewToClip, camera.viewToClip.data(), sizeof(scene::Matrix));
+  std::memcpy(options.clipToCameraView, camera.clipToView.data(), sizeof(scene::Matrix));
+  std::memcpy(options.clipToPrevClip, camera.clipToPrevClip.data(), sizeof(scene::Matrix));
+  std::memcpy(options.prevClipToClip, camera.prevClipToClip.data(), sizeof(scene::Matrix));
+  for (int i = 0; i < 4; ++i)
+    for (int j = 0; j < 4; ++j)
+      options.clipToLensClip[i][j] = i == j; // no lens distortion
+  // Motion is in render pixels; NGX takes it as a fraction of the frame.
+  options.mvecScale[0] = 1.f / float(m->render.width);
+  options.mvecScale[1] = 1.f / float(m->render.height);
+  for (int i = 0; i < 3; ++i) {
+    options.cameraPos[i] = camera.position[i];
+    options.cameraUp[i] = camera.up[i];
+    options.cameraRight[i] = camera.right[i];
+    options.cameraFwd[i] = camera.forward[i];
+  }
+  options.cameraNear = camera.nearPlane;
+  options.cameraFar = camera.farPlane;
+  options.cameraFOV = camera.fieldOfView;
+  options.cameraAspectRatio = camera.aspect;
+  options.colorBuffersHDR = false;
+  options.depthInverted = camera.depthInverted;
+  options.cameraMotionIncluded = true;
+  options.reset = camera.reset;
+  options.mvecsSubrectSize = {m->render.width, m->render.height};
+  options.depthSubrectSize = {m->render.width, m->render.height};
+  options.backbufferSubrectSize = {m->display.width, m->display.height};
+  options.outputInterpSubrectSize = {m->display.width, m->display.height};
+  check(NGX_VK_EVALUATE_DLSSG(command, m->feature, m->parameters, &eval, &options), "DLSS Frame Generation evaluation");
 #else
   unavailable();
 #endif

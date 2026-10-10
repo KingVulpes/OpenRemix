@@ -28,6 +28,7 @@
 #include "platform/render_thread.h"
 #include "platform/window.h"
 #include "raster/renderer.h"
+#include "runtime/frame_generation.h"
 #include "runtime/memory_pressure.h"
 #include "runtime/pipelines.h"
 #include "runtime/profiles.h"
@@ -64,6 +65,7 @@ public:
   }
   const std::string &postProcessingFailure() const { return m_postFailure; }
   remixapi_ErrorCode present(const remixapi_PresentInfo *info);
+  bool lowLatencySupported() const { return m_lowLatencySupported; }
   remixapi_ErrorCode requestScreenshot(const char *path);
   void completeScreenshot();
   int configureSharedFrame(remixapi_EditorSharedFrame &frame);
@@ -173,8 +175,8 @@ private:
   remixapi_ErrorCode recreateSwapchain();
   remixapi_ErrorCode createFrameResources();
   remixapi_ErrorCode createAttachments();
-  remixapi_ErrorCode recordFrame(uint32_t imageIndex,
-                                 scene::TraceFrame *traceScene);
+  remixapi_ErrorCode recordFrame(uint32_t imageIndex, scene::TraceFrame *traceScene,
+                                 const GeneratedImages &generated = {});
   // Synchronous presentation: the whole frame on the calling thread.
   remixapi_ErrorCode presentFrame(const remixapi_PresentInfo *info);
   // Asynchronous presentation. presentAsync runs on the caller's thread with
@@ -251,6 +253,29 @@ private:
   void retireTracer(std::unique_ptr<PathTracer> tracer,
                     std::shared_ptr<void> depth);
   bool preparationPending() const;
+  // Frame generation ("rtx.native.frameGeneration", runtime/frame_generation.h).
+  // prepareFrameGeneration: Present setup (render thread idle): creates the
+  // feature for the current swapchain and render size and reports whether
+  // this frame can generate. acquireGenerated: the frame's second swapchain
+  // image. recordFrameGeneration: the end of the frame's command buffer.
+  // presentImages: the generated image at once and the rendered one half a
+  // frame later, on the presenter thread; finishDeferredPresent waits for
+  // that present, which every other use of the queue must follow (the next
+  // Present begins with it).
+  // NVIDIA Reflex (VK_NV_low_latency2, "rtx.native.lowLatency"). The driver
+  // is told where each frame's phases begin and end (latencyMarker) and, once
+  // per frame after Present, holds the host back until rendering it will not
+  // queue it behind the GPU (latencySleep): the host's next frame then starts
+  // from fresher input. applyLatencyMode: render thread idle.
+  remixapi_ErrorCode presentUnpaced(const remixapi_PresentInfo *info);
+  void applyLatencyMode();
+  void latencySleep();
+  void latencyMarker(VkLatencyMarkerNV marker, uint64_t frame);
+  void prepareFrameGeneration();
+  GeneratedImages acquireGenerated();
+  void recordFrameGeneration(VkCommandBuffer command, uint32_t realIndex, const GeneratedImages &generated);
+  VkResult presentImages(uint32_t realIndex, const GeneratedImages &generated);
+  void finishDeferredPresent();
   static bool processEvent(const SDL_Event *event, void *userData);
   void updateFreeCamera();
 
@@ -362,6 +387,29 @@ private:
   bool m_recreateSurface = false;
   bool m_vsync = false;
   bool m_presenterVsync = false;
+  // Frame generation, in generated frames per rendered frame (0: off).
+  // Requested: the setting; presenter: what the swapchain was created for
+  // (that many more images); m_generateCount: what this frame generates.
+  uint32_t m_frameGenerationRequested = 0, m_presenterFrameGeneration = 0, m_generateCount = 0;
+  bool m_frameGenerationReady = false, m_frameGenerationFailed = false;
+  std::unique_ptr<FrameGeneration> m_frameGeneration;
+  std::string m_frameGenerationStatus;
+  uint64_t m_generatedFrames = 0, m_duplicatedFrames = 0;
+  bool m_lowLatencySupported = false, m_lowLatencyRequested = false, m_lowLatencyActive = false;
+  PFN_vkSetLatencySleepModeNV m_setLatencySleepMode = nullptr;
+  PFN_vkLatencySleepNV m_latencySleep = nullptr;
+  PFN_vkSetLatencyMarkerNV m_setLatencyMarker = nullptr;
+  VkSemaphore m_latencySemaphore = VK_NULL_HANDLE; // timeline: the driver signals the end of a sleep
+  uint64_t m_latencyValue = 0;
+  // The frame the host simulates (caller's thread) and the one being
+  // rendered (copied at Present, read by the render thread).
+  uint64_t m_latencyFrame = 0, m_latencyRenderFrame = 0;
+  // The rendered frame's deferred present: one job at a time on its own
+  // thread, joined by finishDeferredPresent before the queue is used again.
+  RenderThread m_presenter;
+  std::atomic<int> m_deferredResult{VK_SUCCESS};
+  std::chrono::steady_clock::time_point m_lastRenderedPresent{};
+  double m_renderedInterval = 0; // smoothed milliseconds between rendered frames
   bool m_srgb = true;
   remixapi_UIState m_uiState = REMIXAPI_UI_STATE_NONE;
   float m_clearColor[4] = {0.025f, 0.035f, 0.055f, 1.0f};
@@ -395,6 +443,7 @@ private:
   std::vector<VkCommandBuffer> m_commandBuffers;
   struct FrameSync {
     VkSemaphore imageAvailable = VK_NULL_HANDLE;
+    VkSemaphore generatedAvailable[FrameGeneration::maxGenerated] = {}; // frame generation's images
     VkFence fence = VK_NULL_HANDLE;
     std::shared_ptr<FrameSnapshot> snapshot;
   } m_frames[gpuFrameCount];

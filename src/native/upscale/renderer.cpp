@@ -701,4 +701,11 @@ void Renderer::composite(VkCommandBuffer command, bool encodeOutput, bool prism,
 }
 
 Input Renderer::output() const { return {m_gpu->output->image, m_gpu->output->view}; }
+FrameGenerationInputs Renderer::frameGenerationInputs() const {
+  const auto &g = *m_gpu;
+  if (!g.depth || !g.motion)
+    return {};
+  // record() writes the device depth for NGX and the reversed one for FSR.
+  return {{g.depth->image, g.depth->view}, {g.motion->image, g.motion->view}, g.render, !g.ngx, true};
+}
 } // namespace remix::upscale

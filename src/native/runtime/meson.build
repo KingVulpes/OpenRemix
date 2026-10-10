@@ -5,6 +5,7 @@ runtime_sources = files(
   'settings.cpp',
   'profiles.cpp',
   'device.cpp',
+  'frame_generation.cpp',
   'frame_snapshot.cpp',
   'memory_pressure.cpp',
   'presentation.cpp',

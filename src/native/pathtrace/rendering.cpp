@@ -1134,6 +1134,7 @@ namespace remix {
         traceState += hex[value & 15];
       }
     }
+    frameGeneration = {};
     if (upscaler) {
       upscaler->record(command, denoiser->image(denoise::Composed), denoiser->image(denoise::Depth),
                        denoiser->image(denoise::Motion), denoiser->image(denoise::Transmission),
@@ -1142,6 +1143,15 @@ namespace remix {
                        {denoiser->image(denoise::RrDiffuse), denoiser->image(denoise::RrSpecular),
                         denoiser->image(denoise::RrNormal), denoiser->image(denoise::RrHitDistance)},
                        resources.view());
+      // Frame generation (runtime/frame_generation.h) interpolates the
+      // finished frame with the depth and motion the upscaler just prepared.
+      frameGeneration.images = upscaler->frameGenerationInputs();
+      frameGeneration.view = resources.view();
+      frameGeneration.projection = pendingProjection;
+      frameGeneration.previousView = history.reset() ? resources.view() : previousView;
+      frameGeneration.previousProjection = history.reset() ? pendingProjection : previousProjection;
+      frameGeneration.reset = temporalFrame.flags[0] != 0;
+      frameGeneration.valid = frameGeneration.images.valid && !debugView;
     }
     captureLinear(command);
     finishPbrReuse(command);

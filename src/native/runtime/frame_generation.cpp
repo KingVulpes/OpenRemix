@@ -11,8 +11,8 @@ void check(VkResult result) {
     throw result;
 }
 // The UNORM twin of an sRGB swapchain format: the images hold the encoded
-// frame as it is displayed, which is what NGX interpolates, and raw copies
-// between the twins keep the bits.
+// frame as it is displayed, which is what the feature interpolates, and raw
+// copies between the twins keep the bits.
 VkFormat encoded(VkFormat format) {
   switch (format) {
   case VK_FORMAT_B8G8R8A8_SRGB: return VK_FORMAT_B8G8R8A8_UNORM;
@@ -42,18 +42,26 @@ void copy(VkCommandBuffer command, VkImage source, VkImage destination, VkExtent
 }
 } // namespace
 
-FrameGeneration::FrameGeneration(std::shared_ptr<upscale::Ngx> ngx, VkPhysicalDevice physical, VkDevice device,
-                                 uint32_t queueFamily, VkExtent2D display, VkFormat swapchainFormat,
-                                 VkExtent2D render)
-    : m_device(device), m_display(display), m_render(render), m_swapchainFormat(swapchainFormat),
-      m_format(encoded(swapchainFormat)) {
+FrameGeneration::FrameGeneration(Backend backend, std::shared_ptr<upscale::Ngx> ngx, VkPhysicalDevice physical,
+                                 VkDevice device, uint32_t queueFamily, VkExtent2D display,
+                                 VkFormat swapchainFormat, VkExtent2D render, bool depthInverted)
+    : m_backendKind(backend), m_device(device), m_display(display), m_render(render),
+      m_swapchainFormat(swapchainFormat), m_format(encoded(swapchainFormat)), m_depthInverted(depthInverted) {
   try {
+    // Transfer source: the frames are copied to the swapchain, and FSR copies
+    // the frame it interpolated from to the image it keeps for the next one.
     const VkImageUsageFlags sampled =
         VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     m_backbuffer = create(physical, sampled);
     m_hudless = create(physical, sampled);
     m_interpolated = create(physical, sampled | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
-    m_feature.initialize(std::move(ngx), queueFamily, display, m_format, render);
+    if (backend == Backend::Fsr31) {
+      m_fsr = std::make_unique<upscale::FsrFrameGeneration>();
+      m_fsr->initialize(physical, device, display, m_format, render, depthInverted);
+    } else {
+      m_dlss = std::make_unique<upscale::NgxFrameGeneration>();
+      m_dlss->initialize(std::move(ngx), queueFamily, display, m_format, render);
+    }
   } catch (...) {
     destroy(m_backbuffer);
     destroy(m_hudless);
@@ -63,6 +71,8 @@ FrameGeneration::FrameGeneration(std::shared_ptr<upscale::Ngx> ngx, VkPhysicalDe
 }
 
 FrameGeneration::~FrameGeneration() {
+  // Before the images: FSR's backend holds views of them until it goes.
+  m_fsr.reset();
   destroy(m_backbuffer);
   destroy(m_hudless);
   destroy(m_interpolated);
@@ -120,13 +130,16 @@ void FrameGeneration::destroy(Target &target) const {
   target = {};
 }
 
-bool FrameGeneration::matches(VkExtent2D display, VkFormat swapchainFormat, VkExtent2D render) const {
-  return display.width == m_display.width && display.height == m_display.height &&
+bool FrameGeneration::matches(Backend backend, VkExtent2D display, VkFormat swapchainFormat, VkExtent2D render,
+                              bool depthInverted) const {
+  return backend == m_backendKind && display.width == m_display.width && display.height == m_display.height &&
          swapchainFormat == m_swapchainFormat && render.width == m_render.width &&
-         render.height == m_render.height;
+         render.height == m_render.height && (!m_fsr || depthInverted == m_depthInverted);
 }
 
-bool FrameGeneration::ready(VkQueue queue) { return m_feature.finishInitialization(queue); }
+bool FrameGeneration::ready(VkQueue queue) {
+  return m_fsr ? m_fsr->finishInitialization(queue) : m_dlss->finishInitialization(queue);
+}
 
 void FrameGeneration::captureHudless(VkCommandBuffer command, VkImage real) {
   gpu::GpuScope scope(command, "Frame generation: frame without HUD", m_display);
@@ -141,6 +154,9 @@ void FrameGeneration::captureHudless(VkCommandBuffer command, VkImage real) {
 
 void FrameGeneration::duplicate(VkCommandBuffer command, VkImage real, const VkImage *generated, uint32_t count) {
   m_hudlessCaptured = false;
+  // FSR keeps the previous frame itself and is not shown this one.
+  if (m_fsr)
+    m_fsr->discontinuity();
   transition(command, real, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
   for (uint32_t i = 0; i < count; ++i) {
     transition(command, generated[i], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
@@ -152,18 +168,28 @@ void FrameGeneration::duplicate(VkCommandBuffer command, VkImage real, const VkI
 
 void FrameGeneration::record(VkCommandBuffer command, VkImage real, const VkImage *generated, uint32_t count,
                              const PathTracer::FrameGenerationInputs &inputs) {
-  gpu::GpuScope scope(command, "DLSS Frame Generation", m_display);
+  // FSR's contexts are built for one render size and depth direction. The
+  // upscaler can have been replaced since the runtime last compared them
+  // (matches()), which it does again before the next frame: show this one
+  // without interpolation.
+  if (m_fsr && (inputs.images.depthInverted != m_depthInverted || inputs.images.render.width != m_render.width ||
+                inputs.images.render.height != m_render.height)) {
+    duplicate(command, real, generated, count);
+    return;
+  }
+  gpu::GpuScope scope(command, m_fsr ? "FSR 3.1 frame generation" : "DLSS Frame Generation", m_display);
   const bool hudless = m_hudlessCaptured;
   m_hudlessCaptured = false;
-  // The finished frame, as NGX's backbuffer; the swapchain image is not
-  // created with the usage NGX needs to sample it.
+  // The finished frame, as the feature's backbuffer; the swapchain image is
+  // not created with the usage the feature needs to sample it.
   transition(command, real, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
   transition(command, m_backbuffer.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
   copy(command, real, m_backbuffer.image, m_display);
   transition(command, real, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 
   // Matrices: column vectors in column-major storage, which is byte for byte
-  // the row-vector, row-major form NGX takes (as for Ray Reconstruction).
+  // the row-vector, row-major form NGX takes (as for Ray Reconstruction). FSR
+  // takes none of them: only the planes, the field of view and the basis.
   upscale::FrameGenerationCamera camera{};
   const auto &view = inputs.view, &projection = inputs.projection;
   const auto clipToView = scene::inverse(projection), viewToWorld = scene::inverse(view);
@@ -190,8 +216,9 @@ void FrameGeneration::record(VkCommandBuffer command, VkImage real, const VkImag
   camera.depthInverted = inputs.images.depthInverted;
   camera.reset = inputs.reset || m_first;
 
-  // NGX samples its inputs in SHADER_READ_ONLY_OPTIMAL and writes its output
-  // in GENERAL; the upscaler's depth and motion are kept in GENERAL.
+  // Both features sample their inputs in SHADER_READ_ONLY_OPTIMAL and write
+  // their output in GENERAL; the upscaler's depth and motion are kept in
+  // GENERAL.
   auto inputsLayout = [&](bool begin) {
     for (auto image : {inputs.images.depth.image, inputs.images.motion.image})
       transition(command, image, begin ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -204,10 +231,18 @@ void FrameGeneration::record(VkCommandBuffer command, VkImage real, const VkImag
   uint32_t done = 0;
   for (; done < count && failure.empty(); ++done) {
     transition(command, m_interpolated.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+    const upscale::Input backbuffer{m_backbuffer.image, m_backbuffer.view},
+        output{m_interpolated.image, m_interpolated.view},
+        withoutHud = hudless ? upscale::Input{m_hudless.image, m_hudless.view} : upscale::Input{};
     try {
-      m_feature.record(command, {m_backbuffer.image, m_backbuffer.view}, inputs.images.depth, inputs.images.motion,
-                       hudless ? upscale::Input{m_hudless.image, m_hudless.view} : upscale::Input{},
-                       {m_interpolated.image, m_interpolated.view}, camera, count, done + 1);
+      // FSR interpolates halfway only and advances its history with each
+      // call: it is given a single generated frame (maxGeneratedBy).
+      if (m_fsr)
+        m_fsr->record(command, backbuffer, inputs.images.depth, inputs.images.motion, withoutHud, output, camera,
+                      inputs.frameMilliseconds);
+      else
+        m_dlss->record(command, backbuffer, inputs.images.depth, inputs.images.motion, withoutHud, output, camera,
+                       count, done + 1);
     } catch (const std::exception &e) {
       failure = e.what();
       break;

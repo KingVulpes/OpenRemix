@@ -29,6 +29,7 @@ namespace remix {
     struct FrameGenerationInputs {
       upscale::FrameGenerationInputs images;
       scene::Matrix view{}, projection{}, previousView{}, previousProjection{};
+      float frameMilliseconds = 0; // since the previous frame, as the upscaler was given
       bool reset = true; // no usable previous frame
       bool valid = false;
     };

@@ -256,7 +256,9 @@ private:
   // Frame generation ("rtx.native.frameGeneration", runtime/frame_generation.h).
   // prepareFrameGeneration: Present setup (render thread idle): creates the
   // feature for the current swapchain and render size and reports whether
-  // this frame can generate. acquireGenerated: the frame's second swapchain
+  // this frame can generate. DLSS's is created there; FSR's compiles
+  // pipelines and is prepared on the pipeline service's worker
+  // (m_frameGenerationPreparation). acquireGenerated: the frame's second swapchain
   // image. recordFrameGeneration: the end of the frame's command buffer.
   // presentImages: the generated image at once and the rendered one half a
   // frame later, on the presenter thread; finishDeferredPresent waits for
@@ -392,7 +394,23 @@ private:
   // (that many more images); m_generateCount: what this frame generates.
   uint32_t m_frameGenerationRequested = 0, m_presenterFrameGeneration = 0, m_generateCount = 0;
   bool m_frameGenerationReady = false, m_frameGenerationFailed = false;
+  // "rtx.native.frameGenerationBackend", and the value prepareFrameGeneration
+  // last acted on: a change replaces the object, and retries after a failure
+  // of the other backend, through a new swapchain.
+  upscale::FrameGenerationMode m_frameGenerationBackend = upscale::FrameGenerationMode::Auto,
+                               m_appliedFrameGenerationBackend = upscale::FrameGenerationMode::Auto;
   std::unique_ptr<FrameGeneration> m_frameGeneration;
+  // An FSR object being made on the worker. Obsolete ones (the swapchain or
+  // the request changed) may still be inside a driver call and are kept until
+  // their job ends; they were never used by the GPU.
+  struct PreparedFrameGeneration {
+    pipeline::PreparationQueue::Ticket job;
+    std::unique_ptr<FrameGeneration> generation;
+    std::string key;
+  };
+  std::shared_ptr<PreparedFrameGeneration> m_frameGenerationPreparation;
+  std::vector<std::shared_ptr<PreparedFrameGeneration>> m_obsoleteFrameGeneration;
+  uint64_t m_frameGenerationGeneration = 0;
   std::string m_frameGenerationStatus;
   uint64_t m_generatedFrames = 0, m_duplicatedFrames = 0;
   bool m_lowLatencySupported = false, m_lowLatencyRequested = false, m_lowLatencyActive = false;

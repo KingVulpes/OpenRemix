@@ -9,7 +9,6 @@
 #include <FidelityFX/host/backends/vk/ffx_vk.h>
 #include <FidelityFX/host/ffx_fsr3upscaler.h>
 #include <algorithm>
-#include <atomic>
 #include <bit>
 #include <cmath>
 #include <stdexcept>
@@ -17,7 +16,6 @@
 
 namespace remix::upscale {
 namespace {
-std::atomic<FfxGetDeviceCapabilitiesFunc> sdkCapabilities{};
 void check(VkResult r) {
   if (r != VK_SUCCESS)
     throw r;
@@ -247,17 +245,7 @@ void Renderer::initialize(VkPhysicalDevice physical, VkDevice device,
     checkFfx(ffxGetInterfaceVK(&desc.backendInterface,
                                reinterpret_cast<FfxDevice>(&g.fsrDevice),
                                g.scratch.data(), g.scratch.size() * 32, 1));
-    // The SDK queries physical FP16 support, but it may not be enabled on our
-    // logical device. Select the portable full-precision shader contract
-    // explicitly.
-    sdkCapabilities = desc.backendInterface.fpGetDeviceCapabilities;
-    desc.backendInterface.fpGetDeviceCapabilities =
-        [](FfxInterface *backend, FfxDeviceCapabilities *caps) {
-          auto result = sdkCapabilities.load()(backend, caps);
-          caps->waveLaneCountMax = caps->waveLaneCountMin;
-          caps->fp16Supported = false;
-          return result;
-        };
+    usePortableShaders(desc.backendInterface);
     ContextAllocations allocations;
     checkFfx(ffxFsr3UpscalerContextCreate(&g.context, &desc));
     g.created = true;

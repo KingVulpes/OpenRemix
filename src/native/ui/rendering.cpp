@@ -141,16 +141,24 @@ namespace remix {
                                           ? "Always on with frame generation."
                                           : "The driver holds the game back so that frames are not queued ahead of\n"
                                             "the GPU: input reaches the screen sooner when the GPU is the limit.");
-      ui::Checkbox("DLSS Frame Generation", &settings.frameGeneration);
+      ui::Checkbox("Frame generation", &settings.frameGeneration);
       if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Shows generated frames between each pair of rendered frames (2x to 4x).\n"
-                          "Needs a supported RTX GPU, the path tracer and an upscaler (DLSS or FSR; their\n"
-                          "native-resolution preset counts). Adds latency: the rendered frame is shown after\n"
-                          "its generated ones.");
+        ImGui::SetTooltip("Shows generated frames between each pair of rendered frames: DLSS Frame Generation\n"
+                          "(2x to 4x, a supported RTX GPU) or FSR 3.1 frame generation (2x, any GPU).\n"
+                          "Needs the path tracer and an upscaler (DLSS or FSR; their native-resolution preset\n"
+                          "counts). Adds latency: the rendered frame is shown after its generated ones.");
       if (settings.frameGeneration) {
+        int backend = int(settings.frameGenerationBackend);
+        if (ui::Combo("Frame generation backend", &backend, "Auto\0DLSS\0FSR 3.1\0"))
+          settings.frameGenerationBackend = upscale::FrameGenerationMode(backend);
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Auto: DLSS Frame Generation where the GPU supports it, FSR 3.1 otherwise.");
+        // FSR generates one frame whatever is asked.
+        ImGui::BeginDisabled(settings.frameGenerationBackend == upscale::FrameGenerationMode::Fsr31);
         int frames = int(settings.frameGenerationFrames) - 1;
         if (ui::Combo("Generated frames", &frames, "2x (one generated)\0003x (two generated)\0004x (three generated)\0"))
           settings.frameGenerationFrames = uint32_t(frames) + 1;
+        ImGui::EndDisabled();
       }
       if (settings.frameGeneration)
         ImGui::TextWrapped("Frame generation: %s | generated %llu, shown twice instead %llu | rendered frame interval %.1f ms",
@@ -160,7 +168,7 @@ namespace remix {
       else if (m_ngx) {
         const auto ngx = m_ngx->capabilities();
         if (ngx.initializationComplete && !ngx.fg)
-          ImGui::TextWrapped("Frame generation unavailable: %s", ngx.fgReason.c_str());
+          ImGui::TextWrapped("DLSS Frame Generation unavailable: %s", ngx.fgReason.c_str());
       }
     }
     if (ImGui::CollapsingHeader("Memory")) {

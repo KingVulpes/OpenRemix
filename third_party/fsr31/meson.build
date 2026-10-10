@@ -1,6 +1,8 @@
 fsr31_include = include_directories('include', 'src/shared', 'src/backends/shared', is_system : true)
 fsr31_sdk = static_library('fsr31_sdk',
   'src/components/fsr3upscaler/ffx_fsr3upscaler.cpp',
+  'src/components/frameinterpolation/ffx_frameinterpolation.cpp',
+  'src/components/opticalflow/ffx_opticalflow.cpp',
   'src/backends/vk/ffx_vk.cpp',
   'src/shared/ffx_assert.cpp', 'src/shared/ffx_message.cpp',
   'src/shared/ffx_object_management.cpp', 'src/shared/ffx_breadcrumbs_list.cpp',

@@ -1150,6 +1150,7 @@ namespace remix {
       frameGeneration.projection = pendingProjection;
       frameGeneration.previousView = history.reset() ? resources.view() : previousView;
       frameGeneration.previousProjection = history.reset() ? pendingProjection : previousProjection;
+      frameGeneration.frameMilliseconds = temporalFrame.timing[0];
       frameGeneration.reset = temporalFrame.flags[0] != 0;
       frameGeneration.valid = frameGeneration.images.valid && !debugView;
     }

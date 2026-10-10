@@ -47,6 +47,7 @@ namespace remix::api {
         std::strcmp(key, "rtx.native.scene.persistentStaticValidation") == 0 ||
         std::strcmp(key, "rtx.native.asyncPresent") == 0 ||
         std::strcmp(key, "rtx.native.frameGeneration") == 0 ||
+        std::strcmp(key, "rtx.native.frameGenerationBackend") == 0 ||
         std::strcmp(key, "rtx.native.frameGenerationFrames") == 0 ||
         std::strcmp(key, "rtx.native.lowLatency") == 0 ||
         std::strcmp(key, "rtx.native.gpuPassTimers") == 0 ||

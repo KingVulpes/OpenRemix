@@ -36,16 +36,21 @@ namespace remix::config {
     // default; toggling drains the render thread and applies at the next
     // Present.
     bool asyncPresent = false;
-    // DLSS Frame Generation: one generated frame between each pair of rendered
-    // frames, presented half a frame ahead of the rendered one. Needs an RTX
-    // GPU the feature supports, the path tracer and an upscaler (its depth and
-    // motion vectors). Adds half a frame of latency. Off by default.
+    // Frame generation: one generated frame between each pair of rendered
+    // frames, presented half a frame ahead of the rendered one. Needs the path
+    // tracer and an upscaler (its depth and motion vectors), and for DLSS
+    // Frame Generation an RTX GPU the feature supports. Adds half a frame of
+    // latency. Off by default.
     bool frameGeneration = false;
+    // Which feature generates: DLSS Frame Generation, FSR 3.1 frame generation
+    // (any GPU, one generated frame), or DLSS where available and FSR
+    // otherwise.
+    upscale::FrameGenerationMode frameGenerationBackend = upscale::FrameGenerationMode::Auto;
     // NVIDIA Reflex (VK_NV_low_latency2): the driver paces the host so that
     // frames are not queued ahead of the GPU. Always on with frame generation.
     bool lowLatency = false;
     // Generated frames per rendered frame: 1 (2x) to 3 (4x), as far as the
-    // GPU's feature goes (DLSS 4 multi frame generation).
+    // GPU's feature goes (DLSS 4 multi frame generation). FSR generates one.
     uint32_t frameGenerationFrames = 1;
     // Diagnostic: timestamp every GPU pass of a frame and show the costs in
     // Diagnostics (and GetGpuPassTimingsEXT). Off by default; off records no

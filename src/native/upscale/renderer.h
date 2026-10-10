@@ -24,6 +24,16 @@ struct FrameGenerationInputs {
   bool depthInverted{}; // nearer is larger (the FSR path's depth)
   bool valid{};
 };
+// The camera of a frame as the frame generation features take it. Matrices
+// without jitter, in scene::Matrix storage (see NgxFrameGeneration::record).
+// `nearPlane` and `farPlane`: the distances of device depth 0 and 1 before any
+// reversal; `fieldOfView`: vertical, in radians.
+struct FrameGenerationCamera {
+  scene::Matrix viewToClip{}, clipToView{}, clipToPrevClip{}, prevClipToClip{};
+  float position[3]{}, up[3]{}, right[3]{}, forward[3]{};
+  float nearPlane{}, farPlane{}, fieldOfView{}, aspect{};
+  bool depthInverted{}, reset{};
+};
 struct Statistics {
   Backend backend{};
   Mode requested{};

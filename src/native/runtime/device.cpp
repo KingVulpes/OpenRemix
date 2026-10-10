@@ -269,8 +269,10 @@ namespace remix {
       features.features.shaderStorageImageExtendedFormats = VK_TRUE;
       VkPhysicalDeviceFeatures available{};
       vkGetPhysicalDeviceFeatures(selection.physicalDevice, &available);
-      // FSR's output shader uses unformatted writes, independently of NRD.
+      // FSR's output shader uses unformatted writes, independently of NRD;
+      // its frame generation also reads the generated frame that way.
       features.features.shaderStorageImageWriteWithoutFormat = available.shaderStorageImageWriteWithoutFormat;
+      features.features.shaderStorageImageReadWithoutFormat = available.shaderStorageImageReadWithoutFormat;
     }
     if (m_denoiseCapabilities.reblurShSupported) {
       features.features.shaderStorageImageReadWithoutFormat = VK_TRUE;

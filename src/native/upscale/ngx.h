@@ -55,14 +55,6 @@ private:
   struct Impl;
   std::unique_ptr<Impl> m;
 };
-// The camera of a frame as DLSS Frame Generation takes it. Matrices without
-// jitter, in scene::Matrix storage (see NgxFrameGeneration::record).
-struct FrameGenerationCamera {
-  scene::Matrix viewToClip{}, clipToView{}, clipToPrevClip{}, prevClipToClip{};
-  float position[3]{}, up[3]{}, right[3]{}, forward[3]{};
-  float nearPlane{}, farPlane{}, fieldOfView{}, aspect{};
-  bool depthInverted{}, reset{};
-};
 // DLSS Frame Generation (NVSDK_NGX_Feature_FrameGeneration): one generated
 // frame between the previous and the current backbuffer.
 class NgxFrameGeneration {

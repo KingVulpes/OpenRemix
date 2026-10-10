@@ -749,8 +749,18 @@ void RemixNativeRuntime::presented() {
   void RemixNativeRuntime::prepareFrameGeneration() {
     m_frameGenerationReady = false;
     m_generateCount = 0;
+    std::erase_if(m_obsoleteFrameGeneration, [](const auto &p) { return p->job->ready(); });
     if (!m_frameGenerationRequested || !m_presenterFrameGeneration || !m_swapchain || !m_ngx)
       return;
+    if (m_frameGenerationBackend != m_appliedFrameGenerationBackend) {
+      m_appliedFrameGenerationBackend = m_frameGenerationBackend;
+      // A failure was the other backend's: the new swapchain forgets it.
+      if (m_frameGenerationFailed) {
+        m_rebuild = true;
+        m_frameGenerationStatus = "backend changed";
+        return;
+      }
+    }
     if (m_frameGenerationFailed)
       return; // the status says why; a new swapchain (or toggling the setting) tries again
     if (!m_pathTracer || !m_targetBackend || m_backend == 0 || m_loading) {
@@ -768,12 +778,18 @@ void RemixNativeRuntime::presented() {
       return;
     }
     try {
+      using Mode = upscale::FrameGenerationMode;
+      using Backend = FrameGeneration::Backend;
+      const auto mode = m_appliedFrameGenerationBackend;
+      // NGX is only asked when DLSS may generate.
       auto capabilities = m_ngx->capabilities();
-      if (capabilities.sdk && !capabilities.initializationComplete) {
+      if (mode != Mode::Fsr31 && capabilities.sdk && !capabilities.initializationComplete) {
         m_ngx->initializeDevice();
         capabilities = m_ngx->capabilities();
       }
-      if (!capabilities.fg) {
+      const auto backend = mode == Mode::Fsr31 || (mode == Mode::Auto && !capabilities.fg) ? Backend::Fsr31
+                                                                                           : Backend::Dlss;
+      if (backend == Backend::Dlss && !capabilities.fg) {
         m_frameGenerationStatus = capabilities.fgReason.empty() ? "DLSS Frame Generation unavailable" : capabilities.fgReason;
         return;
       }
@@ -782,23 +798,68 @@ void RemixNativeRuntime::presented() {
         m_frameGenerationStatus = "needs an upscaler (DLSS or FSR; their native-resolution preset counts)";
         return;
       }
-      if (m_frameGeneration &&
-          !m_frameGeneration->matches(m_swapchainExtent, m_swapchainFormat, upscaling.render)) {
+      // The depth the upscaler prepares: reversed by FSR's, the device's by
+      // DLSS's (upscale::FrameGenerationInputs::depthInverted). FSR frame
+      // generation's shaders are chosen for one of them.
+      const bool depthInverted = upscaling.backend == upscale::Backend::Fsr31;
+      if (m_frameGeneration && !m_frameGeneration->matches(backend, m_swapchainExtent, m_swapchainFormat,
+                                                           upscaling.render, depthInverted)) {
         // Its images may still be in use by frames in flight: the next
         // Present recreates the swapchain, which waits for the device.
         m_rebuild = true;
-        m_frameGenerationStatus = "render size changed";
+        m_frameGenerationStatus = m_frameGeneration->backend() != backend ? "backend changed" : "render size changed";
         return;
       }
+      if (!m_frameGeneration && backend == Backend::Fsr31) {
+        // Its pipelines compile on the worker; this thread would only be
+        // told they are not ready (runtime/pipelines.h).
+        const auto key = std::to_string(m_swapchainExtent.width) + ":" + std::to_string(m_swapchainExtent.height) +
+                         ":" + std::to_string(int(m_swapchainFormat)) + ":" + std::to_string(upscaling.render.width) +
+                         ":" + std::to_string(upscaling.render.height) + ":" + std::to_string(depthInverted);
+        if (m_frameGenerationPreparation && m_frameGenerationPreparation->key != key) {
+          m_pipelines->cancel(m_frameGenerationPreparation->job);
+          m_obsoleteFrameGeneration.push_back(std::move(m_frameGenerationPreparation));
+        }
+        if (!m_frameGenerationPreparation) {
+          auto next = std::make_shared<PreparedFrameGeneration>();
+          next->key = key;
+          const auto physical = m_physicalDevice;
+          const auto device = m_device;
+          const auto family = m_queueFamily;
+          const auto display = m_swapchainExtent, render = upscaling.render;
+          const auto format = m_swapchainFormat;
+          next->job = m_pipelines->prepare("frame-generation-" + std::to_string(++m_frameGenerationGeneration), [=] {
+            next->generation = std::make_unique<FrameGeneration>(Backend::Fsr31, nullptr, physical, device, family,
+                                                                 display, format, render, depthInverted);
+          });
+          m_frameGenerationPreparation = std::move(next);
+        }
+        if (!m_frameGenerationPreparation->job->ready()) {
+          m_frameGenerationStatus = "starting (FSR 3.1)";
+          return;
+        }
+        const auto prepared = std::move(m_frameGenerationPreparation);
+        prepared->job->check();
+        m_frameGeneration = std::move(prepared->generation);
+      } else if (m_frameGenerationPreparation) {
+        // DLSS became the backend while an FSR object was being made.
+        m_pipelines->cancel(m_frameGenerationPreparation->job);
+        m_obsoleteFrameGeneration.push_back(std::move(m_frameGenerationPreparation));
+      }
       if (!m_frameGeneration)
-        m_frameGeneration = std::make_unique<FrameGeneration>(m_ngx, m_physicalDevice, m_device, m_queueFamily,
-                                                              m_swapchainExtent, m_swapchainFormat, upscaling.render);
+        m_frameGeneration = std::make_unique<FrameGeneration>(Backend::Dlss, m_ngx, m_physicalDevice, m_device,
+                                                              m_queueFamily, m_swapchainExtent, m_swapchainFormat,
+                                                              upscaling.render, depthInverted);
       m_frameGenerationReady = m_frameGeneration->ready(m_queue);
-      m_generateCount = std::min(m_presenterFrameGeneration, std::max(capabilities.fgMultiFrameMax, 1u));
-      m_frameGenerationStatus = !m_frameGenerationReady ? "starting"
-                                : m_generateCount == 1  ? "active (2x)"
-                                : m_generateCount == 2  ? "active (3x)"
-                                                        : "active (4x)";
+      // The swapchain has an image for every frame asked for; a backend that
+      // makes fewer leaves the others unused.
+      m_generateCount = std::min(m_presenterFrameGeneration,
+                                 backend == Backend::Dlss ? std::max(capabilities.fgMultiFrameMax, 1u)
+                                                          : FrameGeneration::maxGeneratedBy(backend));
+      m_frameGenerationStatus = !m_frameGenerationReady
+                                    ? "starting"
+                                    : std::string("active (") + (backend == Backend::Fsr31 ? "FSR 3.1" : "DLSS") +
+                                          ", " + std::to_string(m_generateCount + 1) + "x)";
     } catch (const std::exception &e) {
       m_frameGenerationFailed = true;
       m_frameGenerationStatus = e.what();
@@ -1141,13 +1202,20 @@ void RemixNativeRuntime::presented() {
       vkCmdEndRenderPass(buffer);
     }
     lap(breakdown.uiMilliseconds);
-    if (m_screenshotSupported) {
-      gpu::GpuScope scope(buffer, "Screenshot readback", m_swapchainExtent);
-      m_screenshot.record(m_physicalDevice, m_device, buffer, m_swapchainImages[imageIndex],
-                          m_swapchainExtent, m_swapchainFormat);
-    }
     if (generated.count)
       recordFrameGeneration(buffer, imageIndex, generated);
+    if (m_screenshotSupported) {
+      // Diagnostic (REMIX_FG_SCREENSHOT_GENERATED=1): screenshots take the
+      // frame's first generated image instead of the rendered one.
+      static const bool generatedShots = [] {
+        const char *value = std::getenv("REMIX_FG_SCREENSHOT_GENERATED");
+        return value && value[0] == '1';
+      }();
+      const uint32_t shown = generatedShots && generated.count ? generated.index[0] : imageIndex;
+      gpu::GpuScope scope(buffer, "Screenshot readback", m_swapchainExtent);
+      m_screenshot.record(m_physicalDevice, m_device, buffer, m_swapchainImages[shown], m_swapchainExtent,
+                          m_swapchainFormat);
+    }
     if (m_headless)
       sharedBarrier(buffer, false);
     m_gpuTimers.endFrame(buffer);

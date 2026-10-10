@@ -1,9 +1,16 @@
 #include "upscale/sdk_backend.h"
 #include "runtime/pipelines.h"
+#include <atomic>
+#include <bit>
 #include <string_view>
+// After <bit>, which the SDK's utility header uses without including.
+#include <FidelityFX/host/ffx_interface.h>
 namespace remix::upscale {
 namespace {
 thread_local ContextAllocations *allocations{};
+thread_local DeferredViews *deferredViews{};
+// The backend's own capability query: one function for every interface.
+std::atomic<FfxGetDeviceCapabilitiesFunc> sdkCapabilities{};
 template <auto Create, auto Destroy> struct Object;
 template <class Info, class Handle,
           VkResult(VKAPI_PTR Create)(VkDevice, const Info *,
@@ -31,6 +38,15 @@ struct Object<Create, Destroy> {
     Destroy(device, handle, allocator);
   }
 };
+VKAPI_ATTR void VKAPI_CALL destroyImageView(
+    VkDevice device, VkImageView view, const VkAllocationCallbacks *allocator) {
+  if (allocations)
+    allocations->remove({uint64_t(view), uintptr_t(vkDestroyImageView)});
+  if (deferredViews && view)
+    deferredViews->retire(view);
+  else
+    vkDestroyImageView(device, view, allocator);
+}
 VKAPI_ATTR VkResult VKAPI_CALL
 createPipelines(VkDevice device, VkPipelineCache cache, uint32_t count,
                 const VkComputePipelineCreateInfo *infos,
@@ -78,6 +94,32 @@ void ContextAllocations::add(Key handle, std::function<void()> destroy) {
   order.push_back(handle);
 }
 void ContextAllocations::remove(Key handle) { live.erase(handle); }
+DeferredViews::DeferredViews(VkDevice device, uint32_t frames)
+    : device(device), retired(frames) {}
+DeferredViews::~DeferredViews() {
+  for (const auto &views : retired)
+    for (auto view : views)
+      vkDestroyImageView(device, view, nullptr);
+}
+void DeferredViews::advance() {
+  for (auto view : retired.front())
+    vkDestroyImageView(device, view, nullptr);
+  retired.erase(retired.begin());
+  retired.emplace_back();
+}
+void DeferredViews::retire(VkImageView view) { retired.back().push_back(view); }
+DeferredViews::Scope::Scope(DeferredViews &views) { deferredViews = &views; }
+DeferredViews::Scope::~Scope() { deferredViews = nullptr; }
+void usePortableShaders(FfxInterface &backend) {
+  sdkCapabilities = backend.fpGetDeviceCapabilities;
+  backend.fpGetDeviceCapabilities = [](FfxInterface *sdk,
+                                       FfxDeviceCapabilities *caps) {
+    auto result = sdkCapabilities.load()(sdk, caps);
+    caps->waveLaneCountMax = caps->waveLaneCountMin;
+    caps->fp16Supported = false;
+    return result;
+  };
+}
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL sdkDeviceProc(VkDevice device,
                                                        const char *name) {
   const std::string_view symbol(name);
@@ -92,7 +134,11 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL sdkDeviceProc(VkDevice device,
   OBJECT(vkCreateBuffer, vkDestroyBuffer)
   OBJECT(vkCreateBufferView, vkDestroyBufferView)
   OBJECT(vkCreateImage, vkDestroyImage)
-  OBJECT(vkCreateImageView, vkDestroyImageView)
+  if (symbol == "vkCreateImageView")
+    return reinterpret_cast<PFN_vkVoidFunction>(
+        &Object<vkCreateImageView, vkDestroyImageView>::create);
+  if (symbol == "vkDestroyImageView")
+    return reinterpret_cast<PFN_vkVoidFunction>(destroyImageView);
   if (symbol == "vkCreateShaderModule")
     return reinterpret_cast<PFN_vkVoidFunction>(
         &Object<pipeline::createShaderModule,

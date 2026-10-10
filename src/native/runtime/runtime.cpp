@@ -218,6 +218,8 @@ namespace remix {
     m_obsoletePreparations.clear();
     m_postPreparation.reset();
     m_obsoletePost.clear();
+    m_frameGenerationPreparation.reset();
+    m_obsoleteFrameGeneration.clear();
     destroySwapchain();
     destroySharedFrame();
     m_lastFrame.reset();

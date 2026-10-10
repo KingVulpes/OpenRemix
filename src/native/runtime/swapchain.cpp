@@ -344,6 +344,10 @@ namespace remix {
     // Sized to the swapchain; made again when a frame next generates.
     m_frameGeneration.reset();
     m_frameGenerationReady = false;
+    if (m_frameGenerationPreparation && m_pipelines) {
+      m_pipelines->cancel(m_frameGenerationPreparation->job);
+      m_obsoleteFrameGeneration.push_back(std::move(m_frameGenerationPreparation));
+    }
     m_screenshot.reset(m_device, true);
     shutdownUiVulkan();
     if (!m_commandBuffers.empty()) {

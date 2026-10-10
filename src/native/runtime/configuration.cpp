@@ -144,6 +144,8 @@ namespace remix {
     m_frameGenerationRequested = settings.frameGeneration && !m_headless
                                      ? std::clamp(settings.frameGenerationFrames, 1u, FrameGeneration::maxGenerated)
                                      : 0;
+    // Takes effect in prepareFrameGeneration, through a new swapchain.
+    m_frameGenerationBackend = settings.frameGenerationBackend;
     if (!m_initialized || !settings.backend || !m_traceSupported) {
       if (!m_initialized)
         m_appliedSettings = settings;

@@ -63,11 +63,24 @@ namespace remix::usd {
       std::error_code error;
       if (!std::filesystem::exists(directory, error))
         return result;
-      for (const auto &entry : std::filesystem::recursive_directory_iterator(
-               directory, std::filesystem::directory_options::skip_permission_denied)) {
-        auto name = entry.path().filename().string();
-        if (entry.is_regular_file() && (name == "mod.usda" || name == "mod.usdc" || name == "mod.usd"))
-          result.push_back(entry.path().string());
+      const auto options = std::filesystem::directory_options::skip_permission_denied |
+                           std::filesystem::directory_options::follow_directory_symlink;
+      for (auto it = std::filesystem::recursive_directory_iterator(directory, options, error);
+           it != std::filesystem::recursive_directory_iterator() && !error;
+           it.increment(error)) {
+        std::error_code ec;
+        if (it->is_directory(ec)) {
+          const auto dirName = it->path().filename().string();
+          if (dirName == "assets" || dirName == "deps" || dirName == ".thumbs" ||
+              dirName == "materials" || dirName == "textures" || dirName == ".git") {
+            it.disable_recursion_pending();
+            continue;
+          }
+        } else if (it->is_regular_file(ec)) {
+          auto name = it->path().filename().string();
+          if (name == "mod.usda" || name == "mod.usdc" || name == "mod.usd")
+            result.push_back(it->path().string());
+        }
       }
       std::sort(result.begin(), result.end());
       return result;

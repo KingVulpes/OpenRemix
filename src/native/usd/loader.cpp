@@ -204,8 +204,9 @@ namespace remix::usd {
                 result.scene["materials"].push_back(std::move(material));
             }
           }
-          if (group == "materials" && prim.IsActive() && prim.IsA<UsdShadeMaterial>()) {
+          if (group == "materials" && prim.IsActive()) {
             auto material = compose_material(prim);
+            material["hash"] = hash;
             bool found = false;
             for (const auto &existing : result.scene["materials"])
               found |= existing["id"] == material["id"];

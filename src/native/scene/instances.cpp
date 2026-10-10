@@ -382,10 +382,29 @@ namespace remix {
               resolved->push_back(it->second);
             draw.material = it->second;
             const uint64_t modKey = draw.material->sourceHash ? draw.material->sourceHash : key(surface->material);
-            if (auto replacement = m_modMaterials.find(modKey); replacement != m_modMaterials.end())
-              draw.material = replacement->second;
-            else if (m_modCandidates.contains(modKey) && m_modRequested.insert(modKey).second)
-              m_modRequests.push_back(modKey);
+            const uint64_t texKey = draw.material->texture ? draw.material->texture->getHash() : 0;
+            auto replacement = m_modMaterials.find(modKey);
+            if (replacement == m_modMaterials.end() && texKey)
+              replacement = m_modMaterials.find(texKey);
+            if (replacement != m_modMaterials.end()) {
+              auto modMat = replacement->second;
+              if ((!modMat->texture || modMat->texture == m_white) && it->second->texture) {
+                if (modMat->texture != it->second->texture) {
+                  auto combined = std::make_shared<scene::Material>(*modMat);
+                  combined->texture = it->second->texture;
+                  draw.material = combined;
+                } else {
+                  draw.material = modMat;
+                }
+              } else {
+                draw.material = modMat;
+              }
+            } else {
+              if (m_modCandidates.contains(modKey) && m_modRequested.insert(modKey).second)
+                m_modRequests.push_back(modKey);
+              else if (texKey && m_modCandidates.contains(texKey) && m_modRequested.insert(texKey).second)
+                m_modRequests.push_back(texKey);
+            }
           }
         }
         if (materialOverride)

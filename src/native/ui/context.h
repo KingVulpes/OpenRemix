@@ -3,6 +3,7 @@
 
 namespace remix::ui {
 bool prepareVulkanPipeline(bool request);
+void resetTextureUiCache();
 class UiScope {
 public:
   explicit UiScope(ImGuiContext *context)

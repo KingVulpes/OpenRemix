@@ -88,6 +88,22 @@ namespace remix {
     void updateTexture(remixapi_TextureHandle handle, uint32_t x, uint32_t y, uint32_t width, uint32_t height,
                        remixapi_Format format, const void *pixels, uint32_t rowPitch);
     void destroyTexture(remixapi_TextureHandle handle);
+    const std::unordered_map<uint64_t, std::shared_ptr<scene::Texture>> &textures() const { return m_textures; }
+    const std::unordered_map<std::filesystem::path, std::weak_ptr<scene::Texture>> &paths() const { return m_paths; }
+    const std::unordered_set<uint64_t> &hiddenTextures() const { return m_hiddenTextures; }
+    bool isTextureHidden(uint64_t hash) const { return hash && m_hiddenTextures.find(hash) != m_hiddenTextures.end(); }
+    bool isDrawHidden(const scene::Draw &draw) const {
+      if (m_hiddenTextures.empty() || !draw.material)
+        return false;
+      if (draw.material->texture && isTextureHidden(draw.material->texture->getHash()))
+        return true;
+      if (draw.material->sourceHash && isTextureHidden(draw.material->sourceHash))
+        return true;
+      return false;
+    }
+    void setTextureHidden(uint64_t hash, bool hidden);
+    void clearHiddenTextures();
+    void syncHiddenTextures(const std::vector<uint64_t> &hashes);
     // "Keep BC textures compressed": applies to textures created afterwards.
     // Atomic so the API layer can choose the preparation path before locking.
     void setKeepCompressedTextures(bool value) { m_keepCompressed.store(value, std::memory_order_relaxed); }
@@ -248,6 +264,7 @@ namespace remix {
     std::vector<uint64_t> m_modRequests;
     std::unordered_map<uint64_t, std::shared_ptr<scene::Mesh>> m_meshes;
     std::unordered_map<uint64_t, std::shared_ptr<scene::Texture>> m_textures, m_uiTextures;
+    std::unordered_set<uint64_t> m_hiddenTextures;
     std::unordered_map<std::filesystem::path, std::weak_ptr<scene::Texture>> m_paths;
     std::array<scene::Matrix, 3> m_cameras, m_views, m_projections;
     std::array<scene::Matrix, 3> m_authoredCameras, m_authoredViews;

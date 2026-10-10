@@ -237,6 +237,8 @@ namespace remix {
     }
     std::vector<Draw> pending;
     buildDraws(description, mesh->second, m_modelScratch.data(), count, override, true, pending, nullptr);
+    if (!m_hiddenTextures.empty())
+      std::erase_if(pending, [&](const Draw &d) { return isDrawHidden(d); });
     if (description.halo) {
       // A halo source: validated like any instance, kept out of the scene.
       appendHalo(description.haloParameters, std::move(pending));

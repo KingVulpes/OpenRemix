@@ -134,6 +134,7 @@ namespace remix {
     m_requestedBackend = settings.backend;
     m_raster.setKeepCompressedTextures(settings.compressedTextures);
     m_raster.setRefreshGeometry(settings.refreshGeometry);
+    m_raster.syncHiddenTextures(settings.hideTextures);
     // Read by the frame's recording (the render thread with asynchronous presentation).
     m_gpuTimersEnabled = settings.gpuPassTimers;
     // Startup needs the requested presenter settings before there is a target.

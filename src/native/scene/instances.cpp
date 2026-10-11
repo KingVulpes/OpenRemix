@@ -237,6 +237,8 @@ namespace remix {
     }
     std::vector<Draw> pending;
     buildDraws(description, mesh->second, m_modelScratch.data(), count, override, true, pending, nullptr);
+    if (!m_hiddenTextures.empty())
+      std::erase_if(pending, [&](const Draw &d) { return isDrawHidden(d); });
     if (description.halo) {
       // A halo source: validated like any instance, kept out of the scene.
       appendHalo(description.haloParameters, std::move(pending));
@@ -330,11 +332,13 @@ namespace remix {
       m_default = std::make_shared<Material>();
       m_default->texture = texturePath(nullptr);
     }
-    // A mod replaces the material by its own hash (ownKey; 0: unknown) or by
+    // A mod replaces the material by its own hash (ownKey; 0: unknown), by
     // the key its host named for it (sourceHash: a captured material's hash,
-    // or remixapi_MaterialInfoReplacementHashEXT), the former first.
+    // or remixapi_MaterialInfoReplacementHashEXT) or by its albedo texture's
+    // hash, in that order.
     auto modMaterial = [&](const std::shared_ptr<Material> &original, uint64_t ownKey) -> std::shared_ptr<Material> {
-      const uint64_t modKeys[2] = {ownKey, original->sourceHash};
+      const uint64_t modKeys[3] = {ownKey, original->sourceHash,
+                                   original->texture ? original->texture->getHash() : 0};
       for (const uint64_t modKey : modKeys) {
         if (!modKey)
           continue;

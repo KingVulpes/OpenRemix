@@ -97,8 +97,16 @@ namespace remix {
       bool dynamic = false;
       mutable std::weak_ptr<Texture> linear;
       std::shared_ptr<Texture> encodedSource; // Keep a file-backed data view's weak path cache alive.
+      uint64_t hash = 0;
       mutable uint64_t contentHash = 0;
       uint64_t fingerprint() const;
+      uint64_t getHash() const {
+        if (hash)
+          return hash;
+        if (contentHash)
+          return contentHash;
+        return fingerprint();
+      }
     };
     struct Vertex {
       float position[3];

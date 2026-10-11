@@ -1,11 +1,13 @@
 > This project uses AI-generated code
 # OpenRemix
-
-A performance-focused, multi-platform alternative to [dxvk-remix](https://github.com/NVIDIAGameWorks/dxvk-remix_)
-
+﻿
+A performance-focused, multi-platform alternative to [dxvk-remix](https://github.com/NVIDIAGameWorks/dxvk-remix). 
+﻿
+The entire codebase is different, the only Remix-part of OpenRemix is the compatibility with OpenUSD and the Remix API
+﻿
 ## Features
-
-- Raster rendering and path tracing, with raster or ray-traced primary visibility.
+﻿
+- Raster rendering and path tracing, with raster or ray-traced primary visibility, this is used to pass through raster effects/overlays into the Path-traced view 
 - Sun, sky, local and emissive lighting, indirect illumination, and soft shadows.
 - PBR materials, normal maps, decals, alpha cutouts, and translucent surfaces.
 - Mesh instancing, skinning, and animated textures.

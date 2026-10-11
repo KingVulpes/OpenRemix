@@ -11,6 +11,10 @@ namespace remix {
     // The frame's draw lists move; state that persists across frames here is
     // copied. finishFrame below leaves this side as a finished frame would.
     frame.m_draws = std::move(m_draws);
+    frame.m_hiddenTextures = m_hiddenTextures;
+    if (!frame.m_hiddenTextures.empty()) {
+      std::erase_if(frame.m_draws, [&](const Draw &d) { return frame.isDrawHidden(d); });
+    }
     frame.m_uiDraws = std::move(m_uiDraws);
     frame.m_halos = std::move(m_halos);
     frame.m_haloDraws = m_haloDraws;

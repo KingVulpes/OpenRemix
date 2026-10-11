@@ -143,24 +143,31 @@ namespace remix::usd {
                          (anchor.empty() ? "" : " (authored in " + anchor + ")"));
       return {};
     }
-    Json material_json(const UsdShadeMaterial &material, Json &warnings) {
-      // A mod's material may be a bare `over "mat_<hash>" { over "Shader" {...} }`
-      // (generated mods reference no template): neither prim has a type then,
-      // and the shader is the child of that name.
-      auto connected = material ? material.ComputeSurfaceSource(TfToken("mdl")) : UsdShadeShader();
-      UsdPrim shader = connected ? connected.GetPrim() : UsdPrim();
+    Json material_json(const UsdPrim &prim, Json &warnings) {
+      UsdPrim shader;
+      if (auto material = UsdShadeMaterial(prim)) {
+        if (auto connected = material.ComputeSurfaceSource(TfToken("mdl")))
+          shader = connected.GetPrim();
+      }
+      if (!shader) {
+        if (auto child = prim.GetChild(TfToken("Shader")))
+          shader = child;
+        else {
+          for (auto child : prim.GetChildren())
+            if (child.IsA<UsdShadeShader>() || child.GetName() == "Shader") {
+              shader = child;
+              break;
+            }
+        }
+      }
       if (!shader)
-        for (auto child : material.GetPrim().GetAllChildren())
-          if (child.IsA<UsdShadeShader>() || child.GetName() == TfToken("Shader")) {
-            shader = child;
-            break;
-          }
+        shader = prim;
       auto color = attribute(shader, "inputs:diffuse_color_constant", GfVec3f(0.7f));
       auto emission = attribute(shader, "inputs:emissive_color_constant", GfVec3f(0.0f));
       auto transmission = attribute(shader, "inputs:transmittance_color", GfVec3f(1.0f));
       auto source = attribute(shader, "info:mdl:sourceAsset", SdfAssetPath()).GetAssetPath();
       const bool translucent = source.find("Translucent") != std::string::npos;
-      return {{"id", material.GetPath().GetString()},
+      return {{"id", prim.GetPath().GetString()},
               {"kind", translucent ? "translucent" : "opaque"},
               {"albedo", {color[0], color[1], color[2]}},
               {"roughness", attribute(shader, "inputs:reflection_roughness_constant", 0.5f)},
@@ -285,12 +292,7 @@ namespace remix::usd {
   }
   Json compose_material(const UsdPrim &prim) {
     Json warnings = Json::array();
-    auto material = UsdShadeMaterial(prim);
-    if (!material && prim.IsA<UsdShadeShader>())
-      material = UsdShadeMaterial(prim.GetParent());
-    if (!material && !prim.GetChild(TfToken("Shader")))
-      throw std::runtime_error("Expected a USD material");
-    auto result = material_json(material, warnings);
+    auto result = material_json(prim, warnings);
     result["warnings"] = warnings;
     return result;
   }
@@ -391,7 +393,7 @@ namespace remix::usd {
             auto material = face_materials.count(face) ? face_materials.at(face) : binding;
             std::string material_id = material ? material.GetPath().GetString() : "default";
             if (material && materials.insert(material_id).second)
-              result["materials"].push_back(material_json(material, result["warnings"]));
+              result["materials"].push_back(material_json(material.GetPrim(), result["warnings"]));
             if (!surfaces.count(material_id))
               surfaces[material_id] = {{"material", material_id},
                                        {"category_flags", categories.flags(prim, material)},

@@ -18,6 +18,7 @@ namespace remix {
   void NativeResources::reset() {
     m_draws.clear();
     m_frameIds.clear();
+    m_hiddenTextures.clear();
     m_uiDraws.clear();
     m_overlay.clear();
     m_halos.clear();
@@ -89,5 +90,30 @@ namespace remix {
     m_frameLights.clear();
     m_publishedLights.clear();
     m_lightsPublished = false;
+  }
+
+  void NativeResources::setTextureHidden(uint64_t hash, bool hidden) {
+    if (!hash)
+      return;
+    if (hidden)
+      m_hiddenTextures.insert(hash);
+    else
+      m_hiddenTextures.erase(hash);
+    restartStatic();
+  }
+
+  void NativeResources::clearHiddenTextures() {
+    if (!m_hiddenTextures.empty()) {
+      m_hiddenTextures.clear();
+      restartStatic();
+    }
+  }
+
+  void NativeResources::syncHiddenTextures(const std::vector<uint64_t> &hashes) {
+    std::unordered_set<uint64_t> next(hashes.begin(), hashes.end());
+    if (next != m_hiddenTextures) {
+      m_hiddenTextures = std::move(next);
+      restartStatic();
+    }
   }
 } // namespace remix

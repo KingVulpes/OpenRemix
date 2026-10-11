@@ -490,4 +490,13 @@ namespace remix {
     auto &texture = m_gpu->texture(image, command);
     return {m_gpu->materials.at(source.get())->sampler, texture.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
   }
+
+  VkImageView RasterRenderer::textureView(const scene::Texture *texture) const {
+    if (!m_gpu || !texture)
+      return VK_NULL_HANDLE;
+    auto it = m_gpu->textures.find(texture);
+    if (it != m_gpu->textures.end())
+      return it->second.view;
+    return VK_NULL_HANDLE;
+  }
 } // namespace remix

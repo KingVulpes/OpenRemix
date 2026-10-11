@@ -36,9 +36,9 @@ namespace remix::ui {
     }
     const bool hasPlugin = remixapi_imgui_HasDrawCallback() != 0;
     // Tabs before kMods edit the profile's settings.
-    enum { kMods = 4, kProfiles, kPlugin };
-    const int tabCount = hasPlugin ? 7 : 6;
-    static const char *tabs[] = {"Rendering", "Lighting", "Post-processing", "Diagnostics", "Mods", "Profiles", "Plugin"};
+    enum { kTextures = 4, kMods, kProfiles, kPlugin };
+    const int tabCount = hasPlugin ? 8 : 7;
+    static const char *tabs[] = {"Rendering", "Lighting", "Post-processing", "Diagnostics", "Textures", "Mods", "Profiles", "Plugin"};
     const float footerHeight = ImGui::GetFrameHeightWithSpacing() * 2 + ImGui::GetStyle().ItemSpacing.y * 2;
     auto draft = profiles.current();
     if (panel.tab >= tabCount)

@@ -184,6 +184,9 @@ namespace remix {
     material->columns = std::max(uint8_t(1), info.spriteSheetCol);
     material->fps = info.spriteSheetFps;
     material->texture = texturePath(texture);
+    if (material->texture && !material->sourceHash) {
+      material->sourceHash = material->texture->getHash();
+    }
     material->normalTexture = dataTexturePath(info.normalTexture);
     const auto *pbr = static_cast<const remixapi_MaterialInfoPbrEXT *>(
         extension(info.pNext, REMIXAPI_STRUCT_TYPE_MATERIAL_PBR_EXT));

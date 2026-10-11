@@ -38,6 +38,7 @@ namespace remix {
     if (!m_white) {
       auto white = std::make_shared<Texture>();
       white->pixels = {1, 1, true, {{255, 255, 255, 255}}};
+      white->hash = white->fingerprint();
       m_white = std::move(white);
     }
     if (!path || !*path) {
@@ -76,6 +77,7 @@ namespace remix {
     auto texture = std::make_shared<Texture>();
     texture->pixels = loadTexture(normalized);
     generateMips(texture->pixels);
+    texture->hash = texture->fingerprint();
     m_paths[normalized] = texture;
     return texture;
   }
@@ -92,6 +94,7 @@ namespace remix {
     linear->pixels = source->pixels;
     linear->pixels.srgb = false; // Data maps store values, not sRGB colors.
     linear->encodedSource = source;
+    linear->hash = source->hash;
     source->linear = linear;
     return linear;
   }
@@ -130,6 +133,7 @@ namespace remix {
       static std::atomic<uint64_t> serial{0};
       const uint64_t identity[] = {0x64796e616d696374ull, serial.fetch_add(1) + 1};
       texture->contentHash = hashBytes(identity, sizeof(identity)) | 1;
+      texture->hash = info.hash;
       m_textures[info.hash] = std::move(texture);
       textureCounters.texturesCreated.fetch_add(1, std::memory_order_relaxed);
       handle = reinterpret_cast<remixapi_TextureHandle>(uintptr_t(info.hash));
@@ -160,6 +164,7 @@ namespace remix {
   void NativeResources::storeTexture(uint64_t hash, scene::Pixels &&pixels, remixapi_TextureHandle &handle) {
     auto texture = std::make_shared<Texture>();
     texture->pixels = std::move(pixels);
+    texture->hash = hash;
     // Identical compressed resubmissions keep their uploaded image. The block
     // hash stands in for the released payload.
     auto sameCompressed = [](const Pixels &a, const Pixels &b) {
@@ -180,6 +185,8 @@ namespace remix {
         !sameCompressed(previous->second->pixels, texture->pixels)) {
       m_textures[hash] = std::move(texture);
       textureCounters.texturesCreated.fetch_add(1, std::memory_order_relaxed);
+    } else {
+      previous->second->hash = hash;
     }
     handle = reinterpret_cast<remixapi_TextureHandle>(uintptr_t(hash));
   }

@@ -56,6 +56,8 @@ namespace remix::config {
     // Diagnostics (and GetGpuPassTimingsEXT). Off by default; off records no
     // additional queries.
     bool gpuPassTimers = false;
+    // Hidden textures
+    std::vector<uint64_t> hideTextures;
     bool operator==(const Settings &) const = default;
   };
   using UnknownSettings = std::map<std::string, std::string>;

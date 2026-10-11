@@ -152,7 +152,7 @@ void RemixNativeRuntime::presented() {
       return;
     if (!m_frameGenerationLogHeader) {
       m_frameGenerationLogHeader = true;
-      logFrameGeneration("build: " __DATE__ " " __TIME__ " (frame pacing after the GPU, 2)");
+      logFrameGeneration("build: " __DATE__ " " __TIME__ " (frame pacing after the GPU, 3)");
       logFrameGeneration("device: %s | vendor 0x%04x device 0x%04x | driver version %u (raw) | Vulkan %u.%u.%u",
                          m_properties.deviceName, m_properties.vendorID, m_properties.deviceID,
                          m_properties.driverVersion, VK_API_VERSION_MAJOR(m_properties.apiVersion),
@@ -1160,6 +1160,9 @@ void RemixNativeRuntime::presented() {
     const double step = interval / (generated.count + 1);
     const auto submitted = Clock::now();
     m_presenter.submit([this, realIndex, generated, interval, step, done, presentOne, submitted] {
+      // A frame the GPU had finished before its turn came: the presenter is
+      // behind the host (below).
+      const bool behind = vkGetFenceStatus(m_device, done) == VK_SUCCESS;
       vkWaitForFences(m_device, 1, &done, VK_TRUE, 2000000000);
       auto finished = Clock::now();
       m_logGpu.add(std::chrono::duration_cast<std::chrono::microseconds>(finished - submitted).count());
@@ -1168,7 +1171,10 @@ void RemixNativeRuntime::presented() {
       // frame finished early is held until (nearly) a frame after the one
       // before it was shown; one that is late is shown at once and moves the
       // timeline. "Nearly" lets the timeline come back after a slow frame.
-      if (m_paceClock != Clock::time_point{} && interval > 0) {
+      // Not while the presenter is behind: the host then waits for it, the
+      // interval measured is the presenter's own, and holding frames to it
+      // kept both slow for most of a minute after frame generation started.
+      if (m_paceClock != Clock::time_point{} && interval > 0 && !behind) {
         const auto next = m_paceClock + std::chrono::duration_cast<Clock::duration>(
                                             std::chrono::duration<double, std::milli>(interval * 0.98));
         if (next > finished && next - finished < std::chrono::duration<double, std::milli>(interval))

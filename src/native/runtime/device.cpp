@@ -324,6 +324,23 @@ namespace remix {
                        [](auto p) { return std::strcmp(p, VK_NV_LOW_LATENCY_2_EXTENSION_NAME) == 0; }))
         extensions.push_back(VK_NV_LOW_LATENCY_2_EXTENSION_NAME);
     }
+    // Present metering (frame generation): the driver spaces a frame's
+    // generated and rendered images itself (presentImages).
+    VkPhysicalDevicePresentMeteringFeaturesNV metering = {
+        .sType = presentMeteringFeaturesType};
+    m_presentMeteringSupported = false;
+    if (!m_headless && m_instanceApiVersion >= VK_API_VERSION_1_1 &&
+        supportsDeviceExtension(selection.physicalDevice, VK_NV_PRESENT_METERING_EXTENSION_NAME)) {
+      VkPhysicalDeviceFeatures2 available = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+                                             .pNext = &metering};
+      vkGetPhysicalDeviceFeatures2(selection.physicalDevice, &available);
+      if (metering.presentMetering) {
+        m_presentMeteringSupported = true;
+        extensions.push_back(VK_NV_PRESENT_METERING_EXTENSION_NAME);
+        metering.pNext = features.pNext;
+        features.pNext = &metering;
+      }
+    }
     const VkDeviceCreateInfo createInfo = {
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
         .pNext = &features,

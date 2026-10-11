@@ -169,10 +169,10 @@ namespace remix {
         available += " " + std::to_string(int(mode));
       logFrameGeneration("swapchain: %ux%u format %d | images asked %u (surface min %u max %u) | present mode %d "
                          "(0 immediate, 1 mailbox, 2 FIFO, 3 FIFO relaxed) of available%s | vsync %d | "
-                         "frame generation asked %u | low latency supported %d",
+                         "frame generation asked %u | low latency supported %d | present metering supported %d",
                          extent.width, extent.height, int(format.format), imageCount, capabilities.minImageCount,
                          capabilities.maxImageCount, int(m_presentMode), available.c_str(), int(m_vsync),
-                         m_frameGenerationRequested, int(m_lowLatencySupported));
+                         m_frameGenerationRequested, int(m_lowLatencySupported), int(m_presentMeteringSupported));
     }
     m_swapchainFormat = format.format;
     m_swapchainExtent = extent;

@@ -215,7 +215,8 @@ void RemixNativeRuntime::presented() {
                          "second), shown twice instead %llu, short of generated ones %llu | rendered interval %.2f ms | "
                          "latest present late by at most %.2f ms | on screen for, on average: generated frames %.2f "
                          "ms, rendered frames %.2f ms | last failed acquire result %d | totals: generated "
-                         "%llu, shown twice %llu, short %llu",
+                         "%llu, shown twice %llu, short %llu | paced by the driver (present metering) %u frames, "
+                         "refused %u",
                          seconds, (unsigned long long)(presentations - m_loggedPresentations),
                          double(presentations - m_loggedPresentations) / seconds,
                          (unsigned long long)(generated - m_loggedGenerated),
@@ -224,7 +225,8 @@ void RemixNativeRuntime::presented() {
                          (unsigned long long)(short_ - m_loggedUngenerated), m_renderedInterval,
                          double(m_presentLateMicroseconds.exchange(0)) / 1000.0, generatedShown, renderedShown,
                          m_lastGeneratedAcquire,
-                         (unsigned long long)generated, (unsigned long long)duplicated, (unsigned long long)short_);
+                         (unsigned long long)generated, (unsigned long long)duplicated, (unsigned long long)short_,
+                         m_meteredFrames.exchange(0), m_meteringRefused.exchange(0));
     m_loggedGenerated = generated;
     m_loggedDuplicated = duplicated;
     m_loggedUngenerated = short_;
@@ -1091,9 +1093,10 @@ void RemixNativeRuntime::presented() {
 
   VkResult RemixNativeRuntime::presentImages(uint32_t realIndex, const GeneratedImages &generated) {
     using Clock = std::chrono::steady_clock;
-    auto presentOne = [this](uint32_t index) {
+    auto presentOne = [this](uint32_t index, const void *next = nullptr) {
       const VkPresentInfoKHR present = {
           .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+          .pNext = next,
           .waitSemaphoreCount = 1,
           .pWaitSemaphores = &m_renderFinished[index],
           .swapchainCount = 1,
@@ -1174,9 +1177,18 @@ void RemixNativeRuntime::presented() {
       m_paceClock = finished;
       VkResult worst = VK_SUCCESS;
       Clock::time_point shownSince{};
+      // Present metering: the first present says how many images make up the
+      // frame and the driver shows them evenly spaced, so the rest follow at
+      // once. A frame whose configuration the driver refuses is timed here.
+      // Diagnostic (REMIX_FG_PRESENT_METERING=0): always timed here.
+      static const bool meteringAllowed = [] {
+        const char *value = std::getenv("REMIX_FG_PRESENT_METERING");
+        return !value || value[0] != '0';
+      }();
+      bool metered = m_presentMeteringSupported && meteringAllowed;
       for (uint32_t i = 0; i <= generated.count; ++i) {
         const auto deadline = finished + std::chrono::duration_cast<Clock::duration>(
-                                             std::chrono::duration<double, std::milli>(step * i));
+                                             std::chrono::duration<double, std::milli>(metered && i ? 0 : step * i));
         const auto left = std::chrono::duration_cast<std::chrono::nanoseconds>(deadline - Clock::now()).count();
         if (left > 0)
           SDL_DelayPrecise(Uint64(left));
@@ -1186,7 +1198,18 @@ void RemixNativeRuntime::presented() {
         for (auto worstLate = m_presentLateMicroseconds.load();
              late > worstLate && !m_presentLateMicroseconds.compare_exchange_weak(worstLate, late);) {
         }
-        const VkResult result = presentOne(i < generated.count ? generated.index[i] : realIndex);
+        VkSetPresentConfigNV batch = {.sType = presentConfigType,
+                                      .numFramesPerBatch = generated.count + 1};
+        const VkResult result =
+            presentOne(i < generated.count ? generated.index[i] : realIndex, metered && !i ? &batch : nullptr);
+        if (metered && !i) {
+          if (batch.presentConfigFeedback) {
+            metered = false;
+            ++m_meteringRefused;
+          } else {
+            ++m_meteredFrames;
+          }
+        }
         if (result != VK_SUCCESS && (worst == VK_SUCCESS || worst == VK_SUBOPTIMAL_KHR))
           worst = result;
         // What each kind of frame was on screen for (the log's averages).

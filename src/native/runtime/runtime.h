@@ -484,6 +484,16 @@ private:
     }
   } m_logGenerated, m_logRendered, m_logHost, m_logGpu, m_logWait;
   bool m_lowLatencySupported = false, m_lowLatencyRequested = false, m_lowLatencyActive = false;
+  // VK_NV_present_metering: a frame's images are presented together and the
+  // driver shows them evenly spaced (presentImages), instead of the presenter
+  // thread's timed presents. m_meteringRefused: presents whose configuration
+  // the driver did not take (those frames are timed here), since the last line.
+  // Its structure types by value: the Vulkan headers declare them only with
+  // VK_ENABLE_BETA_EXTENSIONS.
+  static constexpr auto presentConfigType = VkStructureType(1000613000);
+  static constexpr auto presentMeteringFeaturesType = VkStructureType(1000613001);
+  bool m_presentMeteringSupported = false;
+  std::atomic<uint32_t> m_meteredFrames{0}, m_meteringRefused{0};
   PFN_vkSetLatencySleepModeNV m_setLatencySleepMode = nullptr;
   PFN_vkLatencySleepNV m_latencySleep = nullptr;
   PFN_vkSetLatencyMarkerNV m_setLatencyMarker = nullptr;

@@ -1443,12 +1443,18 @@ void RemixNativeRuntime::presented() {
       recordFrameGeneration(buffer, imageIndex, generated);
     if (m_screenshotSupported) {
       // Diagnostic (REMIX_FG_SCREENSHOT_GENERATED=1): screenshots take the
-      // frame's first generated image instead of the rendered one.
-      static const bool generatedShots = [] {
+      // frame's first generated image instead of the rendered one. With 2,
+      // every other capture's: a captured sequence then alternates generated
+      // and rendered images, which shows where in time the generated ones are.
+      static const int generatedShots = [] {
         const char *value = std::getenv("REMIX_FG_SCREENSHOT_GENERATED");
-        return value && value[0] == '1';
+        return value && (value[0] == '1' || value[0] == '2') ? value[0] - '0' : 0;
       }();
-      const uint32_t shown = generatedShots && generated.count ? generated.index[0] : imageIndex;
+      static uint32_t captures = 0;
+      if (m_screenshot.pending())
+        ++captures;
+      const bool takeGenerated = generatedShots == 1 || (generatedShots == 2 && (captures & 1));
+      const uint32_t shown = takeGenerated && generated.count ? generated.index[0] : imageIndex;
       gpu::GpuScope scope(buffer, "Screenshot readback", m_swapchainExtent);
       m_screenshot.record(m_physicalDevice, m_device, buffer, m_swapchainImages[shown], m_swapchainExtent,
                           m_swapchainFormat);

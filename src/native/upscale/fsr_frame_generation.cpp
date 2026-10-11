@@ -1,6 +1,7 @@
 #include "upscale/fsr_frame_generation.h"
 #include "upscale/sdk_backend.h"
 #include <bit>
+#include <cstdlib>
 #include <stdexcept>
 #include <vector>
 // After <bit>, which the SDK's utility header uses without including.
@@ -352,6 +353,14 @@ void FsrFrameGeneration::record(VkCommandBuffer command, Input backbuffer, Input
   dispatch.viewSpaceToMetersFactor = 1;
   dispatch.frameTimeDelta = frameMilliseconds;
   dispatch.reset = reset;
+  // Diagnostic (REMIX_FSR_FG_DEBUG=<FfxFrameInterpolationDispatchFlags>): 2
+  // marks the generated frame's top rows red at a reset and blue below them
+  // while optical flow reports a scene change.
+  static const uint32_t debugFlags = [] {
+    const char *value = std::getenv("REMIX_FSR_FG_DEBUG");
+    return value ? uint32_t(std::strtoul(value, nullptr, 10)) : 0u;
+  }();
+  dispatch.flags = debugFlags;
   dispatch.backBufferTransferFunction = FFX_BACKBUFFER_TRANSFER_FUNCTION_SRGB;
   // A step other than one resets the interpolation; discontinuities are
   // passed as `reset` instead, so the counter only ever steps.

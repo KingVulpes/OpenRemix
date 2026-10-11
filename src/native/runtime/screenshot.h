@@ -13,6 +13,8 @@ namespace remix {
     void submitted(VkFence fence);
     void complete(VkDevice device, bool wait = false);
     void reset(VkDevice device, bool keepRequest = false);
+    // A request the next record() will capture.
+    bool pending() const { return !m_requested.empty() && m_captured.empty(); }
 
   private:
     std::string m_requested, m_captured;

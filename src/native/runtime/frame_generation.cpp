@@ -1,4 +1,5 @@
 #include "runtime/frame_generation.h"
+#include <cstdlib>
 #include "platform/gpu_timers.h"
 #include "upscale/camera.h"
 #include <cmath>
@@ -178,7 +179,13 @@ void FrameGeneration::record(VkCommandBuffer command, VkImage real, const VkImag
     return;
   }
   gpu::GpuScope scope(command, m_fsr ? "FSR 3.1 frame generation" : "DLSS Frame Generation", m_display);
-  const bool hudless = m_hudlessCaptured;
+  // Diagnostic (REMIX_FG_NO_HUDLESS=1): the features are not given the frame
+  // without HUD.
+  static const bool withoutHudless = [] {
+    const char *value = std::getenv("REMIX_FG_NO_HUDLESS");
+    return value && value[0] == '1';
+  }();
+  const bool hudless = m_hudlessCaptured && !withoutHudless;
   m_hudlessCaptured = false;
   // The finished frame, as the feature's backbuffer; the swapchain image is
   // not created with the usage the feature needs to sample it.

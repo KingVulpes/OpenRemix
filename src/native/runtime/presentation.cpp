@@ -26,6 +26,14 @@
 
 #include <SDL3/SDL_timer.h>
 
+#include <cstdarg>
+#include <cstdio>
+#include <filesystem>
+#include <mutex>
+#if defined(_WIN32)
+#include <windows.h>
+#endif
+
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -101,6 +109,128 @@ void RemixNativeRuntime::presented() {
       }
     };
   } // namespace
+  void RemixNativeRuntime::logFrameGeneration(const char *format, ...) {
+    static std::mutex mutex;
+    std::lock_guard lock(mutex);
+    if (!m_frameGenerationLog) {
+      std::filesystem::path path = "openremix_framegen.log";
+#if defined(_WIN32)
+      // Beside this library (the host's working directory may be anywhere).
+      static const int anchor = 0;
+      HMODULE module{};
+      std::wstring file(32768, L'\0');
+      if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                             reinterpret_cast<LPCWSTR>(&anchor), &module)) {
+        const auto size = GetModuleFileNameW(module, file.data(), DWORD(file.size()));
+        if (size && size < file.size()) {
+          file.resize(size);
+          path = std::filesystem::path(file).parent_path() / "openremix_framegen.log";
+        }
+      }
+      m_frameGenerationLog = _wfopen(path.c_str(), L"w");
+#else
+      m_frameGenerationLog = std::fopen(path.c_str(), "w");
+#endif
+      if (!m_frameGenerationLog)
+        return;
+      m_frameGenerationLogStart = std::chrono::steady_clock::now();
+    }
+    const double seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - m_frameGenerationLogStart).count();
+    std::fprintf(m_frameGenerationLog, "[%9.3f] ", seconds);
+    va_list arguments;
+    va_start(arguments, format);
+    std::vfprintf(m_frameGenerationLog, format, arguments);
+    va_end(arguments);
+    std::fputc('\n', m_frameGenerationLog);
+    std::fflush(m_frameGenerationLog);
+  }
+
+  void RemixNativeRuntime::logFrameGenerationState() {
+    // Nothing is written until frame generation has been asked for once.
+    if (!m_frameGenerationRequested && !m_frameGenerationLog)
+      return;
+    if (!m_frameGenerationLogHeader) {
+      m_frameGenerationLogHeader = true;
+      logFrameGeneration("build: " __DATE__ " " __TIME__ " (frame pacing after the GPU, 2)");
+      logFrameGeneration("device: %s | vendor 0x%04x device 0x%04x | driver version %u (raw) | Vulkan %u.%u.%u",
+                         m_properties.deviceName, m_properties.vendorID, m_properties.deviceID,
+                         m_properties.driverVersion, VK_API_VERSION_MAJOR(m_properties.apiVersion),
+                         VK_API_VERSION_MINOR(m_properties.apiVersion), VK_API_VERSION_PATCH(m_properties.apiVersion));
+    }
+    const auto &settings = m_profiles.current();
+    std::string status = m_frameGenerationStatus.empty() ? "(none yet)" : m_frameGenerationStatus;
+    status += " | setting " + std::to_string(int(settings.frameGeneration)) + ", frames " +
+              std::to_string(settings.frameGenerationFrames) + ", asked " + std::to_string(m_frameGenerationRequested) +
+              ", swapchain made for " + std::to_string(m_presenterFrameGeneration) + ", generating " +
+              std::to_string(m_generateCount) + ", ready " + std::to_string(int(m_frameGenerationReady)) +
+              ", failed " + std::to_string(int(m_frameGenerationFailed)) + ", async present " +
+              std::to_string(int(m_asyncActive)) + ", low latency " + std::to_string(int(m_lowLatencyActive));
+    if (status != m_loggedFrameGenerationStatus) {
+      m_loggedFrameGenerationStatus = status;
+      std::string detail;
+      if (m_ngx) {
+        const auto ngx = m_ngx->capabilities();
+        detail += " | NGX: sdk " + std::to_string(int(ngx.sdk)) + ", initialized " +
+                  std::to_string(int(ngx.initializationComplete)) + ", frame generation " + std::to_string(int(ngx.fg)) +
+                  " (up to " + std::to_string(ngx.fgMultiFrameMax) + " generated)" +
+                  (ngx.fgReason.empty() ? "" : ", reason: " + ngx.fgReason);
+      }
+      if (m_pathTracer) {
+        const auto upscaling = m_pathTracer->upscalingStatistics();
+        detail += std::string(" | upscaler ") + upscale::name(upscaling.backend) + " " +
+                  std::to_string(upscaling.render.width) + "x" + std::to_string(upscaling.render.height) + " -> " +
+                  std::to_string(upscaling.display.width) + "x" + std::to_string(upscaling.display.height);
+      } else {
+        detail += " | no path tracer";
+      }
+      logFrameGeneration("status: %s%s", status.c_str(), detail.c_str());
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (m_frameGenerationLogged != std::chrono::steady_clock::time_point{} &&
+        now - m_frameGenerationLogged < std::chrono::seconds(5))
+      return;
+    const double seconds = m_frameGenerationLogged == std::chrono::steady_clock::time_point{}
+                               ? 0
+                               : std::chrono::duration<double>(now - m_frameGenerationLogged).count();
+    m_frameGenerationLogged = now;
+    // Counters are read while the render thread may be writing them: a line
+    // can be a frame off, which does not matter here.
+    const uint64_t generated = m_generatedFrames, duplicated = m_duplicatedFrames, short_ = m_ungeneratedFrames,
+                   presentations = m_presentationCount;
+    const uint32_t generatedShownCount = m_generatedShownCount.exchange(0),
+                   renderedShownCount = m_renderedShownCount.exchange(0);
+    const double generatedShown =
+        double(m_generatedShownMicroseconds.exchange(0)) / 1000.0 / std::max(generatedShownCount, 1u);
+    const double renderedShown =
+        double(m_renderedShownMicroseconds.exchange(0)) / 1000.0 / std::max(renderedShownCount, 1u);
+    if (seconds > 0 && generated != m_loggedGenerated)
+      logFrameGeneration("  timing, min/average/max ~change from one to the next, ms: generated frame on screen %s | rendered frame on screen %s | "
+                         "host's rendered frames apart %s | GPU, submission to completion (waits for the frame "
+                         "before it included) %s | host waiting for the previous frame's images %s",
+                         m_logGenerated.take().c_str(), m_logRendered.take().c_str(), m_logHost.take().c_str(),
+                         m_logGpu.take().c_str(), m_logWait.take().c_str());
+    if (seconds > 0)
+      logFrameGeneration("last %.1f s: rendered frames presented %llu (%.1f per second) | generated %llu (%.1f per "
+                         "second), shown twice instead %llu, short of generated ones %llu | rendered interval %.2f ms | "
+                         "latest present late by at most %.2f ms | on screen for, on average: generated frames %.2f "
+                         "ms, rendered frames %.2f ms | last failed acquire result %d | totals: generated "
+                         "%llu, shown twice %llu, short %llu",
+                         seconds, (unsigned long long)(presentations - m_loggedPresentations),
+                         double(presentations - m_loggedPresentations) / seconds,
+                         (unsigned long long)(generated - m_loggedGenerated),
+                         double(generated - m_loggedGenerated) / seconds,
+                         (unsigned long long)(duplicated - m_loggedDuplicated),
+                         (unsigned long long)(short_ - m_loggedUngenerated), m_renderedInterval,
+                         double(m_presentLateMicroseconds.exchange(0)) / 1000.0, generatedShown, renderedShown,
+                         m_lastGeneratedAcquire,
+                         (unsigned long long)generated, (unsigned long long)duplicated, (unsigned long long)short_);
+    m_loggedGenerated = generated;
+    m_loggedDuplicated = duplicated;
+    m_loggedUngenerated = short_;
+    m_loggedPresentations = presentations;
+  }
+
   void RemixNativeRuntime::applyLatencyMode() {
     if (!m_lowLatencySupported || !m_swapchain)
       return;
@@ -108,6 +238,7 @@ void RemixNativeRuntime::presented() {
                                            .lowLatencyMode = m_lowLatencyRequested ? VK_TRUE : VK_FALSE,
                                            .lowLatencyBoost = VK_FALSE,
                                            .minimumIntervalUs = 0};
+    std::lock_guard lock(m_queueMutex);
     if (m_setLatencySleepMode(m_device, m_swapchain, &mode) == VK_SUCCESS)
       m_lowLatencyActive = m_lowLatencyRequested;
   }
@@ -144,6 +275,7 @@ void RemixNativeRuntime::presented() {
   remixapi_ErrorCode RemixNativeRuntime::present(const remixapi_PresentInfo *info) {
     latencyMarker(VK_LATENCY_MARKER_SIMULATION_END_NV, m_latencyFrame);
     const auto status = presentUnpaced(info);
+    logFrameGenerationState();
     latencySleep();
     return status;
   }
@@ -159,7 +291,6 @@ void RemixNativeRuntime::presented() {
     // only once it is complete, so it always presents synchronously.
     const bool async = m_profiles.current().asyncPresent && !m_headless;
     if (!async && !m_asyncActive) {
-      finishDeferredPresent();
       if (m_lowLatencyRequested != m_lowLatencyActive)
         applyLatencyMode();
       m_latencyRenderFrame = m_latencyFrame;
@@ -169,7 +300,6 @@ void RemixNativeRuntime::presented() {
     // the previous one before this Present touches anything it owns.
     const auto start = std::chrono::steady_clock::now();
     const double waited = waitRenderThread();
-    finishDeferredPresent();
     if (m_lowLatencyRequested != m_lowLatencyActive)
       applyLatencyMode();
     m_latencyRenderFrame = m_latencyFrame;
@@ -271,6 +401,10 @@ void RemixNativeRuntime::presented() {
       return REMIXAPI_ERROR_CODE_SUCCESS;
     }
     try {
+      // Held from the swapchain check to the handoff: the setup may submit
+      // (NGX feature creation) or wait for the device (a tracer rebuilt for
+      // new settings) while the presenter shows the previous frame.
+      std::unique_lock queueLock(m_queueMutex, std::defer_lock);
       if (m_recreateSurface || m_rebuild || !m_swapchain || m_vsync != m_presenterVsync ||
           m_frameGenerationRequested != m_presenterFrameGeneration ||
           state.drawableWidth != m_swapchainExtent.width || state.drawableHeight != m_swapchainExtent.height) {
@@ -282,6 +416,7 @@ void RemixNativeRuntime::presented() {
       if (!m_swapchain) {
         return REMIXAPI_ERROR_CODE_SUCCESS;
       }
+      queueLock.lock();
       updateFreeCamera();
       m_raster.applyFreeCamera(m_freeCamera);
       // The frame snapshot: from here on API calls change the next frame.
@@ -314,6 +449,7 @@ void RemixNativeRuntime::presented() {
       measured(m_asyncCaller.uiMilliseconds, [&] { drawUi(VK_NULL_HANDLE); });
       publishState();
       setupTime.stop();
+      queueLock.unlock();
       m_handoff = {.callerMilliseconds = m_asyncCaller.setupMilliseconds + m_asyncCaller.captureMilliseconds,
                    .memoryStatistics = m_profiles.current().vramStatistics};
       m_renderThread.submit([this] { renderFrame(); });
@@ -366,6 +502,8 @@ void RemixNativeRuntime::presented() {
     } endFrame{frame, m_frameBreakdown.presentReleaseMilliseconds};
     Stopwatch setupTime{m_frameBreakdown.presentSetupMilliseconds};
     try {
+      // Held while the frame is recorded and submitted (see presentImages).
+      std::unique_lock queueLock(m_queueMutex, std::defer_lock);
       using Clock = std::chrono::steady_clock;
       struct ReleaseEnd {
         Clock::time_point &start;
@@ -404,8 +542,7 @@ void RemixNativeRuntime::presented() {
       m_screenshot.complete(m_device, true);
       setupTime.stop();
       result = measured(p.acquireMilliseconds, [&] {
-        return vkAcquireNextImageKHR(m_device, m_swapchain, 1000000000, m_frames[m_frameIndex].imageAvailable,
-                                     VK_NULL_HANDLE, &imageIndex);
+        return acquireImage(m_frames[m_frameIndex].imageAvailable, 1000000000, imageIndex);
       });
       if (result == VK_TIMEOUT || result == VK_NOT_READY)
         return;
@@ -422,6 +559,7 @@ void RemixNativeRuntime::presented() {
       m_rebuild |= result == VK_SUBOPTIMAL_KHR;
       m_frameStarted = true;
       latencyMarker(VK_LATENCY_MARKER_RENDERSUBMIT_START_NV, m_latencyRenderFrame);
+      queueLock.lock();
       const GeneratedImages generated = acquireGenerated();
       const auto status = measured(p.recordMilliseconds, [&] {
         return recordFrame(imageIndex, traceScene ? &*traceScene : nullptr, generated);
@@ -463,6 +601,7 @@ void RemixNativeRuntime::presented() {
         return;
       }
       latencyMarker(VK_LATENCY_MARKER_RENDERSUBMIT_END_NV, m_latencyRenderFrame);
+      queueLock.unlock();
       m_screenshot.submitted(m_frames[m_frameIndex].fence);
       if (m_pathTracer && !m_loading)
         measured(m_frameBreakdown.presentReleaseMilliseconds, [&] { m_pathTracer->submitted(); });
@@ -542,6 +681,9 @@ void RemixNativeRuntime::presented() {
       return REMIXAPI_ERROR_CODE_SUCCESS;
     }
     try {
+      // Held during the setup and while the frame is recorded and submitted
+      // (see presentImages); released for the waits in between.
+      std::unique_lock queueLock(m_queueMutex, std::defer_lock);
       if (!m_headless && (m_recreateSurface || m_rebuild || !m_swapchain || m_vsync != m_presenterVsync ||
                           m_frameGenerationRequested != m_presenterFrameGeneration ||
                           state.drawableWidth != m_swapchainExtent.width ||
@@ -554,6 +696,7 @@ void RemixNativeRuntime::presented() {
       if (!m_swapchain && !m_sharedImage) {
         return REMIXAPI_ERROR_CODE_SUCCESS;
       }
+      queueLock.lock();
       updateFreeCamera();
       m_raster.applyFreeCamera(m_freeCamera);
       prepareSettings();
@@ -598,6 +741,7 @@ void RemixNativeRuntime::presented() {
         ~ReleaseStart() { start = Clock::now(); }
       } releaseStartStamp{releaseStart};
       setupTime.stop();
+      queueLock.unlock();
       if (m_pathTracer && m_targetBackend && !m_loading)
         traceScene = measured(p.sceneMilliseconds,
                               [&] { return m_pathTracer->prepareScene(m_raster, m_traceOptions); });
@@ -625,8 +769,7 @@ void RemixNativeRuntime::presented() {
       result = measured(p.acquireMilliseconds, [&] {
         if (m_headless)
           return VK_SUCCESS;
-        return vkAcquireNextImageKHR(m_device, m_swapchain, 1000000000, m_frames[m_frameIndex].imageAvailable,
-                                     VK_NULL_HANDLE, &imageIndex);
+        return acquireImage(m_frames[m_frameIndex].imageAvailable, 1000000000, imageIndex);
       });
       if (result == VK_TIMEOUT || result == VK_NOT_READY) {
         return REMIXAPI_ERROR_CODE_SUCCESS;
@@ -642,6 +785,7 @@ void RemixNativeRuntime::presented() {
       m_rebuild |= result == VK_SUBOPTIMAL_KHR;
       m_frameStarted = true;
       latencyMarker(VK_LATENCY_MARKER_RENDERSUBMIT_START_NV, m_latencyRenderFrame);
+      queueLock.lock();
       const GeneratedImages generated = m_headless ? GeneratedImages{} : acquireGenerated();
       status = measured(p.recordMilliseconds, [&] {
         return recordFrame(imageIndex, traceScene ? &*traceScene : nullptr, generated);
@@ -684,6 +828,7 @@ void RemixNativeRuntime::presented() {
         return fail(result);
       }
       latencyMarker(VK_LATENCY_MARKER_RENDERSUBMIT_END_NV, m_latencyRenderFrame);
+      queueLock.unlock();
       m_screenshot.submitted(m_frames[m_frameIndex].fence);
       if (m_pathTracer && !m_loading)
         measured(m_frameBreakdown.presentReleaseMilliseconds, [&] { m_pathTracer->submitted(); });
@@ -739,6 +884,10 @@ void RemixNativeRuntime::presented() {
         if (result != VK_SUCCESS)
           return fail(result);
       }
+      const VkFenceCreateInfo unsignalled = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+      result = vkCreateFence(m_device, &unsignalled, nullptr, &frame.presented);
+      if (result != VK_SUCCESS)
+        return fail(result);
       result = vkCreateFence(m_device, &fence, nullptr, &frame.fence);
       if (result != VK_SUCCESS)
         return fail(result);
@@ -875,14 +1024,16 @@ void RemixNativeRuntime::presented() {
     GeneratedImages generated;
     if (!m_frameGenerationReady || !m_frameGeneration)
       return generated;
-    // Short waits: without free images the frame is presented with fewer
-    // generated frames, or alone.
+    // Bounded waits: without free images the frame is presented with fewer
+    // generated frames, or alone (counted: m_ungeneratedFrames). Under FIFO an
+    // image comes back only when the display has taken the one before it, so
+    // the wait is a share of the frame rather than a fixed few milliseconds.
+    const uint64_t wait = uint64_t(std::clamp(m_renderedInterval * 0.25, 4.0, 20.0) * 1e6);
     while (generated.count < m_generateCount) {
       uint32_t index = 0;
-      const VkResult result =
-          vkAcquireNextImageKHR(m_device, m_swapchain, 4000000,
-                                m_frames[m_frameIndex].generatedAvailable[generated.count], VK_NULL_HANDLE, &index);
+      const VkResult result = acquireImage(m_frames[m_frameIndex].generatedAvailable[generated.count], wait, index);
       if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
+        m_lastGeneratedAcquire = int(result);
         if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_ERROR_SURFACE_LOST_KHR) {
           m_rebuild = true;
           m_recreateSurface |= result == VK_ERROR_SURFACE_LOST_KHR;
@@ -891,6 +1042,7 @@ void RemixNativeRuntime::presented() {
       }
       generated.index[generated.count++] = index;
     }
+    m_ungeneratedFrames += generated.count < m_generateCount;
     return generated;
   }
 
@@ -919,6 +1071,24 @@ void RemixNativeRuntime::presented() {
     m_duplicatedFrames += generated.count;
   }
 
+  VkResult RemixNativeRuntime::acquireImage(VkSemaphore semaphore, uint64_t timeoutNanoseconds,
+                                            uint32_t &imageIndex) {
+    // Polled: an acquire that waited inside the driver would hold the
+    // swapchain against the presenter, whose presents are what frees images.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::nanoseconds(timeoutNanoseconds);
+    for (;;) {
+      {
+        std::lock_guard lock(m_queueMutex);
+        const VkResult result = vkAcquireNextImageKHR(m_device, m_swapchain, 0, semaphore, VK_NULL_HANDLE, &imageIndex);
+        if (result != VK_NOT_READY && result != VK_TIMEOUT)
+          return result;
+      }
+      if (std::chrono::steady_clock::now() >= deadline)
+        return VK_TIMEOUT;
+      SDL_DelayNS(200000);
+    }
+  }
+
   VkResult RemixNativeRuntime::presentImages(uint32_t realIndex, const GeneratedImages &generated) {
     using Clock = std::chrono::steady_clock;
     auto presentOne = [this](uint32_t index) {
@@ -930,14 +1100,17 @@ void RemixNativeRuntime::presented() {
           .pSwapchains = &m_swapchain,
           .pImageIndices = &index,
       };
+      std::lock_guard lock(m_queueMutex);
       return vkQueuePresentKHR(m_queue, &present);
     };
-    // The pace of rendered frames, for placing the rendered one halfway.
+    // The pace of rendered frames, for spreading a frame's images over it.
     const auto now = Clock::now();
     if (m_lastRenderedPresent != Clock::time_point{}) {
       const double elapsed = std::chrono::duration<double, std::milli>(now - m_lastRenderedPresent).count();
-      if (elapsed < 250)
+      if (elapsed < 250) {
         m_renderedInterval = m_renderedInterval > 0 ? m_renderedInterval * 0.9 + elapsed * 0.1 : elapsed;
+        m_logHost.add(int64_t(elapsed * 1000));
+      }
       else
         m_renderedInterval = 0; // a pause: no pacing from before it
     }
@@ -947,42 +1120,106 @@ void RemixNativeRuntime::presented() {
       RemixNativeRuntime &runtime;
       ~PresentEnd() { runtime.latencyMarker(VK_LATENCY_MARKER_PRESENT_END_NV, runtime.m_latencyRenderFrame); }
     } presentEnd{*this};
+    // Frames are shown in order by the presenter thread, each over the frame
+    // step that follows the GPU finishing it. The host is not held for that:
+    // when the GPU takes longer than half a frame, the previous frame's
+    // rendered image is still to be shown now, and waiting for it here gave
+    // the host's frames, which the generated ones interpolate between, the
+    // GPU's irregular spacing. Only the frame before the previous one must be
+    // through (its frame slot, and so its fence, is this frame's).
+    if (m_presenter.started())
+      m_presenter.wait(generated.count ? 1 : 0);
+    takeDeferredResult();
+    m_logWait.add(std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - now).count());
     if (!generated.count)
       return presentOne(realIndex);
     // The generated frames show the moments between the previous rendered
-    // frame and this one, so the first is due now. The others and then the
-    // rendered frame follow at even steps of the frame, from the presenter
-    // thread, so that this thread (and the host) go on.
-    const VkResult first = presentOne(generated.index[0]);
-    if (first != VK_SUCCESS && first != VK_SUBOPTIMAL_KHR) {
-      for (uint32_t i = 1; i < generated.count; ++i)
-        presentOne(generated.index[i]); // hand the images back whatever happened
-      presentOne(realIndex);
-      return first;
+    // frame and this one, and the rendered frame follows them, a frame step
+    // apart. The steps count from when the GPU has finished the frame: a
+    // present waits for that anyway, so presents queued at fixed times after
+    // the submission all landed at once whenever the GPU took longer than the
+    // steps (a GPU-bound frame rate, the case frame generation is for), and
+    // the generated frames were replaced before they were seen.
+    // An empty submission's fence signals when the queue's earlier work is done.
+    const VkFence done = m_frames[m_frameIndex].presented;
+    {
+      std::lock_guard lock(m_queueMutex);
+      vkResetFences(m_device, 1, &done);
+      const VkResult submitted = vkQueueSubmit(m_queue, 0, nullptr, done);
+      if (submitted != VK_SUCCESS) {
+        for (uint32_t i = 0; i < generated.count; ++i)
+          presentOne(generated.index[i]); // hand the images back whatever happened
+        presentOne(realIndex);
+        return submitted;
+      }
     }
-    const double step = std::min(m_renderedInterval / (generated.count + 1), 50.0);
-    m_presenter.submit([this, realIndex, generated, now, step, presentOne] {
+    const double interval = std::min(m_renderedInterval, 100.0);
+    const double step = interval / (generated.count + 1);
+    const auto submitted = Clock::now();
+    m_presenter.submit([this, realIndex, generated, interval, step, done, presentOne, submitted] {
+      vkWaitForFences(m_device, 1, &done, VK_TRUE, 2000000000);
+      auto finished = Clock::now();
+      m_logGpu.add(std::chrono::duration_cast<std::chrono::microseconds>(finished - submitted).count());
+      // The GPU's time varies from frame to frame, and showing every frame
+      // the moment it is finished shows that variation as uneven motion. A
+      // frame finished early is held until (nearly) a frame after the one
+      // before it was shown; one that is late is shown at once and moves the
+      // timeline. "Nearly" lets the timeline come back after a slow frame.
+      if (m_paceClock != Clock::time_point{} && interval > 0) {
+        const auto next = m_paceClock + std::chrono::duration_cast<Clock::duration>(
+                                            std::chrono::duration<double, std::milli>(interval * 0.98));
+        if (next > finished && next - finished < std::chrono::duration<double, std::milli>(interval))
+          finished = next;
+      }
+      m_paceClock = finished;
       VkResult worst = VK_SUCCESS;
-      for (uint32_t i = 1; i <= generated.count; ++i) {
-        const auto deadline = now + std::chrono::duration_cast<Clock::duration>(
-                                        std::chrono::duration<double, std::milli>(step * i));
+      Clock::time_point shownSince{};
+      for (uint32_t i = 0; i <= generated.count; ++i) {
+        const auto deadline = finished + std::chrono::duration_cast<Clock::duration>(
+                                             std::chrono::duration<double, std::milli>(step * i));
         const auto left = std::chrono::duration_cast<std::chrono::nanoseconds>(deadline - Clock::now()).count();
         if (left > 0)
           SDL_DelayPrecise(Uint64(left));
+        // How far past its time this present starts (the log's worst case).
+        const auto late =
+            std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - deadline).count();
+        for (auto worstLate = m_presentLateMicroseconds.load();
+             late > worstLate && !m_presentLateMicroseconds.compare_exchange_weak(worstLate, late);) {
+        }
         const VkResult result = presentOne(i < generated.count ? generated.index[i] : realIndex);
         if (result != VK_SUCCESS && (worst == VK_SUCCESS || worst == VK_SUBOPTIMAL_KHR))
           worst = result;
+        // What each kind of frame was on screen for (the log's averages).
+        const auto shown = Clock::now();
+        auto elapsed = [&](Clock::time_point since) {
+          return std::chrono::duration_cast<std::chrono::microseconds>(shown - since).count();
+        };
+        if (i) {
+          m_generatedShownMicroseconds += elapsed(shownSince);
+          ++m_generatedShownCount;
+          m_logGenerated.add(elapsed(shownSince));
+        } else if (m_renderedShownSince != Clock::time_point{} && elapsed(m_renderedShownSince) < 250000) {
+          m_renderedShownMicroseconds += elapsed(m_renderedShownSince);
+          ++m_renderedShownCount;
+          m_logRendered.add(elapsed(m_renderedShownSince));
+        }
+        shownSince = shown;
       }
-      m_deferredResult.store(int(worst));
+      m_renderedShownSince = shownSince;
+      if (worst != VK_SUCCESS)
+        m_deferredResult.store(int(worst));
     });
-    return first;
+    return VK_SUCCESS;
   }
 
   void RemixNativeRuntime::finishDeferredPresent() {
     if (!m_presenter.started())
       return;
     m_presenter.wait();
-    m_presenter.takeError();
+    takeDeferredResult();
+  }
+
+  void RemixNativeRuntime::takeDeferredResult() {
     const auto result = VkResult(m_deferredResult.exchange(int(VK_SUCCESS)));
     if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || result == VK_ERROR_SURFACE_LOST_KHR) {
       m_rebuild = true;

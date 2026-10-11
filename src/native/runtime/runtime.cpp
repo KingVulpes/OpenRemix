@@ -251,6 +251,8 @@ namespace remix {
         for (auto semaphore : frame.generatedAvailable)
           if (semaphore)
             vkDestroySemaphore(m_device, semaphore, nullptr);
+        if (frame.presented)
+          vkDestroyFence(m_device, frame.presented, nullptr);
         frame = {};
       }
       if (m_commandPool) {

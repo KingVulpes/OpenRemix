@@ -25,6 +25,7 @@
 #include "pathtrace/renderer.h"
 #include "platform/gpu_frames.h"
 #include "platform/gpu_timers.h"
+#include "platform/present_queue.h"
 #include "platform/render_thread.h"
 #include "platform/window.h"
 #include "raster/renderer.h"
@@ -260,10 +261,16 @@ private:
   // pipelines and is prepared on the pipeline service's worker
   // (m_frameGenerationPreparation). acquireGenerated: the frame's second swapchain
   // image. recordFrameGeneration: the end of the frame's command buffer.
-  // presentImages: the generated image at once and the rendered one half a
-  // frame later, on the presenter thread; finishDeferredPresent waits for
-  // that present, which every other use of the queue must follow (the next
-  // Present begins with it).
+  // presentImages: hands the frame's images to the presenter thread, which
+  // shows them as the GPU finishes the frame: the generated ones first, the
+  // rendered one last, at even steps of the frame. Those presents overlap the
+  // next frames' work on the other threads, so every use of the queue and of
+  // the swapchain is made under m_queueMutex (acquireImage polls under it
+  // instead of blocking in the driver). finishDeferredPresent waits for the
+  // presenter (before the swapchain or the device goes); takeDeferredResult
+  // acts on what its presents returned.
+  void takeDeferredResult();
+  VkResult acquireImage(VkSemaphore semaphore, uint64_t timeoutNanoseconds, uint32_t &imageIndex);
   // NVIDIA Reflex (VK_NV_low_latency2, "rtx.native.lowLatency"). The driver
   // is told where each frame's phases begin and end (latencyMarker) and, once
   // per frame after Present, holds the host back until rendering it will not
@@ -273,6 +280,13 @@ private:
   void applyLatencyMode();
   void latencySleep();
   void latencyMarker(VkLatencyMarkerNV marker, uint64_t frame);
+  // "openremix_framegen.log" beside the runtime library, written once frame
+  // generation has been asked for: the device, each swapchain, every change
+  // of status and, every few seconds, the counters. What a user sends when
+  // generated frames do not appear. logFrameGenerationState: once a Present,
+  // on the caller's thread.
+  void logFrameGeneration(const char *format, ...);
+  void logFrameGenerationState();
   void prepareFrameGeneration();
   GeneratedImages acquireGenerated();
   void recordFrameGeneration(VkCommandBuffer command, uint32_t realIndex, const GeneratedImages &generated);
@@ -413,6 +427,55 @@ private:
   uint64_t m_frameGenerationGeneration = 0;
   std::string m_frameGenerationStatus;
   uint64_t m_generatedFrames = 0, m_duplicatedFrames = 0;
+  // Rendered frames presented with fewer generated frames than asked for (no
+  // free swapchain image in time), and the swapchain's present mode: what a
+  // report of "no generated frames" needs first.
+  uint64_t m_ungeneratedFrames = 0;
+  VkPresentModeKHR m_presentMode = VK_PRESENT_MODE_FIFO_KHR;
+  // The log's state: what was last written, the result of the last failed
+  // acquire of a generated frame's image, and how late the presenter thread's
+  // presents were at worst since the last line (microseconds).
+  FILE *m_frameGenerationLog = nullptr;
+  bool m_frameGenerationLogHeader = false;
+  std::string m_loggedFrameGenerationStatus;
+  std::chrono::steady_clock::time_point m_frameGenerationLogStart{}, m_frameGenerationLogged{};
+  uint64_t m_loggedGenerated = 0, m_loggedDuplicated = 0, m_loggedUngenerated = 0, m_loggedPresentations = 0;
+  int m_lastGeneratedAcquire = 0;
+  std::atomic<int64_t> m_presentLateMicroseconds{0};
+  // How long generated and rendered frames stayed up before the next present
+  // replaced them (sums since the last line; the presenter thread's clock).
+  std::atomic<int64_t> m_generatedShownMicroseconds{0}, m_renderedShownMicroseconds{0};
+  std::atomic<uint32_t> m_generatedShownCount{0}, m_renderedShownCount{0};
+  std::chrono::steady_clock::time_point m_renderedShownSince{}; // presenter thread only
+  // Since the last line, in microseconds (min, max; sum and count where an
+  // average is logged): how long each kind of frame stayed up, the host's
+  // spacing of rendered frames, the GPU's time for a frame (submission to
+  // completion) and the wait for the previous frame's images in presentImages.
+  struct LogRange {
+    std::atomic<int64_t> low{INT64_MAX}, high{0}, sum{0}, change{0}, last{-1};
+    std::atomic<uint32_t> count{0};
+    void add(int64_t value) {
+      if (const auto before = last.exchange(value); before >= 0)
+        change += value > before ? value - before : before - value;
+      for (auto v = low.load(); value < v && !low.compare_exchange_weak(v, value);) {
+      }
+      for (auto v = high.load(); value > v && !high.compare_exchange_weak(v, value);) {
+      }
+      sum += value;
+      ++count;
+    }
+    // "min/average/max ~change" in ms (change: from one to the next, on
+    // average: how unevenly they come); resets.
+    std::string take() {
+      const auto n = count.exchange(0);
+      const double l = double(low.exchange(INT64_MAX)) / 1000, h = double(high.exchange(0)) / 1000,
+                   a = double(sum.exchange(0)) / 1000 / (n ? n : 1),
+                   c = double(change.exchange(0)) / 1000 / (n ? n : 1);
+      char text[80];
+      std::snprintf(text, sizeof(text), "%.1f/%.1f/%.1f ~%.1f", n ? l : 0., a, h, c);
+      return text;
+    }
+  } m_logGenerated, m_logRendered, m_logHost, m_logGpu, m_logWait;
   bool m_lowLatencySupported = false, m_lowLatencyRequested = false, m_lowLatencyActive = false;
   PFN_vkSetLatencySleepModeNV m_setLatencySleepMode = nullptr;
   PFN_vkLatencySleepNV m_latencySleep = nullptr;
@@ -422,9 +485,14 @@ private:
   // The frame the host simulates (caller's thread) and the one being
   // rendered (copied at Present, read by the render thread).
   uint64_t m_latencyFrame = 0, m_latencyRenderFrame = 0;
-  // The rendered frame's deferred present: one job at a time on its own
-  // thread, joined by finishDeferredPresent before the queue is used again.
-  RenderThread m_presenter;
+  // The presents of frames with generated ones: a job a frame on its own
+  // thread, at most two unfinished (the host is not held for a frame's images
+  // to have been shown, only for those of the frame before it).
+  // finishDeferredPresent waits for them all. m_paceClock: when the last
+  // frame's first image was shown (presenter thread only).
+  PresentQueue m_presenter;
+  std::chrono::steady_clock::time_point m_paceClock{};
+  std::recursive_mutex m_queueMutex;
   std::atomic<int> m_deferredResult{VK_SUCCESS};
   std::chrono::steady_clock::time_point m_lastRenderedPresent{};
   double m_renderedInterval = 0; // smoothed milliseconds between rendered frames
@@ -462,6 +530,7 @@ private:
   struct FrameSync {
     VkSemaphore imageAvailable = VK_NULL_HANDLE;
     VkSemaphore generatedAvailable[FrameGeneration::maxGenerated] = {}; // frame generation's images
+    VkFence presented = VK_NULL_HANDLE; // signalled when the frame's GPU work is done (the presenter waits for it)
     VkFence fence = VK_NULL_HANDLE;
     std::shared_ptr<FrameSnapshot> snapshot;
   } m_frames[gpuFrameCount];

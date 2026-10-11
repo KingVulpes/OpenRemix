@@ -161,10 +161,17 @@ namespace remix {
         ImGui::EndDisabled();
       }
       if (settings.frameGeneration)
-        ImGui::TextWrapped("Frame generation: %s | generated %llu, shown twice instead %llu | rendered frame interval %.1f ms",
+        ImGui::TextWrapped("Frame generation: %s | generated %llu, shown twice instead %llu, rendered frames short of "
+                           "generated ones (no free swapchain image) %llu | rendered frame interval %.1f ms (%.0f fps "
+                           "rendered) | swapchain: %zu images, %s",
                            m_frameGenerationStatus.empty() ? "applies at the next frame" : m_frameGenerationStatus.c_str(),
                            (unsigned long long)m_generatedFrames, (unsigned long long)m_duplicatedFrames,
-                           m_renderedInterval);
+                           (unsigned long long)m_ungeneratedFrames, m_renderedInterval,
+                           m_renderedInterval > 0 ? 1000.0 / m_renderedInterval : 0.0, m_swapchainImages.size(),
+                           m_presentMode == VK_PRESENT_MODE_IMMEDIATE_KHR  ? "immediate"
+                           : m_presentMode == VK_PRESENT_MODE_MAILBOX_KHR ? "mailbox"
+                           : m_presentMode == VK_PRESENT_MODE_FIFO_KHR    ? "FIFO (vsync)"
+                                                                          : "other present mode");
       else if (m_ngx) {
         const auto ngx = m_ngx->capabilities();
         if (ngx.initializationComplete && !ngx.fg)

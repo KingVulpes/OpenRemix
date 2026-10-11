@@ -88,9 +88,13 @@ namespace remix {
     }
 
     uint32_t imageCount = std::max(2u, capabilities.minImageCount + 1);
-    // Frame generation holds its generated frames' images and the rendered
-    // one's at a time; they are presented over the course of the frame.
-    imageCount += m_frameGenerationRequested;
+    // Frame generation holds the images of a frame's generated frames and of
+    // its rendered one until the GPU has finished it and they have been shown
+    // in turn, while the next frame, already being recorded, acquires its own
+    // and the frame before may still be showing its last (a surface with
+    // fewer images generates for fewer frames: m_ungeneratedFrames).
+    if (m_frameGenerationRequested)
+      imageCount += 3 * m_frameGenerationRequested + 2;
     if (capabilities.maxImageCount != 0) {
       imageCount = std::min(imageCount, capabilities.maxImageCount);
     }
@@ -146,7 +150,7 @@ namespace remix {
         .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .preTransform = capabilities.currentTransform,
         .compositeAlpha = compositeAlpha,
-        .presentMode = choosePresentMode(modes),
+        .presentMode = (m_presentMode = choosePresentMode(modes)),
         .clipped = VK_TRUE,
     };
     if (!succeeded(vkCreateSwapchainKHR(m_device, &createInfo, nullptr, &m_swapchain))) {
@@ -159,6 +163,17 @@ namespace remix {
     m_presenterFrameGeneration = m_frameGenerationRequested;
     m_frameGenerationFailed = false;
     m_frameGenerationStatus.clear();
+    if (m_frameGenerationRequested || m_frameGenerationLog) {
+      std::string available;
+      for (auto mode : modes)
+        available += " " + std::to_string(int(mode));
+      logFrameGeneration("swapchain: %ux%u format %d | images asked %u (surface min %u max %u) | present mode %d "
+                         "(0 immediate, 1 mailbox, 2 FIFO, 3 FIFO relaxed) of available%s | vsync %d | "
+                         "frame generation asked %u | low latency supported %d",
+                         extent.width, extent.height, int(format.format), imageCount, capabilities.minImageCount,
+                         capabilities.maxImageCount, int(m_presentMode), available.c_str(), int(m_vsync),
+                         m_frameGenerationRequested, int(m_lowLatencySupported));
+    }
     m_swapchainFormat = format.format;
     m_swapchainExtent = extent;
     if (vkGetSwapchainImagesKHR(m_device, m_swapchain, &imageCount, nullptr) != VK_SUCCESS ||
@@ -170,10 +185,13 @@ namespace remix {
       return REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
     }
     m_swapchainImages.resize(imageCount);
+    if (m_frameGenerationRequested || m_frameGenerationLog)
+      logFrameGeneration("swapchain: %u images created", imageCount);
     return REMIXAPI_ERROR_CODE_SUCCESS;
   }
 
   remixapi_ErrorCode RemixNativeRuntime::recreateSwapchain() {
+    finishDeferredPresent(); // the presenter still shows images of this swapchain
     VkResult result = vkDeviceWaitIdle(m_device);
     if (result != VK_SUCCESS) {
       return fail(result);

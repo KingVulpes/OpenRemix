@@ -379,11 +379,48 @@ namespace remix {
             if (resolved && i == 0)
               resolved->push_back(it->second);
             draw.material = it->second;
-            const uint64_t modKey = draw.material->sourceHash ? draw.material->sourceHash : key(surface->material);
-            if (auto replacement = m_modMaterials.find(modKey); replacement != m_modMaterials.end())
-              draw.material = replacement->second;
-            else if (m_modCandidates.contains(modKey) && m_modRequested.insert(modKey).second)
-              m_modRequests.push_back(modKey);
+            // A mod replaces the material by its own hash or by the key its
+            // host named for it (sourceHash: a captured material's hash, or
+            // remixapi_MaterialInfoReplacementHashEXT), the former first.
+            const uint64_t modKeys[2] = {key(surface->material), draw.material->sourceHash};
+            for (const uint64_t modKey : modKeys) {
+              if (!modKey)
+                continue;
+              if (auto replacement = m_modMaterials.find(modKey); replacement != m_modMaterials.end()) {
+                const auto &mod = replacement->second;
+                // A replacement without an albedo texture (generated PBR mods
+                // give normals and roughness only) keeps the albedo of the
+                // material it replaces, with that texture's alpha state and
+                // sampling, as the capture runtime does; alone it would paint
+                // the surface its constant colour.
+                // (No albedo texture: the default one every such material gets.)
+                if (mod->texture == m_default->texture && draw.material->texture != m_default->texture) {
+                  auto &entry = m_modMerged[key(surface->material)];
+                  if (!entry.merged || entry.mod.lock() != mod || entry.original.lock() != draw.material) {
+                    auto merged = std::make_shared<scene::Material>(*mod);
+                    const auto &original = *draw.material;
+                    merged->texture = original.texture;
+                    std::copy(std::begin(original.tint), std::end(original.tint), merged->tint);
+                    merged->compare = original.compare;
+                    merged->reference = original.reference;
+                    merged->drawAlpha = original.drawAlpha;
+                    merged->filter = original.filter;
+                    merged->wrapU = original.wrapU;
+                    merged->wrapV = original.wrapV;
+                    merged->rows = original.rows;
+                    merged->columns = original.columns;
+                    merged->fps = original.fps;
+                    entry = {mod, draw.material, std::move(merged)};
+                  }
+                  draw.material = entry.merged;
+                } else {
+                  draw.material = mod;
+                }
+                break;
+              }
+              if (m_modCandidates.contains(modKey) && m_modRequested.insert(modKey).second)
+                m_modRequests.push_back(modKey);
+            }
           }
         }
         if (materialOverride)

@@ -329,6 +329,18 @@ typedef struct remixapi_InstanceInfoReplacementHashEXT {
   uint64_t meshHash;
 } remixapi_InstanceInfoReplacementHashEXT;
 
+// Optional MaterialInfo pNext (after its Opaque/Translucent struct). The hash
+// a USD mod keys this material's replacement by (mat_<hash>) when it is not
+// the material's own hash, e.g. for a translation layer whose material stands
+// in for one the capture runtime keyed by another texture. Zero keeps the
+// material's hash as the key.
+#define REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_REPLACEMENT_HASH_EXT ((remixapi_StructType)0x7fff1017)
+typedef struct remixapi_MaterialInfoReplacementHashEXT {
+  remixapi_StructType sType;
+  const void* pNext;
+  uint64_t materialHash;
+} remixapi_MaterialInfoReplacementHashEXT;
+
 // Raw BC1 uploads with one-bit alpha. The retained BC1_RGB formats remain opaque.
 #define REMIXAPI_FORMAT_BC1_RGBA_UNORM_EXT ((remixapi_Format)133)
 #define REMIXAPI_FORMAT_BC1_RGBA_SRGB_EXT ((remixapi_Format)134)

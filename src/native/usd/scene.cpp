@@ -144,11 +144,14 @@ namespace remix::usd {
       return {};
     }
     Json material_json(const UsdShadeMaterial &material, Json &warnings) {
-      auto connected = material.ComputeSurfaceSource(TfToken("mdl"));
+      // A mod's material may be a bare `over "mat_<hash>" { over "Shader" {...} }`
+      // (generated mods reference no template): neither prim has a type then,
+      // and the shader is the child of that name.
+      auto connected = material ? material.ComputeSurfaceSource(TfToken("mdl")) : UsdShadeShader();
       UsdPrim shader = connected ? connected.GetPrim() : UsdPrim();
       if (!shader)
-        for (auto child : material.GetPrim().GetChildren())
-          if (child.IsA<UsdShadeShader>()) {
+        for (auto child : material.GetPrim().GetAllChildren())
+          if (child.IsA<UsdShadeShader>() || child.GetName() == TfToken("Shader")) {
             shader = child;
             break;
           }
@@ -285,7 +288,7 @@ namespace remix::usd {
     auto material = UsdShadeMaterial(prim);
     if (!material && prim.IsA<UsdShadeShader>())
       material = UsdShadeMaterial(prim.GetParent());
-    if (!material)
+    if (!material && !prim.GetChild(TfToken("Shader")))
       throw std::runtime_error("Expected a USD material");
     auto result = material_json(material, warnings);
     result["warnings"] = warnings;

@@ -82,6 +82,38 @@ namespace remix::usd {
         if (auto found = layers.find(key); found != layers.end())
           return found->second;
         result.dependencies.insert(key);
+        // A layer another layer names but which is not on disk is left out, as
+        // USD itself composes around an unresolved reference: Remix mods
+        // commonly reference material templates (SubUSDs/AperturePBR_*.usda)
+        // they do not ship, and author everything that matters over them. It
+        // stays a dependency, so the file appearing later reloads the mod. The
+        // root layer, and a layer that exists but does not parse, are errors.
+        std::error_code missing;
+        if (!layers.empty() && !std::filesystem::exists(path, missing)) {
+          // The Remix material templates (AperturePBR_Opacity.usda, ..._Translucent.usda)
+          // are what make a mod's material overs materials at all: the over itself only
+          // carries the inputs. A mod that references one without shipping it gets the
+          // template's structure from here (the material, its shader and the MDL the
+          // loader tells opaque from translucent by).
+          const auto stem = path.stem().string();
+          if (!stem.starts_with("AperturePBR_"))
+            return nullptr;
+          auto layer = SdfLayer::CreateAnonymous(stem + ".usda");
+          const std::string text = "#usda 1.0\n"
+                                   "def Scope \"Looks\"\n{\n"
+                                   "    def Material \"mat_" + stem + "\"\n    {\n"
+                                   "        token outputs:mdl:surface.connect = </Looks/mat_" + stem + "/Shader.outputs:out>\n"
+                                   "        def Shader \"Shader\"\n        {\n"
+                                   "            uniform token info:implementationSource = \"sourceAsset\"\n"
+                                   "            uniform asset info:mdl:sourceAsset = @" + stem + ".mdl@\n"
+                                   "            uniform token info:mdl:sourceAsset:subIdentifier = \"" + stem + "\"\n"
+                                   "            token outputs:out\n"
+                                   "        }\n    }\n}\n";
+          if (!layer || !layer->ImportFromString(text))
+            return nullptr;
+          layers.emplace(key, layer);
+          return layer;
+        }
         auto layer = SdfLayer::OpenAsAnonymous(key);
         if (!layer)
           throw std::runtime_error("Could not open USD layer: " + key);
@@ -98,8 +130,11 @@ namespace remix::usd {
           auto ext = asset.extension().string();
           std::transform(ext.begin(), ext.end(), ext.begin(),
                          [](unsigned char c) { return std::tolower(c); });
-          if (ext == ".usd" || ext == ".usda" || ext == ".usdc")
-            return openLayer(asset)->GetIdentifier();
+          if (ext == ".usd" || ext == ".usda" || ext == ".usdc") {
+            // An empty path removes the reference, sublayer or payload.
+            const auto opened = openLayer(asset);
+            return opened ? opened->GetIdentifier() : std::string();
+          }
           // Asset dependencies include absent paths so a corrected file is watched.
           result.dependencies.insert(asset.string());
           return asset.string();
@@ -204,7 +239,9 @@ namespace remix::usd {
                 result.scene["materials"].push_back(std::move(material));
             }
           }
-          if (group == "materials" && prim.IsActive() && prim.IsA<UsdShadeMaterial>()) {
+          // Typed, or a bare over with its shader (scene.cpp material_json).
+          if (group == "materials" && prim.IsActive() &&
+              (prim.IsA<UsdShadeMaterial>() || prim.GetChild(TfToken("Shader")))) {
             auto material = compose_material(prim);
             bool found = false;
             for (const auto &existing : result.scene["materials"])

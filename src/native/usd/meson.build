@@ -6,10 +6,18 @@ usd_deps = []
 foreach lib : ['usdUtils', 'usdGeom', 'usdShade', 'usdLux', 'usdSkel', 'usd', 'sdf', 'ar', 'gf', 'vt', 'tf', 'work', 'plug', 'ts', 'pcp', 'arch', 'js', 'trace']
   usd_deps += cpp.find_library('usd_' + lib, dirs : [usd_root / 'lib'])
 endforeach
-usd_args = ['-isystem' + usd_root / 'include']
+# clang-cl takes -isystem only through /clang: (as plain -isystem the headers
+# are not system headers, and OpenUSD's and TBB's warnings fail a werror build).
+usd_system = cpp.get_id() == 'clang-cl' ? '/clang:-isystem' : '-isystem'
+usd_args = [usd_system + usd_root / 'include']
 if get_option('usd_tbb_root') != ''
-  usd_args += ['-isystem' + get_option('usd_tbb_root') / 'include']
-  usd_deps += cpp.find_library('tbb', dirs : [get_option('usd_tbb_root') / 'lib'])
+  usd_args += [usd_system + get_option('usd_tbb_root') / 'include']
+  # oneTBB's import library on Windows is tbb12.
+  usd_tbb = cpp.find_library('tbb12', dirs : [get_option('usd_tbb_root') / 'lib'], required : false)
+  if not usd_tbb.found()
+    usd_tbb = cpp.find_library('tbb', dirs : [get_option('usd_tbb_root') / 'lib'])
+  endif
+  usd_deps += usd_tbb
 else
   usd_deps += dependency('tbb')
 endif

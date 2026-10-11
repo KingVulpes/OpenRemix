@@ -234,8 +234,12 @@ namespace remix {
         std::equal(material->emission, material->emission + 3, previous->second->emission) &&
         material->wrapU == previous->second->wrapU && material->wrapV == previous->second->wrapV)
       material->emissionCache = previous->second->emissionCache;
+    // remixapi_MaterialInfoReplacementHashEXT: the key USD mods replace it by.
+    if (const auto *replacement = static_cast<const remixapi_MaterialInfoReplacementHashEXT *>(
+            extension(info.pNext, REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_REPLACEMENT_HASH_EXT)))
+      material->sourceHash = replacement->materialHash;
     auto equal = [&](const Material &a, const Material &b) {
-      return a.texture == b.texture && a.emissionTexture == b.emissionTexture &&
+      return a.sourceHash == b.sourceHash && a.texture == b.texture && a.emissionTexture == b.emissionTexture &&
              a.suppressEmissionLight == b.suppressEmissionLight && a.selfIllumination == b.selfIllumination &&
              a.selfIlluminationScale == b.selfIlluminationScale && a.roughnessTexture == b.roughnessTexture &&
              a.metallicTexture == b.metallicTexture && a.normalTexture == b.normalTexture &&

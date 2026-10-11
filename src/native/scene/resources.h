@@ -42,6 +42,7 @@ namespace remix {
     }
     void clearModMaterials() {
       m_modMaterials.clear();
+      m_modMerged.clear();
       m_modCandidates.clear();
       m_modRequested.clear();
       m_modRequests.clear();
@@ -58,6 +59,7 @@ namespace remix {
       if (!handle)
         return;
       m_modMaterials[hash] = m_materials.at(uint64_t(reinterpret_cast<uintptr_t>(handle)));
+      m_modMerged.clear();
       ++m_modGeneration;
     }
     std::vector<uint64_t> takeModMaterialRequests() { return std::exchange(m_modRequests, {}); }
@@ -67,6 +69,7 @@ namespace remix {
         if (handle)
           next[hash] = m_materials.at(uint64_t(reinterpret_cast<uintptr_t>(handle)));
       m_modMaterials = std::move(next);
+      m_modMerged.clear();
       ++m_modGeneration;
     }
     void invalidateTexturePaths() { m_paths.clear(); }
@@ -244,6 +247,13 @@ namespace remix {
     std::shared_ptr<scene::Material> m_default, m_domeMaterial;
     std::shared_ptr<const scene::VisibilityPartition> m_visibilityPartition;
     std::unordered_map<uint64_t, std::shared_ptr<scene::Material>> m_materials, m_modMaterials;
+    // A mod material given the albedo of the material it replaces
+    // (instances.cpp), by that material's hash; remade when either changes.
+    struct ModMerged {
+      std::weak_ptr<scene::Material> mod, original;
+      std::shared_ptr<scene::Material> merged;
+    };
+    std::unordered_map<uint64_t, ModMerged> m_modMerged;
     std::unordered_set<uint64_t> m_modCandidates, m_modRequested;
     std::vector<uint64_t> m_modRequests;
     std::unordered_map<uint64_t, std::shared_ptr<scene::Mesh>> m_meshes;

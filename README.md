@@ -26,6 +26,8 @@ A game-side integration or bridge supplies scene data through the [Remix SDK](pu
 Load the library, initialize it and call `Startup`, then create textures, materials,
 and meshes. Each frame, submit cameras, lights, instances and game UI, then call
 `Present`. Keep event handling, presentation and `Shutdown` on the startup thread.
+With a host-owned window (`StartupInfo::hwnd`) `Present` and the window queries may
+come from another thread, one at a time: a host that renders on a thread of its own.
 
 Raster is the default; select path tracing with
 `SetConfigVariable("rtx.native.backend", "pathtrace")`.

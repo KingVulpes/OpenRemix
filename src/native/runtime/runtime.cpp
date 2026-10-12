@@ -141,12 +141,8 @@ namespace remix {
   }
 
   remixapi_ErrorCode RemixNativeRuntime::shutdown() {
-    if (m_window.handle()) {
-      remixapi_WindowState state = {};
-      auto status = m_window.getWindowState(state);
-      if (status == REMIXAPI_ERROR_CODE_WRONG_THREAD) {
-        return status;
-      }
+    if (m_window.handle() && m_window.checkThread() == REMIXAPI_ERROR_CODE_WRONG_THREAD) {
+      return REMIXAPI_ERROR_CODE_WRONG_THREAD;
     }
     // Asynchronous presentation: the render thread finishes its frame, its GPU
     // state returns to the API's renderer and the thread is joined before

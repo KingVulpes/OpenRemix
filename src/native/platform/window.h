@@ -71,6 +71,9 @@ namespace remix {
     SDL_Window *handle() const { return m_window; }
     // True when Startup wrapped a host-owned window (StartupInfo::hwnd).
     bool embedded() const { return m_embedded; }
+    // Whether the caller is the thread that started the window: SDL's events,
+    // input and the window's destruction belong to it.
+    remixapi_ErrorCode checkThread() const;
 
     bool isSurfaceAvailable() const;
     bool isVulkanSurfaceCurrent() const;
@@ -78,7 +81,12 @@ namespace remix {
     const std::string &lastError() const { return m_lastError; }
 
   private:
-    remixapi_ErrorCode checkThread() const;
+    // What Present needs of the window (its state, its size, a surface). A
+    // host-owned window's messages are the host's, on whichever thread it
+    // likes: a host that renders on a thread of its own presents from that
+    // one, and from the starting thread again when it stops. The API mutex
+    // keeps the calls apart.
+    remixapi_ErrorCode checkPresentThread() const;
     void setSdlError(const char *operation) const;
     static SDL_Scancode toScancode(remixapi_Key key);
     static uint32_t toMouseButtons(SDL_MouseButtonFlags buttons);

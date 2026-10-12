@@ -126,7 +126,7 @@ namespace remix {
   }
 
   remixapi_ErrorCode RemixSdlWindow::getWindowState(remixapi_WindowState &state) const {
-    remixapi_ErrorCode threadStatus = checkThread();
+    remixapi_ErrorCode threadStatus = checkPresentThread();
     if (threadStatus != REMIXAPI_ERROR_CODE_SUCCESS) {
       return threadStatus;
     }
@@ -198,7 +198,7 @@ namespace remix {
   remixapi_ErrorCode RemixSdlWindow::createVulkanSurface(VkInstance instance,
                                                          const VkAllocationCallbacks *allocator,
                                                          VkSurfaceKHR &surface) const {
-    remixapi_ErrorCode threadStatus = checkThread();
+    remixapi_ErrorCode threadStatus = checkPresentThread();
     if (threadStatus != REMIXAPI_ERROR_CODE_SUCCESS) {
       return threadStatus;
     }
@@ -217,7 +217,7 @@ namespace remix {
 
   remixapi_ErrorCode RemixSdlWindow::getWindowMetrics(remixapi_WindowMetrics &metrics) const {
     metrics = {};
-    const auto status = checkThread();
+    const auto status = checkPresentThread();
     if (status != REMIXAPI_ERROR_CODE_SUCCESS)
       return status;
     int width, height, pixelsX, pixelsY;
@@ -236,6 +236,13 @@ namespace remix {
     }
     return m_ownerThread == std::this_thread::get_id() ? REMIXAPI_ERROR_CODE_SUCCESS
                                                        : REMIXAPI_ERROR_CODE_WRONG_THREAD;
+  }
+
+  remixapi_ErrorCode RemixSdlWindow::checkPresentThread() const {
+    if (m_window == nullptr) {
+      return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+    }
+    return m_embedded ? REMIXAPI_ERROR_CODE_SUCCESS : checkThread();
   }
 
   void RemixSdlWindow::setSdlError(const char *operation) const {

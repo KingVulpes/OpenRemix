@@ -25,12 +25,29 @@ namespace remix {
     // CPU cost of the last prepare() (FrameBreakdownEXT).
     struct Profile {
       double prepareMilliseconds = 0, skinningMilliseconds = 0;
+      uint64_t culledDraws = 0; // left out by frustum culling
+      // Where prepare()'s time goes: retiring released resources, refreshing
+      // dynamic textures, ordering the draws and building their commands
+      // (a mesh's or material's first use uploads it).
+      double retireMilliseconds = 0, refreshMilliseconds = 0, orderMilliseconds = 0, buildMilliseconds = 0;
+      uint64_t meshesCreated = 0, materialsCreated = 0, texturesRefreshed = 0;
+      // Staging uploads of this prepare(): buffers written, their bytes, the
+      // time allocating and writing them, and the memory type's property flags.
+      double stagingAllocateMilliseconds = 0, stagingWriteMilliseconds = 0, skinUploadMilliseconds = 0;
+      uint64_t stagingBuffers = 0, stagingAllocated = 0;
+      uint32_t stagingMemoryFlags = 0;
+      // The retire phase in parts, and what it walks.
+      double recycleMilliseconds = 0, retireMaterialsMilliseconds = 0, retireTexturesMilliseconds = 0;
+      double retireMeshesMilliseconds = 0, retirePathsMilliseconds = 0;
+      uint64_t materialCount = 0, textureCount = 0, meshCount = 0, pathCount = 0, recycledBuffers = 0;
       uint64_t draws = 0, skinnedVertices = 0, uploadBytes = 0; // draws include halo sources
       uint64_t haloGroups = 0, haloDraws = 0;
       uint64_t maskGroups = 0, maskDraws = 0; // groups with coverage, their source draws
       uint64_t digest = 0; // REMIX_FRAME_DIGEST only: commands and skinned vertices.
     };
     const Profile &profile() const { return m_profile; }
+    // The last prepare() that finished, whole (profile() is rewritten while one runs).
+    Profile completedProfile() const { return m_completedProfile; }
     // linearTarget: the target has an sRGB format (fixed-function blending is
     // linear); otherwise blending operates on display-referred values.
     void configureTarget(VkRenderPass pass, VkExtent2D extent, bool encodeOutput = false,
@@ -115,6 +132,6 @@ namespace remix {
   private:
     struct Gpu;
     std::unique_ptr<Gpu> m_gpu;
-    Profile m_profile;
+    Profile m_profile, m_completedProfile;
   };
 } // namespace remix

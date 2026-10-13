@@ -5,10 +5,23 @@ namespace remix {
   using namespace raster::detail;
 
   void RasterRenderer::Gpu::recycle(std::unique_ptr<Buffer> buffer) {
-    // Called only after the frame fence completes. Bound retained allocations.
-    if (buffer && buffer->allocationSize <= 64u * 1024u * 1024u - reusableBytes) {
-      reusableBytes += buffer->allocationSize;
-      reusableBuffers.push_back(std::move(buffer));
+    // Called only after the frame fence completes. The buffer just used is the
+    // one most likely to be asked for again (a frame's staging, skinned
+    // vertices and transient meshes come back every frame), so it is always
+    // kept and what the pool has held longest goes when it is over its bound.
+    // A full pool that turned the newcomer away instead kept leftovers of one
+    // large upload forever and freed and allocated device memory every frame,
+    // which costs milliseconds a buffer (Garry's Mod, raster backend: 7-25 ms
+    // of a frame's preparation). One eviction a call: a pool far over its
+    // bound empties over some frames, not in one.
+    if (!buffer)
+      return;
+    constexpr uint64_t bound = 64u * 1024u * 1024u;
+    reusableBytes += buffer->allocationSize;
+    reusableBuffers.push_back(std::move(buffer));
+    if (reusableBytes > bound && reusableBuffers.size() > 1) {
+      reusableBytes -= reusableBuffers.front()->allocationSize;
+      reusableBuffers.erase(reusableBuffers.begin());
     }
   }
 
@@ -38,7 +51,16 @@ namespace remix {
       reusableBuffers.erase(best);
       return out;
     }
-    size = (size + 4095) & ~size_t(4095);
+    // Capacities in a few sizes, so a buffer fits the next request of about
+    // its size (a frame's meshes and vertex counts vary): powers of two up to
+    // 1 MiB, 64 KiB steps above (large buffers are mostly kept, not recycled).
+    if (size <= 1024u * 1024u) {
+      size_t capacity = 4096;
+      while (capacity < size)
+        capacity *= 2;
+      size = capacity;
+    } else
+      size = (size + 65535) & ~size_t(65535);
     auto out = std::make_unique<Buffer>();
     out->device = device;
     out->capacity = size;
@@ -56,6 +78,8 @@ namespace remix {
                                              .allocationSize = requirements.size,
                                              .memoryTypeIndex =
                                                  memoryType(requirements.memoryTypeBits, flags)};
+    if (flags == VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+      stagingMemoryFlags = memory.memoryTypes[allocation.memoryTypeIndex].propertyFlags;
     check(vkAllocateMemory(device, &allocation, nullptr, &out->memory));
     check(vkBindBufferMemory(device, out->buffer, out->memory, 0));
     return out;
@@ -68,11 +92,18 @@ namespace remix {
 
   std::unique_ptr<Buffer> RasterRenderer::Gpu::buffer(size_t size, VkBufferUsageFlags usage,
                                                       const std::function<void(uint8_t *)> &write) {
+    const auto begin = std::chrono::steady_clock::now();
+    const size_t pooled = reusableBuffers.size();
     auto out = allocateBuffer(size, usage, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+    stagingAllocated += reusableBuffers.size() == pooled; // not taken from the pool
+    ++stagingBuffers;
     uploadBytes += size;
     void *mapped;
     check(vkMapMemory(device, out->memory, 0, VK_WHOLE_SIZE, 0, &mapped));
+    const auto mappedAt = std::chrono::steady_clock::now();
+    stagingAllocateMs += std::chrono::duration<double, std::milli>(mappedAt - begin).count();
     write(static_cast<uint8_t *>(mapped));
+    stagingWriteMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - mappedAt).count();
     const VkMappedMemoryRange flush = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
                                        .memory = out->memory,
                                        .offset = 0,

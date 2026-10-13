@@ -14,6 +14,7 @@ namespace remix {
     struct Finish {
       Profile &profile;
       const uint64_t &uploads;
+      Profile &completed;
       std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
       uint64_t skinning = 0;
       ~Finish() {
@@ -21,15 +22,28 @@ namespace remix {
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
         profile.skinningMilliseconds = tickMilliseconds(skinning);
         profile.uploadBytes = uploads;
+        completed = profile;
       }
-    } finish{m_profile, g.uploadBytes};
+    } finish{m_profile, g.uploadBytes, m_completedProfile};
+    using Clock = std::chrono::steady_clock;
+    const auto since = [](Clock::time_point t) { return std::chrono::duration<double, std::milli>(Clock::now() - t).count(); };
+    auto phase = Clock::now();
+    g.stagingAllocateMs = g.stagingWriteMs = 0;
+    g.stagingBuffers = g.stagingAllocated = 0;
     g.commands.clear();
     g.sprite.soft = 0;
     g.sprite.captured = false;
+    m_profile.recycledBuffers = g.uploads.size();
     for (auto &buffer : g.uploads)
       g.recycle(std::move(buffer));
     g.uploads.clear();
     g.recycle(std::move(g.skin));
+    m_profile.recycleMilliseconds = since(phase);
+    auto part = Clock::now();
+    m_profile.materialCount = g.materials.size();
+    m_profile.textureCount = g.textures.size();
+    m_profile.meshCount = g.meshes.size();
+    m_profile.pathCount = m_paths.size();
     auto &retired = g.frames[g.frameIndex];
     for (auto it = g.materials.begin(); it != g.materials.end();) {
       if (it->second->owner.expired()) {
@@ -38,6 +52,8 @@ namespace remix {
       } else
         ++it;
     }
+    m_profile.retireMaterialsMilliseconds = since(part);
+    part = Clock::now();
     for (auto it = g.textures.begin(); it != g.textures.end();) {
       if (it->second.owner.expired()) {
         retired.retiredImages.push_back(std::move(it->second.data));
@@ -47,11 +63,17 @@ namespace remix {
         // here, ahead of everything this frame records (raster and traced),
         // whichever of its tables holds the texture's descriptor.
         if (it->second.updatable)
-          if (const auto owner = it->second.owner.lock())
+          if (const auto owner = it->second.owner.lock()) {
+            const auto begin = Clock::now();
             g.refreshTexture(it->second, *owner, command);
+            m_profile.refreshMilliseconds += since(begin);
+            ++m_profile.texturesRefreshed;
+          }
         ++it;
       }
     }
+    m_profile.retireTexturesMilliseconds = since(part);
+    part = Clock::now();
     for (auto it = g.meshes.begin(); it != g.meshes.end();) {
       if (it->second.owner.expired()) {
         retired.retiredBuffers.push_back(std::move(it->second.data));
@@ -59,7 +81,12 @@ namespace remix {
       } else
         ++it;
     }
+    m_profile.retireMeshesMilliseconds = since(part);
+    part = Clock::now();
     prune(m_paths, [](const auto &entry) { return entry.second.expired(); });
+    m_profile.retirePathsMilliseconds = since(part);
+    m_profile.retireMilliseconds = since(phase) - m_profile.refreshMilliseconds;
+    phase = Clock::now();
     auto layer = [](const Draw &d) {
       return d.ui                                          ? 3
              : d.camera == REMIXAPI_CAMERA_TYPE_SKY        ? 0
@@ -140,6 +167,7 @@ namespace remix {
       for (const auto &draw : *list)
         ordered.push_back({0, false, 0, &draw});
     m_profile.draws = ordered.size();
+    m_profile.orderMilliseconds = since(phase);
     std::vector<Vertex> skinned;
     const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - g.epoch).count();
     // A halo or mask source: drawn as a silhouette into a coverage target
@@ -154,6 +182,64 @@ namespace remix {
     const VkRect2D whole = {{0, 0}, g.extent};
     // Coverage exists for this frame's masked draws (set below).
     bool masking = false;
+    // Frustum culling (REMIX_RASTER_FRUSTUM_CULL=0 turns it off): a draw whose
+    // index range lies outside the view is left out before anything is looked
+    // up or recorded for it. The test is conservative: the range's object-space
+    // box against the four side planes, with a margin for the sky's sub-pixel
+    // jitter, and against the eye plane; near and far are left to the clipper.
+    // Not for draws whose vertex positions are not the mesh's (skinned, sprite
+    // overlays), UI, or silhouettes, whose bounds size the coverage targets.
+    static const bool cullEnabled = [] {
+      const char *value = std::getenv("REMIX_RASTER_FRUSTUM_CULL");
+      return !value || value[0] != '0';
+    }();
+    const auto outsideView = [&](const Draw &draw, Gpu::MeshGpu &mesh, const Matrix &m) {
+      const Gpu::MeshGpu::RangeKey key = {draw.firstIndex,
+                                          draw.indexCount ? draw.indexCount : uint32_t(draw.surface->indices.size()),
+                                          draw.vertexOffset};
+      auto found = mesh.ranges.find(key);
+      if (found == mesh.ranges.end()) {
+        Gpu::MeshGpu::Range range;
+        const auto &indices = draw.surface->indices;
+        const auto &vertices = draw.surface->vertices;
+        range.valid = key.count && uint64_t(key.first) + key.count <= indices.size();
+        std::fill_n(range.low, 3, std::numeric_limits<float>::max());
+        std::fill_n(range.high, 3, std::numeric_limits<float>::lowest());
+        for (uint32_t i = 0; i < key.count && range.valid; ++i) {
+          const int64_t vertex = int64_t(indices[key.first + i]) + key.base;
+          if (vertex < 0 || vertex >= int64_t(vertices.size())) {
+            range.valid = false;
+            break;
+          }
+          for (int c = 0; c < 3; ++c) {
+            const float p = vertices[size_t(vertex)].position[c];
+            range.valid = range.valid && std::isfinite(p);
+            range.low[c] = std::min(range.low[c], p);
+            range.high[c] = std::max(range.high[c], p);
+          }
+        }
+        found = mesh.ranges.emplace(key, range).first;
+      }
+      const auto &range = found->second;
+      if (!range.valid)
+        return false;
+      // Bits: outside left, right, bottom, top, behind the eye. A plane every
+      // corner is outside of hides the box.
+      uint32_t outside = 31;
+      for (int corner = 0; corner < 8 && outside; ++corner) {
+        const float p[3] = {corner & 1 ? range.high[0] : range.low[0], corner & 2 ? range.high[1] : range.low[1],
+                            corner & 4 ? range.high[2] : range.low[2]};
+        const float x = m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12];
+        const float y = m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13];
+        const float w = m[3] * p[0] + m[7] * p[1] + m[11] * p[2] + m[15];
+        if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(w))
+          return false;
+        const float edge = w + .01f * std::abs(w);
+        outside &= uint32_t(x < -edge) | uint32_t(x > edge) << 1 | uint32_t(y < -edge) << 2 |
+                   uint32_t(y > edge) << 3 | uint32_t(w <= 0) << 4;
+      }
+      return outside != 0;
+    };
     // One command per draw.
     const auto build = [&](const Draw &draw, const Silhouette *silhouette) {
       const auto &mat = *draw.material;
@@ -174,6 +260,14 @@ namespace remix {
            (slot >= 0 && !outside && !masks.area[slot].extent.width)))
         return;
       Gpu::Command out = {};
+      out.push.mvp = multiply(m_cameras[draw.camera], draw.model);
+      if (!draw.ui && !m_cameraValid[draw.camera] && draw.camera != REMIXAPI_CAMERA_TYPE_WORLD)
+        out.push.mvp = multiply(m_cameras[REMIXAPI_CAMERA_TYPE_WORLD], draw.model);
+      if (cullEnabled && !silhouette && !draw.ui && !draw.spriteFlags && !draw.surface->bonesPerVertex &&
+          outsideView(draw, g.mesh(draw.surface, command), out.push.mvp)) {
+        ++m_profile.culledDraws;
+        return;
+      }
       const bool tested = silhouette && silhouette->depthTest && draw.camera == REMIXAPI_CAMERA_TYPE_WORLD;
       // A sprite overlay (raster/sprite.cpp): a blended draw that is not masked.
       const bool sprite = !silhouette && draw.spriteFlags && draw.blend.enabled && !draw.maskGroup && !draw.cutGroup &&
@@ -190,8 +284,11 @@ namespace remix {
         slot = -1;
         out.pipeline = g.pipeline(draw, false);
       }
+      const size_t meshesBefore = g.meshes.size(), materialsBefore = g.materials.size();
       auto &mesh = g.mesh(draw.surface, command);
       out.set = g.material(draw.material, command);
+      m_profile.meshesCreated += g.meshes.size() - meshesBefore;
+      m_profile.materialsCreated += g.materials.size() - materialsBefore;
       if (slot >= 0) {
         out.coverage = masks.targets[slot].set;
         out.area = outside ? whole : masks.area[slot];
@@ -246,14 +343,11 @@ namespace remix {
           skinned.push_back(vertex);
         }
       }
-      out.push.mvp = multiply(m_cameras[draw.camera], draw.model);
       if (draw.ui) {
         out.push.mvp = identity();
         out.push.mvp[0] = 2.0f / draw.canvasWidth;
         out.push.mvp[5] = 2.0f / draw.canvasHeight;
         out.push.mvp[12] = out.push.mvp[13] = -1;
-      } else if (!m_cameraValid[draw.camera] && draw.camera != REMIXAPI_CAMERA_TYPE_WORLD) {
-        out.push.mvp = multiply(m_cameras[REMIXAPI_CAMERA_TYPE_WORLD], draw.model);
       }
       std::copy_n(mat.tint, 4, out.push.tint);
       const uint32_t frame = uint32_t(std::fmod(seconds * mat.fps, uint32_t(mat.rows) * mat.columns));
@@ -470,8 +564,10 @@ namespace remix {
         cut.digest = digest;
       }
     }
+    phase = Clock::now();
     for (const auto &entry : ordered)
       build(*entry.draw, nullptr);
+    m_profile.buildMilliseconds = since(phase);
     // The coverage passes run before the first masked world draw, or after
     // the world layer.
     masks.split = g.commands.size();
@@ -525,8 +621,10 @@ namespace remix {
       m_profile.digest = digest;
     }
     if (!skinned.empty()) {
+      const auto skinBegin = Clock::now();
       g.skin = g.geometryBuffer(skinned.data(), skinned.size() * sizeof(Vertex),
                                 VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, command);
+      m_profile.skinUploadMilliseconds = since(skinBegin);
       for (auto *list : {&g.commands, &g.halo.commands, &masks.commands})
         for (auto &draw : *list) {
           if (!draw.vertices) {
@@ -534,6 +632,11 @@ namespace remix {
           }
         }
     }
+    m_profile.stagingAllocateMilliseconds = g.stagingAllocateMs;
+    m_profile.stagingWriteMilliseconds = g.stagingWriteMs;
+    m_profile.stagingBuffers = g.stagingBuffers;
+    m_profile.stagingAllocated = g.stagingAllocated;
+    m_profile.stagingMemoryFlags = g.stagingMemoryFlags;
   }
 
   void RasterRenderer::record(VkCommandBuffer command, bool skyOnly, bool skipSky, const float *skyJitter,
@@ -552,6 +655,19 @@ namespace remix {
       return a.offset.x == b.offset.x && a.offset.y == b.offset.y && a.extent.width == b.extent.width &&
              a.extent.height == b.extent.height;
     };
+    // What this call has bound: consecutive draws mostly share it (the parts
+    // of one mesh, the draws of one material), and each bind left out is a
+    // command the driver does not validate.
+    struct Bound {
+      VkPipeline pipeline = VK_NULL_HANDLE;
+      VkPipelineLayout layout = VK_NULL_HANDLE;
+      VkDescriptorSet sets[2] = {};
+      uint32_t setCount = 0;
+      VkBuffer vertices = VK_NULL_HANDLE, sprite = VK_NULL_HANDLE, indices = VK_NULL_HANDLE;
+      VkDeviceSize vertexOffset = 0, spriteOffset = 0, indexOffset = 0;
+      float blend[4] = {};
+      bool blendSet = false;
+    } bound;
     for (size_t index = begin; index < end; ++index) {
       const auto &draw = g.commands[index];
       if ((skyOnly && draw.layer != 0) || (skipSky && draw.layer == 0) || draw.layer < firstLayer ||
@@ -573,18 +689,43 @@ namespace remix {
         vkCmdSetScissor(command, 0, 1, &wanted);
         confined = wanted;
       }
-      vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, draw.pipeline);
+      if (draw.pipeline != bound.pipeline) {
+        vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, draw.pipeline);
+        bound.pipeline = draw.pipeline;
+      }
       // A sprite overlay: the scene's depth as set 1 (its own texture stands in
       // while there is none), its sprite vertices as binding 1.
       const bool soft = draw.sprite && g.sprite.captured && g.sprite.set;
       const VkDescriptorSet sets[] = {draw.set, draw.sprite ? (soft ? g.sprite.set : draw.set) : draw.coverage};
-      vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0,
-                              draw.coverage || draw.sprite ? 2 : 1, sets, 0, nullptr);
-      vkCmdBindVertexBuffers(command, 0, 1, &draw.vertices, &draw.vertexOffset);
-      if (draw.sprite)
+      const uint32_t setCount = draw.coverage || draw.sprite ? 2 : 1;
+      if (layout != bound.layout || setCount != bound.setCount || sets[0] != bound.sets[0] ||
+          (setCount == 2 && sets[1] != bound.sets[1])) {
+        vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, setCount, sets, 0, nullptr);
+        bound.layout = layout;
+        bound.setCount = setCount;
+        bound.sets[0] = sets[0];
+        bound.sets[1] = sets[1];
+      }
+      if (draw.vertices != bound.vertices || draw.vertexOffset != bound.vertexOffset) {
+        vkCmdBindVertexBuffers(command, 0, 1, &draw.vertices, &draw.vertexOffset);
+        bound.vertices = draw.vertices;
+        bound.vertexOffset = draw.vertexOffset;
+      }
+      if (draw.sprite && (draw.spriteBuffer != bound.sprite || draw.spriteOffset != bound.spriteOffset)) {
         vkCmdBindVertexBuffers(command, 1, 1, &draw.spriteBuffer, &draw.spriteOffset);
-      vkCmdBindIndexBuffer(command, draw.indices, draw.indexOffset, VK_INDEX_TYPE_UINT32);
-      vkCmdSetBlendConstants(command, draw.push.factor);
+        bound.sprite = draw.spriteBuffer;
+        bound.spriteOffset = draw.spriteOffset;
+      }
+      if (draw.indices != bound.indices || draw.indexOffset != bound.indexOffset) {
+        vkCmdBindIndexBuffer(command, draw.indices, draw.indexOffset, VK_INDEX_TYPE_UINT32);
+        bound.indices = draw.indices;
+        bound.indexOffset = draw.indexOffset;
+      }
+      if (!bound.blendSet || std::memcmp(bound.blend, draw.push.factor, sizeof(bound.blend))) {
+        vkCmdSetBlendConstants(command, draw.push.factor);
+        std::copy_n(draw.push.factor, 4, bound.blend);
+        bound.blendSet = true;
+      }
       auto push = draw.push;
       if (draw.sprite) {
         std::copy_n(draw.spriteParameters, 4, push.factor);

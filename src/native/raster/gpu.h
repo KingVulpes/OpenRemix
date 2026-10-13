@@ -110,6 +110,25 @@ namespace remix {
       // Object-space bounds of the vertices, computed on first halo use.
       bool bounded = false;
       float low[3] = {}, high[3] = {};
+      // Object-space bounds of the index ranges drawn from the mesh, computed
+      // when a range is first drawn: what frustum culling tests. A host that
+      // draws a large mesh in parts (a world split by visibility cluster)
+      // has its parts culled one by one.
+      struct Range {
+        bool valid = false; // false: an index outside the vertices, never culled
+        float low[3] = {}, high[3] = {};
+      };
+      struct RangeKey {
+        uint32_t first, count;
+        int32_t base;
+        bool operator==(const RangeKey &) const = default;
+      };
+      struct RangeHash {
+        size_t operator()(const RangeKey &k) const {
+          return size_t((uint64_t(k.first) * 0x9e3779b97f4a7c15ull) ^ (uint64_t(k.count) << 32) ^ uint32_t(k.base));
+        }
+      };
+      std::unordered_map<RangeKey, Range, RangeHash> ranges;
     };
     struct TextureGpu {
       std::weak_ptr<scene::Texture> owner;
@@ -154,6 +173,10 @@ namespace remix {
       VkDeviceSize spriteOffset = 0;
       float spriteParameters[4] = {};
     };
+    // Diagnostics of the frame's staging uploads (RasterRenderer::Profile).
+    double stagingAllocateMs = 0, stagingWriteMs = 0;
+    uint64_t stagingBuffers = 0, stagingAllocated = 0;
+    uint32_t stagingMemoryFlags = 0;
     std::unordered_map<const scene::Surface *, MeshGpu> meshes;
     std::unordered_map<const scene::Texture *, TextureGpu> textures;
     std::unordered_map<const scene::Material *, std::unique_ptr<MaterialGpu>> materials;

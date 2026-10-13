@@ -657,7 +657,9 @@ typedef struct remixapi_FrameBreakdownEXT {
   double snapshotMilliseconds, otherMilliseconds;
   double presentSetupMilliseconds, presentReleaseMilliseconds;
   uint64_t traceInstances, traceSurfaces, primaryDraws, rasterDraws;
-  uint64_t textureDescriptors, rasterSkinnedVertices, rasterUploadBytes, reserved2;
+  // rasterCulledDraws (was reserved, zero): raster draws outside the view,
+  // left out before they were recorded; rasterDraws counts them too.
+  uint64_t textureDescriptors, rasterSkinnedVertices, rasterUploadBytes, rasterCulledDraws;
 } remixapi_FrameBreakdownEXT;
 
 // GPU pass timings of the newest completed frame, while the
@@ -893,8 +895,6 @@ typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_GetDenoisingStatisticsEXT
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetDenoisingCapabilitiesEXT(remixapi_DenoisingCapabilitiesEXT* capabilities);
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetDenoisingStatisticsEXT(remixapi_DenoisingStatisticsEXT* statistics);
 
-#ifdef __cplusplus
-}
 // Optional MeshInfo pNext: the mesh already registered under this hash,
 // deformed. The new registration replaces its vertex data and stays the same
 // object: with the same surfaces, vertex counts and index values the tracer
@@ -969,6 +969,8 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_RemoveSceneInstancesEXT(
 typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_DrawSceneInstancesEXT)(const float* origin);
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_DrawSceneInstancesEXT(const float* origin);
 
+#ifdef __cplusplus
+}
 #endif
 
 #define REMIXAPI_STRUCT_TYPE_MATERIAL_NORMAL_ENCODING_EXT ((remixapi_StructType)0x7fff1011)

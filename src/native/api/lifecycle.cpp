@@ -167,6 +167,50 @@ void serviceDevRequests() {
         std::snprintf(line, sizeof(line), "# sharc update paths %u, query attempts %u, hits %u, entries %u\n", cache.updatePaths,
                       cache.queryAttempts, cache.queryHits, cache.occupiedEntries);
         text += line;
+        const auto breakdown = g_runtime.frameBreakdown();
+        std::snprintf(line, sizeof(line),
+                      "# raster draws %llu, outside the view (not drawn) %llu, prepare %.3f ms, record %.3f ms\n",
+                      (unsigned long long)breakdown.rasterDraws, (unsigned long long)breakdown.rasterCulledDraws,
+                      breakdown.rasterPrepareMilliseconds, breakdown.compositeMilliseconds);
+        text += line;
+        const auto raster = g_runtime.rasterProfile();
+        std::snprintf(line, sizeof(line),
+                      "# raster prepare %.3f ms: retire %.3f, texture refresh %.3f (%llu), order %.3f, draws %.3f "
+                      "(%llu new meshes, %llu new materials)\n",
+                      raster.prepareMilliseconds, raster.retireMilliseconds, raster.refreshMilliseconds,
+                      (unsigned long long)raster.texturesRefreshed, raster.orderMilliseconds, raster.buildMilliseconds,
+                      (unsigned long long)raster.meshesCreated, (unsigned long long)raster.materialsCreated);
+        text += line;
+        std::snprintf(line, sizeof(line),
+                      "# raster staging: %llu buffers (%llu newly allocated), allocate+map %.3f ms, write %.3f ms, "
+                      "memory flags 0x%x | skinned vertices %llu, skin upload %.3f ms, skinning %.3f ms\n",
+                      (unsigned long long)raster.stagingBuffers, (unsigned long long)raster.stagingAllocated,
+                      raster.stagingAllocateMilliseconds, raster.stagingWriteMilliseconds, raster.stagingMemoryFlags,
+                      (unsigned long long)raster.skinnedVertices, raster.skinUploadMilliseconds,
+                      raster.skinningMilliseconds);
+        text += line;
+        std::snprintf(line, sizeof(line),
+                      "# raster retire: recycle %.3f ms (%llu buffers), materials %.3f (%llu), textures %.3f (%llu), "
+                      "meshes %.3f (%llu), paths %.3f (%llu)\n",
+                      raster.recycleMilliseconds, (unsigned long long)raster.recycledBuffers,
+                      raster.retireMaterialsMilliseconds, (unsigned long long)raster.materialCount,
+                      raster.retireTexturesMilliseconds, (unsigned long long)raster.textureCount,
+                      raster.retireMeshesMilliseconds, (unsigned long long)raster.meshCount,
+                      raster.retirePathsMilliseconds, (unsigned long long)raster.pathCount);
+        text += line;
+        if (g_runtime.latencyRequested()) {
+          std::snprintf(line, sizeof(line), "# low latency: %s\n",
+                        g_runtime.latencyActive() ? "on" : "off (raster backend)");
+          text += line;
+        }
+        if (const auto caller = g_runtime.asyncCallerStatistics(); caller.active) {
+          std::snprintf(line, sizeof(line),
+                        "# asynchronous present, caller: call %.3f ms (wait for render thread %.3f, setup %.3f, capture "
+                        "%.3f, ui %.3f)\n",
+                        caller.callMilliseconds, caller.waitMilliseconds, caller.setupMilliseconds,
+                        caller.captureMilliseconds, caller.uiMilliseconds);
+          text += line;
+        }
       }
     }
     std::ofstream(directory / "timings.txt") << text;

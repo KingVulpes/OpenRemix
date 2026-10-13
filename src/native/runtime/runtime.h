@@ -147,6 +147,15 @@ public:
   remixapi_BackendCapabilitiesEXT backendCapabilities() const;
   remixapi_TracingStatisticsEXT tracingStatistics() const;
   remixapi_SharcStatisticsEXT sharcStatistics() const;
+  // Low latency: asked for by the setting, and in effect (the path tracing
+  // backend or frame generation).
+  bool latencyRequested() const { return m_lowLatencyRequested; }
+  bool latencyActive() const { return m_lowLatencyActive; }
+  // The raster renderer's last prepare() (read while the render thread may
+  // be writing it: diagnostics only).
+  RasterRenderer::Profile rasterProfile() const { return renderer().completedProfile(); }
+  // The caller's side of the last asynchronous Present (inactive otherwise).
+  AsyncPresentStatistics asyncCallerStatistics() const { return m_previousAsyncCaller; }
   remixapi_ErrorCode configureSetting(const char *key, const char *value);
   // GetVramStats, gated by the "Report VRAM statistics" setting.
   remixapi_ErrorCode vramStatistics(remixapi_VramStats &stats) const;
@@ -281,6 +290,8 @@ private:
   remixapi_ErrorCode presentUnpaced(const remixapi_PresentInfo *info);
   void applyLatencyMode();
   void latencySleep();
+  // Whether the driver's low latency mode should be on now.
+  bool latencyWanted() const;
   void latencyMarker(VkLatencyMarkerNV marker, uint64_t frame);
   // "openremix_framegen.log" beside the runtime library, written once frame
   // generation has been asked for: the device, each swapchain, every change

@@ -81,6 +81,7 @@ void RemixNativeRuntime::presented() {
         frame.rasterDraws = r.draws;
         frame.rasterSkinnedVertices = r.skinnedVertices;
         frame.rasterUploadBytes = r.uploadBytes;
+        frame.rasterCulledDraws = r.culledDraws;
         const double covered =
             frame.rasterPrepareMilliseconds + frame.traceBeginMilliseconds + frame.traceSetupMilliseconds +
             frame.traceSurfacesMilliseconds + frame.retireMilliseconds + frame.traceAccelerationMilliseconds +
@@ -233,16 +234,27 @@ void RemixNativeRuntime::presented() {
     m_loggedPresentations = presentations;
   }
 
+  bool RemixNativeRuntime::latencyWanted() const {
+    // The driver's low latency mode is for a host that would otherwise queue
+    // its frames behind the GPU: the path tracer's, or frame generation, whose
+    // presents are paced on it. With the raster backend the GPU is idle for
+    // most of a frame and the mode only took time, on (the sleep after
+    // Present) or merely enabled (the driver then holds vkQueuePresentKHR).
+    // Garry's Mod, gm_voidplaces, raster: 19.6 ms a frame with the sleep,
+    // 17.4 with the mode enabled and no sleep, 13.6 with it off.
+    return m_lowLatencyRequested && (m_frameGenerationRequested || m_backend == 1);
+  }
+
   void RemixNativeRuntime::applyLatencyMode() {
     if (!m_lowLatencySupported || !m_swapchain)
       return;
     const VkLatencySleepModeInfoNV mode = {.sType = VK_STRUCTURE_TYPE_LATENCY_SLEEP_MODE_INFO_NV,
-                                           .lowLatencyMode = m_lowLatencyRequested ? VK_TRUE : VK_FALSE,
+                                           .lowLatencyMode = latencyWanted() ? VK_TRUE : VK_FALSE,
                                            .lowLatencyBoost = VK_FALSE,
                                            .minimumIntervalUs = 0};
     std::lock_guard lock(m_queueMutex);
     if (m_setLatencySleepMode(m_device, m_swapchain, &mode) == VK_SUCCESS)
-      m_lowLatencyActive = m_lowLatencyRequested;
+      m_lowLatencyActive = latencyWanted();
   }
 
   void RemixNativeRuntime::latencyMarker(VkLatencyMarkerNV marker, uint64_t frame) {
@@ -293,7 +305,7 @@ void RemixNativeRuntime::presented() {
     // only once it is complete, so it always presents synchronously.
     const bool async = m_profiles.current().asyncPresent && !m_headless;
     if (!async && !m_asyncActive) {
-      if (m_lowLatencyRequested != m_lowLatencyActive)
+      if (latencyWanted() != m_lowLatencyActive)
         applyLatencyMode();
       m_latencyRenderFrame = m_latencyFrame;
       return presentFrame(info);
@@ -302,7 +314,7 @@ void RemixNativeRuntime::presented() {
     // the previous one before this Present touches anything it owns.
     const auto start = std::chrono::steady_clock::now();
     const double waited = waitRenderThread();
-    if (m_lowLatencyRequested != m_lowLatencyActive)
+    if (latencyWanted() != m_lowLatencyActive)
       applyLatencyMode();
     m_latencyRenderFrame = m_latencyFrame;
     if (async != m_asyncActive) {

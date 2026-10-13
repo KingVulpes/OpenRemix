@@ -305,20 +305,41 @@ namespace remix {
       tableVersion = 0;
       tableShadow.clear();
     }
+    using TableClock = std::chrono::steady_clock;
+    const auto tableBegan = TableClock::now();
+    const auto tableSince = [](TableClock::time_point t) {
+      return std::chrono::duration<double, std::milli>(TableClock::now() - t).count();
+    };
+    trace::TableCosts tableCosts;
+    tableCosts.bytes = tableBytes;
+    // A table that no longer fits grows by half again, not to the size asked:
+    // a scene gaining instances one at a time (props, ragdolls, NPCs spawned
+    // in play) would otherwise replace both buffers of every slot at each
+    // one. The old buffers go to the idle cache, not back to the driver.
+    const size_t tableCapacity = (tableBytes + tableBytes / 2 + 65535) & ~size_t(65535);
     if (deviceLocalScene) {
       // Staged whole (a host write), copied to the device in the blocks that
       // differ from what this slot's table holds: a static world costs no
       // copy, and the kept static prefix is not even compared.
-      if (!tableUpload || tableUpload->size < tableBytes)
-        tableUpload = buffer(tableBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true);
-      if (!table || table->size < tableBytes) {
-        table = buffer(tableBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
-        tableShadow.clear(); // a new buffer holds nothing yet
+      if (!tableUpload || tableUpload->size < tableBytes) {
+        tableUpload = buffer(tableCapacity, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true, true);
+        ++tableCosts.grown;
       }
+      if (!table || table->size < tableBytes) {
+        table = buffer(tableCapacity, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false,
+                       true);
+        tableShadow.clear(); // a new buffer holds nothing yet
+        ++tableCosts.grown;
+      }
+      tableCosts.grow = tableSince(tableBegan);
+      tableCosts.capacity = table->size;
       const size_t held = tableShadow.size();
       const bool kept = held >= prefixBytes && tableVersion && tableVersion == tables.prefixVersion();
       const size_t from = kept ? prefixBytes : 0;
+      const auto writeBegan = TableClock::now();
       write(*tableUpload, {{prefixData, prefixBytes}, {tailData, tableBytes - prefixBytes}}, from);
+      tableCosts.write = tableSince(writeBegan);
+      const auto compareBegan = TableClock::now();
       if (tableShadow.size() < tableBytes)
         tableShadow.resize(tableBytes);
       std::vector<VkBufferCopy> regions;
@@ -345,6 +366,9 @@ namespace remix {
                     .size = regions.back().srcOffset + regions.back().size - regions.front().srcOffset}};
       if (!regions.empty())
         vkCmdCopyBuffer(command, tableUpload->handle, table->handle, uint32_t(regions.size()), regions.data());
+      for (const auto &region : regions)
+        tableCosts.copied += region.size;
+      tableCosts.compare = tableSince(compareBegan);
       tableVersion = tables.prefixVersion();
     } else {
       // This slot's table may already hold the kept static prefix.
@@ -356,6 +380,9 @@ namespace remix {
       write(*table, {{prefixData, prefixBytes}, {tailData, tableBytes - prefixBytes}}, kept ? prefixBytes : 0);
       tableVersion = tables.prefixVersion();
     }
+    tableCosts.total = tableSince(tableBegan);
+    if (tableCosts.total > trace::g_tableCosts.total)
+      trace::g_tableCosts = tableCosts;
     lap(breakdown.tableMilliseconds);
     // Emission constants, UVs and texture fingerprints already participate in
     // the scene signature above. Do not duplicate every triangle's reduction.

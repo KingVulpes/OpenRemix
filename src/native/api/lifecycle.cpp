@@ -275,6 +275,15 @@ void serviceDevRequests() {
                         c.stage, c.slowest);
           text += line;
         }
+        {
+          const auto t = std::exchange(remix::trace::g_tableCosts, {});
+          std::snprintf(line, sizeof(line),
+                        "# slowest surface table step since the last dump %.2f ms: %.2f MiB (capacity %.2f), %llu "
+                        "buffers grown %.2f ms, write %.2f, compare and copy %.2f (%.2f MiB copied)\n",
+                        t.total, t.bytes / 1048576.0, t.capacity / 1048576.0, (unsigned long long)t.grown, t.grow,
+                        t.write, t.compare, t.copied / 1048576.0);
+          text += line;
+        }
         if (g_pacing.calls > 1) {
           auto sorted = g_pacing.intervals;
           std::sort(sorted.begin(), sorted.end());

@@ -7,6 +7,17 @@
 #include <remix/remix_native_ext.h>
 #include <vulkan/vulkan.h>
 
+namespace remix::trace {
+  // The surface table step of the slowest frame since this was last read
+  // (diagnostics): its size, and what growing its buffers, writing it and
+  // finding the changed blocks took.
+  struct TableCosts {
+    double total = 0, grow = 0, write = 0, compare = 0;
+    uint64_t bytes = 0, capacity = 0, grown = 0, copied = 0;
+  };
+  inline TableCosts g_tableCosts;
+} // namespace remix::trace
+
 namespace remix {
   class PathTracer {
   public:

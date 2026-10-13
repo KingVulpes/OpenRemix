@@ -260,6 +260,12 @@ void RemixNativeRuntime::presented() {
   void RemixNativeRuntime::latencyMarker(VkLatencyMarkerNV marker, uint64_t frame) {
     if (!m_lowLatencyActive || !m_swapchain)
       return;
+    // The driver serializes a marker behind a sleep in progress: while one
+    // overruns (the host has stopped waiting for it), a marker would hold
+    // this thread for the rest of it, the host's or the render thread's.
+    // Those frames go unmarked.
+    if (m_latencySleeper.sleeping.load(std::memory_order_relaxed))
+      return;
     const VkSetLatencyMarkerInfoNV info = {.sType = VK_STRUCTURE_TYPE_SET_LATENCY_MARKER_INFO_NV,
                                            .presentID = frame,
                                            .marker = marker};
@@ -278,9 +284,11 @@ void RemixNativeRuntime::presented() {
               return;
             auto current = std::move(job);
             job = nullptr;
+            sleeping.store(true, std::memory_order_relaxed);
             lock.unlock();
             current();
             lock.lock();
+            sleeping.store(false, std::memory_order_relaxed);
             busy = false;
             done.notify_all();
           }

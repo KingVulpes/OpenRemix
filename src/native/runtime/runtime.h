@@ -534,6 +534,9 @@ private:
     std::condition_variable wake, done;
     std::function<void()> job;
     bool busy = false, stop = false;
+    // Set while the driver's sleep call is in progress, for latencyMarker:
+    // the driver makes a marker wait for it.
+    std::atomic<bool> sleeping{false};
     // Runs work on the thread and waits for it at most milliseconds; while
     // an earlier sleep is still running, waits for that one instead.
     void run(std::function<void()> work, double milliseconds);

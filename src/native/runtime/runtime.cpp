@@ -41,6 +41,7 @@ namespace remix {
     if (m_device && !m_deviceLost) {
       vkDeviceWaitIdle(m_device);
     }
+    m_latencySleeper.shutdown(); // before the device and the swapchain it sleeps on go
     destroyVulkan();
     m_window.shutdown();
   }
@@ -159,6 +160,7 @@ namespace remix {
     if (m_device && !m_deviceLost) {
       vkDeviceWaitIdle(m_device);
     }
+    m_latencySleeper.shutdown(); // before the device and the swapchain it sleeps on go
     destroyVulkan();
     m_window.shutdown();
     m_initialized = false;

@@ -14,7 +14,7 @@ namespace remix {
     struct Finish {
       Profile &profile;
       const uint64_t &uploads;
-      Profile &completed;
+      Profile &completed, &worst;
       std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
       uint64_t skinning = 0;
       ~Finish() {
@@ -23,12 +23,16 @@ namespace remix {
         profile.skinningMilliseconds = tickMilliseconds(skinning);
         profile.uploadBytes = uploads;
         completed = profile;
+        if (profile.prepareMilliseconds > worst.prepareMilliseconds)
+          worst = profile;
       }
-    } finish{m_profile, g.uploadBytes, m_completedProfile};
+    } finish{m_profile, g.uploadBytes, m_completedProfile, m_worstProfile};
     using Clock = std::chrono::steady_clock;
     const auto since = [](Clock::time_point t) { return std::chrono::duration<double, std::milli>(Clock::now() - t).count(); };
     auto phase = Clock::now();
     g.stagingAllocateMs = g.stagingWriteMs = 0;
+    g.createPipelineMs = g.createMeshMs = g.createTextureMs = g.createMaterialMs = 0;
+    g.pipelinesCreated = g.texturesCreated = 0;
     g.stagingBuffers = g.stagingAllocated = 0;
     g.commands.clear();
     g.sprite.soft = 0;
@@ -275,6 +279,12 @@ namespace remix {
       try {
         out.pipeline = silhouette ? silhouette->pipelines[tested] : g.pipeline(draw, slot >= 0, sprite);
       } catch (VkResult result) {
+        // With the path tracer no draw's variant is waited for
+        // (preparePipelines): the draw is left out until it has compiled.
+        if (result == VK_NOT_READY && tracing && !silhouette && (!masked || !cut)) {
+          ++m_profile.unreadyDraws;
+          return;
+        }
         // A masked draw's variant is still compiling (preparePipelines does
         // not wait for it): left out of this frame, a CUT instance drawn whole.
         if (!masked || result != VK_NOT_READY || (cut && slot < 0))
@@ -295,12 +305,13 @@ namespace remix {
       }
       const size_t firstSkinned = skinned.size();
       out.vertices = out.indices = mesh.data->buffer;
-      out.indexOffset = mesh.indexOffset;
+      out.vertexOffset = mesh.data->offset;
+      out.indexOffset = mesh.data->offset + mesh.indexOffset;
       if (sprite) {
         out.sprite = true;
         out.spriteBuffer = mesh.data->buffer;
         // A mesh without sprite vertices: any data (its flags that read them are off).
-        out.spriteOffset = draw.surface->sprite.empty() ? 0 : mesh.spriteOffset;
+        out.spriteOffset = mesh.data->offset + (draw.surface->sprite.empty() ? 0 : mesh.spriteOffset);
         const auto &blend = draw.blend;
         out.spriteParameters[0] = draw.spriteSoft[0] > 0 ? 1 / draw.spriteSoft[0] : 0;
         out.spriteParameters[1] = draw.spriteSoft[1];
@@ -629,6 +640,7 @@ namespace remix {
         for (auto &draw : *list) {
           if (!draw.vertices) {
             draw.vertices = g.skin->buffer;
+            draw.vertexOffset += g.skin->offset;
           }
         }
     }
@@ -637,6 +649,12 @@ namespace remix {
     m_profile.stagingBuffers = g.stagingBuffers;
     m_profile.stagingAllocated = g.stagingAllocated;
     m_profile.stagingMemoryFlags = g.stagingMemoryFlags;
+    m_profile.createPipelineMilliseconds = g.createPipelineMs;
+    m_profile.createMeshMilliseconds = g.createMeshMs;
+    m_profile.createTextureMilliseconds = g.createTextureMs;
+    m_profile.createMaterialMilliseconds = g.createMaterialMs - g.createTextureMs;
+    m_profile.pipelinesCreated = g.pipelinesCreated;
+    m_profile.texturesCreated = g.texturesCreated;
   }
 
   void RasterRenderer::record(VkCommandBuffer command, bool skyOnly, bool skipSky, const float *skyJitter,

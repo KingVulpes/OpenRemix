@@ -154,6 +154,24 @@ public:
   // The raster renderer's last prepare() (read while the render thread may
   // be writing it: diagnostics only).
   RasterRenderer::Profile rasterProfile() const { return renderer().completedProfile(); }
+  RasterRenderer::Profile takeWorstRasterProfile() { return renderer().takeWorstProfile(); }
+  RasterRenderer::TextureCosts takeTextureCosts() { return renderer().takeTextureCosts(); }
+  // How long the Present just made waited for the render thread, and the
+  // frame it waited for: the render thread's whole time on it and its parts.
+  double asyncCallerWait() const { return m_asyncCaller.waitMilliseconds; }
+  struct WaitedFrame {
+    double render = 0, present = 0, record = 0, fence = 0, acquire = 0, submit = 0, queuePresent = 0, release = 0;
+    double scene = 0, setup = 0, queueLock = 0;
+    // Of record: the raster renderer's preparation, the tracer's surfaces
+    // (materials within), acceleration structures, tables and passes, and
+    // within those its geometry, uploads and allocations.
+    double raster = 0, surfaces = 0, material = 0, traceAccel = 0, table = 0, passes = 0, composite = 0;
+    double geometry = 0, upload = 0, allocation = 0;
+    uint64_t bufferAllocations = 0, memoryAllocations = 0;
+  };
+  WaitedFrame waitedFrame() const { return m_waitedFrame; }
+  // How long the last Present's low latency sleep held the host.
+  double latencySleepMilliseconds() const { return m_latencySleepMilliseconds; }
   // The caller's side of the last asynchronous Present (inactive otherwise).
   AsyncPresentStatistics asyncCallerStatistics() const { return m_previousAsyncCaller; }
   remixapi_ErrorCode configureSetting(const char *key, const char *value);
@@ -503,6 +521,28 @@ private:
   PFN_vkSetLatencyMarkerNV m_setLatencyMarker = nullptr;
   VkSemaphore m_latencySemaphore = VK_NULL_HANDLE; // timeline: the driver signals the end of a sleep
   uint64_t m_latencyValue = 0;
+  double m_latencySleepMilliseconds = 0;
+  // The host's recent interval between sleeps (smoothed), which bounds one.
+  double m_latencyIntervalMilliseconds = 0;
+  std::chrono::steady_clock::time_point m_latencySleptAt{};
+  // The driver's sleep runs on a thread of its own, so that the host waits
+  // for it only as long as a sleep is worth (vkLatencySleepNV itself blocks,
+  // now and then for four frames' time).
+  struct LatencySleeper {
+    std::thread thread;
+    std::mutex mutex;
+    std::condition_variable wake, done;
+    std::function<void()> job;
+    bool busy = false, stop = false;
+    // Runs work on the thread and waits for it at most milliseconds; while
+    // an earlier sleep is still running, waits for that one instead.
+    void run(std::function<void()> work, double milliseconds);
+    void idle();     // returns once no sleep is running
+    void shutdown(); // idle, and the thread joined
+    ~LatencySleeper() { shutdown(); }
+  } m_latencySleeper;
+  WaitedFrame m_waitedFrame; // caller-owned: taken while the render thread is idle
+  double m_queueLockMilliseconds = 0; // render-owned: the frame's wait for the queue mutex
   // The frame the host simulates (caller's thread) and the one being
   // rendered (copied at Present, read by the render thread).
   uint64_t m_latencyFrame = 0, m_latencyRenderFrame = 0;

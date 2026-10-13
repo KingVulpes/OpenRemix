@@ -82,6 +82,56 @@ namespace {
 //   sequence.request   N (default 60) consecutive captures to sequence/NNN.png,
 //                      one per present while the previous one has completed
 // Each request file is deleted when served.
+// The host's frame pacing as Present sees it, since the last timings dump:
+// the intervals between Present calls and where the calls' own time went.
+// Caller's thread only (Present and the dump it serves).
+struct PresentPacing {
+  std::chrono::steady_clock::time_point last{};
+  std::vector<float> intervals; // milliseconds
+  // One call's parts: dev requests, waiting for the API mutex, the runtime's
+  // Present (with the wait for the render thread), the low latency sleep,
+  // USD mods and what follows the mutex.
+  // interval: from this call's start to the next one's, so the call's own
+  // time and the host's frame after it.
+  struct Call {
+    double total = 0, requests = 0, mutex = 0, present = 0, sleep = 0, mods = 0, after = 0, interval = 0;
+    double wait = 0; // of present: waiting for the render thread's previous frame
+    remix::RemixNativeRuntime::WaitedFrame waited; // that frame, on the render thread
+    // Of the host's part of the interval: inside OpenRemix's resource calls
+    // (CreateTexture, CreateMesh, DrawInstance, ...), and the longest of them.
+    double api = 0, apiLongest = 0;
+    const char *apiLongestName = "";
+  } worst, sum, previous;
+  bool hasPrevious = false;
+  // The frames that took long (over 40 ms), in order, up to a limit.
+  std::vector<Call> slow;
+  uint64_t calls = 0;
+  void add(const Call &call) {
+    ++calls;
+    sum.total += call.total;
+    sum.requests += call.requests;
+    sum.mutex += call.mutex;
+    sum.present += call.present;
+    sum.wait += call.wait;
+    sum.api += call.api;
+    sum.sleep += call.sleep;
+    sum.mods += call.mods;
+    sum.after += call.after;
+    if (call.interval > worst.interval)
+      worst = call;
+    if (call.interval > 40 && slow.size() < 160)
+      slow.push_back(call);
+    if (intervals.size() < 65536)
+      intervals.push_back(float(call.interval));
+  }
+  void reset() {
+    intervals.clear();
+    slow.clear();
+    worst = sum = {};
+    calls = 0;
+  }
+} g_pacing;
+
 void serviceDevRequests() {
   static uint32_t calls = 0, sequenceLeft = 0, sequenceIndex = 0;
   std::error_code ec;
@@ -146,7 +196,7 @@ void serviceDevRequests() {
     {
       std::lock_guard lock(g_apiMutex);
       const auto &t = g_runtime.gpuPassTimings();
-      char line[200];
+      char line[512];
       if (!t.available) {
         text = "unavailable (enable rtx.native.gpuPassTimers)\n";
       } else {
@@ -198,6 +248,96 @@ void serviceDevRequests() {
                       raster.retireMeshesMilliseconds, (unsigned long long)raster.meshCount,
                       raster.retirePathsMilliseconds, (unsigned long long)raster.pathCount);
         text += line;
+        {
+          const auto w = g_runtime.takeWorstRasterProfile();
+          std::snprintf(line, sizeof(line),
+                        "# slowest raster prepare since the last dump %.2f ms: retire %.2f (recycle %.2f), order %.2f, "
+                        "draws %.2f, skin upload %.2f | created: %llu pipelines %.2f ms, %llu meshes %.2f ms, %llu "
+                        "textures %.2f ms, %llu materials %.2f ms | staging %llu buffers (%llu allocated) %.2f ms, "
+                        "%.2f MiB | draws %llu, culled %llu, waiting for a pipeline %llu\n",
+                        w.prepareMilliseconds, w.retireMilliseconds, w.recycleMilliseconds, w.orderMilliseconds,
+                        w.buildMilliseconds, w.skinUploadMilliseconds, (unsigned long long)w.pipelinesCreated,
+                        w.createPipelineMilliseconds, (unsigned long long)w.meshesCreated, w.createMeshMilliseconds,
+                        (unsigned long long)w.texturesCreated, w.createTextureMilliseconds,
+                        (unsigned long long)w.materialsCreated, w.createMaterialMilliseconds,
+                        (unsigned long long)w.stagingBuffers, (unsigned long long)w.stagingAllocated,
+                        w.stagingAllocateMilliseconds + w.stagingWriteMilliseconds, w.uploadBytes / 1048576.0,
+                        (unsigned long long)w.draws, (unsigned long long)w.culledDraws,
+                        (unsigned long long)w.unreadyDraws);
+          text += line;
+        }
+        {
+          const auto c = g_runtime.takeTextureCosts();
+          std::snprintf(line, sizeof(line),
+                        "# texture images created since the last dump: %llu, %.1f MiB | budget query %.2f ms, create "
+                        "%.2f, allocate %.2f, bind %.2f, view %.2f, staging copy %.2f | slowest image %.2f ms\n",
+                        (unsigned long long)c.images, c.bytes / 1048576.0, c.query, c.create, c.allocate, c.bind, c.view,
+                        c.stage, c.slowest);
+          text += line;
+        }
+        if (g_pacing.calls > 1) {
+          auto sorted = g_pacing.intervals;
+          std::sort(sorted.begin(), sorted.end());
+          const auto at = [&](double q) { return sorted[std::min(sorted.size() - 1, size_t(q * sorted.size()))]; };
+          double mean = 0, deviation = 0, step = 0;
+          for (const float v : sorted)
+            mean += v;
+          mean /= double(sorted.size());
+          for (const float v : sorted)
+            deviation += (v - mean) * (v - mean);
+          for (size_t i = 1; i < g_pacing.intervals.size(); ++i)
+            step += std::abs(g_pacing.intervals[i] - g_pacing.intervals[i - 1]);
+          size_t over = 0;
+          for (const float v : sorted)
+            over += v > 1.5 * mean;
+          std::snprintf(line, sizeof(line),
+                        "# pacing over %zu frames: interval mean %.2f ms, median %.2f, 95%% %.2f, 99%% %.2f, max %.2f; "
+                        "deviation %.2f, mean change frame to frame %.2f; %zu frames over 1.5x the mean\n",
+                        sorted.size(), mean, at(.5), at(.95), at(.99), sorted.back(),
+                        std::sqrt(deviation / double(sorted.size())), step / double(sorted.size() - 1), over);
+          text += line;
+          const double n = double(g_pacing.calls);
+          const auto &s = g_pacing.sum;
+          const auto &w = g_pacing.worst;
+          std::snprintf(line, sizeof(line),
+                        "# Present call mean %.2f ms: dev requests %.2f, API mutex wait %.2f, present %.2f (waiting for "
+                        "the render thread %.2f), low latency sleep %.2f, mods %.2f, after %.2f | host's OpenRemix "
+                        "resource calls %.2f ms a frame\n",
+                        s.total / n, s.requests / n, s.mutex / n, s.present / n, s.wait / n, s.sleep / n, s.mods / n,
+                        s.after / n, s.api / n);
+          text += line;
+          std::snprintf(line, sizeof(line),
+                        "# longest interval %.2f ms, the Present call that began it %.2f: dev requests %.2f, API mutex "
+                        "wait %.2f, present %.2f (waiting for the render thread %.2f), low latency sleep %.2f, mods "
+                        "%.2f, after %.2f (the rest is the host)\n",
+                        w.interval, w.total, w.requests, w.mutex, w.present, w.wait, w.sleep, w.mods, w.after);
+          text += line;
+          const auto &f = w.waited;
+          std::snprintf(line, sizeof(line),
+                        "# the frame that call waited for, on the render thread: %.2f ms in all, present %.2f (setup "
+                        "%.2f, scene %.2f, fence %.2f, acquire %.2f, queue mutex %.2f, record %.2f, submit %.2f, queue "
+                        "present %.2f), release %.2f\n",
+                        f.render, f.present, f.setup, f.scene, f.fence, f.acquire, f.queueLock, f.record, f.submit,
+                        f.queuePresent, f.release);
+          text += line;
+          // Every long frame: what its Present call waited for.
+          for (const auto &c : g_pacing.slow) {
+            const auto &r = c.waited;
+            std::snprintf(line, sizeof(line),
+                          "# slow %.1f ms: call %.1f (mutex %.1f, wait for render thread %.1f, sleep %.1f), host %.1f "
+                          "(in OpenRemix calls %.1f, longest %s %.1f) | "
+                          "render thread %.1f: setup %.1f scene %.1f fence %.1f acquire %.1f record %.1f queuePresent "
+                          "%.1f | record: raster %.1f surfaces %.1f (material %.1f) accel %.1f table %.1f passes %.1f "
+                          "composite %.1f | geometry %.1f upload %.1f allocation %.1f (%llu buffers, %llu memory)\n",
+                          c.interval, c.total, c.mutex, c.wait, c.sleep, c.interval - c.total, c.api, c.apiLongestName,
+                          c.apiLongest, r.render, r.setup,
+                          r.scene, r.fence, r.acquire, r.record, r.queuePresent, r.raster, r.surfaces, r.material,
+                          r.traceAccel, r.table, r.passes, r.composite, r.geometry, r.upload, r.allocation,
+                          (unsigned long long)r.bufferAllocations, (unsigned long long)r.memoryAllocations);
+            text += line;
+          }
+        }
+        g_pacing.reset();
         if (g_runtime.latencyRequested()) {
           std::snprintf(line, sizeof(line), "# low latency: %s\n",
                         g_runtime.latencyActive() ? "on" : "off (raster backend)");
@@ -220,16 +360,61 @@ void serviceDevRequests() {
 
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_Present(const remixapi_PresentInfo *info) {
   try {
+    using Clock = std::chrono::steady_clock;
+    const auto ms = [](Clock::time_point a, Clock::time_point b) {
+      return std::chrono::duration<double, std::milli>(b - a).count();
+    };
+    const auto entered = Clock::now();
+    PresentPacing::Call call;
+    {
+      const double api = double(g_apiCallNanoseconds.exchange(0, std::memory_order_relaxed)) / 1e6;
+      const double longest = double(g_apiLongestNanoseconds.exchange(0, std::memory_order_relaxed)) / 1e6;
+      g_pacing.previous.api = api;
+      g_pacing.previous.apiLongest = longest;
+      g_pacing.previous.apiLongestName = g_apiLongestName.load(std::memory_order_relaxed);
+    }
+    if (g_pacing.hasPrevious) {
+      g_pacing.previous.interval = ms(g_pacing.last, entered);
+      g_pacing.add(g_pacing.previous);
+    }
+    g_pacing.last = entered;
     serviceDevRequests();
+    const auto requested = Clock::now();
+    call.requests = ms(entered, requested);
+    // Closes the record on every way out of the call.
+    struct Pace {
+      PresentPacing::Call &call;
+      Clock::time_point entered, unlocked{};
+      ~Pace() {
+        const auto now = Clock::now();
+        call.total = std::chrono::duration<double, std::milli>(now - entered).count();
+        if (unlocked != Clock::time_point{})
+          call.after = std::chrono::duration<double, std::milli>(now - unlocked).count();
+        g_pacing.previous = call;
+        g_pacing.hasPrevious = true;
+      }
+    } pace{call, entered};
     PFN_remixapi_BridgeCallback presentCallback = nullptr;
     remixapi_ErrorCode status = REMIXAPI_ERROR_CODE_GENERAL_FAILURE;
     {
+      struct Unlocked {
+        Clock::time_point &at;
+        ~Unlocked() { at = Clock::now(); }
+      } unlocked{pace.unlocked}; // destroyed after the lock below: the mutex is released first
       std::lock_guard lock(g_apiMutex);
+      const auto locked = Clock::now();
+      call.mutex = ms(requested, locked);
       status = g_runtime.present(info);
+      const auto presented = Clock::now();
+      call.sleep = g_runtime.latencySleepMilliseconds();
+      call.present = ms(locked, presented) - call.sleep;
+      if (const auto caller = g_runtime.asyncCallerStatistics(); caller.active)
+        call.wait = g_runtime.asyncCallerWait(), call.waited = g_runtime.waitedFrame();
 #if REMIX_HAS_USD
       if (status == REMIXAPI_ERROR_CODE_SUCCESS)
         remix::usd::modBoundary(g_runtime.raster());
 #endif
+      call.mods = ms(presented, Clock::now());
 #if !defined(_WIN32)
       // Validation and reconstruction SDKs initialize process-static resources on
       // first use. Async preparation can activate them after the initial raster

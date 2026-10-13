@@ -26,6 +26,7 @@ namespace remix {
     struct Profile {
       double prepareMilliseconds = 0, skinningMilliseconds = 0;
       uint64_t culledDraws = 0; // left out by frustum culling
+      uint64_t unreadyDraws = 0; // left out while their pipeline variant compiles (path tracing)
       // Where prepare()'s time goes: retiring released resources, refreshing
       // dynamic textures, ordering the draws and building their commands
       // (a mesh's or material's first use uploads it).
@@ -36,6 +37,12 @@ namespace remix {
       double stagingAllocateMilliseconds = 0, stagingWriteMilliseconds = 0, skinUploadMilliseconds = 0;
       uint64_t stagingBuffers = 0, stagingAllocated = 0;
       uint32_t stagingMemoryFlags = 0;
+      // First uses: creating pipelines, meshes (upload), textures (image,
+      // upload, mips) and materials (descriptor set; its texture's time is
+      // counted with the textures).
+      double createPipelineMilliseconds = 0, createMeshMilliseconds = 0, createTextureMilliseconds = 0;
+      double createMaterialMilliseconds = 0;
+      uint64_t pipelinesCreated = 0, texturesCreated = 0;
       // The retire phase in parts, and what it walks.
       double recycleMilliseconds = 0, retireMaterialsMilliseconds = 0, retireTexturesMilliseconds = 0;
       double retireMeshesMilliseconds = 0, retirePathsMilliseconds = 0;
@@ -48,6 +55,20 @@ namespace remix {
     const Profile &profile() const { return m_profile; }
     // The last prepare() that finished, whole (profile() is rewritten while one runs).
     Profile completedProfile() const { return m_completedProfile; }
+    // What creating textures' images cost since this was last asked: the
+    // driver's budget query, creating the image, allocating and binding its
+    // memory, its view, and writing the staging copy.
+    struct TextureCosts {
+      uint64_t images = 0, bytes = 0;
+      double query = 0, create = 0, allocate = 0, bind = 0, view = 0, stage = 0, slowest = 0;
+    };
+    TextureCosts takeTextureCosts();
+    // The slowest prepare() since this was last asked.
+    Profile takeWorstProfile() {
+      const auto worst = m_worstProfile;
+      m_worstProfile = {};
+      return worst;
+    }
     // linearTarget: the target has an sRGB format (fixed-function blending is
     // linear); otherwise blending operates on display-referred values.
     void configureTarget(VkRenderPass pass, VkExtent2D extent, bool encodeOutput = false,
@@ -132,6 +153,6 @@ namespace remix {
   private:
     struct Gpu;
     std::unique_ptr<Gpu> m_gpu;
-    Profile m_profile, m_completedProfile;
+    Profile m_profile, m_completedProfile, m_worstProfile;
   };
 } // namespace remix

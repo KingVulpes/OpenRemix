@@ -356,6 +356,7 @@ namespace remix {
   }
 
   void RemixNativeRuntime::destroySwapchain() {
+    m_latencySleeper.idle(); // a sleep in progress names this swapchain
     // Callers have waited for the device, except after device loss.
     if (m_device && !m_deviceLost)
       completeScreenshot();

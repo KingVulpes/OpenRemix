@@ -118,6 +118,12 @@ namespace remix {
     if (it != meshes.end()) {
       return it->second;
     }
+    const auto begin = std::chrono::steady_clock::now();
+    struct Timed {
+      double &total;
+      std::chrono::steady_clock::time_point begin;
+      ~Timed() { total += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count(); }
+    } timed{createMeshMs, begin};
     const size_t offset = source->vertices.size() * sizeof(Vertex);
     // Sprite vertices (remixapi_MeshInfoSpriteVerticesEXT) follow the indices.
     const size_t spriteOffset = offset + source->indices.size() * sizeof(uint32_t);
@@ -142,6 +148,12 @@ namespace remix {
         refreshTexture(it->second, *source, command);
       return it->second;
     }
+    struct Timed {
+      double &total;
+      std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
+      ~Timed() { total += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count(); }
+    } timed{createTextureMs};
+    ++texturesCreated;
     if (!source->updates)
       return createTexture(source, command);
     // An updatable texture's texels change under its lock: the image starts
@@ -246,7 +258,10 @@ namespace remix {
     const VkFormat format = !p.hdrMips.empty() ? VK_FORMAT_R32G32B32A32_SFLOAT
                             : p.srgb           ? VK_FORMAT_R8G8B8A8_SRGB
                                                : VK_FORMAT_R8G8B8A8_UNORM;
+    const auto queryBegin = std::chrono::steady_clock::now();
     uint32_t skip = textureMipSkip(p.width, p.height, available);
+    textureCosts.query +=
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - queryBegin).count();
     std::unique_ptr<Image> allocated;
     for (;;) {
       try {
@@ -280,6 +295,7 @@ namespace remix {
       width = std::max(1u, width / 2);
       height = std::max(1u, height / 2);
     }
+    const auto stageBegin = std::chrono::steady_clock::now();
     uploads.push_back(buffer(total, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, [&](uint8_t *mapped) {
       for (uint32_t i = 0; i < levels; ++i) {
         const auto [bytes, size] = level(i);
@@ -287,6 +303,8 @@ namespace remix {
           std::memcpy(mapped + copies[i].bufferOffset, bytes, size);
       }
     }));
+    textureCosts.stage +=
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - stageBegin).count();
     copyLevels(command, value.data->image, levels, copies);
     return value;
   }
@@ -419,6 +437,11 @@ namespace remix {
     if (auto it = materials.find(source.get()); it != materials.end()) {
       return it->second->set;
     }
+    struct Timed {
+      double &total;
+      std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
+      ~Timed() { total += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count(); }
+    } timed{createMaterialMs};
     auto &tex = texture(source->texture, command);
     CounterTicks time{textureCounters.gpuCreateTicks};
     textureCounters.gpuMaterialsCreated.fetch_add(1, std::memory_order_relaxed);

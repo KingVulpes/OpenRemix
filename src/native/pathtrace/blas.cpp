@@ -18,7 +18,20 @@ namespace remix {
     retiredStates.clear();
     retired.clear();
     bufferCache->trimMemory(bufferMemory);
-    std::erase_if(bufferMemory, [](const auto &block) { return block.use_count() == 1; });
+    // Empty blocks go, but one of each memory type stays: the next buffer of
+    // that type would otherwise allocate one again.
+    {
+      std::vector<uint32_t> kept;
+      std::erase_if(bufferMemory, [&](const auto &block) {
+        if (block.use_count() != 1)
+          return false;
+        if (std::find(kept.begin(), kept.end(), block->type) == kept.end()) {
+          kept.push_back(block->type);
+          return false;
+        }
+        return true;
+      });
+    }
     if (timingPending) {
       uint64_t times[12] = {};
       if (vkGetQueryPoolResults(device, timestamps, 0, 12, sizeof(times), times, sizeof(uint64_t),

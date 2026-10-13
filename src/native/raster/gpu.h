@@ -8,6 +8,9 @@
 #include <cmath>
 #include <cstring>
 #include <functional>
+#include <future>
+#include <map>
+#include <memory>
 #include <utility>
 
 namespace remix::raster::detail {
@@ -18,6 +21,58 @@ namespace remix::raster::detail {
       throw result;
     }
   }
+  // One buffer and its memory that many small buffers are parts of. Creating
+  // a buffer with memory of its own takes the driver milliseconds (and mapping
+  // one about half of one), which a frame that first draws fifty small meshes
+  // paid fifty times: 130 ms for 70 KiB of geometry. Parts of an arena cost a
+  // search of its free list.
+  struct Arena {
+    VkDevice device = VK_NULL_HANDLE;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VkDeviceSize size = 0;
+    uint8_t *mapped = nullptr; // staging arenas: mapped for their lifetime
+    bool coherent = true;
+    std::map<VkDeviceSize, VkDeviceSize> free; // offset -> size, neighbours merged
+    // The first free range that holds size bytes, or false.
+    bool take(VkDeviceSize bytes, VkDeviceSize &offset) {
+      for (auto it = free.begin(); it != free.end(); ++it)
+        if (it->second >= bytes) {
+          offset = it->first;
+          const VkDeviceSize rest = it->second - bytes;
+          free.erase(it);
+          if (rest)
+            free.emplace(offset + bytes, rest);
+          return true;
+        }
+      return false;
+    }
+    void give(VkDeviceSize offset, VkDeviceSize bytes) {
+      auto next = free.lower_bound(offset);
+      if (next != free.begin()) {
+        auto before = std::prev(next);
+        if (before->first + before->second == offset) {
+          offset = before->first;
+          bytes += before->second;
+          free.erase(before);
+        }
+      }
+      if (next != free.end() && offset + bytes == next->first) {
+        bytes += next->second;
+        free.erase(next);
+      }
+      free.emplace(offset, bytes);
+    }
+    bool empty() const { return free.size() == 1 && free.begin()->second == size; }
+    ~Arena() {
+      if (mapped)
+        vkUnmapMemory(device, memory);
+      if (buffer)
+        vkDestroyBuffer(device, buffer, nullptr);
+      if (memory)
+        vkFreeMemory(device, memory, nullptr);
+    }
+  };
   struct Buffer {
     VkDevice device;
     VkBuffer buffer = VK_NULL_HANDLE;
@@ -26,7 +81,15 @@ namespace remix::raster::detail {
     VkDeviceSize allocationSize = 0;
     VkBufferUsageFlags usage = 0;
     VkMemoryPropertyFlags flags = 0;
+    // A part of an arena: `buffer` is the arena's and the part begins at
+    // `offset` (0 for a buffer of its own). Every use adds it.
+    std::shared_ptr<Arena> arena;
+    VkDeviceSize offset = 0;
     ~Buffer() {
+      if (arena) {
+        arena->give(offset, allocationSize);
+        return;
+      }
       if (buffer) {
         vkDestroyBuffer(device, buffer, nullptr);
       }
@@ -35,11 +98,62 @@ namespace remix::raster::detail {
       }
     }
   };
+  // Device memory that texture images are parts of. An allocation of its own
+  // took the driver 10 ms an image on average and up to 130 (Garry's Mod,
+  // RTX 2080 on Thunderbolt: 900 ms over 92 images in a 75 s session), in the
+  // frame that first drew the texture.
+  struct MemoryBlock {
+    VkDevice device = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VkDeviceSize size = 0;
+    uint32_t type = 0;
+    std::map<VkDeviceSize, VkDeviceSize> free; // offset -> size, neighbours merged
+    // The first free range that holds bytes at the alignment, or false.
+    bool take(VkDeviceSize bytes, VkDeviceSize alignment, VkDeviceSize &offset) {
+      for (auto it = free.begin(); it != free.end(); ++it) {
+        const VkDeviceSize begin = it->first, end = it->first + it->second;
+        const VkDeviceSize aligned = (begin + alignment - 1) / alignment * alignment;
+        if (aligned + bytes > end)
+          continue;
+        free.erase(it);
+        if (aligned > begin)
+          free.emplace(begin, aligned - begin);
+        if (aligned + bytes < end)
+          free.emplace(aligned + bytes, end - aligned - bytes);
+        offset = aligned;
+        return true;
+      }
+      return false;
+    }
+    void give(VkDeviceSize offset, VkDeviceSize bytes) {
+      auto next = free.lower_bound(offset);
+      if (next != free.begin()) {
+        auto before = std::prev(next);
+        if (before->first + before->second == offset) {
+          offset = before->first;
+          bytes += before->second;
+          free.erase(before);
+        }
+      }
+      if (next != free.end() && offset + bytes == next->first) {
+        bytes += next->second;
+        free.erase(next);
+      }
+      free.emplace(offset, bytes);
+    }
+    ~MemoryBlock() {
+      if (memory)
+        vkFreeMemory(device, memory, nullptr);
+    }
+  };
   struct Image {
     VkDevice device;
     VkImage image = VK_NULL_HANDLE;
     VkImageView view = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
+    // A part of a block (memory is then null): returned to it.
+    std::shared_ptr<MemoryBlock> block;
+    VkDeviceSize blockOffset = 0, blockBytes = 0;
     VkFormat format = VK_FORMAT_UNDEFINED;
     uint32_t levels = 0;
     VkComponentMapping components = {};
@@ -61,6 +175,8 @@ namespace remix::raster::detail {
       if (memory) {
         vkFreeMemory(device, memory, nullptr);
       }
+      if (block)
+        block->give(blockOffset, blockBytes);
     }
   };
   struct Push {
@@ -87,6 +203,8 @@ namespace remix::raster::detail {
 namespace remix {
   struct RasterRenderer::Gpu {
     using Buffer = raster::detail::Buffer;
+    using Arena = raster::detail::Arena;
+    using MemoryBlock = raster::detail::MemoryBlock;
     using Image = raster::detail::Image;
     using Push = raster::detail::Push;
     VkPhysicalDevice physical = VK_NULL_HANDLE;
@@ -174,7 +292,11 @@ namespace remix {
       float spriteParameters[4] = {};
     };
     // Diagnostics of the frame's staging uploads (RasterRenderer::Profile).
+    RasterRenderer::TextureCosts textureCosts;
     double stagingAllocateMs = 0, stagingWriteMs = 0;
+    // First uses in the frame: what creating them took.
+    double createPipelineMs = 0, createMeshMs = 0, createTextureMs = 0, createMaterialMs = 0;
+    uint64_t pipelinesCreated = 0, texturesCreated = 0;
     uint64_t stagingBuffers = 0, stagingAllocated = 0;
     uint32_t stagingMemoryFlags = 0;
     std::unordered_map<const scene::Surface *, MeshGpu> meshes;
@@ -186,6 +308,18 @@ namespace remix {
     VkDeviceSize reusableBytes = 0;
     void recycle(std::unique_ptr<Buffer> buffer);
     std::unique_ptr<Buffer> skin;
+    // Arenas small geometry is part of, and the ones its staging copies are
+    // part of: those per frame slot, since a slot's staging is released
+    // together when the slot comes round again.
+    // Blocks texture images are parts of, and the next one, allocated ahead
+    // on another thread so that no frame waits for it.
+    std::vector<std::shared_ptr<MemoryBlock>> imageBlocks;
+    std::future<std::shared_ptr<MemoryBlock>> spareImageBlock;
+    static std::shared_ptr<MemoryBlock> allocateBlock(VkDevice device, VkDeviceSize size, uint32_t type);
+    std::vector<std::shared_ptr<Arena>> geometryArenas;
+    std::vector<std::shared_ptr<Arena>> stagingArenas[gpuFrameCount];
+    std::unique_ptr<Buffer> part(std::vector<std::shared_ptr<Arena>> &arenas, VkDeviceSize size,
+                                 VkBufferUsageFlags usage, VkMemoryPropertyFlags flags, VkDeviceSize arenaSize);
     struct FrameResources {
       std::vector<std::unique_ptr<Buffer>> uploads, retiredBuffers;
       std::vector<std::unique_ptr<Image>> retiredImages;

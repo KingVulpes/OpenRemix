@@ -1,4 +1,5 @@
 #pragma once
+#include <future>
 #include "pathtrace/buffer_cache.h"
 #include "pathtrace/frame_tables.h"
 #include "pathtrace/renderer.h"
@@ -161,6 +162,14 @@ namespace remix {
     const bool digestEnabled = std::getenv("REMIX_FRAME_DIGEST") != nullptr;
     uint64_t digest = 0;
     std::vector<std::shared_ptr<trace::detail::BufferMemory>> bufferMemory;
+    // The next block of each memory type in use, allocated ahead on another
+    // thread: allocating device memory takes the driver tens of milliseconds
+    // here, which a frame that needed a new block (a new mesh's acceleration
+    // structure, a grown table) used to wait for.
+    static constexpr VkDeviceSize bufferBlockSize = 32 * 1024 * 1024;
+    std::vector<std::pair<uint32_t, std::future<std::shared_ptr<trace::detail::BufferMemory>>>> spareBufferMemory;
+    static std::shared_ptr<trace::detail::BufferMemory> allocateBufferMemory(VkDevice device, VkDeviceSize size,
+                                                                           uint32_t type);
     using Buffer = trace::detail::Buffer;
     using Image = trace::detail::Image;
     using Arena = trace::detail::Arena;

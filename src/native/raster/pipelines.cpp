@@ -57,13 +57,19 @@ namespace remix {
       }
       return sprites > 0;
     };
+    // With the path tracer the raster draws are overlays and effects (a
+    // muzzle flash, an impact, the HUD): a frame never waits for a variant
+    // of theirs to compile. Waiting froze the picture for the length of each
+    // compile, about 100 ms, and the first shot of a session needs several.
+    // prepare() leaves such a draw out until its pipeline is ready. The raster
+    // backend draws the scene itself and waits, as before.
     const auto request = [&](const scene::Draw &draw, bool masked, bool wait = true) {
       try {
         m_gpu->pipeline(draw, masked, !masked && spriteStages(draw));
       } catch (VkResult result) {
         if (result != VK_NOT_READY)
           throw;
-        ready = ready && !wait;
+        ready = ready && (!wait || tracing);
       }
     };
     // The variants prepare() can choose for a draw: a masked draw's is tested
@@ -135,6 +141,12 @@ namespace remix {
     if (pipelines.size() >= 256) {
       throw VK_ERROR_TOO_MANY_OBJECTS;
     }
+    struct Timed {
+      double &total;
+      std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
+      ~Timed() { total += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count(); }
+    } timed{createPipelineMs};
+    ++pipelinesCreated;
     const VkPipelineShaderStageCreateInfo stages[] = {
         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
          .stage = VK_SHADER_STAGE_VERTEX_BIT,

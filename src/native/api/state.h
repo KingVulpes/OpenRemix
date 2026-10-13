@@ -38,7 +38,25 @@ namespace remix::api {
   extern PFN_remixapi_BridgeCallback g_presentCallback;
   extern std::unordered_map<std::string, std::string> g_gameValues;
 
-  template <typename F> remixapi_ErrorCode resourceCall(F &&call) {
+  // The host's time inside resource calls since the last Present, for the
+  // frame pacing figures: all of it, and the longest single call.
+  inline std::atomic<uint64_t> g_apiCallNanoseconds{0}, g_apiLongestNanoseconds{0};
+  inline std::atomic<const char *> g_apiLongestName{""};
+
+  template <typename F> remixapi_ErrorCode resourceCall(F &&call, const char *name = __builtin_FUNCTION()) {
+    struct Timed {
+      const char *name;
+      std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
+      ~Timed() {
+        const uint64_t elapsed = uint64_t(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - begin).count());
+        g_apiCallNanoseconds.fetch_add(elapsed, std::memory_order_relaxed);
+        if (elapsed > g_apiLongestNanoseconds.load(std::memory_order_relaxed)) {
+          g_apiLongestNanoseconds.store(elapsed, std::memory_order_relaxed);
+          g_apiLongestName.store(name, std::memory_order_relaxed);
+        }
+      }
+    } timed{name};
     try {
       std::lock_guard lock(g_apiMutex);
       if (!g_runtime.isInitialized()) {

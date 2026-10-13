@@ -50,7 +50,11 @@ namespace remix {
         .memoryTypeIndex =
             memoryType(requirements.memoryTypeBits,
                        host ? VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)};
-    if (reusable && !dedicated.requiresDedicatedAllocation) {
+    // Device-local buffers are parts of a block, the idle cache's (reusable)
+    // or not: a memory allocation of its own cost each new acceleration
+    // structure and table the driver's allocation time. Host-visible buffers
+    // outside the cache keep memory of their own, which their readers map.
+    if (!dedicated.requiresDedicatedAllocation && (reusable || !host)) {
       const VkDeviceSize alignment = std::max(requirements.alignment,
           host ? properties.limits.nonCoherentAtomSize : VkDeviceSize(1));
       out->allocationSize = align(requirements.size,alignment);
@@ -61,13 +65,25 @@ namespace remix {
         }
       }
       if (!out->block) {
-        auto block = std::make_shared<BufferMemory>();
-        block->device = device; block->type = allocate.memoryTypeIndex;
-        block->size = std::max(VkDeviceSize(16*1024*1024),out->allocationSize);
-        allocate.allocationSize = block->size;
-        check(vkAllocateMemory(device,&allocate,nullptr,&block->memory));
+        const uint32_t type = allocate.memoryTypeIndex;
+        std::shared_ptr<BufferMemory> block;
+        const bool standard = out->allocationSize <= bufferBlockSize;
+        if (standard)
+          for (auto it = spareBufferMemory.begin(); it != spareBufferMemory.end(); ++it)
+            if (it->first == type) {
+              block = it->second.get(); // Waits only if the spare is still being allocated.
+              spareBufferMemory.erase(it);
+              break;
+            }
+        if (!block) {
+          block = allocateBufferMemory(device, std::max(bufferBlockSize, out->allocationSize), type);
+          if (!block)
+            throw VK_ERROR_OUT_OF_DEVICE_MEMORY;
+        }
+        if (standard)
+          spareBufferMemory.emplace_back(
+              type, std::async(std::launch::async, allocateBufferMemory, device, bufferBlockSize, type));
         ++performance.memoryAllocations; performance.memoryAllocationBytes += block->size;
-        block->free.emplace_back(0,block->size);
         const auto offset = block->take(out->allocationSize,alignment);
         out->block = block; out->memoryOffset = *offset;
         bufferMemory.push_back(std::move(block));
@@ -93,6 +109,24 @@ namespace remix {
     if (reusable)
       out->cache = bufferCache;
     return out;
+  }
+
+  std::shared_ptr<BufferMemory> PathTracer::Gpu::allocateBufferMemory(VkDevice device, VkDeviceSize size,
+                                                                     uint32_t type) {
+    auto block = std::make_shared<BufferMemory>();
+    block->device = device;
+    block->type = type;
+    block->size = size;
+    const VkMemoryAllocateFlagsInfo flags = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO,
+                                             .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT};
+    const VkMemoryAllocateInfo allocate = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                                           .pNext = &flags,
+                                           .allocationSize = size,
+                                           .memoryTypeIndex = type};
+    if (vkAllocateMemory(device, &allocate, nullptr, &block->memory) != VK_SUCCESS)
+      return nullptr;
+    block->free.emplace_back(0, size);
+    return block;
   }
 
   void PathTracer::Gpu::write(Buffer &buffer, const void *data, size_t size) {

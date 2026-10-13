@@ -266,20 +266,85 @@ void RemixNativeRuntime::presented() {
     m_setLatencyMarker(m_device, m_swapchain, &info);
   }
 
+  void RemixNativeRuntime::LatencySleeper::run(std::function<void()> work, double milliseconds) {
+    std::unique_lock lock(mutex);
+    if (!busy) {
+      if (!thread.joinable())
+        thread = std::thread([this] {
+          std::unique_lock lock(mutex);
+          for (;;) {
+            wake.wait(lock, [&] { return stop || job; });
+            if (stop)
+              return;
+            auto current = std::move(job);
+            job = nullptr;
+            lock.unlock();
+            current();
+            lock.lock();
+            busy = false;
+            done.notify_all();
+          }
+        });
+      job = std::move(work);
+      busy = true;
+      wake.notify_one();
+    }
+    done.wait_for(lock, std::chrono::duration<double, std::milli>(milliseconds), [&] { return !busy; });
+  }
+
+  void RemixNativeRuntime::LatencySleeper::idle() {
+    std::unique_lock lock(mutex);
+    done.wait(lock, [&] { return !busy; });
+  }
+
+  void RemixNativeRuntime::LatencySleeper::shutdown() {
+    {
+      std::unique_lock lock(mutex);
+      done.wait(lock, [&] { return !busy; });
+      stop = true;
+      wake.notify_one();
+    }
+    if (thread.joinable())
+      thread.join();
+    stop = false;
+  }
+
   void RemixNativeRuntime::latencySleep() {
+    m_latencySleepMilliseconds = 0;
     if (!m_lowLatencyActive || !m_swapchain)
       return;
-    const VkLatencySleepInfoNV sleep = {.sType = VK_STRUCTURE_TYPE_LATENCY_SLEEP_INFO_NV,
-                                        .signalSemaphore = m_latencySemaphore,
-                                        .value = ++m_latencyValue};
-    if (m_latencySleep(m_device, m_swapchain, &sleep) == VK_SUCCESS) {
-      // Bounded: a driver that never signals must not hold the host.
-      const VkSemaphoreWaitInfo wait = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
-                                        .semaphoreCount = 1,
-                                        .pSemaphores = &m_latencySemaphore,
-                                        .pValues = &m_latencyValue};
-      vkWaitSemaphores(m_device, &wait, 100000000);
+    ScopedMilliseconds sleepTime{m_latencySleepMilliseconds};
+    // The driver now and then holds the host for several frames' time after
+    // a long frame (80-90 ms seen, at 21 ms a frame): a second long frame for
+    // every first. A sleep is worth at most about a frame, so that is the
+    // most it gets; the driver's signal, when it comes, is for a value no
+    // wait asks for any more.
+    const auto now = std::chrono::steady_clock::now();
+    if (m_latencySleptAt != std::chrono::steady_clock::time_point{}) {
+      const double interval = std::chrono::duration<double, std::milli>(now - m_latencySleptAt).count();
+      // Long frames do not lengthen the bound much: they are what it is for.
+      const double sample = std::min(interval, 2 * std::max(m_latencyIntervalMilliseconds, 1.));
+      m_latencyIntervalMilliseconds =
+          m_latencyIntervalMilliseconds > 0 ? m_latencyIntervalMilliseconds * .9 + sample * .1 : interval;
     }
+    m_latencySleptAt = now;
+    const double bound = std::clamp(m_latencyIntervalMilliseconds > 0 ? m_latencyIntervalMilliseconds : 100., 8., 100.);
+    const uint64_t value = ++m_latencyValue;
+    m_latencySleeper.run(
+        [this, value] {
+          const VkLatencySleepInfoNV sleep = {.sType = VK_STRUCTURE_TYPE_LATENCY_SLEEP_INFO_NV,
+                                              .signalSemaphore = m_latencySemaphore,
+                                              .value = value};
+          if (m_latencySleep(m_device, m_swapchain, &sleep) == VK_SUCCESS) {
+            // Bounded: a driver that never signals must not hold the thread.
+            const VkSemaphoreWaitInfo wait = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+                                              .semaphoreCount = 1,
+                                              .pSemaphores = &m_latencySemaphore,
+                                              .pValues = &value};
+            vkWaitSemaphores(m_device, &wait, 100000000);
+          }
+        },
+        bound);
     // The host's next frame begins here.
     ++m_latencyFrame;
     latencyMarker(VK_LATENCY_MARKER_SIMULATION_START_NV, m_latencyFrame);
@@ -314,6 +379,26 @@ void RemixNativeRuntime::presented() {
     // the previous one before this Present touches anything it owns.
     const auto start = std::chrono::steady_clock::now();
     const double waited = waitRenderThread();
+    m_waitedFrame = {m_asyncRender.renderMilliseconds,       m_framePerformance.presentMilliseconds,
+                     m_framePerformance.recordMilliseconds,  m_framePerformance.fenceMilliseconds,
+                     m_framePerformance.acquireMilliseconds, m_framePerformance.submitMilliseconds,
+                     m_framePerformance.queuePresentMilliseconds,
+                     m_frameBreakdown.presentReleaseMilliseconds,
+                     m_framePerformance.sceneMilliseconds,
+                     m_frameBreakdown.presentSetupMilliseconds,
+                     m_queueLockMilliseconds,
+                     m_frameBreakdown.rasterPrepareMilliseconds,
+                     m_frameBreakdown.traceSurfacesMilliseconds,
+                     m_frameBreakdown.materialMilliseconds,
+                     m_frameBreakdown.traceAccelerationMilliseconds,
+                     m_frameBreakdown.tableMilliseconds,
+                     m_frameBreakdown.passesMilliseconds,
+                     m_frameBreakdown.compositeMilliseconds,
+                     m_framePerformance.geometryMilliseconds,
+                     m_framePerformance.uploadMilliseconds,
+                     m_framePerformance.allocationMilliseconds,
+                     m_framePerformance.bufferAllocations,
+                     m_framePerformance.memoryAllocations};
     if (latencyWanted() != m_lowLatencyActive)
       applyLatencyMode();
     m_latencyRenderFrame = m_latencyFrame;
@@ -483,6 +568,7 @@ void RemixNativeRuntime::presented() {
   // next Present, since this frame's Present has already returned.
   void RemixNativeRuntime::renderFrame() {
     m_asyncRender.renderMilliseconds = 0;
+    m_queueLockMilliseconds = 0;
     ScopedMilliseconds renderTime{m_asyncRender.renderMilliseconds};
     auto &frame = *m_frameScene;
     // GetVramStats' raster figures walk every cached texture and mesh: taken
@@ -572,7 +658,7 @@ void RemixNativeRuntime::presented() {
       m_rebuild |= result == VK_SUBOPTIMAL_KHR;
       m_frameStarted = true;
       latencyMarker(VK_LATENCY_MARKER_RENDERSUBMIT_START_NV, m_latencyRenderFrame);
-      queueLock.lock();
+      measured(m_queueLockMilliseconds, [&] { queueLock.lock(); });
       const GeneratedImages generated = acquireGenerated();
       const auto status = measured(p.recordMilliseconds, [&] {
         return recordFrame(imageIndex, traceScene ? &*traceScene : nullptr, generated);

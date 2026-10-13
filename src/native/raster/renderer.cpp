@@ -78,6 +78,12 @@ namespace remix {
     g.skin = std::move(next.skin);
   }
 
+  RasterRenderer::TextureCosts RasterRenderer::takeTextureCosts() {
+    const auto costs = m_gpu->textureCosts;
+    m_gpu->textureCosts = {};
+    return costs;
+  }
+
   RasterRenderer::MemoryStatistics RasterRenderer::memoryStatistics() const {
     MemoryStatistics result;
     if (!m_gpu)

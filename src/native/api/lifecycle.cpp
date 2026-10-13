@@ -196,7 +196,7 @@ void serviceDevRequests() {
     {
       std::lock_guard lock(g_apiMutex);
       const auto &t = g_runtime.gpuPassTimings();
-      char line[512];
+      char line[1024];
       if (!t.available) {
         text = "unavailable (enable rtx.native.gpuPassTimers)\n";
       } else {
@@ -282,6 +282,41 @@ void serviceDevRequests() {
                         "buffers grown %.2f ms, write %.2f, compare and copy %.2f (%.2f MiB copied)\n",
                         t.total, t.bytes / 1048576.0, t.capacity / 1048576.0, (unsigned long long)t.grown, t.grow,
                         t.write, t.compare, t.copied / 1048576.0);
+          text += line;
+        }
+        {
+          const auto a = std::exchange(remix::trace::g_accelCosts, {});
+          std::snprintf(line, sizeof(line),
+                        "# slowest acceleration structure step since the last dump %.2f ms: bottom level %.2f (%u "
+                        "builds recorded in %.2f, compaction query pool %.2f), top level %.2f (%u instances written "
+                        "in %.2f) | %u structures created in %.2f | combined top level: %s, static part %s (%u "
+                        "records made), decision %.2f, records %.2f, written %.2f MiB in %.2f (static part %s), "
+                        "sizes %.2f, instance buffer %.2f, structure %.2f, scratch buffer %.2f, build command %.2f\n",
+                        a.total, a.bottom, a.bottomBuilds, a.record, a.queryPool, a.top, a.topInstances,
+                        a.instances, a.created, a.create, a.update ? "refit" : "build",
+                        a.staticChanged ? "changed" : "unchanged", a.staticFilled, a.decide, a.fill,
+                        a.written / 1048576.0, a.write, a.keptPrefix ? "kept" : "rewritten", a.sizes, a.storageInstances,
+                        a.storageAccel, a.storage, a.topRecord);
+          text += line;
+        }
+        {
+          const auto b = std::exchange(remix::trace::g_blockCosts, {});
+          static const char *const how[] = {"spare ready", "spare still being allocated", "no spare of its type",
+                                            "buffer over the block size"};
+          std::snprintf(line, sizeof(line),
+                        "# tracer memory blocks since the last dump: %u from a ready spare, %u waited for a spare, %u "
+                        "with no spare of their type, %u for a large buffer | slowest %.2f ms (%s): a %.2f MiB %s "
+                        "buffer, memory type %u, %u blocks of it before | slowest buffer binding %.2f ms (%s), "
+                        "slowest block mapping %.2f, slowest buffer creation %.2f, slowest buffer destruction %.2f (%.2f MiB%s), "
+                        "slowest block freed in %.2f\n",
+                        b.ready, b.awaited, b.none, b.large, b.slowest, how[b.slowestHow & 3],
+                        b.slowestBuffer / 1048576.0, b.slowestHost ? "host" : "device", b.slowestType,
+                        b.slowestBlocks, b.slowestBind, b.bindFirst ? "the first into its block" : "not the first",
+                        b.slowestMap, b.slowestCreate,
+                        std::exchange(remix::trace::g_slowestBufferDestroy, 0.0),
+                        remix::trace::g_slowestBufferDestroyBytes / 1048576.0,
+                        remix::trace::g_slowestBufferDestroyOwn ? ", memory of its own" : "",
+                        std::exchange(remix::trace::g_slowestBlockFree, 0.0));
           text += line;
         }
         if (g_pacing.calls > 1) {

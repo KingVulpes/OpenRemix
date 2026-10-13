@@ -1,4 +1,7 @@
 #pragma once
+#include "platform/memory_release.h"
+#include "pathtrace/block_costs.h"
+#include <chrono>
 #include <vulkan/vulkan.h>
 #include <array>
 #include <memory>
@@ -18,8 +21,10 @@ namespace remix::trace::detail {
     std::vector<std::pair<VkDeviceSize,VkDeviceSize>> free;
     size_t liveRanges = 0;
     ~BufferMemory() {
-      if (mapped) vkUnmapMemory(device,memory);
-      if (memory) vkFreeMemory(device,memory,nullptr);
+      const auto began = std::chrono::steady_clock::now();
+      MemoryRelease::free(device,memory); // (its mapping with it)
+      remix::trace::g_slowestBlockFree = std::max(remix::trace::g_slowestBlockFree,
+          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - began).count());
     }
     std::optional<VkDeviceSize> take(VkDeviceSize bytes, VkDeviceSize alignment) {
       for (size_t i = 0; i < free.size(); ++i) {
@@ -71,14 +76,19 @@ namespace remix::trace::detail {
     VkDeviceSize memoryOffset = 0, atomSize = 1;
 
     void destroy() const noexcept {
-      if (mapped && !block)
-        vkUnmapMemory(device, memory);
+      const auto began = std::chrono::steady_clock::now();
       if (handle)
         vkDestroyBuffer(device, handle, nullptr);
       if (block)
         block->release(memoryOffset,allocationSize);
-      else if (memory)
-        vkFreeMemory(device, memory, nullptr);
+      else
+        MemoryRelease::free(device, memory); // (its mapping with it)
+      const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - began).count();
+      if (ms > remix::trace::g_slowestBufferDestroy) {
+        remix::trace::g_slowestBufferDestroy = ms;
+        remix::trace::g_slowestBufferDestroyBytes = allocationSize;
+        remix::trace::g_slowestBufferDestroyOwn = !block && memory;
+      }
     }
   };
 

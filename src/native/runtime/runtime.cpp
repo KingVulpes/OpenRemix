@@ -20,6 +20,7 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
+#include "platform/memory_release.h"
 #include "runtime/runtime.h"
 
 #include <algorithm>
@@ -261,6 +262,7 @@ namespace remix {
       m_latencySemaphore = VK_NULL_HANDLE;
       m_lowLatencySupported = m_lowLatencyActive = false;
       m_gpuTimers.shutdown();
+      MemoryRelease::drain();
       vkDestroyDevice(m_device, nullptr);
     }
     if (m_surface) {

@@ -5,6 +5,7 @@
 #include "raster/renderer.h"
 #include "scene/trace_frame.h"
 #include <remix/remix_native_ext.h>
+#include "pathtrace/block_costs.h"
 #include <vulkan/vulkan.h>
 
 namespace remix::trace {
@@ -16,6 +17,35 @@ namespace remix::trace {
     uint64_t bytes = 0, capacity = 0, grown = 0, copied = 0;
   };
   inline TableCosts g_tableCosts;
+
+  // New blocks of buffer memory since this was last read (diagnostics): how
+  // each was come by, and the slowest. `ready`: a spare allocated ahead was
+  // there; `awaited`: one was still being allocated; `none`: no spare of that
+  // memory type (its first block); `large`: a buffer over the block size.
+  struct BlockCosts {
+    uint32_t ready = 0, awaited = 0, none = 0, large = 0;
+    double slowest = 0;
+    uint64_t slowestBuffer = 0;
+    uint32_t slowestType = 0, slowestHow = 0, slowestBlocks = 0;
+    bool slowestHost = false;
+    // The slowest binding of a buffer to its memory and mapping of a block.
+    double slowestBind = 0, slowestMap = 0, slowestCreate = 0;
+    bool bindFirst = false; // that binding was the first into its block
+  };
+  inline BlockCosts g_blockCosts;
+
+  // The acceleration structure step of the slowest frame since this was last
+  // read (diagnostics), by what it called. `now` is the frame being recorded.
+  struct AccelCosts {
+    double total = 0, bottom = 0, top = 0, create = 0, record = 0, queryPool = 0, instances = 0, sizes = 0;
+    // The combined top level: its policy's decision, the instance records,
+    // their write, the structure and scratch buffers, the build command.
+    double decide = 0, fill = 0, write = 0, storage = 0, topRecord = 0, storageInstances = 0, storageAccel = 0;
+    uint64_t written = 0;
+    uint32_t created = 0, bottomBuilds = 0, topInstances = 0, staticFilled = 0;
+    bool update = false, staticChanged = false, keptPrefix = false;
+  };
+  inline AccelCosts g_accelNow, g_accelCosts;
 } // namespace remix::trace
 
 namespace remix {

@@ -49,6 +49,7 @@ namespace remix {
     m_profile.meshCount = g.meshes.size();
     m_profile.pathCount = m_paths.size();
     auto &retired = g.frames[g.frameIndex];
+    g.launchSpareImageBlock();
     for (auto it = g.materials.begin(); it != g.materials.end();) {
       if (it->second->owner.expired()) {
         retired.retiredMaterials.push_back(std::move(it->second));

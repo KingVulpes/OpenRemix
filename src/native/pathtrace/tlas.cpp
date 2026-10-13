@@ -27,6 +27,7 @@ namespace remix {
                                  uint64_t staticGeneration, bool faceCulling, bool combined) {
     const std::vector<trace::InstanceInput> *inputs[2] = {&staticInputs, &dynamicInputs};
     ScopedMilliseconds time{performance.accelerationMilliseconds};
+    ScopedMilliseconds whole{trace::g_accelNow.top};
     // Instance flags depend on hardware face culling: rebuild when it changes.
     // A layout change starts the other layout from scratch and releases the
     // unused TLASes after this frame (their slot's retired list).
@@ -70,9 +71,13 @@ namespace remix {
         throw VK_ERROR_TOO_MANY_OBJECTS;
       std::vector<VkAccelerationStructureInstanceKHR> data;
       data.reserve(inputs[i]->size());
-      for (const auto &input : *inputs[i])
-        data.push_back(instanceData(input, faceCulling));
-      hostBuffer(top.instances, data.data(), data.size() * sizeof(data[0]), inputUsage);
+      {
+        ScopedMilliseconds instances{trace::g_accelNow.instances};
+        trace::g_accelNow.topInstances += uint32_t(inputs[i]->size());
+        for (const auto &input : *inputs[i])
+          data.push_back(instanceData(input, faceCulling));
+        hostBuffer(top.instances, data.data(), data.size() * sizeof(data[0]), inputUsage);
+      }
       geometry[i] = {.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR,
                      .geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR};
       geometry[i].geometry.instances = {
@@ -142,7 +147,15 @@ namespace remix {
                                          uint64_t staticGeneration) {
     using Policy = trace::CombinedTlasPolicy;
     auto &top = tlas[2];
+    auto &costs = trace::g_accelNow;
+    auto lapBegan = std::chrono::steady_clock::now();
+    const auto lap = [&](double &into) {
+      const auto now = std::chrono::steady_clock::now();
+      into += std::chrono::duration<double, std::milli>(now - lapBegan).count();
+      lapBegan = now;
+    };
     const auto decision = combinedPolicy.decide(staticInputs, staticGeneration, dynamicInputs, force);
+    lap(costs.decide);
     stats.dynamicRebuildReason = decision.action == Policy::Build ? decision.reason : 0;
     if (decision.action == Policy::None) {
       combinedPolicy.commit(staticInputs, staticGeneration, dynamicInputs, decision);
@@ -153,7 +166,10 @@ namespace remix {
     if (total > asProperties.maxInstanceCount)
       throw VK_ERROR_TOO_MANY_OBJECTS;
     const auto count = uint32_t(total);
+    costs.topInstances += count;
+    costs.staticChanged = decision.staticChanged;
     if (decision.staticChanged || !combinedStaticValid) {
+      costs.staticFilled += uint32_t(staticInputs.size());
       combinedStatic.clear();
       combinedStatic.reserve(staticInputs.size());
       for (const auto &input : staticInputs)
@@ -168,13 +184,21 @@ namespace remix {
     const size_t staticBytes = combinedStatic.size() * sizeof(combinedStatic[0]);
     const size_t bytes = staticBytes + combinedDynamic.size() * sizeof(combinedDynamic[0]);
     bool kept = top.prefix == combinedStaticStamp;
+    lap(costs.fill);
     if (!top.instances || top.instances->size < bytes) {
-      top.instances = buffer(bytes, inputUsage, true);
+      // (Room to spare and part of a block, as hostBuffer's.)
+      if (top.instances)
+        retiredBuffers.push_back(std::move(top.instances));
+      top.instances = buffer(bytes + bytes / 2, inputUsage, true, true);
       kept = false;
     }
+    lap(costs.storageInstances);
     write(*top.instances,
           {{combinedStatic.data(), staticBytes}, {combinedDynamic.data(), bytes - staticBytes}},
           kept ? staticBytes : 0);
+    costs.written += kept ? bytes - staticBytes : bytes;
+    costs.keptPrefix = kept;
+    lap(costs.write);
     top.prefix = combinedStaticStamp;
     VkAccelerationStructureGeometryKHR geometry = {.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR,
                                                    .geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR};
@@ -191,6 +215,7 @@ namespace remix {
         .pGeometries = &geometry};
     VkAccelerationStructureBuildSizesInfoKHR sizes = {.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
     buildSizes(device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &build, &count, &sizes);
+    lap(costs.sizes);
     if (!top.accel || top.accel->size < sizes.accelerationStructureSize) {
       if (top.accel)
         retired.push_back(std::move(top.accel));
@@ -199,6 +224,7 @@ namespace remix {
       update = false;
       build.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
     }
+    lap(costs.storageAccel);
     build.srcAccelerationStructure = update ? top.accel->handle : VK_NULL_HANDLE;
     build.dstAccelerationStructure = top.accel->handle;
     const VkDeviceSize alignment = asProperties.minAccelerationStructureScratchOffsetAlignment;
@@ -208,7 +234,10 @@ namespace remix {
     build.scratchData.deviceAddress = align(topScratch->address, alignment);
     VkAccelerationStructureBuildRangeInfoKHR range = {.primitiveCount = count};
     const auto *ranges = &range;
+    lap(costs.storage);
     buildAs(command, 1, &build, &ranges);
+    costs.update = update;
+    lap(costs.topRecord);
     // A refit forced into a build commits as one, restarting the refit count.
     auto committed = decision;
     if (!update && committed.action == Policy::Update) {

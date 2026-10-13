@@ -258,6 +258,10 @@ namespace remix {
     if (timestamps)
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, timestamps, 1);
     lap(breakdown.traceAccelerationMilliseconds);
+    trace::g_accelNow.total = trace::g_accelNow.bottom + trace::g_accelNow.top;
+    if (trace::g_accelNow.total > trace::g_accelCosts.total)
+      trace::g_accelCosts = trace::g_accelNow;
+    trace::g_accelNow = {};
     // An empty frame uploads one default surface.
     const TraceSurface emptySurface{};
     const size_t prefixSurfaceCount = tables.prefixSurfaces(), tailSurfaceCount = tables.tail().surfaces.size();
@@ -374,7 +378,10 @@ namespace remix {
       // This slot's table may already hold the kept static prefix.
       bool kept = table && table->size >= tableBytes && tableVersion && tableVersion == tables.prefixVersion();
       if (!table || table->size < tableBytes) {
-        table = buffer(tableBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
+        // (Room to spare and part of a block, as hostBuffer's.)
+        if (table)
+          retiredBuffers.push_back(std::move(table));
+        table = buffer(tableBytes + tableBytes / 2, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true, true);
         kept = false;
       }
       write(*table, {{prefixData, prefixBytes}, {tailData, tableBytes - prefixBytes}}, kept ? prefixBytes : 0);

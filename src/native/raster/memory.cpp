@@ -124,7 +124,17 @@ namespace remix {
       reusableImages.erase(reusableImages.begin());
   }
 
-  std::shared_ptr<MemoryBlock> RasterRenderer::Gpu::allocateBlock(VkDevice device, VkDeviceSize size, uint32_t type) {
+  void RasterRenderer::Gpu::launchSpareImageBlock() {
+    const bool quiet = imagesCreated == imagesSeen;
+    imagesSeen = imagesCreated;
+    if (!spareImageWanted || (!(++spareImageFrames > 1 && quiet) && spareImageFrames < 120))
+      return;
+    spareImageBlock = std::async(std::launch::async, allocateBlock, device, imageBlockSize, *spareImageWanted, true);
+    spareImageWanted.reset();
+  }
+
+  std::shared_ptr<MemoryBlock> RasterRenderer::Gpu::allocateBlock(VkDevice device, VkDeviceSize size, uint32_t type,
+                                                                 bool warm) {
     auto block = std::make_shared<MemoryBlock>();
     block->device = device;
     block->size = size;
@@ -137,6 +147,31 @@ namespace remix {
     if (vkAllocateMemory(device, &allocation, nullptr, &block->memory) != VK_SUCCESS)
       return nullptr;
     block->free.emplace(0, size);
+    // The driver finishes a memory allocation at its first use: the first
+    // image bound into a new block took ~15 ms, in the frame that created the
+    // texture. A spare, allocated on another thread ahead of its use, pays
+    // that there: an image bound and destroyed again.
+    if (warm) {
+      const VkImageCreateInfo info = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                                      .imageType = VK_IMAGE_TYPE_2D,
+                                      .format = VK_FORMAT_R8G8B8A8_UNORM,
+                                      .extent = {64, 64, 1},
+                                      .mipLevels = 1,
+                                      .arrayLayers = 1,
+                                      .samples = VK_SAMPLE_COUNT_1_BIT,
+                                      .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                      .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                                      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                                      .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+      VkImage first = VK_NULL_HANDLE;
+      if (vkCreateImage(device, &info, nullptr, &first) == VK_SUCCESS) {
+        VkMemoryRequirements requirements;
+        vkGetImageMemoryRequirements(device, first, &requirements);
+        if ((requirements.memoryTypeBits >> type & 1) && requirements.size <= size)
+          vkBindImageMemory(device, first, block->memory, 0);
+        vkDestroyImage(device, first, nullptr);
+      }
+    }
     return block;
   }
 
@@ -308,7 +343,7 @@ namespace remix {
         .memoryTypeIndex = memoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)};
     // A texture's image is a part of a block; a large one, and a depth image
     // (few, long-lived), has memory of its own.
-    constexpr VkDeviceSize blockSize = 64u * 1024u * 1024u;
+    constexpr VkDeviceSize blockSize = imageBlockSize;
     VkDeviceSize offset = 0;
     if (!isDepth && requirements.size <= blockSize / 4) {
       const uint32_t type = allocation.memoryTypeIndex;
@@ -320,17 +355,19 @@ namespace remix {
       if (!out->block) {
         // The block allocated ahead, if it is of this type; else one now.
         std::shared_ptr<MemoryBlock> block;
+        spareImageWanted.reset();
         if (spareImageBlock.valid()) {
           block = spareImageBlock.get();
           if (block && block->type != type)
             block.reset();
         }
         if (!block)
-          block = allocateBlock(device, blockSize, type);
+          block = allocateBlock(device, blockSize, type, false);
         if (block && block->take(requirements.size, requirements.alignment, offset)) {
           imageBlocks.push_back(block);
           out->block = std::move(block);
-          spareImageBlock = std::async(std::launch::async, allocateBlock, device, blockSize, type);
+          spareImageWanted = type;
+          spareImageFrames = 0;
         }
       }
     }
@@ -355,6 +392,7 @@ namespace remix {
     if (!isDepth) {
       const auto t4 = Clock::now();
       ++textureCosts.images;
+      ++imagesCreated;
       textureCosts.bytes += requirements.size;
       textureCosts.create += ms(t0, t1);
       textureCosts.allocate += ms(t1, t2);

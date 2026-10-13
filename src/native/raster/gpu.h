@@ -1,8 +1,10 @@
 #pragma once
+#include "platform/memory_release.h"
 #include "raster/renderer.h"
 #include "platform/timing.h"
 #include "runtime/pipelines.h"
 
+#include <optional>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -65,12 +67,9 @@ namespace remix::raster::detail {
     }
     bool empty() const { return free.size() == 1 && free.begin()->second == size; }
     ~Arena() {
-      if (mapped)
-        vkUnmapMemory(device, memory);
       if (buffer)
         vkDestroyBuffer(device, buffer, nullptr);
-      if (memory)
-        vkFreeMemory(device, memory, nullptr);
+      MemoryRelease::free(device, memory); // (its mapping with it)
     }
   };
   struct Buffer {
@@ -93,9 +92,7 @@ namespace remix::raster::detail {
       if (buffer) {
         vkDestroyBuffer(device, buffer, nullptr);
       }
-      if (memory) {
-        vkFreeMemory(device, memory, nullptr);
-      }
+      MemoryRelease::free(device, memory);
     }
   };
   // Device memory that texture images are parts of. An allocation of its own
@@ -141,10 +138,7 @@ namespace remix::raster::detail {
       }
       free.emplace(offset, bytes);
     }
-    ~MemoryBlock() {
-      if (memory)
-        vkFreeMemory(device, memory, nullptr);
-    }
+    ~MemoryBlock() { MemoryRelease::free(device, memory); }
   };
   struct Image {
     VkDevice device;
@@ -172,9 +166,7 @@ namespace remix::raster::detail {
       if (image) {
         vkDestroyImage(device, image, nullptr);
       }
-      if (memory) {
-        vkFreeMemory(device, memory, nullptr);
-      }
+      MemoryRelease::free(device, memory);
       if (block)
         block->give(blockOffset, blockBytes);
     }
@@ -315,7 +307,18 @@ namespace remix {
     // on another thread so that no frame waits for it.
     std::vector<std::shared_ptr<MemoryBlock>> imageBlocks;
     std::future<std::shared_ptr<MemoryBlock>> spareImageBlock;
-    static std::shared_ptr<MemoryBlock> allocateBlock(VkDevice device, VkDeviceSize size, uint32_t type);
+    // The spare is not allocated the moment its predecessor is taken: the
+    // driver serializes its memory calls, and the image that needed the block
+    // then waited behind the allocation to be bound (9-15 ms). It is asked for
+    // here and allocated in the first frame that follows one without a new
+    // image (launchSpareImageBlock, once a frame).
+    static constexpr VkDeviceSize imageBlockSize = 64u * 1024u * 1024u;
+    std::optional<uint32_t> spareImageWanted;
+    uint32_t spareImageFrames = 0;
+    uint64_t imagesCreated = 0, imagesSeen = 0;
+    void launchSpareImageBlock();
+    // `warm`: also pays the driver's first-use cost (for a spare, off the render thread).
+    static std::shared_ptr<MemoryBlock> allocateBlock(VkDevice device, VkDeviceSize size, uint32_t type, bool warm);
     std::vector<std::shared_ptr<Arena>> geometryArenas;
     std::vector<std::shared_ptr<Arena>> stagingArenas[gpuFrameCount];
     std::unique_ptr<Buffer> part(std::vector<std::shared_ptr<Arena>> &arenas, VkDeviceSize size,

@@ -17,6 +17,7 @@ namespace remix {
     swap(set, frame.set);
     swap(timestamps, frame.timestamps);
     swap(compaction, frame.compaction);
+    swap(compactionCapacity, frame.compactionCapacity);
     swap(timingPending, frame.timingPending);
     swap(traceState, frame.traceState);
     swap(table, frame.table);

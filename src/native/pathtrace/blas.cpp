@@ -11,6 +11,7 @@ namespace remix {
     completeRayProfile();
     uploads.clear();
     staging.used = 0;
+    launchSpares();
     const bool geometryReleased = !retiredGeometry.empty();
     primaryRecording.reset = false; // This slot's secondaries have completed.
     retiredGeometry.clear();
@@ -116,6 +117,7 @@ namespace remix {
 
   void PathTracer::Gpu::buildBottom(VkCommandBuffer command) {
     ScopedMilliseconds time{performance.accelerationMilliseconds};
+    ScopedMilliseconds whole{trace::g_accelNow.bottom};
     std::vector<std::shared_ptr<Geometry>> work;
     VkDeviceSize scratchBytes = 0;
     for (auto &[key, view] : meshes)
@@ -160,15 +162,28 @@ namespace remix {
         compactPending.push_back(g);
       g->pending = false;
     }
-    buildAs(command, uint32_t(builds.size()), builds.data(), ranges.data());
+    trace::g_accelNow.bottomBuilds += uint32_t(builds.size());
+    {
+      ScopedMilliseconds record{trace::g_accelNow.record};
+      buildAs(command, uint32_t(builds.size()), builds.data(), ranges.data());
+    }
     barrier(command, buildStage, asWrite, buildStage, asRead);
     if (!compactPending.empty()) {
-      if (compaction)
-        vkDestroyQueryPool(device, compaction, nullptr);
-      VkQueryPoolCreateInfo info = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
-                                    .queryType = VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR,
-                                    .queryCount = uint32_t(compactPending.size())};
-      check(vkCreateQueryPool(device, &info, nullptr, &compaction));
+      ScopedMilliseconds pool{trace::g_accelNow.queryPool};
+      // The pool is kept and only grown: creating one a frame with builds
+      // waited behind the driver's other memory work (16 ms seen).
+      if (compactionCapacity < compactPending.size()) {
+        if (compaction)
+          vkDestroyQueryPool(device, compaction, nullptr);
+        compaction = VK_NULL_HANDLE;
+        compactionCapacity = 0;
+        const uint32_t capacity = std::max<uint32_t>(256, uint32_t(compactPending.size()) * 2);
+        VkQueryPoolCreateInfo info = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+                                      .queryType = VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR,
+                                      .queryCount = capacity};
+        check(vkCreateQueryPool(device, &info, nullptr, &compaction));
+        compactionCapacity = capacity;
+      }
       vkCmdResetQueryPool(command, compaction, 0, uint32_t(compactPending.size()));
       std::vector<VkAccelerationStructureKHR> handles;
       for (const auto &g : compactPending)

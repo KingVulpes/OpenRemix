@@ -1,4 +1,5 @@
 #pragma once
+#include "platform/memory_release.h"
 #include <future>
 #include "pathtrace/buffer_cache.h"
 #include "pathtrace/frame_tables.h"
@@ -40,8 +41,7 @@ namespace remix::trace::detail {
         vkDestroyImageView(device, view, nullptr);
       if (handle)
         vkDestroyImage(device, handle, nullptr);
-      if (memory)
-        vkFreeMemory(device, memory, nullptr);
+      MemoryRelease::free(device, memory);
     }
   };
   struct Arena {
@@ -168,8 +168,22 @@ namespace remix {
     // structure, a grown table) used to wait for.
     static constexpr VkDeviceSize bufferBlockSize = 32 * 1024 * 1024;
     std::vector<std::pair<uint32_t, std::future<std::shared_ptr<trace::detail::BufferMemory>>>> spareBufferMemory;
+    // A spare is not allocated the moment its predecessor is taken: the driver
+    // serializes its memory calls, and the frames that fill a block are the
+    // ones creating buffers, which then waited behind the allocation (20 ms
+    // and more, on the render thread). It is asked for here and allocated in
+    // the first frame that follows one without a new buffer (launchSpares).
+    struct SpareWanted {
+      uint32_t type = 0;
+      bool host = false;
+      uint32_t frames = 0;
+    };
+    std::vector<SpareWanted> sparesWanted;
+    uint64_t buffersCreated = 0, buffersSeen = 0;
+    void launchSpares();
+    // `warm`: also pays the driver's first-use costs (for a spare, off the render thread).
     static std::shared_ptr<trace::detail::BufferMemory> allocateBufferMemory(VkDevice device, VkDeviceSize size,
-                                                                           uint32_t type);
+                                                                           uint32_t type, bool host, bool warm);
     using Buffer = trace::detail::Buffer;
     using Image = trace::detail::Image;
     using Arena = trace::detail::Arena;
@@ -265,6 +279,7 @@ namespace remix {
     void forgetLightingPipeline(VkPipeline pipeline);
     VkShaderModule shaders[3] = {};
     VkQueryPool compaction = VK_NULL_HANDLE, timestamps = VK_NULL_HANDLE;
+    uint32_t compactionCapacity = 0; // queries in `compaction`
     uint32_t timestampBits = 0;
     const char *stageProfile = std::getenv("REMIX_STACK_PROFILE");
     const char *stateProfile = stageProfile ? std::getenv("REMIX_TRACE_STATE") : nullptr;
@@ -686,6 +701,7 @@ namespace remix {
       LinearCapture linearCapture;
       VkDescriptorSet set = VK_NULL_HANDLE;
       VkQueryPool timestamps = VK_NULL_HANDLE, compaction = VK_NULL_HANDLE, sharcTimestamps = VK_NULL_HANDLE;
+      uint32_t compactionCapacity = 0;
       bool timingPending = false, sharcPending = false, guidingPending = false, reusePending = false,
            rayPending = false;
       std::unique_ptr<Buffer> table, uniform, scratch, topScratch, instances[3];

@@ -150,6 +150,20 @@ namespace remix {
     bool sharc = true, sharcDebug = false;
     uint32_t sharcCapacityLog2 = 22, sharcDownscale = 5, sharcSceneScale = 50;
     uint32_t sharcAccumulationFrames = 32, sharcStaleFrames = 64;
+    // The accumulation window while dynamic geometry moves (shadows cast into
+    // the cache follow it); lighting changes use a shorter one of their own.
+    uint32_t sharcMotionFrames = 10;
+    // An update sample is limited to this multiple of what its cell already
+    // holds (0: unlimited), as dxvk-remix's fireflyClampMultiplier.
+    float sharcFireflyClamp = 10;
+    // The most update paths a frame traces (0: no limit): above it the update
+    // grid coarsens past sharcDownscale. The default is 1920x1080 at 5.
+    uint32_t sharcMaxUpdatePaths = 82944;
+    // Moving surfaces hold cache entries too, at the world position they are at.
+    bool sharcDynamicSurfaces = true;
+    // PBR surfaces smoother than REMIX_SHARC_PBR_MIN_ROUGHNESS hold cache
+    // entries as if they were that rough, where otherwise paths trace on.
+    bool sharcGlossySurfaces = true;
     uint64_t sharcReset = 0; // Runtime action sequence; excluded from profiles.
     bool overrideLight = false;
     float lightDirection[3] = {-0.4f, -0.8f, -0.3f};

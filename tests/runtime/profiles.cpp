@@ -87,6 +87,11 @@ int main(int argc, char **argv) {
   t.sharcSceneScale = 13;
   t.sharcAccumulationFrames = 48;
   t.sharcStaleFrames = 81;
+  t.sharcMotionFrames = 7;
+  t.sharcFireflyClamp = 3.5f;
+  t.sharcMaxUpdatePaths = 12345;
+  t.sharcDynamicSurfaces = false;
+  t.sharcGlossySurfaces = false;
   t.overrideLight = true;
   t.lightDirection[0] = -.7f;
   t.lightDirection[1] = .2f;

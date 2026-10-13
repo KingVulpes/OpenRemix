@@ -192,10 +192,17 @@ namespace remix::trace {
     using MapKey = std::tuple<const scene::Texture *, uint8_t, uint8_t, uint8_t>;
     struct Flags {
       bool blended = false, decal = false, receivers = false;
+      // Opaque surfaces that hold SHARC entries only with sharcGlossySurfaces
+      // (static, smoother than the policy's roughness) or sharcDynamicSurfaces
+      // (moving; sharp ones need both).
+      bool sharpReceivers = false, dynamicReceivers = false, dynamicSharpReceivers = false;
       Flags &operator|=(const Flags &o) {
         blended |= o.blended;
         decal |= o.decal;
         receivers |= o.receivers;
+        sharpReceivers |= o.sharpReceivers;
+        dynamicReceivers |= o.dynamicReceivers;
+        dynamicSharpReceivers |= o.dynamicSharpReceivers;
         return *this;
       }
       bool operator==(const Flags &) const = default;
@@ -502,9 +509,13 @@ namespace remix::trace {
       Flags f;
       f.blended = surface.blend.enabled;
       f.decal = surface.decal;
-      f.receivers = surface.classification == 0 && !surface.blend.enabled &&
-                    (!material.pbr || material.roughnessTexture ||
-                     material.roughness >= REMIX_SHARC_PBR_MIN_ROUGHNESS);
+      const bool rough = !material.pbr || material.roughnessTexture ||
+                         material.roughness >= REMIX_SHARC_PBR_MIN_ROUGHNESS;
+      const bool opaque = !surface.blend.enabled, fixed = surface.classification == 0;
+      f.receivers = fixed && opaque && rough;
+      f.sharpReceivers = fixed && opaque && !rough;
+      f.dynamicReceivers = !fixed && opaque && rough;
+      f.dynamicSharpReceivers = !fixed && opaque && !rough;
       return f;
     }
 

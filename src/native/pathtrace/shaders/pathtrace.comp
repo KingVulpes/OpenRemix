@@ -482,8 +482,16 @@ vec3 direct(Hit hit,bool primary) {
   vec3 specular;return direct(hit,primary,specular);
 }
 #if defined(SHARC_QUERY) || defined(SHARC_UPDATE_PASS)
+// Static opaque surfaces hold cache entries; moving ones with
+// sharcDynamicSurfaces, at the world position they are at. A PBR surface
+// smoother than the policy's roughness holds one only with
+// sharcGlossySurfaces, lit as if it were that rough (cacheRoughness).
 bool cacheSurface(Hit hit) {
-  return hit.cacheable&&!hit.blended&&(!hit.pbr||hit.rm.x>=REMIX_SHARC_PBR_MIN_ROUGHNESS);
+  return (hit.cacheable||(frame.sharcConfig.x&2u)!=0)&&!hit.blended&&
+         (!hit.pbr||hit.rm.x>=REMIX_SHARC_PBR_MIN_ROUGHNESS||(frame.sharcConfig.x&4u)!=0);
+}
+float cacheRoughness(Hit hit) {
+  return (frame.sharcConfig.x&4u)!=0?max(hit.rm.x,REMIX_SHARC_PBR_MIN_ROUGHNESS):hit.rm.x;
 }
 float cacheDirectionWeight(Hit hit,vec3 total,vec3 specular) {
   // Diffuse stays isotropic. Broad specular retains a directional component;
@@ -525,10 +533,47 @@ SharcHitData cacheHit(Hit hit) {
   data.materialDemodulation=max(hit.color.rgb,vec3(.001));
   if(hit.pbr) {
     vec3 diffuseFactor,specularFactor;
-    NRD_MaterialFactors(hit.n,hit.wo,hit.color.rgb*(1-hit.rm.y),mix(vec3(.04),hit.color.rgb,hit.rm.y),hit.rm.x,diffuseFactor,specularFactor);
+    NRD_MaterialFactors(hit.n,hit.wo,hit.color.rgb*(1-hit.rm.y),mix(vec3(.04),hit.color.rgb,hit.rm.y),cacheRoughness(hit),diffuseFactor,specularFactor);
     data.materialDemodulation=max(diffuseFactor+specularFactor,vec3(.001));
   }
   return data;
+}
+// The spread of a path after another scattering: the widths of independent
+// spreads add in quadrature, so a path stays as wide as its widest bounce.
+// Judging a vertex by the last bounce alone traced on from every glossy
+// surface reached over a diffuse one.
+float cacheSpread(float before,float bounce) {
+  return min(1.,sqrt(before*before+bounce*bounce));
+}
+#endif
+#ifdef SHARC_UPDATE_PASS
+// One sample far above what a cell holds stays in it for the whole
+// accumulation window, a blotch the size of the cell. A sample (times the
+// weight it is added with) is limited to sharcGrid.y times the cell's
+// resolved mean, as dxvk-remix limits it; a cell without a mean yet takes
+// anything. Samples that are not numbers are dropped: the query refuses them,
+// but only after they have spoiled the cell.
+vec3 cacheLimit(SharcParameters parameters,uint cell,vec3 radiance,vec3 weight) {
+  if(any(isnan(radiance))||any(isinf(radiance)))return vec3(0);
+  if(frame.sharcGrid.y<=0||cell==HASH_GRID_INVALID_CACHE_INDEX)return radiance;
+  SharcVoxelData voxel=SharcGetVoxelData(parameters.resolvedBuffer,cell);
+  if(voxel.accumulatedSampleNum<=SHARC_SAMPLE_NUM_THRESHOLD)return radiance;
+  float limit=SharcRadianceLuma(voxel.accumulatedRadiance)*frame.sharcGrid.y;
+  if(limit<=1e-6)return radiance;
+  float value=SharcRGBToYCoCg(radiance*weight).x;
+  return value>limit?radiance*(limit/value):radiance;
+}
+// The cell a hit's sample would be added to, if it exists already.
+uint cacheCell(SharcParameters parameters,SharcHitData data) {
+  if(frame.sharcGrid.y<=0)return HASH_GRID_INVALID_CACHE_INDEX;
+  HashGridKey key=HashGridComputeSpatialHash(data.positionWorld,data.normalWorld,parameters.hashGridParameters);
+  uint cell,offset;
+  return HashGridFind(parameters.hashGridData,key,HashGridGetBaseSlot(key,parameters.hashGridData.capacity),HASH_GRID_HASH_MAP_BUCKET_SIZE,cell,offset)?cell:HASH_GRID_INVALID_CACHE_INDEX;
+}
+// Light that reaches the path's cached vertices without a cell of its own.
+vec3 cacheLimitPrevious(SharcParameters parameters,SharcState state,vec3 radiance) {
+  if(state.pathLength==0)return radiance;
+  return cacheLimit(parameters,state.cacheIndices[0],radiance,vec3(state.sampleWeights[0]));
 }
 #endif
 #ifdef SHARC_QUERY
@@ -594,8 +639,9 @@ vec3 continuation(Hit primary,int lobe,float probability,out vec3 firstDirection
   float diffuseMotion=0;
   uint bounce=0,layers=0;
   if(frame.config.y==0)profilePath(8u);
-  for(uint step=0;step<164&&bounce<frame.config.y;++step) {
-    if(layers==0)profilePath(1u+bounce);
+  // Steps: up to 16 bounces, each through up to 32 blended layers.
+  for(uint step=0;step<560&&bounce<frame.config.y;++step) {
+    if(layers==0)profilePath(1u+min(bounce,3u)); // Four depth counters: the last takes every deeper segment.
     Hit hit=secondaryHit(origin,direction);
     // Also through blended layers, and to the sky (a reflection distance).
     pathDistance+=hit.t*(1-smoothstep(0.,.2,diffuseMotion));
@@ -651,7 +697,7 @@ vec3 continuation(Hit primary,int lobe,float probability,out vec3 firstDirection
     diffuseMotion+=1-dot(hitSpecular,luma)/max(dot(hitWeight,luma),1e-20);
     throughput*=hitWeight;previousVertex=hit.p;origin=offsetRay(hit.p,hit.ng);layers=0;
 #ifdef SHARC_QUERY
-    footprintScale=cacheFootprint(hit);
+    footprintScale=cacheSpread(footprintScale,cacheFootprint(hit));
 #endif
     if(!any(greaterThan(throughput,vec3(0)))){profilePath(6u);break;}
     if(enableRussianRoulette&&frame.pathConfig.x!=0&&bounce>=frame.pathConfig.y) {
@@ -758,12 +804,12 @@ void updateCache(ivec2 pixel) {
   ray((vec2(pixel)+.5+frame.jitter.xy)/vec2(frame.target.xy)*2-1,frame.inverseCamera,origin,direction);
   SharcParameters parameters=cacheParameters();SharcState state;SharcInit(state);
   vec3 previousVertex=origin;
-  float footprintScale=1;
+  float footprintScale=0; // The camera ray scatters nothing; the first hit is never judged.
   uint bounce=0,layers=0;
   atomicAdd(CacheCounters(frame.sharcCounters).data[0],1u);
-  for(uint step=0;step<164&&bounce<=frame.config.y;++step) {
+  for(uint step=0;step<560&&bounce<=frame.config.y;++step) {
     Hit hit=secondaryHit(origin,direction);
-    if(hit.t==1e30) { SharcUpdateMiss(parameters,state,frame.skyRadiance.w!=0?vec3(0):environmentRadiance(direction));break; }
+    if(hit.t==1e30) { SharcUpdateMiss(parameters,state,cacheLimitPrevious(parameters,state,frame.skyRadiance.w!=0?vec3(0):environmentRadiance(direction)));break; }
     // Transparent sheets never hold cache entries, and their lighting no longer
     // queries the cache: update paths pass through them to the surfaces behind,
     // weighted by transmission. This also trains surfaces reached from water
@@ -774,28 +820,32 @@ void updateCache(ivec2 pixel) {
       if(bounce!=0)SharcSetThroughput(state,transmissionColor(hit.color.rgb,hit.tinted)*((frame.pathConfig.z&1u)==0?1-hit.color.a:1.));
       origin=offsetRay(hit.p,-hit.ng);continue;
     }
+    bool store=cacheSurface(hit);
+    // A glossy surface's entry is lit, and scatters the path on, as the rough
+    // surface it is stored as.
+    if(hit.pbr)hit.rm.x=cacheRoughness(hit);
     vec3 directSpecular;
     vec3 lighting=direct(hit,false,directSpecular);
-    bool store=cacheSurface(hit);
     // SDK update resampling can also terminate a path. Do not resample a tail
     // through a narrow PBR reflection which the production query would reject.
     if(store&&state.pathLength!=0&&footprintScale<1)
       store=cacheFootprintFits(hit,length(hit.p-previousVertex)*footprintScale);
     if(store) {
       SharcHitData data=cacheHit(hit);
+      lighting=cacheLimit(parameters,cacheCell(parameters,data),lighting,1/data.materialDemodulation);
       data.radianceDirectionWeight=cacheDirectionWeight(hit,lighting,directSpecular);
       if(!SharcUpdateHit(parameters,state,data,lighting,random()))break;
     } else {
-      // Moving, blended and sharp surfaces affect other cached vertices, but
-      // never insert or query their own shared surface entry.
-      SharcUpdateMiss(parameters,state,lighting);
+      // Surfaces without an entry of their own (blended ones; moving and
+      // sharp ones unless enabled) still light the path's cached vertices.
+      SharcUpdateMiss(parameters,state,cacheLimitPrevious(parameters,state,lighting));
     }
     if(++bounce>frame.config.y)break;
     vec3 specularWeight;
     vec3 weight=materialSample(hit,direction,specularWeight);
     if(store)SharcSetRadianceDirectionWeight(state,cacheDirectionWeight(hit,weight,specularWeight));
     SharcSetThroughput(state,weight);
-    previousVertex=hit.p;footprintScale=cacheFootprint(hit);
+    previousVertex=hit.p;footprintScale=cacheSpread(footprintScale,cacheFootprint(hit));
     origin=offsetRay(hit.p,hit.ng);layers=0;
     if(!any(greaterThan(weight,vec3(0))))break;
   }
@@ -1289,7 +1339,7 @@ void main() {
     // used by the production integrator. Black/magenta indicates a cache miss.
     vec3 cached;
     bool found=false;
-    if(frame.sharcConfig.x!=0&&(!primary.pbr||primary.rm.x>=REMIX_SHARC_PBR_MIN_ROUGHNESS))
+    if((frame.sharcConfig.x&1u)!=0&&(!primary.pbr||primary.rm.x>=REMIX_SHARC_PBR_MIN_ROUGHNESS||(frame.sharcConfig.x&4u)!=0))
       found=SharcGetCachedRadiance(cacheParameters(),cacheHit(primary),cached,false);
     color=found?cached:vec3(.5,0,.5);
   }

@@ -155,7 +155,11 @@ namespace remix {
     }
     const auto flags = tables.flags();
     uint64_t reuseSignature = tables.reuseSignature();
-    const bool hasCacheReceivers = flags.receivers, hasBlendedGeometry = flags.blended;
+    const bool hasCacheReceivers =
+        flags.receivers || (options.sharcGlossySurfaces && flags.sharpReceivers) ||
+        (options.sharcDynamicSurfaces &&
+         (flags.dynamicReceivers || (options.sharcGlossySurfaces && flags.dynamicSharpReceivers)));
+    const bool hasBlendedGeometry = flags.blended;
     decalMaterialsActive = flags.decal;
     shadowEarlyOutActive = options.shadowEarlyOut;
     // Texture descriptors in first-use order: the static prefix's (resolved
@@ -595,8 +599,11 @@ namespace remix {
     append(&options.fsrSharpness, sizeof(options.fsrSharpness));
     const uint64_t cacheSettings[] = {
         options.sharcReset,     options.sharcCapacityLog2,       options.sharcSceneScale,
-        options.sharcDownscale, options.sharcAccumulationFrames, options.sharcStaleFrames};
+        options.sharcDownscale, options.sharcAccumulationFrames, options.sharcStaleFrames,
+        options.sharcMotionFrames, options.sharcMaxUpdatePaths, options.sharcDynamicSurfaces,
+        options.sharcGlossySurfaces};
     append(cacheSettings, sizeof(cacheSettings));
+    append(&options.sharcFireflyClamp, sizeof(options.sharcFireflyClamp));
     const auto temporalEpoch = resources.temporalEpoch();
     append(&temporalEpoch, sizeof(temporalEpoch));
     lap(breakdown.lightingMilliseconds);

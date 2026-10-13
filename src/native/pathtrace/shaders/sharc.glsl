@@ -10,10 +10,13 @@
 #define SHARC_ENABLE_SH_ENCODING 1
 #define SHARC_ENABLE_CACHE_RESAMPLING 1
 #define SHARC_SAMPLE_NUM_THRESHOLD 3
-// Each resolve invocation owns exactly one entry. Disable SDK cross-entry
-// history reads during in-place resolve; LOD changes warm through normal misses.
-#define SHARC_BLEND_ADJACENT_LEVELS 0
-#define SHARC_LINEAR_PROBE_WINDOW_SIZE 0
+// The resolve keeps the SDK's reads of other entries, as dxvk-remix does: a
+// cell new at its level starts from the adjacent level's radiance while the
+// camera moves (SHARC_BLEND_ADJACENT_LEVELS), and a key inserted again at an
+// earlier slot takes over its old entry (SHARC_LINEAR_PROBE_WINDOW_SIZE).
+// Those reads race with the entry's own invocation and see it before or after
+// its resolve; either is a valid history. Without them every change of level
+// was a band of cache misses until the cell had its samples again.
 // NRD's HLSL compatibility aliases are already expanded in its declarations.
 #undef rcp
 #undef saturate
@@ -31,7 +34,7 @@ SharcParameters cacheParameters() {
   p.hashGridParameters.cameraPosition=frame.eye.xyz;
   p.hashGridParameters.logarithmBase=2;
   p.hashGridParameters.sceneScale=frame.sharcGrid.x;
-  p.hashGridParameters.levelBias=frame.sharcGrid.y;
+  p.hashGridParameters.levelBias=0;
   p.hashGridData.capacity=frame.sharcConfig.y;
   p.hashGridData.hashEntriesBuffer=RWStructuredBuffer_uint64_t(frame.sharcHash);
   p.radianceScale=1000;

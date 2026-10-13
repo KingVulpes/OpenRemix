@@ -41,7 +41,7 @@ namespace remix {
       int samples = int(options.samples), bounces = int(options.bounces);
       if (ui::SliderInt("Samples / pixel", &samples, 1, 16))
         options.samples = uint32_t(samples);
-      if (ui::SliderInt("Maximum indirect bounces", &bounces, 0, 4))
+      if (ui::SliderInt("Maximum indirect bounces", &bounces, 0, 16))
         options.bounces = uint32_t(bounces);
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Maximum traced indirect surface interactions per sample.\nMisses and cache hits "
@@ -52,7 +52,7 @@ namespace remix {
                           "reduce tracing work but increase noise; the maximum bounce limit always applies.");
       ImGui::BeginDisabled(!options.russianRoulette);
       int minimumBounces = int(options.rouletteMinBounces);
-      if (ui::SliderInt("Bounces before adaptive termination", &minimumBounces, 1, 4))
+      if (ui::SliderInt("Bounces before adaptive termination", &minimumBounces, 1, 16))
         options.rouletteMinBounces = uint32_t(minimumBounces);
       ImGui::EndDisabled();
       if (options.russianRoulette && options.rouletteMinBounces >= options.bounces)

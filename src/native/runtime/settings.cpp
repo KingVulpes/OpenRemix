@@ -109,9 +109,9 @@ namespace remix::config {
         result.push_back(choices("rtx.native.pathtrace.dlssQuality", FIELD(trace.dlssQuality),
                                  {"native-aa", "quality", "balanced", "performance", "ultra-performance"}));
         TRACE(samples, 1, 16);
-        TRACE(bounces, 0, 4);
+        TRACE(bounces, 0, 16);
         TRACE(russianRoulette, 0, 1);
-        TRACE(rouletteMinBounces, 1, 4);
+        TRACE(rouletteMinBounces, 1, 16);
         TRACE(accumulate, 0, 1);
         TRACE(sigma, 0, 1);
         TRACE(blueNoiseShadows, 0, 1);
@@ -196,6 +196,11 @@ namespace remix::config {
         TRACE(sharcSceneScale, 1, 200);
         TRACE(sharcAccumulationFrames, 1, 1024);
         TRACE(sharcStaleFrames, 8, 1024);
+        TRACE(sharcMotionFrames, 1, 1024);
+        TRACE(sharcFireflyClamp, 0, 1000);
+        TRACE(sharcMaxUpdatePaths, 0, 16777216);
+        TRACE(sharcDynamicSurfaces, 0, 1);
+        TRACE(sharcGlossySurfaces, 0, 1);
         TRACE(sky, 0, 1);
         TRACE(forceRebuild, 0, 1);
         TRACE(fsrSharpness, 0, 1);

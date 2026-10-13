@@ -45,8 +45,8 @@ layout(set=0,binding=3,std140) uniform Frame {
   vec4 jitter; // primary offset; z water reuse; w blue-noise sun/local bits
   vec4 skyRadiance; // linear uniform environment; w reserved
   uint64_t sharcHash, sharcAccumulation, sharcResolved, sharcCounters;
-  uvec4 sharcConfig; // active, capacity, update downscale, debug view
-  vec4 sharcGrid; // scene scale, level bias, accumulation frames, stale frames
+  uvec4 sharcConfig; // bits (1 active, 2 dynamic surfaces, 4 glossy surfaces), capacity, update downscale, debug view
+  vec4 sharcGrid; // scene scale, update sample limit (multiple of the cell's mean; 0 none), accumulation frames, stale frames
   vec4 sharcPreviousCamera;
   vec4 sun;
   uint64_t lightNodes, lightEmitters;

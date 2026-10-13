@@ -654,6 +654,9 @@ namespace remix {
       scene::TemporalEpoch epoch{};
       uint64_t reset = 0, warmFrames = 0;
       uint32_t scale = 0, bounces = 0, responsiveFrames = 0, warmTarget = 64;
+      // Frames left of the window dynamic geometry shortens, and this frame's
+      // update grid (sharcDownscale, coarser above sharcMaxUpdatePaths).
+      uint32_t motionFrames = 0, downscale = 1;
       uint32_t localConfig[4] = {};
       float localIntensity = 0, localRange = 0;
       float previousEye[3] = {}, light[9] = {};

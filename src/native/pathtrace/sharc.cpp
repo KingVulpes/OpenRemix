@@ -278,8 +278,13 @@ namespace remix {
     // The static prefix geometry already held is equal without a compare.
     const bool sameGeometry = geometryGeneration && geometryGeneration == sharc.geometryGeneration;
     const bool geometryChanged = !sameGeometry && sharc.geometry != geometry;
+    // Static geometry that came or went (a spawned or settled object, a
+    // streamed-in part of the world) changes the light around it and nothing
+    // else: the cache is kept and averages over fewer frames for a while, as
+    // for a lighting change. Entries where the geometry was go stale unsampled.
+    // A rebased world changes the epoch, and the keys with it.
     sharc.clear |= sharc.epoch != currentEpoch || sharc.reset != options.sharcReset ||
-                   sharc.scale != options.sharcSceneScale || sharc.bounces != options.bounces || geometryChanged;
+                   sharc.scale != options.sharcSceneScale || sharc.bounces != options.bounces;
     sharc.epoch = currentEpoch;
     sharc.reset = options.sharcReset;
     sharc.scale = options.sharcSceneScale;
@@ -315,10 +320,18 @@ namespace remix {
       sharc.localRange = frame.localScale[1];
     }
     const bool dynamicChanged = sharc.dynamicGeometry != dynamicGeometry;
-    if (localChanged || difference > 1e-7f || angle < .9999999f || dynamicChanged)
+    if (localChanged || difference > 1e-7f || angle < .9999999f || geometryChanged)
       sharc.responsiveFrames = 32;
     else if (sharc.responsiveFrames)
       --sharc.responsiveFrames;
+    // Something moves in most frames of a game: its shadows in the cache get
+    // a window of their own, not the few frames of a lighting change.
+    if (dynamicChanged)
+      sharc.motionFrames = 32;
+    else if (sharc.motionFrames)
+      --sharc.motionFrames;
+    if (geometryChanged)
+      sharc.warmFrames = 0;
     if (dynamicChanged)
       sharc.dynamicGeometry = dynamicGeometry;
     std::copy_n(light, 9, sharc.light);
@@ -328,14 +341,28 @@ namespace remix {
     frame.sharcAccumulation = sharc.accumulation->address;
     frame.sharcResolved = sharc.resolved->address;
     frame.sharcCounters = sharc.counters->address;
-    frame.sharcConfig[0] = hasReceivers;
+    // The update grid: one path a cell of sharcDownscale pixels a side, and
+    // of more above sharcMaxUpdatePaths, so the cost of the world-space cache
+    // does not grow with the resolution.
+    sharc.downscale = std::max(options.sharcDownscale, 1u);
+    if (options.sharcMaxUpdatePaths)
+      while (sharc.downscale < 16 && uint64_t((extent.width + sharc.downscale - 1) / sharc.downscale) *
+                                             ((extent.height + sharc.downscale - 1) / sharc.downscale) >
+                                         options.sharcMaxUpdatePaths)
+        ++sharc.downscale;
+    frame.sharcConfig[0] = uint32_t(hasReceivers) | uint32_t(options.sharcDynamicSurfaces) << 1 |
+                           uint32_t(options.sharcGlossySurfaces) << 2;
     frame.sharcConfig[1] = sharc.stats.capacity;
-    frame.sharcConfig[2] = options.sharcDownscale;
+    frame.sharcConfig[2] = sharc.downscale;
     frame.sharcConfig[3] = options.sharcDebug;
     frame.sharcGrid[0] = float(options.sharcSceneScale);
-    frame.sharcGrid[1] = 0;
+    // While the lighting changes a cell's mean says nothing of what it should
+    // hold next: the limit would only hold new light back.
+    frame.sharcGrid[1] = sharc.responsiveFrames ? 0 : options.sharcFireflyClamp;
     frame.sharcGrid[2] = float(sharc.responsiveFrames ? std::min(options.sharcAccumulationFrames, 4u)
-                                                    : options.sharcAccumulationFrames);
+                               : sharc.motionFrames
+                                   ? std::min(options.sharcAccumulationFrames, options.sharcMotionFrames)
+                                   : options.sharcAccumulationFrames);
     frame.sharcGrid[3] = float(options.sharcStaleFrames);
     std::copy_n(sharc.clear ? frame.eye : sharc.previousEye, 3, frame.sharcPreviousCamera);
     std::copy_n(frame.eye, 3, sharc.previousEye);
@@ -367,9 +394,9 @@ namespace remix {
     }
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &set, 0, nullptr);
     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, selectLightingPipeline(sharc.update));
-    const uint32_t tile = options.sharcDownscale * 8;
+    const uint32_t tile = sharc.downscale * 8;
     {
-      const uint32_t scale = std::max(options.sharcDownscale, 1u);
+      const uint32_t scale = sharc.downscale;
       gpu::GpuScope scope(command, "SHARC update (trace)", (extent.width + scale - 1) / scale,
                           (extent.height + scale - 1) / scale);
       vkCmdDispatch(command, (extent.width + tile - 1) / tile, (extent.height + tile - 1) / tile, 1);

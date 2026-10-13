@@ -181,6 +181,14 @@ namespace remix {
         options.sharcSceneScale = uint32_t(scale);
       if (ui::SliderInt("Update downscale", &downscale, 1, 16))
         options.sharcDownscale = uint32_t(downscale);
+      int paths = int(options.sharcMaxUpdatePaths), motion = int(options.sharcMotionFrames);
+      if (ui::SliderInt("Most update paths (0: no limit)", &paths, 0, 1000000))
+        options.sharcMaxUpdatePaths = uint32_t(paths);
+      if (ui::SliderInt("Frames averaged while objects move", &motion, 1, 64))
+        options.sharcMotionFrames = uint32_t(motion);
+      ui::SliderFloat("Update sample limit (x cell mean, 0: none)", &options.sharcFireflyClamp, 0, 100);
+      ui::Checkbox("Cache on moving surfaces", &options.sharcDynamicSurfaces);
+      ui::Checkbox("Cache on glossy surfaces", &options.sharcGlossySurfaces);
       auto cache = sharcStatistics();
       ImGui::TextWrapped("%s | %u / %u entries | %.1f MiB",
                          cache.active ? (cache.updatePaths ? "Caching" : "Enabled (idle)") : "Inactive",
@@ -194,9 +202,10 @@ namespace remix {
       if (cache.unavailableReason[0])
         ImGui::TextWrapped("%s", cache.unavailableReason);
       if (cache.active && !cache.updatePaths)
-        ImGui::TextWrapped("No cache update paths. Requires static opaque diffuse or rough PBR surfaces.");
-      ImGui::TextWrapped(
-          "Sharp PBR surfaces continue tracing; rough PBR surfaces can reuse cached lighting.");
+        ImGui::TextWrapped("No cache update paths. Requires opaque surfaces the settings above let hold entries.");
+      ImGui::TextWrapped("%s", options.sharcGlossySurfaces
+                                   ? "Glossy PBR surfaces hold cached lighting as rough ones; paths that are still sharp trace on."
+                                   : "Sharp PBR surfaces continue tracing; rough PBR surfaces can reuse cached lighting.");
       if (options.accumulate)
         ImGui::TextWrapped("%s", "Progressive reference rendering bypasses SHARC.");
     }

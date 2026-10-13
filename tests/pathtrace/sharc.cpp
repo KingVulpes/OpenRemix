@@ -56,8 +56,12 @@ int main(int argc, char **argv) {
           "Invalid sky toggle accepted");
   ok(api.SetConfigVariable("rtx.native.pathtrace.bounces", "4"));
   ok(api.SetConfigVariable("rtx.native.pathtrace.sharcCapacityLog2", "18"));
+  // The eligibility checks below describe the cache without entries on sharp
+  // or moving surfaces.
+  ok(api.SetConfigVariable("rtx.native.pathtrace.sharcGlossySurfaces", "0"));
+  ok(api.SetConfigVariable("rtx.native.pathtrace.sharcDynamicSurfaces", "0"));
   ok(api.SetConfigVariable("rtx.native.vsync", "False"));
-  for (auto key : {"sharc", "sharcDebug"}) {
+  for (auto key : {"sharc", "sharcDebug", "sharcGlossySurfaces", "sharcDynamicSurfaces"}) {
     std::string setting = std::string("rtx.native.pathtrace.") + key;
     require(api.SetConfigVariable(setting.c_str(), "2") == REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS,
             "Invalid SHARC toggle accepted");

@@ -4,7 +4,7 @@ layout(buffer_reference,std430,buffer_reference_align=4) buffer RayCounters { ui
 void profileRay(uint counter) {
 #if !defined(CONFIDENCE_PASS) && !defined(SHARC_UPDATE_PASS)
   if(!enableRayProfile||(frame.reuseConfig.z==0&&frame.reuseConfig.w==0))return;
-  if((hash(gl_GlobalInvocationID.x+gl_GlobalInvocationID.y*frame.target.x)&63u)!=0)return;
+  if((hash(uint(shadingPixel.x)+uint(shadingPixel.y)*frame.target.x)&63u)!=0)return;
 #ifdef SPLIT_LIGHTING_PASS
   counter+=64;
 #elif defined(TRANSPARENCY_PASS)

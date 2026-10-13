@@ -413,7 +413,7 @@ void splitLocalLighting(Hit hit,uint state,uint samples,out vec3 torch,out vec3 
     // Complementary pixels provide each history with nearby valid samples.
     // A frame-wide random phase avoids a persistent spatial selection bias.
     uint phase=hash(frame.config.z+i*0x9e3779b9u)&1u;
-    bool chooseTorch=frame.splitLocal.x==2||!both||((gl_GlobalInvocationID.x+gl_GlobalInvocationID.y+phase)&1u)==0u;
+    bool chooseTorch=frame.splitLocal.x==2||!both||((uint(shadingPixel.x)+uint(shadingPixel.y)+phase)&1u)==0u;
     float scale=frame.splitLocal.x==1&&both?2:1;
     if(hasTorch&&chooseTorch) {
       float distance;vec3 specular;

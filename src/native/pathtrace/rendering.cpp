@@ -857,6 +857,7 @@ namespace remix {
                       tables.dynamicInputs().empty() && temporalFrame.local[2] == 0 && !history.reset());
     const bool querySharc = sharc.stats.active && (sharc.hasReceivers || options.sharcDebug);
     configureIndirect(frame, options, querySharc);
+    configureSparse(command, frame, options, extent);
     beginRayProfile(command, frame);
     frame.config[2] = uint32_t(sequence++);
     // Opt-in diagnostic offset for independently seeded HDR references.
@@ -990,6 +991,7 @@ namespace remix {
     recordRegir(command);
     recordSharc(command, options);
     recordOrca(command, extent, querySharc);
+    recordSparse(command, extent);
     if (denoiser) {
       denoiser->setLocalTuning({options.localAntilagSigma, options.localAntilagSensitivity, options.localHistoryFrames,
                                 options.indirectHistoryFrames});
@@ -1017,6 +1019,24 @@ namespace remix {
     if (!opaquePipeline)
       opaquePipeline = selectLightingPipeline(opaqueSource);
     const auto opaqueKey = selectedLightingKey;
+    // Sparse rendering launches the opaque pass twice. Both variants compile
+    // lazily; until they have, the frame is lit densely.
+    VkPipeline sparseLit = VK_NULL_HANDLE, sparseGuides = VK_NULL_HANDLE;
+    if (sparse.active && !indirectPass.active) {
+      sparseLit = selectLightingPipeline(opaqueSource, false, false, 1);
+      sparseGuides = selectLightingPipeline(opaqueSource, false, false, 2);
+    }
+    sparse.launched = sparseLit && sparseGuides;
+    // A changed rate starts Ray Reconstruction's history over, so the image
+    // settles at the new rate instead of blending two.
+    if (const float rate = sparse.launched ? sparse.rate : 1; rate != sparse.launchedRate) {
+      sparse.launchedRate = rate;
+      temporalFrame.flags[0] = 1;
+    }
+    trace::g_sparseState = {options.sparseRendering, sparse.launched, sparse.rate,
+                            sparse.launched         ? ""
+                            : sparse.inactiveReason ? sparse.inactiveReason
+                                                    : "its lighting variants are compiling"};
     VkPipeline indirectPipeline = VK_NULL_HANDLE;
     uint32_t indirectKey = UINT32_MAX;
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, denoiser ? temporalLayout : layout, 0, 1,
@@ -1063,9 +1083,23 @@ namespace remix {
       const char *name = indirectPass.active ? "Trace opaque: direct, sun, local, emissive"
                          : querySharc        ? "Trace opaque: direct, sun, local, emissive, indirect+SHARC"
                                              : "Trace opaque: direct, sun, local, emissive, indirect";
-      gpu::GpuScope scope(command, name, extent);
-      vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, opaquePipeline);
-      vkCmdDispatch(command, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
+      if (sparse.launched) {
+        // The two launches write disjoint pixels.
+        {
+          gpu::GpuScope scope(command, "Sparse rendering: guides of unlit pixels", extent);
+          vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, sparseGuides);
+          vkCmdDispatch(command, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
+        }
+        gpu::GpuScope scope(command, querySharc ? "Trace opaque, selected pixels: direct, sun, local, emissive, indirect+SHARC"
+                                                : "Trace opaque, selected pixels: direct, sun, local, emissive, indirect",
+                            extent);
+        vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, sparseLit);
+        vkCmdDispatchIndirect(command, sparse.count->handle, 16);
+      } else {
+        gpu::GpuScope scope(command, name, extent);
+        vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, opaquePipeline);
+        vkCmdDispatch(command, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
+      }
     }
     stageTime(6);
     // Publish opaque lighting, RNG and sheet count to transparent composition.

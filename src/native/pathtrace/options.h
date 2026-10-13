@@ -79,6 +79,23 @@ namespace remix {
     // ORCA: a radiance cache rebuilt every frame from sparse full paths (one
     // per orcaTile x orcaTile pixels); other pixels read their first bounce
     // from it. No history: indirect light follows lighting changes at once.
+    // Sparse rendering (after dxvk-remix's rtx.sparseRendering): each frame
+    // lights only a blue-noise selection of the pixels, at 1 / rate times
+    // their radiance, and DLSS Ray Reconstruction rebuilds the rest; guides,
+    // emission, sky and transparent layers stay dense. Needs DLSS Ray
+    // Reconstruction; off with ReSTIR, a separate local-lighting pass,
+    // accumulation and debug views.
+    // The rate (selected share of the pixels) is sparseSamplingRate as is,
+    // or with sparseAdaptiveRate that rate at the reference render resolution
+    // (2227x1238, 4K output with DLSS Auto) scaled by (reference pixels /
+    // render pixels) ^ sparseResolutionExponent: lower render resolutions
+    // leave Ray Reconstruction less to work with and take a higher rate.
+    // sparseQuality then moves the scaled rate, in log space, towards 1/16
+    // (0) or 1 (1); 0.5 leaves it. Above sparseMaxRate sparse rendering is
+    // off: the gain no longer pays for the loss.
+    bool sparseRendering = false, sparseAdaptiveRate = true;
+    float sparseSamplingRate = .357f, sparseResolutionExponent = .69f;
+    float sparseQuality = .5f, sparseMaxRate = .75f;
     bool orca = false;
     uint32_t orcaTile = 4;
     float orcaCellSize = .0625f; // smallest voxel, meters; levels grow by 4x

@@ -1,5 +1,8 @@
 #include "runtime/runtime.h"
 #include "ui/widgets.h"
+#include "pathtrace/block_costs.h"
+#include "pathtrace/sparse_policy.h"
+#include <iterator>
 #include "upscale/ngx.h"
 #include <algorithm>
 #include <cmath>
@@ -120,6 +123,43 @@ namespace remix {
           ui::SliderFloat("FSR sharpening", &options.fsrSharpness, 0.f, 1.f, "%.2f");
         else
           ui::Checkbox("DLSS Ray Reconstruction", &options.dlssRayReconstruction);
+      }
+      if (rrActive) {
+        ui::Checkbox("Sparse rendering", &options.sparseRendering);
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Lights only a blue-noise selection of the pixels each frame and lets Ray Reconstruction\n"
+                            "rebuild the rest. Faster at high render resolutions; turns itself off where the\n"
+                            "render resolution is too low for it to pay.");
+        if (options.sparseRendering) {
+          ui::Checkbox("Sparse rate follows render resolution", &options.sparseAdaptiveRate);
+          if (options.sparseAdaptiveRate) {
+            // The presets' rate and exponent are tuned as pairs; other values
+            // come from the configuration only.
+            const int count = int(std::size(trace::sparsePresets));
+            int preset = count;
+            for (int i = 0; i < count; ++i)
+              if (std::abs(options.sparseSamplingRate - trace::sparsePresets[i].samplingRate) < 1e-4f &&
+                  std::abs(options.sparseResolutionExponent - trace::sparsePresets[i].resolutionExponent) < 1e-4f)
+                preset = i;
+            if (ui::Combo("Sparse preset", &preset, "Ultra\0High\0Medium\0Low\0Custom (configuration)\0") &&
+                preset < count) {
+              options.sparseSamplingRate = trace::sparsePresets[preset].samplingRate;
+              options.sparseResolutionExponent = trace::sparsePresets[preset].resolutionExponent;
+            }
+            if (ImGui::IsItemHovered())
+              ImGui::SetTooltip("How many pixels are lit at each render resolution: fewer from Ultra to Low.");
+            ui::SliderFloat("Sparse quality", &options.sparseQuality, 0.f, 1.f, "%.2f");
+            if (ImGui::IsItemHovered())
+              ImGui::SetTooltip("Fine adjustment of the preset: 0.5 leaves it, higher lights more pixels.");
+          } else {
+            ui::SliderFloat("Sparse sampling rate", &options.sparseSamplingRate, 1.f / 16, 1.f, "%.3f");
+          }
+          const auto sparse = trace::g_sparseState;
+          if (sparse.launched)
+            ImGui::TextWrapped("Sparse rendering: %.1f%% of the pixels lit each frame", sparse.rate * 100);
+          else
+            ImGui::TextWrapped("Sparse rendering: off (%s)", sparse.reason);
+        }
       }
       ImGui::TextWrapped("Active: %s", upscale::name(fsr.backend));
       ImGui::TextWrapped("%ux%u -> %ux%u | reconstruction %.2f ms", fsr.render.width, fsr.render.height,

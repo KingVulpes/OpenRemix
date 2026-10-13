@@ -217,6 +217,14 @@ void serviceDevRequests() {
         std::snprintf(line, sizeof(line), "# sharc update paths %u, query attempts %u, hits %u, entries %u\n", cache.updatePaths,
                       cache.queryAttempts, cache.queryHits, cache.occupiedEntries);
         text += line;
+        if (const auto sparse = remix::trace::g_sparseState; sparse.requested) {
+          if (sparse.launched)
+            std::snprintf(line, sizeof(line), "# sparse rendering: on, %.1f%% of the pixels lit each frame\n",
+                          sparse.rate * 100);
+          else
+            std::snprintf(line, sizeof(line), "# sparse rendering: off (%s)\n", sparse.reason);
+          text += line;
+        }
         const auto breakdown = g_runtime.frameBreakdown();
         std::snprintf(line, sizeof(line),
                       "# raster draws %llu, outside the view (not drawn) %llu, prepare %.3f ms, record %.3f ms\n",

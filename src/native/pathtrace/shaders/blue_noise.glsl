@@ -17,7 +17,7 @@ vec2 shadowBlueNoise(ivec2 pixel,uint sequence) {
 }
 vec2 localEmitterNoise(bool primary) {
   if(!primary||(uint(frame.jitter.w)&2u)==0)return vec2(-1);
-  return blueNoiseSample(ivec2(gl_GlobalInvocationID.xy),frame.config.z,16392u,31u);
+  return blueNoiseSample(shadingPixel,frame.config.z,16392u,31u);
 }
 // Only the screen-uniform stream index rotates the pattern. Per-pixel hashes
 // would destroy its spatial error distribution. Separate candidates/samples and

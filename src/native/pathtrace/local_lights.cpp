@@ -8,11 +8,11 @@ using namespace trace::detail;
 // Specializing it away restores occupancy for water and ordinary sky/sun
 // scenes. Variants are lazy, cached, and share the source pipeline's
 // fence/layout lifetime.
-VkPipeline PathTracer::Gpu::selectLightingPipeline(VkPipeline pipeline, bool combinedDirect, bool separateIndirect) {
+VkPipeline PathTracer::Gpu::selectLightingPipeline(VkPipeline pipeline, bool combinedDirect, bool separateIndirect, uint32_t sparse) {
   selectedLightingKey = UINT32_MAX;
   auto found = lightingPipelines.find(pipeline);
   if (found == lightingPipelines.end())
-    return separateIndirect ? VK_NULL_HANDLE : pipeline;
+    return separateIndirect || sparse ? VK_NULL_HANDLE : pipeline;
   auto &source = found->second;
   const bool smallSet = localIlluminationActive && lightBvh.nodes().size() >= 3 && lightBvh.nodes().size() <= 7;
   const bool guided = localGuidingActive && source.supportsGuiding;
@@ -26,13 +26,13 @@ VkPipeline PathTracer::Gpu::selectLightingPipeline(VkPipeline pipeline, bool com
   const bool roulette = rouletteActive && source.supportsRoulette;
   // rtx.native.pathtrace.shadowEarlyOut; off keeps the existing variants.
   const bool earlyOut = shadowEarlyOutActive;
-  const bool keyed = separateIndirect || angular || combinedDirect || split || reuse || rayProfile.path || firstHit || roulette || !decalMaterialsActive || earlyOut;
+  const bool keyed = separateIndirect || angular || combinedDirect || split || reuse || rayProfile.path || firstHit || roulette || !decalMaterialsActive || earlyOut || sparse;
   const uint32_t key = uint32_t(guided) | uint32_t(smallSet) << 1 | uint32_t(resampling) << 2 |
                        uint32_t(split) << 3 | uint32_t(combinedDirect) << 4 | uint32_t(angular) << 5 |
                        uint32_t(localIlluminationActive) << 6 | uint32_t(reuse) << 7 | uint32_t(rayProfile.path != nullptr) << 8 | uint32_t(firstHit) << 9 | uint32_t(separateIndirect) << 10 | uint32_t(roulette) << 11 | uint32_t(decalMaterialsActive) << 12 |
-                       uint32_t(earlyOut) << 13;
+                       uint32_t(earlyOut) << 13 | sparse << 14;
   selectedLightingKey = key;
-  if (localIlluminationActive && !guided && !smallSet && !resampling && !split && !angular && !combinedDirect && !reuse && !rayProfile.path && !firstHit && !separateIndirect && !roulette && decalMaterialsActive && !earlyOut)
+  if (localIlluminationActive && !guided && !smallSet && !resampling && !split && !angular && !combinedDirect && !reuse && !rayProfile.path && !firstHit && !separateIndirect && !roulette && decalMaterialsActive && !earlyOut && !sparse)
     return pipeline;
   auto &variant = keyed ? source.specialized[key].first : resampling ? source.withResampling[guided] : smallSet ? source.smallSet[guided] : localIlluminationActive ? source.withGuiding : source.withoutLocal;
   auto &attempted = keyed ? source.specialized[key].second : resampling ? source.resamplingAttempted[guided] : smallSet ? source.smallAttempted[guided] : localIlluminationActive ? source.guidingAttempted : source.attempted;
@@ -45,7 +45,7 @@ VkPipeline PathTracer::Gpu::selectLightingPipeline(VkPipeline pipeline, bool com
     VkShaderModule module{};
     auto result = pipeline::createShaderModule(device, &ci, nullptr, &module);
     if (result == VK_SUCCESS) {
-      const VkBool32 enabled[] = {VkBool32(localIlluminationActive), VkBool32(guided), VkBool32(smallSet), VkBool32(resampling), VkBool32(split), VkBool32(angular), VkBool32(reuse), VkBool32(rayProfile.path != nullptr), VkBool32(firstHit), VkBool32(separateIndirect), VkBool32(roulette), VkBool32(decalMaterialsActive), VkBool32(earlyOut)};
+      const VkBool32 enabled[] = {VkBool32(localIlluminationActive), VkBool32(guided), VkBool32(smallSet), VkBool32(resampling), VkBool32(split), VkBool32(angular), VkBool32(reuse), VkBool32(rayProfile.path != nullptr), VkBool32(firstHit), VkBool32(separateIndirect), VkBool32(roulette), VkBool32(decalMaterialsActive), VkBool32(earlyOut), sparse};
       const VkSpecializationMapEntry entries[] = {{0, 0, sizeof(VkBool32)}, {1, sizeof(VkBool32), sizeof(VkBool32)},
                                                  {2, 2 * sizeof(VkBool32), sizeof(VkBool32)},
                                                  {3, 3 * sizeof(VkBool32), sizeof(VkBool32)},
@@ -57,8 +57,9 @@ VkPipeline PathTracer::Gpu::selectLightingPipeline(VkPipeline pipeline, bool com
                                                  {9, 9 * sizeof(VkBool32), sizeof(VkBool32)},
                                                  {10, 10 * sizeof(VkBool32), sizeof(VkBool32)},
                                                  {11, 11 * sizeof(VkBool32), sizeof(VkBool32)},
-                                                 {12, 12 * sizeof(VkBool32), sizeof(VkBool32)}};
-      const VkSpecializationInfo specialization{13, entries, sizeof(enabled), enabled};
+                                                 {12, 12 * sizeof(VkBool32), sizeof(VkBool32)},
+                                                 {13, 13 * sizeof(VkBool32), sizeof(uint32_t)}};
+      const VkSpecializationInfo specialization{14, entries, sizeof(enabled), enabled};
       const VkComputePipelineCreateInfo create{
           .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
           .stage = {.sType =
@@ -76,19 +77,19 @@ VkPipeline PathTracer::Gpu::selectLightingPipeline(VkPipeline pipeline, bool com
       attempted = false;
       if (reuse)
         pbrReuse.valid = pbrReuse.active = false;
-      return separateIndirect ? VK_NULL_HANDLE : pipeline;
+      return separateIndirect || sparse ? VK_NULL_HANDLE : pipeline;
     }
     // This specialization only improves performance. The ordinary pipeline
     // retains ordinary LightBVH sampling if guidance cannot be allocated,
     // or a black local signal when illumination is disabled.
     if (result == VK_ERROR_DEVICE_LOST)
       throw result;
-    if (result != VK_SUCCESS && roulette) {
+    if (result != VK_SUCCESS && roulette && !sparse) {
       rouletteFailed = true;
       rouletteActive = false;
       std::fprintf(stderr, "Adaptive termination unavailable; using fixed-limit tracing\n");
     }
-    if (result != VK_SUCCESS && guided && !separateIndirect) {
+    if (result != VK_SUCCESS && guided && !separateIndirect && !sparse) {
       lightGuiding.pipelineFailed = true;
       lightGuiding.valid = false;
       lightGuiding.stats.active = 0;
@@ -101,7 +102,7 @@ VkPipeline PathTracer::Gpu::selectLightingPipeline(VkPipeline pipeline, bool com
   if (reuse && !variant) pbrReuse.valid = pbrReuse.active = false;
   // A split consumer must never silently execute the inline fallback after
   // its producer has run (duplicate tracing and cache/profile side effects).
-  if (separateIndirect && !variant) return VK_NULL_HANDLE;
+  if ((separateIndirect || sparse) && !variant) return VK_NULL_HANDLE;
   return variant ? variant : pipeline;
 }
 

@@ -131,8 +131,12 @@ namespace remix::trace::detail {
     // before a surface at which a camera ray is located (float bits).
     uint64_t cameraNodes = 0, cameraLeaves = 0;
     uint32_t cameraCull[4] = {};
+    // Sparse rendering (sparse.cpp): the selected pixels, their count and
+    // indirect dispatch. sparseConfig: active, threshold levels passed of 256.
+    uint64_t sparseList = 0, sparseCount = 0;
+    uint32_t sparseConfig[4] = {};
   };
-  static_assert(sizeof(Frame) == 880 && offsetof(Frame, cameraCull) == 864 && offsetof(Frame, cutConfig) == 816 && offsetof(Frame, orcaParams) == 800 && offsetof(Frame, regirConfig) == 752 && offsetof(Frame, restirCurrent) == 656 && offsetof(Frame, visibilityNodes) == 592 && offsetof(Frame, pathConfig) == 528 &&
+  static_assert(sizeof(Frame) == 912 && offsetof(Frame, sparseList) == 880 && offsetof(Frame, sparseConfig) == 896 && offsetof(Frame, cameraCull) == 864 && offsetof(Frame, cutConfig) == 816 && offsetof(Frame, orcaParams) == 800 && offsetof(Frame, regirConfig) == 752 && offsetof(Frame, restirCurrent) == 656 && offsetof(Frame, visibilityNodes) == 592 && offsetof(Frame, pathConfig) == 528 &&
                 offsetof(Frame, firefly) == 512 && offsetof(Frame, indirectResults) == 496 &&
                 offsetof(Frame, lightGuideRead) == 384 && offsetof(Frame, lightGuideConfig) == 400 &&
                 offsetof(Frame, lightNodes) == 336 && offsetof(Frame, localConfig) == 352 &&
@@ -274,8 +278,10 @@ namespace remix {
     bool localAngularActive = false;
     bool localGuidingActive = false;
     bool rouletteActive = false, rouletteFailed = false;
+    // sparse: the launch of the opaque pass under sparse rendering (1 the
+    // selected pixels, 2 the others); null until that variant has compiled.
     VkPipeline selectLightingPipeline(VkPipeline pipeline, bool combinedDirect = false,
-                                      bool separateIndirect = false);
+                                      bool separateIndirect = false, uint32_t sparse = 0);
     void forgetLightingPipeline(VkPipeline pipeline);
     VkShaderModule shaders[3] = {};
     VkQueryPool compaction = VK_NULL_HANDLE, timestamps = VK_NULL_HANDLE;
@@ -470,6 +476,20 @@ namespace remix {
       bool valid = false, active = false, pipelineFailed = false;
     } regir;
     void configureRegir(Frame &frame, const TraceOptions &options);
+    // Sparse rendering (sparse.cpp): this frame's selected pixels, listed by
+    // a compaction pass for the indirect launch of the opaque lighting pass.
+    struct Sparse {
+      VkPipeline compact = VK_NULL_HANDLE, arguments = VK_NULL_HANDLE;
+      std::unique_ptr<Buffer> list, count;
+      bool active = false, pipelineFailed = false;
+      // Launched sparse this frame (both opaque variants had compiled).
+      bool launched = false;
+      float rate = 1;         // selected share of the pixels this frame
+      float launchedRate = 1; // the share last launched with (1: dense)
+      const char *inactiveReason = "not requested";
+    } sparse;
+    void configureSparse(VkCommandBuffer command, Frame &frame, const TraceOptions &options, VkExtent2D extent);
+    void recordSparse(VkCommandBuffer command, VkExtent2D extent);
     // Per-frame radiance cache from sparse paths (orca.cpp, orca.glsl).
     struct Orca {
       static constexpr uint32_t capacity = 1u << 18;

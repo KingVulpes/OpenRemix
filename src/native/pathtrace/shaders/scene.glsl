@@ -76,6 +76,8 @@ layout(set=0,binding=3,std140) uniform Frame {
   uvec4 cutSlots; // four bits per mask group (1..32): its coverage texture (from the first) + 1, or 0
   uint64_t cameraNodes, cameraLeaves; // visibility partition nodes; a bit per leaf, set where the camera sees it
   uvec4 cameraCull; // active camera culling (1 back faces, 2 visibility), probe distance before a surface (float bits)
+  uint64_t sparseList, sparseCount; // sparse rendering: selected pixels, their count and dispatch
+  uvec4 sparseConfig; // sparse rendering active, threshold levels passed of 256, reserved
 } frame;
 layout(set=0,binding=6) uniform sampler2D textures[4096];
 // remixapi_InstanceInfoMaskEXT CUT: the camera does not see a surface where

@@ -157,6 +157,12 @@ namespace remix::config {
         TRACE(restir, 0, 1);
         TRACE(regir, 0, 1);
         TRACE(regirCellSize, .125f, 16);
+        TRACE(sparseRendering, 0, 1);
+        TRACE(sparseAdaptiveRate, 0, 1);
+        TRACE(sparseSamplingRate, .0625f, 1);
+        TRACE(sparseResolutionExponent, 0, 1);
+        TRACE(sparseQuality, 0, 1);
+        TRACE(sparseMaxRate, .0625f, 1);
         TRACE(orca, 0, 1);
         TRACE(orcaTile, 2, 8);
         TRACE(orcaCellSize, .01f, 4);

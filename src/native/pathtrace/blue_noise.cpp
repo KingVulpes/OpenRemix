@@ -9,7 +9,9 @@ void PathTracer::Gpu::configureBlueNoise(VkCommandBuffer command, Frame &frame,
   const bool sun = options.blueNoiseShadows && frame.sun[1] && frame.sun[0] > 0;
   const bool local = options.blueNoiseLocalLights && localIlluminationActive &&
                      denoiser && postReblur && postLocalDenoise && !options.accumulate;
-  if ((!sun && !local) || blueNoiseFailed) return;
+  // Sparse rendering selects its pixels from the same tables.
+  const bool selection = options.sparseRendering && rrActive();
+  if ((!sun && !local && !selection) || blueNoiseFailed) return;
   try {
     if (!blueNoise) {
       blueNoise = upload(command, trace::blueNoiseSamples, sizeof(trace::blueNoiseSamples),

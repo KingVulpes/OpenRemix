@@ -1,6 +1,9 @@
 policy_test = executable('remix-tlas-policy-test', 'tlas_policy.cpp',
   include_directories : test_includes, link_with : pathtrace_library)
 test('Tracing scene and TLAS policy', policy_test)
+sparse_policy_test = executable('remix-sparse-policy-test', 'sparse_policy.cpp',
+  include_directories : test_includes)
+test('Sparse rendering sampling rate', sparse_policy_test)
 static_scene_test = executable('remix-static-scene-test', 'static_scene.cpp',
   include_directories : test_includes, link_with : scene_library, dependencies : threads_dep)
 test('Persistent static set matches the rebuild path', static_scene_test)

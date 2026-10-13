@@ -10,59 +10,8 @@
 #include <numeric>
 
 namespace remix::scene {
-  uint16_t halfBits(float v) {
-    uint32_t f;
-    std::memcpy(&f, &v, sizeof(f));
-    const uint32_t sign = (f >> 16) & 0x8000u;
-    f &= 0x7fffffffu;
-    if (f >= 0x47800000u) // 65536 and above (the caller passes finite values)
-      return uint16_t(sign | 0x7c00u);
-    if (f < 0x38800000u) { // below the smallest normal half: subnormal steps of 2^-24
-      float a;
-      std::memcpy(&a, &f, sizeof(a));
-      return uint16_t(sign | uint32_t(std::nearbyint(a * 16777216.0f)));
-    }
-    const uint32_t half = (f - 0x38000000u) >> 13, rest = f & 0x1fffu;
-    return uint16_t(sign | (half + uint32_t(rest > 0x1000u || (rest == 0x1000u && (half & 1u)))));
-  }
-
-  float halfFloat(uint16_t bits) {
-    const uint32_t exponent = (bits >> 10) & 31u, mantissa = bits & 0x3ffu;
-    float v;
-    if (exponent == 0)
-      v = std::ldexp(float(mantissa), -24);
-    else if (exponent == 31)
-      v = mantissa ? std::numeric_limits<float>::quiet_NaN() : std::numeric_limits<float>::infinity();
-    else {
-      const uint32_t f = ((exponent + 112u) << 23) | (mantissa << 13);
-      std::memcpy(&v, &f, sizeof(v));
-    }
-    return (bits & 0x8000u) ? -v : v;
-  }
-
   MaterialDecode materialDecode(const Material &m) {
     MaterialDecode d;
-    if (m.roughnessTexture && (m.roughnessEncoding == smoothnessInRedEncoding ||
-                               m.roughnessEncoding == smoothnessInGreenEncoding)) {
-      d.flags |= MaterialDecode::roughnessFromSmoothness;
-      if (m.roughnessEncoding == smoothnessInGreenEncoding) {
-        d.flags |= MaterialDecode::smoothnessInGreen;
-        if (m.specularMetal) {
-          d.flags |= MaterialDecode::metallicFromSpecular;
-          d.specularMetal = m.specularMetal;
-        }
-      }
-    }
-    if (m.hasAlbedoTint) {
-      d.flags |= MaterialDecode::albedoTint;
-      // An sRGB view is already linear when sampled, so the shader linearizes
-      // the tint to match (fork: OPAQUE_SURFACE_MATERIAL_FLAG_ALBEDO_TEXTURE_IS_SRGB).
-      const auto &p = m.texture->pixels;
-      if (p.srgb && p.hdrMips.empty())
-        d.flags |= MaterialDecode::albedoSrgb;
-      for (unsigned c = 0; c < 3; ++c)
-        d.tint[c] = halfBits(m.albedoTint[c]);
-    }
     if (m.selfIllumination) {
       d.flags |= MaterialDecode::selfIllumination |
                  uint32_t(m.selfIllumination - 1) << MaterialDecode::selfIlluminationMaskShift;
@@ -75,47 +24,6 @@ namespace remix::scene {
 namespace remix {
   using namespace scene;
   using namespace scene::detail;
-
-  namespace {
-    // The dxvk-remix fork's opaque-material extensions, with its encodings,
-    // quantization and clamps (rtx_remix_api.cpp / rtx_scene_manager.cpp).
-    void parseFork(const remixapi_MaterialInfo &info, Material &material) {
-      if (const auto *sg = static_cast<const remixapi_MaterialInfoOpaqueSpecGlossEXT *>(
-              extension(info.pNext, REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_SPEC_GLOSS_EXT))) {
-        const float values[] = {sg->metalStrength,   sg->specularMetalLow, sg->specularMetalHigh,
-                                sg->metalAlbedoLuminanceMax, sg->specularTint.x, sg->specularTint.y,
-                                sg->specularTint.z};
-        finite(values, std::size(values));
-        // Only the smoothness encodings mean anything for a roughness map.
-        if (sg->roughnessEncoding == smoothnessInRedEncoding ||
-            sg->roughnessEncoding == smoothnessInGreenEncoding)
-          material.roughnessEncoding = sg->roughnessEncoding;
-        // Metalness needs gloss in green (red = specular level) and a map.
-        auto q = [](float v, float maxCode) { return uint32_t(std::clamp(v, 0.0f, 1.0f) * maxCode + 0.5f); };
-        const uint32_t strength = q(sg->metalStrength, 15);
-        if (sg->metalStrength > 0 && strength &&
-            material.roughnessEncoding == smoothnessInGreenEncoding && material.roughnessTexture) {
-          const uint32_t params = q(sg->specularMetalLow, 15) | q(sg->specularMetalHigh, 15) << 4 |
-                                  q(sg->metalAlbedoLuminanceMax, 15) << 8 | strength << 12;
-          const uint32_t tint = q(sg->specularTint.x, 31) | q(sg->specularTint.y, 63) << 5 |
-                                q(sg->specularTint.z, 31) << 11;
-          material.specularMetal = params | tint << 16;
-        }
-      }
-      if (const auto *at = static_cast<const remixapi_MaterialInfoOpaqueAlbedoTintEXT *>(
-              extension(info.pNext, REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_ALBEDO_TINT_EXT))) {
-        finite(&at->albedoTint.x, 3);
-        float tint[3];
-        for (unsigned c = 0; c < 3; ++c)
-          tint[c] = halfFloat(halfBits(std::clamp((&at->albedoTint.x)[c], 0.0f, 16.0f)));
-        // Only meaningful with an albedo texture; (1,1,1) is a no-op.
-        if (info.albedoTexture && *info.albedoTexture && (tint[0] != 1 || tint[1] != 1 || tint[2] != 1)) {
-          material.hasAlbedoTint = true;
-          std::copy_n(tint, 3, material.albedoTint);
-        }
-      }
-    }
-  } // namespace
 
   void NativeResources::createMaterial(const remixapi_MaterialInfo &info, remixapi_MaterialHandle &handle) {
     if (!info.hash) {
@@ -158,7 +66,6 @@ namespace remix {
       material->reference = float(opaque->alphaReferenceValue) / 255;
       material->drawAlpha = opaque->useDrawCallAlphaState != 0;
       material->translucent = opaque->opacityConstant < 1;
-      parseFork(info, *material);
     } else if (translucent) {
       material->tint[0] = translucent->transmittanceColor.x;
       material->tint[1] = translucent->transmittanceColor.y;
@@ -251,9 +158,7 @@ namespace remix {
              std::equal(a.tint, a.tint + 4, b.tint) && a.compare == b.compare && a.reference == b.reference &&
              a.drawAlpha == b.drawAlpha && a.translucent == b.translucent &&
              a.transmission == b.transmission && a.filter == b.filter && a.wrapU == b.wrapU &&
-             a.wrapV == b.wrapV && a.rows == b.rows && a.columns == b.columns && a.fps == b.fps &&
-             a.roughnessEncoding == b.roughnessEncoding && a.specularMetal == b.specularMetal &&
-             a.hasAlbedoTint == b.hasAlbedoTint && std::equal(a.albedoTint, a.albedoTint + 3, b.albedoTint);
+             a.wrapV == b.wrapV && a.rows == b.rows && a.columns == b.columns && a.fps == b.fps;
     };
     if (previous == m_materials.end() || !equal(*previous->second, *material)) {
       if (previous != m_materials.end()) {

@@ -142,40 +142,17 @@ namespace remix {
       bool drawAlpha = false, translucent = false, transmission = false;
       uint8_t filter = 0, wrapU = 1, wrapV = 1;
       uint8_t rows = 1, columns = 1, fps = 0;
-      // remixapi_MaterialInfoOpaqueSpecGlossEXT (dxvk-remix fork semantics).
-      // roughnessEncoding: REMIXAPI_TEXTURE_ENCODING_SMOOTHNESS_IN_RED/GREEN or
-      // NONE; with a smoothness map, roughness = max(1 - smoothness, roughness).
-      // specularMetal: the fork's packed metalness parameters (0 = off): bits
-      // 0-3 spec low, 4-7 spec high, 8-11 albedo luminance max, 12-15
-      // strength (each /15), 16-31 specular tint R5 G6 B5.
-      uint32_t roughnessEncoding = 0;
-      uint32_t specularMetal = 0;
-      // remixapi_MaterialInfoOpaqueAlbedoTintEXT: gamma multiplier on the
-      // albedo texture's RGB, clamped to [0, 16] and rounded to half precision
-      // like the fork's. Set only for opaque materials with an albedo texture.
-      bool hasAlbedoTint = false;
-      float albedoTint[3] = {1, 1, 1};
       // Set once the handle stops resolving to this object (replaced or
       // destroyed), so retained instances know to resolve the handle again.
       bool retired = false;
     };
-    // REMIXAPI_TEXTURE_ENCODING_SMOOTHNESS_IN_RED / _GREEN (remix_fo4_ext.h
-    // defines them for Windows only).
-    constexpr uint32_t smoothnessInRedEncoding = 2, smoothnessInGreenEncoding = 3;
-    // IEEE half-precision bits of a finite v (round to nearest even).
-    uint16_t halfBits(float v);
-    float halfFloat(uint16_t bits);
-    // What a backend's shader decodes for a material's fork extensions.
+    // What a backend's shader decodes for a material beyond its maps.
     struct MaterialDecode {
-      static constexpr uint32_t roughnessFromSmoothness = 1, smoothnessInGreen = 2, metallicFromSpecular = 4,
-                                albedoTint = 8, albedoSrgb = 16;
       // Self-illumination: enabled, and its mask (0 none, 1 albedo alpha,
       // 2 emissive alpha) in the two bits above.
       static constexpr uint32_t selfIllumination = 32, selfIlluminationMaskShift = 6;
       uint32_t flags = 0;
       float selfIlluminationScale = 0;
-      uint32_t specularMetal = 0;
-      uint16_t tint[3] = {0x3c00, 0x3c00, 0x3c00}; // half bits
     };
     MaterialDecode materialDecode(const Material &material);
     // remixapi_MeshInfoSpriteVerticesEXT: a vertex's sprite parameters.

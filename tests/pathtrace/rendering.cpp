@@ -364,15 +364,15 @@ int main(int argc, char **argv) {
     return 0;
   }
   if (argc > 2 && std::string(argv[2]) == "mesh-refresh") {
-    // remixapi_MeshInfoRefreshGeometryEXT as the FO4 plugin uses it: a mesh
+    // remixapi_MeshInfoDeformEXT: a mesh
     // created normally, then refreshed under the same hash (FaceGen morphs,
     // particles). The first refresh starts a lineage (one build without
     // compaction); later ones refit that BLAS in place, so the dynamic TLAS
     // refits instead of rebuilding for a new BLAS address.
     ok(api.SetConfigVariable("rtx.native.meshes.refreshInPlace", "1"));
     identity.classification = REMIXAPI_INSTANCE_DYNAMIC_EXT;
-    remixapi_MeshInfoRefreshGeometryEXT refresh{};
-    refresh.sType = REMIXAPI_STRUCT_TYPE_MESH_INFO_REFRESH_GEOMETRY_EXT;
+    remixapi_MeshInfoDeformEXT refresh{};
+    refresh.sType = REMIXAPI_STRUCT_TYPE_MESH_DEFORM_EXT;
     for (auto &v : vertices) { v.position[0] *= .3f; v.position[1] *= .3f; }
     auto measure = [&](const char *what, remixapi_MeshHandle &handle) {
       mesh.pNext = nullptr;

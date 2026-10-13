@@ -895,6 +895,80 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetDenoisingStatisticsEXT(rem
 
 #ifdef __cplusplus
 }
+// Optional MeshInfo pNext: the mesh already registered under this hash,
+// deformed. The new registration replaces its vertex data and stays the same
+// object: with the same surfaces, vertex counts and index values the tracer
+// refits the acceleration structure it has (bone-skinned meshes included,
+// which MeshInfoUpdateEXT leaves to the per-instance skin path) and motion
+// vectors follow each vertex from its previous position. Draws already queued
+// keep the previous vertices. With another topology the object starts over
+// (one full build); with another surface count, or nothing registered under
+// the hash, the struct is ignored. Honoured while
+// "rtx.native.meshes.refreshInPlace" is on; otherwise a repeated hash is the
+// plain re-registration it always was. A host morphing a face every frame
+// uses this instead of a new hash a frame, which would be a new object
+// without history each time.
+#define REMIXAPI_STRUCT_TYPE_MESH_DEFORM_EXT ((remixapi_StructType)0x7fff1018)
+typedef struct remixapi_MeshInfoDeformEXT {
+  remixapi_StructType sType;
+  const void* pNext;
+} remixapi_MeshInfoDeformEXT;
+
+// Optional InstanceInfo pNext (DrawInstance, AddSceneInstancesEXT,
+// SetSceneInstanceEXT): every surface of the mesh is shaded with this material
+// instead of the one its surface was created with, so one mesh serves any
+// number of materials. A null handle, or one that is not a live material,
+// keeps the mesh's own. Instances of one mesh share its geometry and
+// acceleration structure across materials, except materials that alpha-test
+// or blend, which keep a copy each (their opacity is part of the structure).
+#define REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_MATERIAL_EXT ((remixapi_StructType)0x7fff1019)
+typedef struct remixapi_InstanceInfoMaterialEXT {
+  remixapi_StructType sType;
+  const void* pNext;
+  remixapi_MaterialHandle material;
+} remixapi_InstanceInfoMaterialEXT;
+
+// Scene instances: instances the runtime keeps. A host describes a placement
+// once (AddSceneInstancesEXT, any number in one call) and every frame's
+// DrawSceneInstancesEXT draws all that are visible, in place of one
+// DrawInstance per placement per frame; what is static among them is also kept
+// in the tracer's tables from frame to frame. Handles are nonzero. An
+// instance's description is an InstanceInfo with the pNext chain DrawInstance
+// takes; it is copied. Remove an instance before destroying its mesh.
+// Named exports; resolve with GetProcAddress/dlsym.
+#define REMIXAPI_SCENE_INSTANCE_TRANSFORM_EXT 0x1u
+#define REMIXAPI_SCENE_INSTANCE_VISIBLE_EXT 0x2u
+typedef struct remixapi_SceneInstanceChangeEXT {
+  uint64_t instance;
+  uint32_t fields; // REMIXAPI_SCENE_INSTANCE_*: which of the members below apply
+  remixapi_Bool visible;
+  remixapi_Transform transform; // the instance's new transform, not a delta
+} remixapi_SceneInstanceChangeEXT;
+// outInstances: count handles, in the order of infos. Nothing is added when a
+// description is refused.
+typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_AddSceneInstancesEXT)(
+    const remixapi_InstanceInfo* infos, uint32_t count, uint64_t* outInstances);
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_AddSceneInstancesEXT(
+    const remixapi_InstanceInfo* infos, uint32_t count, uint64_t* outInstances);
+// Replaces an instance's whole description; its visibility stays.
+typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_SetSceneInstanceEXT)(
+    uint64_t instance, const remixapi_InstanceInfo* info);
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_SetSceneInstanceEXT(
+    uint64_t instance, const remixapi_InstanceInfo* info);
+typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_ChangeSceneInstancesEXT)(
+    const remixapi_SceneInstanceChangeEXT* changes, uint32_t count);
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_ChangeSceneInstancesEXT(
+    const remixapi_SceneInstanceChangeEXT* changes, uint32_t count);
+typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_RemoveSceneInstancesEXT)(
+    const uint64_t* instances, uint32_t count);
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_RemoveSceneInstancesEXT(
+    const uint64_t* instances, uint32_t count);
+// origin: three floats subtracted from every scene instance's translation
+// this frame (a host that rebases its world around the camera gives the same
+// origin it subtracts from its camera and lights); null for none.
+typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_DrawSceneInstancesEXT)(const float* origin);
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_DrawSceneInstancesEXT(const float* origin);
+
 #endif
 
 #define REMIXAPI_STRUCT_TYPE_MATERIAL_NORMAL_ENCODING_EXT ((remixapi_StructType)0x7fff1011)

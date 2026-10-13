@@ -135,16 +135,16 @@ namespace remix {
       }
       mesh->updateStream = compatible ? previous->second->updateStream : std::make_shared<MeshUpdateStream>();
     }
-    // remixapi_MeshInfoRefreshGeometryEXT (fork semantics, behind "Refresh mesh
-    // geometry in place"): new vertex data for the mesh registered under this
+    // remixapi_MeshInfoDeformEXT (behind "Refresh mesh geometry in place"):
+    // new vertex data for the mesh registered under this
     // hash, same topology. Ignored when nothing is registered (a plain create).
     // A different surface count is a different mesh, not a morph: the
-    // registered mesh stays and the call still succeeds, as in the fork.
+    // registered mesh stays and the call still succeeds.
     // Queued draws keep the immutable previous version; the new one joins its
     // update lineage, so the tracer refits the BLAS it already has (skinned
     // meshes included) and temporal history treats it as the same surface.
     if (m_refreshGeometry && previous != m_meshes.end() &&
-        extension(info.pNext, REMIXAPI_STRUCT_TYPE_MESH_INFO_REFRESH_GEOMETRY_EXT)) {
+        extension(info.pNext, REMIXAPI_STRUCT_TYPE_MESH_DEFORM_EXT)) {
       const auto &old = *previous->second;
       if (old.surfaces.size() != mesh->surfaces.size()) {
         handle = reinterpret_cast<remixapi_MeshHandle>(uintptr_t(info.hash));

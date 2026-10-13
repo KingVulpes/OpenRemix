@@ -14,6 +14,7 @@
 #include <utility>
 #include <memory>
 #include <remix/remix_c.h>
+#include <remix/remix_native_ext.h>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -111,7 +112,7 @@ namespace remix {
     // Atomic so the API layer can choose the preparation path before locking.
     void setKeepCompressedTextures(bool value) { m_keepCompressed.store(value, std::memory_order_relaxed); }
     bool keepCompressedTextures() const { return m_keepCompressed.load(std::memory_order_relaxed); }
-    // Honour remixapi_MeshInfoRefreshGeometryEXT ("Refresh mesh geometry in
+    // Honour remixapi_MeshInfoDeformEXT ("Refresh mesh geometry in
     // place"). Off: the struct is ignored and a repeated CreateMesh replaces the
     // mesh as before.
     void setRefreshGeometry(bool value) { m_refreshGeometry = value; }
@@ -119,10 +120,10 @@ namespace remix {
     void setupCamera(const remixapi_CameraInfo &info);
     void applyFreeCamera(const scene::FreeCameraState &freeCam);
     void drawInstance(const remixapi_InstanceInfo &info, remixapi_MaterialHandle materialOverride = nullptr);
-    // Retained instances (remix_fo4_ext.h). Handles are nonzero and never reused.
+    // Scene instances (remixapi_AddSceneInstancesEXT). Handles are nonzero and never reused.
     uint64_t createRetained(const remixapi_InstanceInfo &info);
     void updateRetained(uint64_t handle, const remixapi_InstanceInfo &info);
-    void updateRetained(const remixapi_RetainedInstanceUpdate *updates, uint32_t count);
+    void updateRetained(const remixapi_SceneInstanceChangeEXT *changes, uint32_t count);
     void destroyRetained(const uint64_t *handles, uint32_t count);
     void drawRetained(const float *sceneOrigin);
     size_t retainedCount() const { return m_retained.size(); }
@@ -336,7 +337,7 @@ namespace remix {
                     const scene::Matrix *models, uint32_t count,
                     const std::shared_ptr<scene::Material> &materialOverride, bool strict,
                     std::vector<scene::Draw> &out, std::vector<std::shared_ptr<scene::Material>> *resolved);
-    // The live material an InstanceInfoMaterialOverrideEXT names; null keeps
+    // The live material an InstanceInfoMaterialEXT names; null keeps
     // the mesh's own materials (no override, or a dead handle).
     std::shared_ptr<scene::Material> overrideMaterial(const scene::InstanceDescription &description) const;
     void resolveRetained(scene::RetainedInstance &entry, bool strict);

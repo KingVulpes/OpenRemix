@@ -28,7 +28,7 @@ pbr_test = executable('remix-pbr-resource-test', 'pbr.cpp',
 test('PBR material validation and texture lifetime', pbr_test)
 materials_ext_test = executable('remix-material-extensions-test', 'materials_ext.cpp',
   include_directories : test_includes, link_with : scene_library)
-test('Spec/gloss, albedo tint and material override', materials_ext_test)
+test('Instance material and dynamic textures', materials_ext_test)
 opacity_test = executable('remix-opacity-test', 'opacity.cpp',
   include_directories : test_includes, link_with : scene_library, cpp_args : test_cpp_args)
 test('Opaque traversal atlas coverage and snapshot ownership', opacity_test)

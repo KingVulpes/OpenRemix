@@ -17,11 +17,9 @@ namespace remix::config {
     bool compressedTextures = false;
     // Fill GetVramStats from OpenRemix's allocations and the driver budget.
     bool vramStatistics = false;
-    // Honour remixapi_MeshInfoRefreshGeometryEXT: a refresh keeps the mesh's
-    // update lineage, so the tracer refits its BLAS instead of rebuilding.
+    // Honour remixapi_MeshInfoDeformEXT: a deformed mesh keeps its update
+    // lineage, so the tracer refits its BLAS instead of rebuilding.
     bool refreshGeometry = false;
-    // Answer remixapi_GetMemoryPressure from the driver's device-local budget.
-    bool memoryPressure = false;
     // Trace retained static instances from the path tracer's own copy of
     // them, updated only where they change, instead of rebuilding their
     // frame tables every frame. Output-identical; it keeps state, so it is

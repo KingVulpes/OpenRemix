@@ -152,23 +152,6 @@ int main(int argc, char **argv) {
   auto libraryPath = argv[1];
 #endif
   ok(remixapi_lib_loadRemixDllAndInitialize(libraryPath, &api, &library));
-  // remix_fo4_ext.h named export; zero until enabled and presented.
-#if defined(_WIN32)
-  const auto getMemoryPressure =
-      reinterpret_cast<PFN_remixapi_GetMemoryPressure>(GetProcAddress(library, "remixapi_GetMemoryPressure"));
-#else
-  const auto getMemoryPressure =
-      reinterpret_cast<PFN_remixapi_GetMemoryPressure>(dlsym(library, "remixapi_GetMemoryPressure"));
-#endif
-  require(getMemoryPressure != nullptr, "remixapi_GetMemoryPressure not exported");
-  remixapi_MemoryPressureInfo pressure = {};
-  require(getMemoryPressure(nullptr) == REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS &&
-              getMemoryPressure(&pressure) == REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS,
-          "Memory pressure accepted a missing structSize");
-  pressure.structSize = sizeof(pressure);
-  ok(getMemoryPressure(&pressure));
-  require(!pressure.level && !pressure.requestHostRelease && !pressure.usageBytes && !pressure.budgetBytes,
-          "Memory pressure reported before startup");
   auto selectBackend = [&] {
     if (const char *backend = std::getenv("REMIX_TEST_BACKEND")) {
       const auto status = api.SetConfigVariable("rtx.native.backend", backend);
@@ -217,7 +200,6 @@ int main(int argc, char **argv) {
     ok(api.Startup(&startup));
     ok(api.SetConfigVariable("rtx.native.textures.keepCompressed", "1"));
     ok(api.SetConfigVariable("rtx.native.vramStatistics", "1"));
-    ok(api.SetConfigVariable("rtx.native.memoryPressure", "1"));
     selectBackend();
     SampleScene scene;
     ok(scene.create(api));
@@ -347,22 +329,9 @@ int main(int argc, char **argv) {
                 vram.totalAllocatedBytes >= vram.totalUsedBytes &&
                 vram.totalUsedBytes >= vram.usedMaterialTextureBytes,
             "VRAM statistics missing textures");
-    const uint64_t driverBudget = vram.driverBudgetBytes;
     ok(api.SetConfigVariable("rtx.native.vramStatistics", "0"));
     require(api.GetVramStats(&vram) == REMIXAPI_ERROR_CODE_FEATURE_UNAVAILABLE && !vram.totalUsedBytes,
             "Disabled VRAM statistics still reported");
-    // Memory pressure follows the driver's device-local budget once enabled.
-    ok(getMemoryPressure(&pressure));
-    std::fprintf(stderr, "Memory pressure: level %u, %llu / %llu MiB, release %llu MiB, frame %u\n",
-                 pressure.level, (unsigned long long)(pressure.usageBytes >> 20),
-                 (unsigned long long)(pressure.budgetBytes >> 20),
-                 (unsigned long long)(pressure.bytesToRelease >> 20), pressure.frame);
-    require(pressure.frame > 0 && (!driverBudget || (pressure.budgetBytes && pressure.usageBytes)),
-            "Enabled memory pressure missing the driver budget");
-    ok(api.SetConfigVariable("rtx.native.memoryPressure", "0"));
-    ok(api.Present(nullptr));
-    ok(getMemoryPressure(&pressure));
-    require(!pressure.level && !pressure.usageBytes && !pressure.budgetBytes, "Disabled memory pressure still reported");
     ok(api.Shutdown());
     ok(remixapi_lib_shutdownAndUnloadRemixDll(&api, library));
     std::puts("Compressed BC textures rendered in raster and path tracing");

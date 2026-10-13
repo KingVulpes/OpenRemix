@@ -50,7 +50,7 @@ namespace remix::trace::detail {
     float emission[4] = {};
     float pbr[4] = {};            // perceptual roughness, metalness, enabled, reserved
     uint32_t pbrTextures[4] = {}; // roughness, metalness, normal; index + 1
-    uint32_t material[4] = {};    // scene::MaterialDecode: flags, specular metal, tint halves r|g, b
+    uint32_t material[4] = {};    // scene::MaterialDecode: flags; the rest unused
   };
   static_assert(sizeof(TraceSurface) == 256);
   inline float linear(float c) { return c <= .04045f ? c / 12.92f : std::pow((c + .055f) / 1.055f, 2.4f); }
@@ -527,9 +527,6 @@ namespace remix::trace {
       entry.pbr[2] = material.pbr ? 1.f : 0.f;
       const auto decode = scene::materialDecode(material);
       entry.decode[0] = decode.flags;
-      entry.decode[1] = decode.specularMetal;
-      entry.decode[2] = uint32_t(decode.tint[0]) | uint32_t(decode.tint[1]) << 16;
-      entry.decode[3] = decode.tint[2];
       entry.maps[3] = material.normalEncoding == 1
                           ? 2
                           : (material.normalEncoding == 3 ? 4 : 0) |
@@ -566,9 +563,6 @@ namespace remix::trace {
       value.pbr[2] = material.pbr ? 1.f : 0.f;
       const auto decode = scene::materialDecode(material);
       value.material[0] = decode.flags;
-      value.material[1] = decode.specularMetal;
-      value.material[2] = uint32_t(decode.tint[0]) | uint32_t(decode.tint[1]) << 16;
-      value.material[3] = decode.tint[2];
       value.pbrTextures[3] =
           material.normalEncoding == 1
               ? 2

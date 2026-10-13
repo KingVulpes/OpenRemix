@@ -1,10 +1,8 @@
-// Retained instances (remix_fo4_ext.h), after the dxvk-remix fork
-// (Kim2091/dxvk-remix rebased-9-19-opt). Named exports only; the versioned
-// interface table is unchanged. Hosts resolve them with GetProcAddress/dlsym.
-// Validation, resolution and replay live in scene/retained.cpp. Every call
-// takes the API mutex like the other entry points. Error codes follow the fork,
-// except that an uninitialized runtime reports NOT_INITIALIZED as the other
-// OpenRemix entry points do (the fork: REMIX_DEVICE_WAS_NOT_REGISTERED).
+// Scene instances (remix_native_ext.h): instances the runtime keeps and draws
+// with one call a frame. Named exports only; the versioned interface table is
+// unchanged. Validation, resolution and the per-frame draw live in
+// scene/retained.cpp. Every call takes the API mutex like the other entry
+// points.
 
 #include "api/state.h"
 
@@ -12,37 +10,47 @@ using namespace remix::api;
 
 extern "C" {
 
-REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_CreateRetainedInstance(const remixapi_InstanceInfo *info,
-                                                                          uint64_t *outHandle) {
-  if (!outHandle)
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_AddSceneInstancesEXT(const remixapi_InstanceInfo *infos,
+                                                                        uint32_t count, uint64_t *outInstances) {
+  if (count && (!infos || !outInstances))
     return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
   return resourceCall([&](auto &resources) {
-    if (!info || info->sType != REMIXAPI_STRUCT_TYPE_INSTANCE_INFO)
-      throw REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
-    *outHandle = resources.createRetained(*info);
+    for (uint32_t i = 0; i < count; ++i)
+      if (infos[i].sType != REMIXAPI_STRUCT_TYPE_INSTANCE_INFO)
+        throw REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+    uint32_t added = 0;
+    try {
+      for (; added < count; ++added)
+        outInstances[added] = resources.createRetained(infos[added]);
+    } catch (...) {
+      // All or nothing: a refused description takes the ones before it along.
+      resources.destroyRetained(outInstances, added);
+      std::fill_n(outInstances, count, uint64_t(0));
+      throw;
+    }
   });
 }
 
-REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_UpdateRetainedInstance(uint64_t handle,
-                                                                          const remixapi_InstanceInfo *info) {
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_SetSceneInstanceEXT(uint64_t instance,
+                                                                       const remixapi_InstanceInfo *info) {
   return resourceCall([&](auto &resources) {
     if (!info || info->sType != REMIXAPI_STRUCT_TYPE_INSTANCE_INFO)
       throw REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
-    resources.updateRetained(handle, *info);
+    resources.updateRetained(instance, *info);
   });
 }
 
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL
-remixapi_UpdateRetainedInstances(const remixapi_RetainedInstanceUpdate *updates, uint32_t count) {
-  return resourceCall([&](auto &resources) { resources.updateRetained(updates, count); });
+remixapi_ChangeSceneInstancesEXT(const remixapi_SceneInstanceChangeEXT *changes, uint32_t count) {
+  return resourceCall([&](auto &resources) { resources.updateRetained(changes, count); });
 }
 
-REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_DestroyRetainedInstances(const uint64_t *handles,
-                                                                            uint32_t count) {
-  return resourceCall([&](auto &resources) { resources.destroyRetained(handles, count); });
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_RemoveSceneInstancesEXT(const uint64_t *instances,
+                                                                           uint32_t count) {
+  return resourceCall([&](auto &resources) { resources.destroyRetained(instances, count); });
 }
 
-REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_DrawRetainedInstances(const float *sceneOrigin) {
-  return resourceCall([&](auto &resources) { resources.drawRetained(sceneOrigin); });
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_DrawSceneInstancesEXT(const float *origin) {
+  return resourceCall([&](auto &resources) { resources.drawRetained(origin); });
 }
 }

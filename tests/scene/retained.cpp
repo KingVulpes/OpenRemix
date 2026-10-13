@@ -13,19 +13,19 @@ namespace {
     return r.pendingDrawCount();
   }
 
-  remixapi_RetainedInstanceUpdate moveTo(uint64_t handle, float x) {
-    remixapi_RetainedInstanceUpdate u = {};
-    u.handle = handle;
-    u.flags = REMIXAPI_RETAINED_UPDATE_TRANSFORM;
+  remixapi_SceneInstanceChangeEXT moveTo(uint64_t handle, float x) {
+    remixapi_SceneInstanceChangeEXT u = {};
+    u.instance = handle;
+    u.fields = REMIXAPI_SCENE_INSTANCE_TRANSFORM_EXT;
     u.transform.matrix[0][0] = u.transform.matrix[1][1] = u.transform.matrix[2][2] = 1;
     u.transform.matrix[0][3] = x;
     return u;
   }
 
-  remixapi_RetainedInstanceUpdate show(uint64_t handle, bool visible) {
-    remixapi_RetainedInstanceUpdate u = {};
-    u.handle = handle;
-    u.flags = REMIXAPI_RETAINED_UPDATE_VISIBILITY;
+  remixapi_SceneInstanceChangeEXT show(uint64_t handle, bool visible) {
+    remixapi_SceneInstanceChangeEXT u = {};
+    u.instance = handle;
+    u.fields = REMIXAPI_SCENE_INSTANCE_VISIBLE_EXT;
     u.visible = visible;
     return u;
   }
@@ -129,7 +129,7 @@ namespace {
     require(r.retainedStatistics().moving == 0, "An unchanged transform counted as a move");
 
     // Batches are validated before anything is applied.
-    remixapi_RetainedInstanceUpdate batch[2] = {moveTo(a, 7), moveTo(0, 1)};
+    remixapi_SceneInstanceChangeEXT batch[2] = {moveTo(a, 7), moveTo(0, 1)};
     rejected([&] { r.updateRetained(batch, 2); });
     batch[1] = moveTo(b, 1);
     batch[1].transform.matrix[0][0] = std::numeric_limits<float>::quiet_NaN();
@@ -137,8 +137,8 @@ namespace {
     frame(r);
     for (const auto &draw : r.draws())
       require(draw.model[12] != 7, "Rejected batch was partly applied");
-    rejected([&] { r.updateRetained(static_cast<const remixapi_RetainedInstanceUpdate *>(nullptr), 1); });
-    r.updateRetained(static_cast<const remixapi_RetainedInstanceUpdate *>(nullptr), 0);
+    rejected([&] { r.updateRetained(static_cast<const remixapi_SceneInstanceChangeEXT *>(nullptr), 1); });
+    r.updateRetained(static_cast<const remixapi_SceneInstanceChangeEXT *>(nullptr), 0);
     auto unknown = moveTo(12345, 1);
     r.updateRetained(&unknown, 1); // Unknown handles are ignored.
 

@@ -217,17 +217,17 @@ namespace {
       if (handles.size() < 24)
         handles.push_back(r.createRetained(placed(a, float(handles.size()), 1)));
       if (f % 5 == 1) {
-        remixapi_RetainedInstanceUpdate u{};
-        u.handle = handles[size_t(f) % handles.size()];
-        u.flags = REMIXAPI_RETAINED_UPDATE_TRANSFORM;
+        remixapi_SceneInstanceChangeEXT u{};
+        u.instance = handles[size_t(f) % handles.size()];
+        u.fields = REMIXAPI_SCENE_INSTANCE_TRANSFORM_EXT;
         u.transform.matrix[0][0] = u.transform.matrix[1][1] = u.transform.matrix[2][2] = 1;
         u.transform.matrix[0][3] = float(f);
         r.updateRetained(&u, 1);
       }
       if (f % 11 == 4) {
-        remixapi_RetainedInstanceUpdate u{};
-        u.handle = handles[size_t(f * 7) % handles.size()];
-        u.flags = REMIXAPI_RETAINED_UPDATE_VISIBILITY;
+        remixapi_SceneInstanceChangeEXT u{};
+        u.instance = handles[size_t(f * 7) % handles.size()];
+        u.fields = REMIXAPI_SCENE_INSTANCE_VISIBLE_EXT;
         u.visible = (f / 11) % 2;
         r.updateRetained(&u, 1);
       }

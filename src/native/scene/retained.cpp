@@ -5,12 +5,12 @@
 #include <algorithm>
 #include <cmath>
 
-// Retained instances: a draw is validated and resolved once, when it is
-// created or re-described, into ready Draw records kept in a dense table.
-// drawRetained() then copies the visible records into the frame.
+// Scene instances (remixapi_AddSceneInstancesEXT), "retained" here: a draw is
+// validated and resolved once, when it is added or re-described, into ready
+// Draw records kept in a dense table. drawRetained() then copies the visible
+// records into the frame.
 //
-// Lifetime (matches the dxvk-remix fork, which keeps handles and looks them up
-// at replay): an entry names its mesh and materials by handle. It holds the
+// Lifetime: an entry names its mesh and materials by handle. It holds the
 // objects those handles resolved to, so a DestroyMesh/DestroyMaterial while it
 // is registered never leaves a dangling reference. A destroyed or replaced mesh
 // or material is marked retired; the entry resolves its handles again at the
@@ -246,35 +246,35 @@ namespace remix {
       m_retainedWatch += current->watch;
       return;
     }
-    // As in the fork, an unknown handle registers a new instance under it. The
-    // counter moves past it so CreateRetainedInstance never hands it out.
+    // An unknown handle registers a new instance under it. The counter moves
+    // past it so AddSceneInstancesEXT never hands it out.
     m_nextRetained = std::max(m_nextRetained, handle);
     m_retainedIndex.emplace(handle, uint32_t(m_retained.size()));
     m_retainedWatch += next.watch;
     m_retained.push_back(std::move(next));
   }
 
-  void NativeResources::updateRetained(const remixapi_RetainedInstanceUpdate *updates, uint32_t count) {
+  void NativeResources::updateRetained(const remixapi_SceneInstanceChangeEXT *updates, uint32_t count) {
     if (!count)
       return;
     if (!updates)
       throw invalid;
     // Validate the whole batch before applying any of it.
     for (uint32_t i = 0; i < count; ++i) {
-      if (!updates[i].handle)
+      if (!updates[i].instance)
         throw invalid;
-      if (updates[i].flags & REMIXAPI_RETAINED_UPDATE_TRANSFORM)
+      if (updates[i].fields & REMIXAPI_SCENE_INSTANCE_TRANSFORM_EXT)
         for (const auto &row : updates[i].transform.matrix)
           finite(row, 4);
     }
     freezeStatic();
     for (uint32_t i = 0; i < count; ++i) {
       const auto &update = updates[i];
-      const auto found = m_retainedIndex.find(update.handle);
+      const auto found = m_retainedIndex.find(update.instance);
       if (found == m_retainedIndex.end())
-        continue; // Unknown handles are ignored, as in the fork.
+        continue; // Unknown handles are ignored (an instance removed meanwhile).
       auto &e = m_retained[found->second];
-      if (update.flags & REMIXAPI_RETAINED_UPDATE_TRANSFORM) {
+      if (update.fields & REMIXAPI_SCENE_INSTANCE_TRANSFORM_EXT) {
         const Matrix model = transform(update.transform);
         if (model != e.description.model) {
           e.description.model = model;
@@ -282,7 +282,7 @@ namespace remix {
           moveRetained(e);
         }
       }
-      if (update.flags & REMIXAPI_RETAINED_UPDATE_VISIBILITY)
+      if (update.fields & REMIXAPI_SCENE_INSTANCE_VISIBLE_EXT)
         e.visible = update.visible != 0;
     }
   }

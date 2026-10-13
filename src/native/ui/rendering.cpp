@@ -190,21 +190,6 @@ namespace remix {
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Answer GetVramStats with OpenRemix's texture, geometry, acceleration-structure\n"
                           "and denoiser allocations, plus the driver's device-local usage and budget.");
-      ui::Checkbox("Report memory pressure", &settings.memoryPressure);
-      if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Answer remixapi_GetMemoryPressure from the driver's device-local usage and budget:\n"
-                          "levels at 90/94/97%% of the budget; at the critical level the host is asked to\n"
-                          "release far content. Off: the host always reads no pressure.");
-      if (settings.memoryPressure) {
-        if (!m_memoryBudget)
-          ImGui::TextWrapped("%s", "VK_EXT_memory_budget is unavailable: no pressure is reported.");
-        const auto pressure = m_memoryPressure.sample();
-        static const char *const levels[] = {"none", "elevated", "high", "critical"};
-        ImGui::TextDisabled("Pressure: %s | %.0f / %.0f MiB | release %.0f MiB%s", levels[pressure.level & 3],
-                            pressure.usageBytes / 1048576.0, pressure.budgetBytes / 1048576.0,
-                            pressure.bytesToRelease / 1048576.0,
-                            pressure.requestHostRelease ? " | host asked to release" : "");
-      }
       const auto memory = renderer().memoryStatistics();
       ImGui::TextDisabled("Textures: %llu, %.1f MiB (%.1f MiB BC) | geometry %.1f MiB",
                           (unsigned long long)memory.textureCount, memory.textureBytes / 1048576.0,
@@ -213,13 +198,13 @@ namespace remix {
     if (ImGui::CollapsingHeader("Geometry")) {
       ui::Checkbox("Refresh mesh geometry in place", &settings.refreshGeometry);
       if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Honour remixapi_MeshInfoRefreshGeometryEXT: a host refreshing a mesh's vertices\n"
+        ImGui::SetTooltip("Honour remixapi_MeshInfoDeformEXT: a host refreshing a mesh's vertices\n"
                           "(face morphs, particles) keeps its identity, so the path tracer refits the\n"
                           "existing BLAS and motion vectors follow the surface. Off: the refresh replaces\n"
                           "the mesh (full BLAS build). Applies to refreshes after the change.");
       ui::Checkbox("Persistent static scene", &settings.persistentStatic);
       if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Retained static instances (DrawRetainedInstances) stay in the path tracer's own\n"
+        ImGui::SetTooltip("Static scene instances (DrawSceneInstancesEXT) stay in the path tracer's own\n"
                           "copy, updated only where they change: unchanged ones cost no per-frame work in\n"
                           "the draw list, scene preparation, surface table, temporal history or scene\n"
                           "signature. The same output as without it. Path tracing only; applies from the\n"

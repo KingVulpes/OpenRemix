@@ -362,19 +362,19 @@ namespace {
     return info;
   }
 
-  remixapi_RetainedInstanceUpdate moveTo(uint64_t handle, float x) {
-    remixapi_RetainedInstanceUpdate u = {};
-    u.handle = handle;
-    u.flags = REMIXAPI_RETAINED_UPDATE_TRANSFORM;
+  remixapi_SceneInstanceChangeEXT moveTo(uint64_t handle, float x) {
+    remixapi_SceneInstanceChangeEXT u = {};
+    u.instance = handle;
+    u.fields = REMIXAPI_SCENE_INSTANCE_TRANSFORM_EXT;
     u.transform.matrix[0][0] = u.transform.matrix[1][1] = u.transform.matrix[2][2] = 1;
     u.transform.matrix[0][3] = x;
     return u;
   }
 
-  remixapi_RetainedInstanceUpdate show(uint64_t handle, bool visible) {
-    remixapi_RetainedInstanceUpdate u = {};
-    u.handle = handle;
-    u.flags = REMIXAPI_RETAINED_UPDATE_VISIBILITY;
+  remixapi_SceneInstanceChangeEXT show(uint64_t handle, bool visible) {
+    remixapi_SceneInstanceChangeEXT u = {};
+    u.instance = handle;
+    u.fields = REMIXAPI_SCENE_INSTANCE_VISIBLE_EXT;
     u.visible = visible;
     return u;
   }

@@ -35,15 +35,13 @@ Optional, off by default: `rtx.native.textures.keepCompressed = 1` keeps BC1-BC7
 textures compressed on the GPU (for textures created afterwards), and
 `rtx.native.vramStatistics = 1` makes `GetVramStats` report allocations and the
 driver budget. Both are also in the ImGui Rendering tab under Memory.
-Also off by default: `rtx.native.memoryPressure = 1` answers `remixapi_GetMemoryPressure`
-(Memory), and `rtx.native.meshes.refreshInPlace = 1` honours
-`remixapi_MeshInfoRefreshGeometryEXT`, refitting a refreshed mesh's BLAS (Geometry).
+Also off by default: `rtx.native.meshes.refreshInPlace = 1` honours
+`remixapi_MeshInfoDeformEXT`, refitting a deformed mesh's BLAS (Geometry).
 `rtx.native.gpuPassTimers = 1` (Diagnostics, GPU pass timings) timestamps every GPU pass
 of a frame and lists the costs by size; hosts can log them with `remixapi_GetGpuPassTimingsEXT`.
-The `remix_fo4_ext.h` material structs (spec/gloss roughness maps, albedo tint and the
-per-instance material override) follow the dxvk-remix fork and are always honoured;
-`remixapi_GetSpecGlossMaterialVersion`, `GetMaterialAlbedoTintVersion` and
-`GetInstanceMaterialOverrideVersion` return 1 so hosts can drop their CPU fallbacks.
+`remixapi_InstanceInfoMaterialEXT` shades an instance with a material other than its
+mesh's, and scene instances (`remixapi_AddSceneInstancesEXT`, `DrawSceneInstancesEXT`)
+are placed once and drawn by one call a frame; both are in `remix_native_ext.h`.
 See the [native sample](samples/remix-native).
 
 ## Building

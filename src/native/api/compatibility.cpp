@@ -187,27 +187,4 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_SetFogState(const remixapi_Fo
 
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_AutoInstancePersistentLights() { return ignoredEffect(); }
 
-// remix_fo4_ext.h: device-local memory pressure (fork semantics). Lock-free and
-// callable from any thread; all zero while "Report memory pressure" is off.
-REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetMemoryPressure(remixapi_MemoryPressureInfo *out_info) {
-  if (!out_info || out_info->structSize < sizeof(remixapi_MemoryPressureInfo))
-    return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
-  const auto sample = g_runtime.memoryPressure();
-  out_info->structSize = sizeof(remixapi_MemoryPressureInfo);
-  out_info->level = sample.level;
-  out_info->requestHostRelease = sample.requestHostRelease;
-  out_info->frame = sample.frame;
-  out_info->usageBytes = sample.usageBytes;
-  out_info->budgetBytes = sample.budgetBytes;
-  out_info->bytesToRelease = sample.bytesToRelease;
-  return REMIXAPI_ERROR_CODE_SUCCESS;
-}
-
-// remix_fo4_ext.h revisions, as the dxvk-remix fork reports them. The structs
-// are always honoured: materials decode spec/gloss maps and the albedo tint in
-// both backends, and DrawInstance / retained instances apply the material
-// override. Hosts gate their CPU fallbacks on these (probed before Startup).
-REMIXAPI uint32_t REMIXAPI_CALL remixapi_GetSpecGlossMaterialVersion(void) { return 1; }
-REMIXAPI uint32_t REMIXAPI_CALL remixapi_GetMaterialAlbedoTintVersion(void) { return 1; }
-REMIXAPI uint32_t REMIXAPI_CALL remixapi_GetInstanceMaterialOverrideVersion(void) { return 1; }
 }

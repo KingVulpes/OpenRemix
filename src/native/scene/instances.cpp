@@ -226,7 +226,7 @@ namespace remix {
     if (uint64_t(count) * mesh->second->surfaces.size() + (description.halo || description.maskSource ? 0 : pendingDrawCount()) > 65536) {
       throw invalid;
     }
-    // A USD mod's material wins over remixapi_InstanceInfoMaterialOverrideEXT.
+    // A USD mod's material wins over remixapi_InstanceInfoMaterialEXT.
     const auto override = materialOverride ? m_materials.at(key(materialOverride)) : overrideMaterial(description);
     m_modelScratch.resize(count);
     for (uint32_t i = 0; i < count; ++i) {
@@ -257,8 +257,8 @@ namespace remix {
                    std::make_move_iterator(pending.end()));
   }
 
-  // remixapi_InstanceInfoMaterialOverrideEXT, shared by DrawInstance and
-  // retained instances (fork semantics): every surface is shaded with the
+  // remixapi_InstanceInfoMaterialEXT, shared by DrawInstance and scene
+  // instances: every surface is shaded with the
   // override; a null handle, or one that is not a live material, leaves the
   // mesh's own materials.
   std::shared_ptr<Material> NativeResources::overrideMaterial(const InstanceDescription &description) const {
@@ -481,8 +481,8 @@ namespace remix::scene {
       d.hidden = true;
       return;
     }
-    if (const auto *override = static_cast<const remixapi_InstanceInfoMaterialOverrideEXT *>(
-            extension(info.pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_MATERIAL_OVERRIDE_EXT)))
+    if (const auto *override = static_cast<const remixapi_InstanceInfoMaterialEXT *>(
+            extension(info.pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_MATERIAL_EXT)))
       d.materialOverride = key(override->material);
     const auto *alpha =static_cast<const remixapi_InstanceInfoBlendEXT *>(
         extension(info.pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_BLEND_EXT));

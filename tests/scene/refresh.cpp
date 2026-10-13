@@ -2,7 +2,7 @@
 #include "scene/temporal.h"
 #include <memory>
 
-// remixapi_MeshInfoRefreshGeometryEXT: fork semantics (repeated CreateMesh
+// remixapi_MeshInfoDeformEXT (repeated CreateMesh
 // under a live hash replaces its vertices; no mesh or a different surface
 // count ignores the struct), update lineage for the tracer, retained replay and
 // temporal correspondence. Behind "Refresh mesh geometry in place".
@@ -13,7 +13,7 @@ namespace {
     uint32_t indices[6] = {0, 2, 1, 0, 3, 2}, bones[4] = {};
     float weights[4] = {1, 1, 1, 1};
     remixapi_MeshInfoSurfaceTriangles surfaces[2] = {};
-    remixapi_MeshInfoRefreshGeometryEXT refresh = {};
+    remixapi_MeshInfoDeformEXT refresh = {};
     remixapi_MeshInfo info = {};
     Morph(uint64_t hash, remixapi_MaterialHandle material, bool skin) {
       const float positions[4][3] = {{-1, -1, 1}, {1, -1, 1}, {1, 1, 1}, {-1, 1, 1}};
@@ -32,7 +32,7 @@ namespace {
           s.skinning_value = {1, weights, 4, bones, 4};
         }
       }
-      refresh.sType = REMIXAPI_STRUCT_TYPE_MESH_INFO_REFRESH_GEOMETRY_EXT;
+      refresh.sType = REMIXAPI_STRUCT_TYPE_MESH_DEFORM_EXT;
       info.sType = REMIXAPI_STRUCT_TYPE_MESH_INFO;
       info.hash = hash;
       info.surfaces_values = surfaces;

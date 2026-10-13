@@ -159,12 +159,6 @@ extern "C" {
     REMIXAPI_STRUCT_TYPE_FOG_INFO                              = 29,
     REMIXAPI_STRUCT_TYPE_UI_DRAW_LIST                         = 30,
     REMIXAPI_STRUCT_TYPE_LIGHT_INFO_LOCAL_ORIGIN_EXT           = 31,
-    // Fork-compatible extensions, see remix_fo4_ext.h. Values differ from the
-    // fork's (29-32), which collide with FOG_INFO, UI_DRAW_LIST and LOCAL_ORIGIN.
-    REMIXAPI_STRUCT_TYPE_MESH_INFO_REFRESH_GEOMETRY_EXT        = 32,
-    REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_SPEC_GLOSS_EXT   = 33,
-    REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_ALBEDO_TINT_EXT  = 34,
-    REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_MATERIAL_OVERRIDE_EXT   = 35,
     // NOTE: if adding a new struct, register it in 'rtx_remix_specialization.inl'
     //       and only extend this enum by appending, never adjust the order of these 
     //       as that will break backwards compatibility.
@@ -1704,7 +1698,5 @@ extern "C" {
 #ifdef __cplusplus
 }
 #endif // __cplusplus
-
-#include "remix_fo4_ext.h"
 
 #endif // REMIX_C_H_

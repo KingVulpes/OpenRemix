@@ -74,14 +74,6 @@ void main() {
     else texel.rgb = mix(texel.rgb, s.rgb, s.a);
   }
 #endif
-  // remixapi_MaterialInfoOpaqueAlbedoTintEXT (scene::MaterialDecode): half
-  // tints in the high words of state.x/y/w. A multiply on the texture's gamma
-  // values; an sRGB view samples linear, so the tint is linearized to match.
-  if ((draw.state.w & 4) != 0) {
-    vec3 tint = vec3(unpackHalf2x16(draw.state.x >> 16).x, unpackHalf2x16(draw.state.y >> 16).x,
-                     unpackHalf2x16(draw.state.w >> 16).x);
-    texel.rgb *= (draw.state.w & 8) != 0 ? pow(tint, vec3(2.2)) : tint;
-  }
   vec4 vertex = vec4(linearColor(vertexColor.rgb), vertexColor.a);
   uint s = draw.state.x;
 #ifdef SPRITE

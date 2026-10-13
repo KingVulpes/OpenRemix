@@ -23,10 +23,6 @@ namespace remix::scene {
     add(m.metallic);
     add(m.pbr);
     add(m.normalEncoding);
-    add(m.roughnessEncoding);
-    add(m.specularMetal);
-    add(m.hasAlbedoTint);
-    add(m.albedoTint);
     if (m.roughnessTexture)
       add(m.roughnessTexture->fingerprint());
     if (m.metallicTexture)

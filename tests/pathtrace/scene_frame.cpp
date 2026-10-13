@@ -1,14 +1,14 @@
 // Fallout 4-sized frame benchmark for the CPU cost of remixapi_Present.
-// Mimics the FO4 plugin's per-frame call pattern: ~12k retained static
+// Mimics a large host's per-frame call pattern: ~12k static scene
 // instances over a few thousand meshes and materials, ~40 CPU-skinned actors
 // drawn every frame with stable dynamic identities, first-person skinned
 // meshes, per-frame sphere lights, a sun, world + view-model cameras and a
 // full-screen CPU overlay. Path tracing with raster primary visibility.
 //
 // Needs a display and a ray-tracing Vulkan device. Runs only when
-// REMIX_BENCH_FO4 is set:
-//   meson test -C <build> --benchmark "FO4 frame CPU cost" (sets it), or run
-//   remix-fo4-frame-benchmark.exe directly with REMIX_BENCH_FO4=1.
+// REMIX_BENCH_SCENE is set:
+//   meson test -C <build> --benchmark "Scene frame CPU cost" (sets it), or run
+//   remix-scene-frame-benchmark.exe directly with REMIX_BENCH_SCENE=1.
 // Optional environment (defaults in brackets):
 //   REMIX_BENCH_FRAMES [300] measured frames, REMIX_BENCH_WARMUP [120]
 //   REMIX_BENCH_WIDTH/HEIGHT [1920x1080] window size
@@ -177,8 +177,8 @@ namespace {
 } // namespace
 
 int main() {
-  if (!std::getenv("REMIX_BENCH_FO4")) {
-    std::puts("FO4 frame benchmark skipped (set REMIX_BENCH_FO4=1)");
+  if (!std::getenv("REMIX_BENCH_SCENE")) {
+    std::puts("Scene frame benchmark skipped (set REMIX_BENCH_SCENE=1)");
     return 77;
   }
   const uint32_t frames = env("REMIX_BENCH_FRAMES", 300), warmup = env("REMIX_BENCH_WARMUP", 120);
@@ -344,7 +344,7 @@ int main() {
     instance.transform = translation(600 * random.unit() - 300, 600 * random.unit() - 300, 3 * random.unit(),
                                      6.28f * random.unit(), .5f + random.unit());
     uint64_t handle = 0;
-    ok(remixapi_CreateRetainedInstance(&instance, &handle), "CreateRetainedInstance");
+    ok(remixapi_AddSceneInstancesEXT(&instance, 1, &handle), "AddSceneInstancesEXT");
   }
 
   // Emissive fixtures (lamps, signs, screens): 10 emissive materials, half
@@ -409,7 +409,7 @@ int main() {
       instance.transform = translation(200 * random.unit() - 100, 200 * random.unit() - 100, 2 + 3 * random.unit(),
                                        6.28f * random.unit());
       uint64_t handle = 0;
-      ok(remixapi_CreateRetainedInstance(&instance, &handle), "CreateRetainedInstance (lamp)");
+      ok(remixapi_AddSceneInstancesEXT(&instance, 1, &handle), "AddSceneInstancesEXT (lamp)");
     }
   }
 
@@ -506,7 +506,7 @@ int main() {
     ok(api.DrawLightInstance(sun), "DrawLightInstance (sun)");
     for (auto light : lights)
       ok(api.DrawLightInstance(light), "DrawLightInstance");
-    ok(remixapi_DrawRetainedInstances(nullptr), "DrawRetainedInstances");
+    ok(remixapi_DrawSceneInstancesEXT(nullptr), "DrawSceneInstancesEXT");
     auto skinned = [&](remixapi_MeshHandle mesh, uint64_t id, uint32_t actor, const remixapi_Transform &transform,
                        uint32_t category) {
       pose(frame, actor, boneCount, bones);

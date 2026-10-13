@@ -398,7 +398,6 @@ void RemixNativeRuntime::presented() {
       m_recreateSurface = true;
     }
     applySettings();
-    updateMemoryPressure();
     if (state.minimized || !state.drawableWidth || !state.drawableHeight) {
       return REMIXAPI_ERROR_CODE_SUCCESS;
     }
@@ -678,7 +677,6 @@ void RemixNativeRuntime::presented() {
       m_recreateSurface = true;
     }
     applySettings();
-    updateMemoryPressure();
     if (state.minimized || !state.drawableWidth || !state.drawableHeight) {
       return REMIXAPI_ERROR_CODE_SUCCESS;
     }

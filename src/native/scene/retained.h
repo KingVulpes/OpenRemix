@@ -55,7 +55,7 @@ namespace remix::scene {
   // Throws the codes DrawInstance returns. Mesh-independent checks only.
   void describeInstance(const remixapi_InstanceInfo &info, InstanceDescription &out);
 
-  // A registered draw (remixapi_CreateRetainedInstance). The description is kept
+  // A registered draw (remixapi_AddSceneInstancesEXT). The description is kept
   // chain-free; records are ready Draws, rebuilt only when the description, the
   // mesh or a material they were resolved from changes.
   struct RetainedInstance {

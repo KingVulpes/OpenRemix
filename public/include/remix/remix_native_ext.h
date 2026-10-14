@@ -977,8 +977,32 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_DrawSceneInstancesEXT(const f
 typedef struct remixapi_MaterialNormalEncodingEXT {
   remixapi_StructType sType;
   const void *pNext;
-  uint32_t encoding; // 0 legacy auto XY/XYZ, 1 hemisphere-octahedral, 2 tangent DX, 3 tangent GL
+  // 0 legacy auto XY/XYZ, 1 hemisphere-octahedral, 2 tangent DX, 3 tangent GL,
+  // 4 Source engine self-shadowed bump ($ssbump: RGB weights of its three
+  // bump basis directions)
+  uint32_t encoding;
 } remixapi_MaterialNormalEncodingEXT;
+
+// Optional pNext on opaque MaterialInfo: how the roughness and metallic maps'
+// texels become values, so a game's own masks serve as PBR maps unconverted.
+// Per map: x = texel[channel]; inverted, x = 1 - x; x = x^exponent; then
+// curve 0: value = bias + scale * x,
+// curve 1: a Blinn-Phong exponent n = bias + scale * x, value = the perceptual
+//          roughness of the same lobe, (2 / (n + 2))^(1/4).
+// Absent: the red channel as it is (channel 0, curve 0, bias 0, scale 1,
+// exponent 1). exponent: 0 to 15.
+#define REMIXAPI_STRUCT_TYPE_MATERIAL_PBR_REMAP_EXT ((remixapi_StructType)0x7fff101a)
+typedef struct remixapi_MaterialPbrChannelEXT {
+  uint32_t channel; // 0 red, 1 green, 2 blue, 3 alpha
+  remixapi_Bool invert;
+  uint32_t curve;
+  float exponent, bias, scale;
+} remixapi_MaterialPbrChannelEXT;
+typedef struct remixapi_MaterialPbrRemapEXT {
+  remixapi_StructType sType;
+  const void *pNext;
+  remixapi_MaterialPbrChannelEXT roughness, metallic;
+} remixapi_MaterialPbrRemapEXT;
 
 // A private value avoids the retained 0.1003 BC5 value (139).
 #define REMIXAPI_FORMAT_BC4_UNORM_EXT ((remixapi_Format)147)

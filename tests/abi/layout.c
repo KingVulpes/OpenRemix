@@ -28,6 +28,8 @@ _Static_assert(offsetof(remixapi_EditorSharedFrame, device_uuid) == 24, "Device 
 _Static_assert(offsetof(remixapi_EditorSharedFrame, memory_fd) == 40, "Shared memory FD offset");
 _Static_assert(sizeof(remixapi_EditorStartupEXT) == 32, "Editor startup extension ABI");
 _Static_assert(sizeof(remixapi_MaterialNormalEncodingEXT) == 24, "Normal encoding ABI");
+_Static_assert(sizeof(remixapi_MaterialPbrChannelEXT) == 24, "PBR channel ABI");
+_Static_assert(sizeof(remixapi_MaterialPbrRemapEXT) == 64, "PBR remap ABI");
 _Static_assert(sizeof(remixapi_USDLoadOptionsEXT) == 32, "USD load version 1 ABI");
 _Static_assert(sizeof(remixapi_USDDrawOptionsEXT) == 16, "USD draw version 1 ABI");
 _Static_assert(sizeof(remixapi_USDDiagnosticsEXT) == 1088, "USD diagnostics version 1 ABI");

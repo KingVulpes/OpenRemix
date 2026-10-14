@@ -32,7 +32,7 @@ namespace remix {
     auto material = std::make_shared<Material>();
     if (auto *normal = static_cast<const remixapi_MaterialNormalEncodingEXT *>(
             extension(info.pNext, REMIXAPI_STRUCT_TYPE_MATERIAL_NORMAL_ENCODING_EXT))) {
-      if (normal->encoding > 3)
+      if (normal->encoding > 4)
         throw invalid;
       material->normalEncoding = normal->encoding;
     }
@@ -55,6 +55,23 @@ namespace remix {
       material->metallic = opaque->metallicConstant;
       material->roughnessTexture = dataTexturePath(opaque->roughnessTexture);
       material->metallicTexture = dataTexturePath(opaque->metallicTexture);
+      if (const auto *remap = static_cast<const remixapi_MaterialPbrRemapEXT *>(
+              extension(info.pNext, REMIXAPI_STRUCT_TYPE_MATERIAL_PBR_REMAP_EXT))) {
+        const remixapi_MaterialPbrChannelEXT *maps[] = {&remap->roughness, &remap->metallic};
+        for (unsigned i = 0; i < 2; ++i) {
+          const auto &in = *maps[i];
+          finite(&in.exponent, 3);
+          if (in.channel > 3 || in.invert > 1 || in.curve > 1 || in.exponent < 0 || in.exponent > 15)
+            throw invalid;
+          auto &out = material->remap[i];
+          out.channel = uint8_t(in.channel);
+          out.curve = uint8_t(in.curve);
+          out.invert = in.invert != 0;
+          out.exponent = in.exponent;
+          out.bias = in.bias;
+          out.scale = in.scale;
+        }
+      }
       material->tint[0] = opaque->albedoConstant.x;
       material->tint[1] = opaque->albedoConstant.y;
       material->tint[2] = opaque->albedoConstant.z;
@@ -154,6 +171,7 @@ namespace remix {
              a.selfIlluminationScale == b.selfIlluminationScale && a.roughnessTexture == b.roughnessTexture &&
              a.metallicTexture == b.metallicTexture && a.normalTexture == b.normalTexture &&
              a.normalEncoding == b.normalEncoding && a.roughness == b.roughness && a.metallic == b.metallic &&
+             a.remap[0] == b.remap[0] && a.remap[1] == b.remap[1] &&
              a.pbr == b.pbr && std::equal(a.emission, a.emission + 3, b.emission) &&
              std::equal(a.tint, a.tint + 4, b.tint) && a.compare == b.compare && a.reference == b.reference &&
              a.drawAlpha == b.drawAlpha && a.translucent == b.translucent &&

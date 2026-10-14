@@ -53,6 +53,33 @@ namespace remix::trace::detail {
     uint32_t material[4] = {};    // scene::MaterialDecode: flags; the rest unused
   };
   static_assert(sizeof(TraceSurface) == 256);
+  // The material-only fields of a surface. A remapped map's bias takes its
+  // constant's place in pbr (unused beside a map) and its scale material[1 +
+  // map]; material[3] holds per map (bits 8 x map) channel, invert << 2, curve
+  // << 3 and remapped << 7, and the exponent in 1/16 (bits 16 + 8 x map).
+  // maps[3]: the normal decoding (scene.glsl materialNormal).
+  inline void materialFields(const scene::Material &material, float pbr[4], uint32_t decodeOut[4], uint32_t &normal) {
+    pbr[0] = material.roughness;
+    pbr[1] = material.metallic;
+    pbr[2] = material.pbr ? 1.f : 0.f;
+    const auto decode = scene::materialDecode(material);
+    decodeOut[0] = decode.flags;
+    const std::shared_ptr<scene::Texture> *textures[] = {&material.roughnessTexture, &material.metallicTexture};
+    for (unsigned i = 0; i < 2; ++i) {
+      const auto &r = material.remap[i];
+      if (!*textures[i] || r.identity())
+        continue;
+      pbr[i] = r.bias;
+      std::memcpy(&decodeOut[1 + i], &r.scale, sizeof(float));
+      const uint32_t bits = r.channel | uint32_t(r.invert) << 2 | uint32_t(r.curve) << 3 | 128u;
+      const uint32_t exponent = uint32_t(std::lround(std::clamp(r.exponent, 0.f, 15.9375f) * 16));
+      decodeOut[3] |= bits << (8 * i) | exponent << (16 + 8 * i);
+    }
+    normal = material.normalEncoding == 1   ? 2
+             : material.normalEncoding == 4 ? 8
+                                            : (material.normalEncoding == 3 ? 4 : 0) |
+                                                  uint32_t(material.normalTexture && material.normalTexture->pixels.twoChannel);
+  }
   inline float linear(float c) { return c <= .04045f ? c / 12.92f : std::pow((c + .055f) / 1.055f, 2.4f); }
   // Decal paint mode (TraceSurface state bits 7-8): 0 alpha-over, 1 multiply
   // (DST_COLOR*ZERO or ZERO*SRC_COLOR), 2 double multiply (DST_COLOR*SRC_COLOR, mod2x).
@@ -522,15 +549,8 @@ namespace remix::trace {
     // A material's slot fields that do not depend on descriptor numbering.
     static MaterialSlots values(const scene::Material &material) {
       MaterialSlots entry;
-      entry.pbr[0] = material.roughness;
-      entry.pbr[1] = material.metallic;
-      entry.pbr[2] = material.pbr ? 1.f : 0.f;
+      detail::materialFields(material, entry.pbr, entry.decode, entry.maps[3]);
       const auto decode = scene::materialDecode(material);
-      entry.decode[0] = decode.flags;
-      entry.maps[3] = material.normalEncoding == 1
-                          ? 2
-                          : (material.normalEncoding == 3 ? 4 : 0) |
-                                uint32_t(material.normalTexture && material.normalTexture->pixels.twoChannel);
       std::copy_n(material.emission, 3, entry.emission);
       entry.emission[3] = decode.selfIlluminationScale;
       return entry;
@@ -558,16 +578,8 @@ namespace remix::trace {
       append(&fingerprint, sizeof(fingerprint));
       const uint8_t sampler[] = {material.filter, material.wrapU, material.wrapV};
       append(sampler, sizeof(sampler));
-      value.pbr[0] = material.roughness;
-      value.pbr[1] = material.metallic;
-      value.pbr[2] = material.pbr ? 1.f : 0.f;
+      detail::materialFields(material, value.pbr, value.material, value.pbrTextures[3]);
       const auto decode = scene::materialDecode(material);
-      value.material[0] = decode.flags;
-      value.pbrTextures[3] =
-          material.normalEncoding == 1
-              ? 2
-              : (material.normalEncoding == 3 ? 4 : 0) |
-                    uint32_t(material.normalTexture && material.normalTexture->pixels.twoChannel);
       const std::shared_ptr<scene::Texture> *textures[] = {&material.roughnessTexture, &material.metallicTexture,
                                                            &material.normalTexture};
       for (unsigned i = 0; i < 3; ++i) {

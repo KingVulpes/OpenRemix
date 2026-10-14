@@ -122,6 +122,14 @@ namespace remix {
       float roughness = 1, metallic = 0;
       bool pbr = false;
       uint32_t normalEncoding = 0;
+      // remixapi_MaterialPbrRemapEXT, per map (roughness, metallic).
+      struct Remap {
+        uint8_t channel = 0, curve = 0;
+        bool invert = false;
+        float exponent = 1, bias = 0, scale = 1;
+        bool identity() const { return !channel && !curve && !invert && exponent == 1 && bias == 0 && scale == 1; }
+        bool operator==(const Remap &) const = default;
+      } remap[2];
       float emission[3] = {};
       bool suppressEmissionLight = false;
       // remixapi_MaterialInfoSelfIlluminationEXT: 0 off, else the mask + 1

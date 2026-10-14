@@ -212,11 +212,62 @@ namespace {
     r.drawInstance(info2);
     require(r.draws().back().material->texture == texture, "CreateTexture replaced a material's dynamic texture");
   }
+
+  // remixapi_MaterialPbrRemapEXT and the SSBump normal encoding.
+  void pbrRemap() {
+    remix::NativeResources r;
+    const uint8_t texel[4] = {0, 0, 255, 128};
+    remixapi_TextureInfo texture{};
+    texture.sType = REMIXAPI_STRUCT_TYPE_TEXTURE_INFO;
+    texture.hash = 0x61;
+    texture.format = REMIXAPI_FORMAT_B8G8R8A8_SRGB;
+    texture.width = texture.height = texture.depth = texture.mipLevels = 1;
+    texture.data = texel;
+    texture.dataSize = sizeof(texel);
+    remixapi_TextureHandle textureHandle;
+    r.createTexture(texture, textureHandle);
+    remixapi_MaterialNormalEncodingEXT encoding{};
+    encoding.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_NORMAL_ENCODING_EXT;
+    encoding.encoding = 4;
+    remixapi_MaterialPbrRemapEXT remap{};
+    remap.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_PBR_REMAP_EXT;
+    remap.pNext = &encoding;
+    remap.roughness = {3, 1, 1, 2, 1, 149};
+    remap.metallic = {0, 0, 0, 1, 0, 1};
+    remixapi_MaterialInfoOpaqueEXT opaque{};
+    opaque.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_EXT;
+    opaque.pNext = &remap;
+    opaque.albedoConstant = {1, 1, 1};
+    opaque.opacityConstant = 1;
+    opaque.alphaTestType = 7;
+    opaque.roughnessTexture = "0x61";
+    remixapi_MaterialInfo info{};
+    info.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO;
+    info.pNext = &opaque;
+    info.hash = 0x60;
+    remixapi_MaterialHandle handle;
+    r.createMaterial(info, handle);
+    const auto made = drawn(r, quad(r, 0x62, handle));
+    const auto &rough = made->remap[0];
+    require(made->normalEncoding == 4 && rough.channel == 3 && rough.invert && rough.curve == 1 &&
+                rough.exponent == 2 && rough.bias == 1 && rough.scale == 149 && made->remap[1].identity() &&
+                made->pbr,
+            "PBR remap fields");
+    remap.roughness.channel = 4;
+    rejected([&] { r.createMaterial(info, handle); });
+    remap.roughness.channel = 0;
+    remap.roughness.exponent = 16;
+    rejected([&] { r.createMaterial(info, handle); });
+    remap.roughness.exponent = 1;
+    encoding.encoding = 5;
+    rejected([&] { r.createMaterial(info, handle); });
+  }
 } // namespace
 
 int main() {
   materialOverride();
   dynamicTexture();
+  pbrRemap();
   std::puts("Instance material and dynamic textures passed");
   return 0;
 }

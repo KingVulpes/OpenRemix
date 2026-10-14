@@ -23,6 +23,14 @@ namespace remix::scene {
     add(m.metallic);
     add(m.pbr);
     add(m.normalEncoding);
+    for (const auto &r : m.remap) {
+      add(r.channel);
+      add(r.curve);
+      add(r.invert);
+      add(r.exponent);
+      add(r.bias);
+      add(r.scale);
+    }
     if (m.roughnessTexture)
       add(m.roughnessTexture->fingerprint());
     if (m.metallicTexture)

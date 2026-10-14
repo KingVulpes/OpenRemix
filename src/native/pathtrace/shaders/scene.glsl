@@ -153,11 +153,21 @@ vec3 environmentRadiance(vec3 direction) {
   return frame.skyRadiance.rgb*textureLod(textures[nonuniformEXT(uint(frame.skyRadiance.w)-1)],uv,0).rgb;
 }
 // Perceptual roughness and metalness; albedo is the linear material colour.
+// A roughness (map 0) or metallic (1) texel's value (frame_tables.h
+// materialFields: remixapi_MaterialPbrRemapEXT).
+float materialMapValue(Surface s,uint map,vec4 texel) {
+  uint bits=s.material.w>>(8*map);
+  if((bits&128u)==0)return texel.r;
+  float x=texel[bits&3u];
+  if((bits&4u)!=0)x=1-x;
+  x=pow(max(x,1e-6),float((s.material.w>>(16+8*map))&255u)/16);
+  float v=s.pbr[map]+uintBitsToFloat(s.material[1+map])*x;
+  return (bits&8u)!=0?sqrt(sqrt(2/(max(v,0)+2))):v;
+}
 vec2 materialParameters(Surface s,vec2 uv,inout vec3 albedo) {
-  float metallic=s.pbrTextures.y==0?s.pbr.y:materialTexel(s,s.pbrTextures.y-1,uv).r;
+  float metallic=s.pbrTextures.y==0?s.pbr.y:materialMapValue(s,1,materialTexel(s,s.pbrTextures.y-1,uv));
   if(s.pbrTextures.x==0)return clamp(vec2(s.pbr.x,metallic),0,1);
-  vec4 map=materialTexel(s,s.pbrTextures.x-1,uv);
-  return clamp(vec2(map.r,metallic),0,1);
+  return clamp(vec2(materialMapValue(s,0,materialTexel(s,s.pbrTextures.x-1,uv)),metallic),0,1);
 }
 mat3 materialBasis(vec3 n,vec3 e1,vec3 e2,vec2 u1,vec2 u2) {
   float det=u1.x*u2.y-u1.y*u2.x;
@@ -171,7 +181,10 @@ mat3 materialBasis(vec3 n,vec3 e1,vec3 e2,vec2 u1,vec2 u2) {
 }
 vec3 materialNormal(Surface s,vec2 uv,mat3 basis,vec3 wo) {
   if(s.pbrTextures.z==0)return basis[2];
-  vec3 local=materialTexel(s,s.pbrTextures.z-1,uv).xyz*2-1;
+  vec3 local=materialTexel(s,s.pbrTextures.z-1,uv).xyz;
+  // Source's $ssbump: weights of its bump basis directions (bumpBasis[3]).
+  if(s.pbrTextures.w==8)local=mat3(.81649658,0,.57735027,-.40824829,.70710678,.57735027,-.40824829,-.70710678,.57735027)*local;
+  else local=local*2-1;
   if((s.pbrTextures.w&1)!=0)local.z=sqrt(max(0,1-dot(local.xy,local.xy)));
   if(s.pbrTextures.w==2) { local.xy=vec2(local.x+local.y,local.x-local.y)*.5; local.z=1-abs(local.x)-abs(local.y); }
   if((s.pbrTextures.w&4)!=0)local.y=-local.y;

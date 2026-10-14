@@ -711,6 +711,21 @@ typedef struct remixapi_CameraEnvironmentEXT {
   remixapi_Float3D radiance;
 } remixapi_CameraEnvironmentEXT;
 
+// Optional pNext on a world CameraInfo: the camera is inside a translucent
+// body (under water). What it sees is absorbed as through such a body
+// (remixapi_MaterialInfoTranslucentEXT without a thin wall: the colour to the
+// power of the distance over the measurement distance) up to the first
+// surface, and what is absorbed becomes the body's colour lit by the sky and
+// the sun. Absent, or inside 0: the camera is in air.
+#define REMIXAPI_STRUCT_TYPE_CAMERA_MEDIUM_EXT ((remixapi_StructType)0x7fff101c)
+typedef struct remixapi_CameraMediumEXT {
+  remixapi_StructType sType;
+  const void* pNext;
+  remixapi_Bool inside;
+  remixapi_Float3D transmittanceColor;
+  float transmittanceMeasurementDistance;
+} remixapi_CameraMediumEXT;
+
 typedef struct remixapi_DenoisingCapabilitiesEXT {
   uint32_t structSize, reblurShSupported, taaSupported, reserved;
   char unavailableReason[256];
@@ -979,9 +994,27 @@ typedef struct remixapi_MaterialNormalEncodingEXT {
   const void *pNext;
   // 0 legacy auto XY/XYZ, 1 hemisphere-octahedral, 2 tangent DX, 3 tangent GL,
   // 4 Source engine self-shadowed bump ($ssbump: RGB weights of its three
-  // bump basis directions)
+  // bump basis directions), 5 Source engine water: a tangent DX map sampled
+  // as the Water shader samples its $normalmap (remixapi_MaterialNormalScrollEXT)
   uint32_t encoding;
 } remixapi_MaterialNormalEncodingEXT;
+
+// Optional pNext on MaterialInfo, with normal encoding 5: the scroll rates (UV
+// units per second, of the runtime's clock) of Source's Water shader. The map
+// is sampled at the surface's UVs moved by base x t (the scroll its
+// $bumptransform gets from a TextureScroll proxy) and, with multi-texture
+// layers (layers 3: $scroll1 set), averaged with samples at
+// 0.1 x (u + v, v - u) + layer1 x t and 0.45 x (v, u) + layer2 x t.
+// Encoding 5 shares the material's packed fields with
+// remixapi_MaterialPbrRemapEXT: such a material has no roughness or metallic
+// map.
+#define REMIXAPI_STRUCT_TYPE_MATERIAL_NORMAL_SCROLL_EXT ((remixapi_StructType)0x7fff101b)
+typedef struct remixapi_MaterialNormalScrollEXT {
+  remixapi_StructType sType;
+  const void *pNext;
+  uint32_t layers; // 1 or 3
+  float base[2], layer1[2], layer2[2];
+} remixapi_MaterialNormalScrollEXT;
 
 // Optional pNext on opaque MaterialInfo: how the roughness and metallic maps'
 // texels become values, so a game's own masks serve as PBR maps unconverted.

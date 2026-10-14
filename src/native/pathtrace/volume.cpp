@@ -10,7 +10,7 @@ using namespace trace::detail;
 // frame and the transparency passes march camera rays through them.
 void PathTracer::Gpu::configureVolume(VkCommandBuffer command, Frame &frame, const TraceOptions &options) {
   auto &v = volume;
-  frame.volumeGrid = frame.volumeReserved = 0;
+  frame.volumeGrid = 0;
   std::fill_n(frame.volumeConfig, 4, 0u);
   std::fill_n(frame.volumeFrame, 4, 0u);
   v.active = false;

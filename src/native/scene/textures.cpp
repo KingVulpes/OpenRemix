@@ -100,15 +100,18 @@ namespace remix {
   }
 
   namespace {
-    // remixapi_TextureInfoDynamicEXT, validated.
-    bool dynamicTexture(const remixapi_TextureInfo &info) {
+    // remixapi_TextureInfoDynamicEXT, validated. withMips: generated mips were
+    // asked for (remixapi_TextureInfoGenerateMipsEXT), made again from every
+    // update (small animated maps; a large render target leaves them out).
+    bool dynamicTexture(const remixapi_TextureInfo &info, bool &withMips) {
       const auto *dynamic = static_cast<const remixapi_TextureInfoDynamicEXT *>(
           extension(info.pNext, REMIXAPI_STRUCT_TYPE_TEXTURE_DYNAMIC_EXT));
       if (!dynamic || !dynamic->dynamic)
         return false;
       const auto *mips = static_cast<const remixapi_TextureInfoGenerateMipsEXT *>(
           extension(info.pNext, REMIXAPI_STRUCT_TYPE_TEXTURE_GENERATE_MIPS_EXT));
-      if (dynamic->dynamic > 1 || info.mipLevels != 1 || (mips && mips->generate) ||
+      withMips = mips && mips->generate;
+      if (dynamic->dynamic > 1 || info.mipLevels != 1 ||
           (info.format != REMIXAPI_FORMAT_R8G8B8A8_UNORM && info.format != REMIXAPI_FORMAT_R8G8B8A8_SRGB &&
            info.format != REMIXAPI_FORMAT_B8G8R8A8_UNORM && info.format != REMIXAPI_FORMAT_B8G8R8A8_SRGB))
         throw invalid;
@@ -120,11 +123,14 @@ namespace remix {
     if (!info.hash) {
       throw invalid;
     }
-    if (dynamicTexture(info)) {
+    bool withMips = false;
+    if (dynamicTexture(info, withMips)) {
       auto pixels = decodeTexture(info);
       if (pixels.mips.size() != 1 || !pixels.hdrMips.empty() || pixels.compressed ||
           pixels.mips[0].size() != size_t(pixels.width) * pixels.height * 4)
         throw invalid;
+      if (withMips)
+        generateMips(pixels);
       auto texture = std::make_shared<Texture>();
       texture->pixels = std::move(pixels);
       texture->dynamic = true;
@@ -254,7 +260,14 @@ namespace remix {
         x0 = std::min(x0, uint32_t(begin / 4));
         x1 = std::max(x1, uint32_t((end + 3) / 4));
       }
-      const uint32_t region[4] = {x + x0, y + first, x + x1, y + last};
+      // Generated mips are made again from the new level 0: all of it is new.
+      const bool mipped = p.mips.size() > 1;
+      if (mipped) {
+        p.mips.resize(1);
+        generateMips(p);
+      }
+      const uint32_t region[4] = {mipped ? 0 : x + x0, mipped ? 0 : y + first, mipped ? p.width : x + x1,
+                                  mipped ? p.height : y + last};
       if (updates.dirty[2] <= updates.dirty[0] || updates.dirty[3] <= updates.dirty[1]) {
         std::copy_n(region, 4, updates.dirty);
       } else {

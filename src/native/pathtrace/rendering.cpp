@@ -1,6 +1,8 @@
 #include "pathtrace/gpu.h"
 #include "pathtrace/sharc_policy.h"
 #include "scene/emission.h"
+#include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <map>
@@ -597,6 +599,14 @@ namespace remix {
     if (frame.cameraLeaves)
       append(cameraCulling.leavesClusters, sizeof(cameraCulling.leavesClusters));
     frame.config[0] = options.samples;
+    std::copy_n(resources.cameraMedium().data(), 4, frame.cameraMedium);
+    frame.upAxis = float(std::min(options.volumetricUpAxis, 2u));
+    {
+      // Scrolling maps (water): wrapped well before float precision suffers.
+      static const auto start = std::chrono::steady_clock::now();
+      const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+      frame.animationTime = float(std::fmod(seconds, 4096.0));
+    }
     frame.config[1] = options.bounces;
     frame.target[0] = extent.width;
     frame.target[1] = extent.height;

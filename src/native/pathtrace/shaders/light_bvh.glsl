@@ -147,7 +147,7 @@ bool localOccluder(accelerationStructureEXT scene,vec3 origin,vec3 direction,ino
   hit.p=model*vec4(a+bary.x*(b-a)+bary.y*(c-a),1);
   hit.n=normalize(cross(model*vec4(b-a,0),model*vec4(c-a,0)));
   if(dot(hit.n,direction)>0)hit.n=-hit.n;
-  hit.transmission=transmissionColor(color.rgb,(s.state.w&32)!=0)*(1-color.a);
+  hit.transmission=sheetTransmission(s,color,hit.t);
   return false;
 }
 vec3 localVisibility(vec3 origin,vec3 endpoint) {

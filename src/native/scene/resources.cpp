@@ -48,6 +48,7 @@ namespace remix {
     m_cameraValid = {};
     m_temporalEpoch = {};
     m_skyRadiance = {};
+    m_cameraMedium = {};
     m_lights.clear();
     m_light = {};
     m_dome = {};

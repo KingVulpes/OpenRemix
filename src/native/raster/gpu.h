@@ -482,6 +482,7 @@ namespace remix {
     TextureGpu &createTexture(const std::shared_ptr<scene::Texture> &source, VkCommandBuffer command);
     // Uploads the dirty region of an updatable texture into its image.
     void refreshTexture(TextureGpu &value, const scene::Texture &source, VkCommandBuffer command);
+    void refreshLevels(TextureGpu &value, const scene::Texture &source, VkCommandBuffer command);
     TextureGpu uploadPixels(const std::shared_ptr<scene::Texture> &owner, const scene::Pixels &p,
                             VkCommandBuffer command, VkImageCreateFlags flags);
     TextureGpu &compressedTexture(const std::shared_ptr<scene::Texture> &source, VkCommandBuffer command);

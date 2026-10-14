@@ -176,10 +176,15 @@ namespace remix {
     const uint32_t x0 = updates.dirty[0], y0 = updates.dirty[1], x1 = updates.dirty[2], y1 = updates.dirty[3];
     std::fill_n(updates.dirty, 4, 0u);
     const auto &p = source.pixels;
-    // Region updates cover plain single-level RGBA8 images at full size.
-    if (x1 <= x0 || y1 <= y0 || !value.data || p.compressed || !p.hdrMips.empty() || p.mips.size() != 1 ||
+    // Region updates cover plain RGBA8 images at full size. One with mips
+    // (generated again by every update) is uploaded whole, every level.
+    if (x1 <= x0 || y1 <= y0 || !value.data || p.compressed || !p.hdrMips.empty() ||
         value.data->width != p.width || value.data->height != p.height || x1 > p.width || y1 > p.height)
       return;
+    if (p.mips.size() > 1) {
+      refreshLevels(value, source, command);
+      return;
+    }
     const uint32_t width = x1 - x0, height = y1 - y0;
     CounterTicks time{textureCounters.uploadTicks};
     dynamicTextureUploads += source.dynamic;
@@ -208,6 +213,52 @@ namespace remix {
                                     .imageExtent = {width, height, 1}};
     vkCmdCopyBufferToImage(command, uploads.back()->buffer, value.data->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                            1, &copy);
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0,
+                         nullptr, 1, &barrier);
+  }
+
+  void RasterRenderer::Gpu::refreshLevels(TextureGpu &value, const Texture &source, VkCommandBuffer command) {
+    const auto &p = source.pixels;
+    size_t total = 0;
+    for (const auto &level : p.mips)
+      total += level.size();
+    CounterTicks time{textureCounters.uploadTicks};
+    dynamicTextureUploads += source.dynamic;
+    textureCounters.uploads.fetch_add(1, std::memory_order_relaxed);
+    textureCounters.uploadBytes.fetch_add(total, std::memory_order_relaxed);
+    uploads.push_back(buffer(total, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, [&](uint8_t *mapped) {
+      for (const auto &level : p.mips) {
+        std::memcpy(mapped, level.data(), level.size());
+        mapped += level.size();
+      }
+    }));
+    const uint32_t levels = uint32_t(p.mips.size());
+    VkImageMemoryBarrier barrier = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                                    .srcAccessMask = VK_ACCESS_SHADER_READ_BIT,
+                                    .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                    .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                    .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                    .image = value.data->image,
+                                    .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, levels, 0, 1}};
+    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+                         nullptr, 1, &barrier);
+    std::vector<VkBufferImageCopy> copies;
+    VkDeviceSize offset = 0;
+    for (uint32_t level = 0; level < levels; ++level) {
+      const uint32_t w = std::max(1u, p.width >> level), h = std::max(1u, p.height >> level);
+      copies.push_back({.bufferOffset = offset,
+                        .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1},
+                        .imageExtent = {w, h, 1}});
+      offset += p.mips[level].size();
+    }
+    vkCmdCopyBufferToImage(command, uploads.back()->buffer, value.data->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           uint32_t(copies.size()), copies.data());
     barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
     barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;

@@ -32,9 +32,21 @@ namespace remix {
     auto material = std::make_shared<Material>();
     if (auto *normal = static_cast<const remixapi_MaterialNormalEncodingEXT *>(
             extension(info.pNext, REMIXAPI_STRUCT_TYPE_MATERIAL_NORMAL_ENCODING_EXT))) {
-      if (normal->encoding > 4)
+      if (normal->encoding > 5)
         throw invalid;
       material->normalEncoding = normal->encoding;
+    }
+    if (const auto *scroll = static_cast<const remixapi_MaterialNormalScrollEXT *>(
+            extension(info.pNext, REMIXAPI_STRUCT_TYPE_MATERIAL_NORMAL_SCROLL_EXT))) {
+      finite(scroll->base, 2);
+      finite(scroll->layer1, 2);
+      finite(scroll->layer2, 2);
+      if (material->normalEncoding != 5 || (scroll->layers != 1 && scroll->layers != 3))
+        throw invalid;
+      material->scrollLayers = scroll->layers;
+      const float *rates[] = {scroll->base, scroll->layer1, scroll->layer2};
+      for (unsigned i = 0; i < 3; ++i)
+        std::copy_n(rates[i], 2, material->scroll + 2 * i);
     }
     const auto *opaque = static_cast<const remixapi_MaterialInfoOpaqueEXT *>(
         extension(info.pNext, REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_EXT));
@@ -93,6 +105,18 @@ namespace remix {
       }
       material->translucent = true;
       material->transmission = true;
+      // Without a thin wall, a body (water): Fresnel reflection by the
+      // refractive index, and what passes is the colour to the power of the
+      // distance behind over the measurement distance (Beer-Lambert). A thin
+      // wall keeps the tinted-sheet approximation.
+      finite(&translucent->refractiveIndex, 1);
+      finite(&translucent->transmittanceMeasurementDistance, 1);
+      if (!translucent->thinWallThickness_hasvalue && translucent->transmittanceMeasurementDistance > 0) {
+        material->refractiveIndex = translucent->refractiveIndex >= 1 ? translucent->refractiveIndex : 1.5f;
+        material->transmittanceDistance = translucent->transmittanceMeasurementDistance;
+        material->roughness = .04f; // a smooth surface, shaded as PBR for its reflection
+        material->metallic = 0;
+      }
     }
     finite(material->tint, 4);
     if (material->tint[3] < 0 || material->tint[3] > 1) {
@@ -112,14 +136,18 @@ namespace remix {
       material->sourceHash = material->texture->getHash();
     }
     material->normalTexture = dataTexturePath(info.normalTexture);
+    // Water shares the packed remap fields (frame_tables.h materialFields).
+    if (material->normalEncoding == 5 && (material->roughnessTexture || material->metallicTexture))
+      throw invalid;
     const auto *pbr = static_cast<const remixapi_MaterialInfoPbrEXT *>(
         extension(info.pNext, REMIXAPI_STRUCT_TYPE_MATERIAL_PBR_EXT));
     if (pbr && (!opaque || pbr->enabled > 1))
       throw invalid;
     material->pbr =
-        opaque && (pbr ? pbr->enabled != 0
+        material->transmittanceDistance > 0 ||
+        (opaque && (pbr ? pbr->enabled != 0
                        : material->roughness > 0 || material->metallic > 0 || material->roughnessTexture ||
-                             material->metallicTexture || material->normalTexture);
+                             material->metallicTexture || material->normalTexture));
     finite(&info.emissiveColorConstant.x, 3);
     finite(&info.emissiveIntensity, 1);
     if (info.emissiveIntensity < 0 || info.emissiveColorConstant.x < 0 || info.emissiveColorConstant.y < 0 ||
@@ -171,7 +199,9 @@ namespace remix {
              a.selfIlluminationScale == b.selfIlluminationScale && a.roughnessTexture == b.roughnessTexture &&
              a.metallicTexture == b.metallicTexture && a.normalTexture == b.normalTexture &&
              a.normalEncoding == b.normalEncoding && a.roughness == b.roughness && a.metallic == b.metallic &&
-             a.remap[0] == b.remap[0] && a.remap[1] == b.remap[1] &&
+             a.remap[0] == b.remap[0] && a.remap[1] == b.remap[1] && a.scrollLayers == b.scrollLayers &&
+             std::equal(a.scroll, a.scroll + 6, b.scroll) && a.refractiveIndex == b.refractiveIndex &&
+             a.transmittanceDistance == b.transmittanceDistance &&
              a.pbr == b.pbr && std::equal(a.emission, a.emission + 3, b.emission) &&
              std::equal(a.tint, a.tint + 4, b.tint) && a.compare == b.compare && a.reference == b.reference &&
              a.drawAlpha == b.drawAlpha && a.translucent == b.translucent &&

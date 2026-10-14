@@ -53,10 +53,24 @@ namespace remix::trace::detail {
     uint32_t material[4] = {};    // scene::MaterialDecode: flags; the rest unused
   };
   static_assert(sizeof(TraceSurface) == 256);
+  // IEEE binary16 bits of v, rounded to nearest (subnormals kept).
+  inline uint32_t halfBits(float v) {
+    uint32_t bits;
+    std::memcpy(&bits, &v, 4);
+    const uint32_t sign = bits >> 16 & 0x8000u;
+    const float a = std::min(std::fabs(v), 65504.f);
+    if (a < 6.1035156e-5f)
+      return sign | uint32_t(std::lround(a / 5.9604645e-8f));
+    std::memcpy(&bits, &a, 4);
+    bits += 0x1000u; // round
+    return sign | (((bits >> 23) - 112) << 10) | (bits >> 13 & 0x3ffu);
+  }
   // The material-only fields of a surface. A remapped map's bias takes its
   // constant's place in pbr (unused beside a map) and its scale material[1 +
   // map]; material[3] holds per map (bits 8 x map) channel, invert << 2, curve
   // << 3 and remapped << 7, and the exponent in 1/16 (bits 16 + 8 x map).
+  // Water (normal encoding 5, no such maps) has its scroll rates there
+  // instead, as half floats: base, layer 1 and layer 2 in material[1..3].
   // maps[3]: the normal decoding (scene.glsl materialNormal).
   inline void materialFields(const scene::Material &material, float pbr[4], uint32_t decodeOut[4], uint32_t &normal) {
     pbr[0] = material.roughness;
@@ -64,6 +78,13 @@ namespace remix::trace::detail {
     pbr[2] = material.pbr ? 1.f : 0.f;
     const auto decode = scene::materialDecode(material);
     decodeOut[0] = decode.flags;
+    // A translucent body: its refractive index and measurement distance, half
+    // floats in pbr[3] (scene.glsl thickSheet); zero for everything else.
+    if (material.transmission && material.transmittanceDistance > 0) {
+      const uint32_t packed = detail::halfBits(material.refractiveIndex) |
+                              detail::halfBits(std::min(material.transmittanceDistance, 65504.f)) << 16;
+      std::memcpy(&pbr[3], &packed, 4);
+    }
     const std::shared_ptr<scene::Texture> *textures[] = {&material.roughnessTexture, &material.metallicTexture};
     for (unsigned i = 0; i < 2; ++i) {
       const auto &r = material.remap[i];
@@ -74,6 +95,12 @@ namespace remix::trace::detail {
       const uint32_t bits = r.channel | uint32_t(r.invert) << 2 | uint32_t(r.curve) << 3 | 128u;
       const uint32_t exponent = uint32_t(std::lround(std::clamp(r.exponent, 0.f, 15.9375f) * 16));
       decodeOut[3] |= bits << (8 * i) | exponent << (16 + 8 * i);
+    }
+    if (material.normalEncoding == 5) {
+      for (unsigned i = 0; i < 3; ++i)
+        decodeOut[1 + i] = detail::halfBits(material.scroll[2 * i]) | detail::halfBits(material.scroll[2 * i + 1]) << 16;
+      normal = material.scrollLayers == 3 ? 48 : 16;
+      return;
     }
     normal = material.normalEncoding == 1   ? 2
              : material.normalEncoding == 4 ? 8

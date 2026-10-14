@@ -31,6 +31,10 @@ namespace remix::scene {
       add(r.bias);
       add(r.scale);
     }
+    add(m.scrollLayers);
+    add(m.scroll);
+    add(m.refractiveIndex);
+    add(m.transmittanceDistance);
     if (m.roughnessTexture)
       add(m.roughnessTexture->fingerprint());
     if (m.metallicTexture)

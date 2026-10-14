@@ -141,12 +141,17 @@ namespace remix::trace::detail {
     // march distance, scattered light scale, base height. volumeMedium:
     // scattering albedo, extinction per world unit. volumeHeight: up axis,
     // density falloff per world unit. volumeEye/Previous: the windows' centre.
-    uint64_t volumeGrid = 0, volumeReserved = 0;
+    uint64_t volumeGrid = 0;
+    // Seconds of the runtime's clock (wrapped), for scrolling maps; the world's
+    // up axis (0 x, 1 y, 2 z: rtx.native.pathtrace.volumetricUpAxis).
+    float animationTime = 0, upAxis = 2;
     uint32_t volumeConfig[4] = {}, volumeFrame[4] = {};
     float volumeParams[4] = {}, volumeMedium[4] = {}, volumeHeight[4] = {};
     float volumeEye[4] = {}, volumePrevious[4] = {};
+    // remixapi_CameraMediumEXT: transmittance colour, measurement distance (0: in air).
+    float cameraMedium[4] = {};
   };
-  static_assert(sizeof(Frame) == 1040 && offsetof(Frame, volumeGrid) == 912 && offsetof(Frame, volumePrevious) == 1024 && offsetof(Frame, sparseList) == 880 && offsetof(Frame, sparseConfig) == 896 && offsetof(Frame, cameraCull) == 864 && offsetof(Frame, cutConfig) == 816 && offsetof(Frame, orcaParams) == 800 && offsetof(Frame, regirConfig) == 752 && offsetof(Frame, restirCurrent) == 656 && offsetof(Frame, visibilityNodes) == 592 && offsetof(Frame, pathConfig) == 528 &&
+  static_assert(sizeof(Frame) == 1056 && offsetof(Frame, volumeGrid) == 912 && offsetof(Frame, volumePrevious) == 1024 && offsetof(Frame, sparseList) == 880 && offsetof(Frame, sparseConfig) == 896 && offsetof(Frame, cameraCull) == 864 && offsetof(Frame, cutConfig) == 816 && offsetof(Frame, orcaParams) == 800 && offsetof(Frame, regirConfig) == 752 && offsetof(Frame, restirCurrent) == 656 && offsetof(Frame, visibilityNodes) == 592 && offsetof(Frame, pathConfig) == 528 &&
                 offsetof(Frame, firefly) == 512 && offsetof(Frame, indirectResults) == 496 &&
                 offsetof(Frame, lightGuideRead) == 384 && offsetof(Frame, lightGuideConfig) == 400 &&
                 offsetof(Frame, lightNodes) == 336 && offsetof(Frame, localConfig) == 352 &&

@@ -224,6 +224,8 @@ namespace remix {
     bool cameraValid() const { return m_cameraValid[0]; }
     scene::TemporalEpoch temporalEpoch() const { return m_temporalEpoch; }
     const std::array<float, 3> &skyRadiance() const { return m_skyRadiance; }
+    // remixapi_CameraMediumEXT: transmittance colour, measurement distance (0: in air).
+    const std::array<float, 4> &cameraMedium() const { return m_cameraMedium; }
     void createLight(const remixapi_LightInfo &info, remixapi_LightHandle &handle);
     void updateLight(remixapi_LightHandle handle, const remixapi_LightInfo &info);
     void destroyLight(remixapi_LightHandle handle);
@@ -308,6 +310,7 @@ namespace remix {
     std::array<bool, 3> m_cameraValid = {};
     scene::TemporalEpoch m_temporalEpoch;
     std::array<float, 3> m_skyRadiance = {};
+    std::array<float, 4> m_cameraMedium = {};
     std::vector<scene::Draw> m_draws, m_uiDraws, m_overlay;
     std::vector<scene::HaloGroup> m_halos;
     size_t m_haloDraws = 0;

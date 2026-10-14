@@ -130,6 +130,13 @@ namespace remix {
         bool identity() const { return !channel && !curve && !invert && exponent == 1 && bias == 0 && scale == 1; }
         bool operator==(const Remap &) const = default;
       } remap[2];
+      // remixapi_MaterialNormalScrollEXT (normal encoding 5): layers, then the
+      // base, layer 1 and layer 2 rates.
+      uint32_t scrollLayers = 1;
+      float scroll[6] = {};
+      // A translucent body (remixapi_MaterialInfoTranslucentEXT without a thin
+      // wall): its refractive index and measurement distance (0: a thin sheet).
+      float refractiveIndex = 1.5f, transmittanceDistance = 0;
       float emission[3] = {};
       bool suppressEmissionLight = false;
       // remixapi_MaterialInfoSelfIlluminationEXT: 0 off, else the mask + 1

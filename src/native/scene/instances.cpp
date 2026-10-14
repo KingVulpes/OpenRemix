@@ -102,7 +102,19 @@ namespace remix {
       if (!environment->enabled)
         sky = {};
     }
+    std::array<float, 4> medium = {};
+    if (const auto *inside = static_cast<const remixapi_CameraMediumEXT *>(
+            extension(info.pNext, REMIXAPI_STRUCT_TYPE_CAMERA_MEDIUM_EXT))) {
+      const auto &c = inside->transmittanceColor;
+      medium = {c.x, c.y, c.z, inside->transmittanceMeasurementDistance};
+      finite(medium.data(), medium.size());
+      if (inside->inside > 1 || std::any_of(medium.begin(), medium.end(), [](float v) { return v < 0; }))
+        throw invalid;
+      if (!inside->inside || medium[3] <= 0)
+        medium = {};
+    }
     if (info.type == REMIXAPI_CAMERA_TYPE_WORLD) {
+      m_cameraMedium = medium;
       const auto *metadata = static_cast<const remixapi_CameraTemporalEXT *>(
           extension(info.pNext, REMIXAPI_STRUCT_TYPE_CAMERA_TEMPORAL_EXT));
       m_temporalEpoch =

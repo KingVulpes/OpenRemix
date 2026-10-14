@@ -97,9 +97,39 @@ namespace {
     info.data = red;
     info.dataSize = sizeof(red);
     remixapi_TextureHandle handle{}, plain{};
-    // One uncompressed level only.
+    // Generated mips, made again from each update (animated maps).
     dynamic.pNext = &mips;
-    rejected([&] { r.createTexture(info, handle); });
+    info.hash = 0x55;
+    remixapi_TextureHandle mipped{};
+    r.createTexture(info, mipped);
+    {
+      remixapi_MaterialInfoOpaqueEXT o{};
+      o.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_OPAQUE_EXT;
+      o.albedoConstant = {1, 1, 1};
+      o.opacityConstant = 1;
+      o.alphaTestType = 7;
+      remixapi_MaterialInfo m{};
+      m.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO;
+      m.pNext = &o;
+      m.hash = 0x56;
+#ifdef _WIN32
+      m.albedoTexture = L"0x55";
+#else
+      m.albedoTexture = "0x55";
+#endif
+      remixapi_MaterialHandle mh{};
+      r.createMaterial(m, mh);
+      const auto t = drawn(r, quad(r, 0x57, mh))->texture;
+      require(t->dynamic && t->pixels.mips.size() == 2 && t->pixels.mips[1][0] == 255, "Dynamic texture with mips");
+      const uint8_t green[16] = {0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255};
+      r.updateTexture(mipped, 0, 0, 2, 2, REMIXAPI_FORMAT_R8G8B8A8_UNORM, green, 8);
+      std::lock_guard lock(t->updates->lock);
+      require(t->pixels.mips.size() == 2 && t->pixels.mips[1][0] == 0 && t->pixels.mips[1][1] == 255 &&
+                  t->updates->dirty[0] == 0 && t->updates->dirty[2] == 2 && t->updates->dirty[3] == 2,
+              "Mips made again from an update");
+    }
+    info.hash = 0x51;
+    // One uncompressed level only.
     dynamic.pNext = nullptr;
     info.format = REMIXAPI_FORMAT_BC1_RGB_SRGB;
     rejected([&] { r.createTexture(info, handle); });
@@ -259,8 +289,54 @@ namespace {
     remap.roughness.exponent = 16;
     rejected([&] { r.createMaterial(info, handle); });
     remap.roughness.exponent = 1;
-    encoding.encoding = 5;
+    encoding.encoding = 6;
     rejected([&] { r.createMaterial(info, handle); });
+
+    // Water (encoding 5): scroll rates; no roughness or metallic map beside.
+    remixapi_MaterialNormalScrollEXT scroll{};
+    scroll.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_NORMAL_SCROLL_EXT;
+    scroll.pNext = &encoding;
+    scroll.layers = 3;
+    scroll.base[0] = .05f;
+    scroll.layer2[1] = 2.6e-4f;
+    opaque.pNext = &scroll;
+    encoding.encoding = 5;
+    rejected([&] { r.createMaterial(info, handle); }); // a roughness map
+    opaque.roughnessTexture = nullptr;
+    info.normalTexture = "0x61";
+    info.hash = 0x63;
+    r.createMaterial(info, handle);
+    const auto water = drawn(r, quad(r, 0x64, handle));
+    require(water->normalEncoding == 5 && water->scrollLayers == 3 && water->scroll[0] == .05f &&
+                water->scroll[5] == 2.6e-4f,
+            "Water scroll fields");
+    scroll.layers = 2;
+    rejected([&] { r.createMaterial(info, handle); });
+    scroll.layers = 1;
+    encoding.encoding = 2;
+    rejected([&] { r.createMaterial(info, handle); }); // scroll without encoding 5
+
+    // A translucent body (no thin wall, a measurement distance): PBR, its
+    // refractive index and distance kept; a thin wall stays a tinted sheet.
+    remixapi_MaterialInfoTranslucentEXT body{};
+    body.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_TRANSLUCENT_EXT;
+    body.refractiveIndex = 1.333f;
+    body.transmittanceColor = {.1f, .4f, .5f};
+    body.transmittanceMeasurementDistance = 300;
+    remixapi_MaterialInfo bodyInfo{};
+    bodyInfo.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO;
+    bodyInfo.pNext = &body;
+    bodyInfo.hash = 0x65;
+    r.createMaterial(bodyInfo, handle);
+    const auto water2 = drawn(r, quad(r, 0x66, handle));
+    require(water2->transmission && water2->translucent && water2->pbr && water2->refractiveIndex == 1.333f &&
+                water2->transmittanceDistance == 300 && water2->tint[1] == .4f,
+            "Translucent body fields");
+    body.thinWallThickness_hasvalue = 1;
+    bodyInfo.hash = 0x67;
+    r.createMaterial(bodyInfo, handle);
+    const auto sheet = drawn(r, quad(r, 0x68, handle));
+    require(sheet->transmission && !sheet->pbr && sheet->transmittanceDistance == 0, "Thin translucent sheet");
   }
 } // namespace
 

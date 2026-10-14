@@ -78,13 +78,15 @@ layout(set=0,binding=3,std140) uniform Frame {
   uvec4 cameraCull; // active camera culling (1 back faces, 2 visibility), probe distance before a surface (float bits)
   uint64_t sparseList, sparseCount; // sparse rendering: selected pixels, their count and dispatch
   uvec4 sparseConfig; // sparse rendering active, threshold levels passed of 256, reserved
-  uint64_t volumeGrid, volumeReserved; // volumetrics (volume.glsl): the cells of every level
+  uint64_t volumeGrid; // volumetrics (volume.glsl): the cells of every level
+  float animationTime, upAxis; // seconds (wrapped), for scrolling maps; the world's up axis (0 x, 1 y, 2 z)
   uvec4 volumeConfig; // active, cells per side, levels, update interval (frames)
   uvec4 volumeFrame; // update counter, history samples, march steps, reset
   vec4 volumeParams; // smallest cell (world units), march distance, scattered light scale, base height
   vec4 volumeMedium; // scattering albedo; extinction per world unit
   vec4 volumeHeight; // up axis; density falloff per world unit above the base height (0: uniform)
   vec4 volumeEye, volumePrevious; // the windows' centre this frame and last
+  vec4 cameraMedium; // remixapi_CameraMediumEXT: transmittance colour, measurement distance (0: in air)
 } frame;
 layout(set=0,binding=6) uniform sampler2D textures[4096];
 // remixapi_InstanceInfoMaskEXT CUT: the camera does not see a surface where
@@ -169,6 +171,10 @@ vec2 materialParameters(Surface s,vec2 uv,inout vec3 albedo) {
   if(s.pbrTextures.x==0)return clamp(vec2(s.pbr.x,metallic),0,1);
   return clamp(vec2(materialMapValue(s,0,materialTexel(s,s.pbrTextures.x-1,uv)),metallic),0,1);
 }
+// As materialTexel, at UVs scaled by k (the footprint scales with them).
+vec4 materialTexelScaled(Surface s,uint index,vec2 uv,float k) {
+  return textureGrad(textures[nonuniformEXT(index)],uv*s.uv.xy+s.uv.zw,uvGradX*s.uv.xy*k,uvGradY*s.uv.xy*k);
+}
 mat3 materialBasis(vec3 n,vec3 e1,vec3 e2,vec2 u1,vec2 u2) {
   float det=u1.x*u2.y-u1.y*u2.x;
   vec3 t=abs(det)>1e-10?(e1*u2.y-e2*u1.y)/det:vec3(0);
@@ -181,10 +187,22 @@ mat3 materialBasis(vec3 n,vec3 e1,vec3 e2,vec2 u1,vec2 u2) {
 }
 vec3 materialNormal(Surface s,vec2 uv,mat3 basis,vec3 wo) {
   if(s.pbrTextures.z==0)return basis[2];
-  vec3 local=materialTexel(s,s.pbrTextures.z-1,uv).xyz;
+  vec3 local;
+  if((s.pbrTextures.w&16)!=0) {
+    // Source's water (normal encoding 5; frame_tables.h materialFields): the
+    // map at the UVs its $bumptransform scrolls to, and with multi-texture
+    // layers the Water shader's two more samples, averaged.
+    uint map=s.pbrTextures.z-1;
+    float t=frame.animationTime;
+    local=materialTexel(s,map,uv+unpackHalf2x16(s.material.y)*t).xyz;
+    if((s.pbrTextures.w&32)!=0)
+      local=(local+materialTexelScaled(s,map,vec2(uv.x+uv.y,uv.y-uv.x)*.1+unpackHalf2x16(s.material.z)*t,.14142136).xyz+
+             materialTexelScaled(s,map,uv.yx*.45+unpackHalf2x16(s.material.w)*t,.45).xyz)/3;
+    local=local*2-1;
+  } else local=materialTexel(s,s.pbrTextures.z-1,uv).xyz;
   // Source's $ssbump: weights of its bump basis directions (bumpBasis[3]).
   if(s.pbrTextures.w==8)local=mat3(.81649658,0,.57735027,-.40824829,.70710678,.57735027,-.40824829,-.70710678,.57735027)*local;
-  else local=local*2-1;
+  else if((s.pbrTextures.w&16)==0)local=local*2-1;
   if((s.pbrTextures.w&1)!=0)local.z=sqrt(max(0,1-dot(local.xy,local.xy)));
   if(s.pbrTextures.w==2) { local.xy=vec2(local.x+local.y,local.x-local.y)*.5; local.z=1-abs(local.x)-abs(local.y); }
   if((s.pbrTextures.w&4)!=0)local.y=-local.y;
@@ -221,6 +239,20 @@ vec4 combineColor(uint op, vec4 a, vec4 b) { return op == 7 ? vec4(mix(a.rgb, mi
 // background unchanged, regardless of their RGB. Only authored thin-sheet
 // materials (constant opacity or glass) retain the colored-transmission model.
 vec3 transmissionColor(vec3 color, bool tinted) { return tinted ? color : vec3(1); }
+// What a sheet met at distance t along a light or shadow ray lets through. A
+// translucent body (frame_tables.h materialFields: refractive index and
+// measurement distance in pbr.w) passes its colour to the power of t over the
+// measurement distance (the ray's length inside it, as from a surface under
+// water), less its Fresnel reflection at normal incidence; any other sheet
+// its tinted coverage rule.
+vec3 sheetTransmission(Surface s, vec4 color, float t) {
+  if ((s.state.w&8)!=0 && s.pbr.w!=0) {
+    vec2 body=unpackHalf2x16(floatBitsToUint(s.pbr.w));
+    float f0=(body.x-1)/(body.x+1);
+    return (1-f0*f0)*pow(clamp(color.rgb,vec3(1e-4),vec3(1)),vec3(t/max(body.y,1e-3)));
+  }
+  return transmissionColor(color.rgb,(s.state.w&32)!=0)*(1-color.a);
+}
 // Candidate intersections need opacity only. In particular, do not linearize
 // vertex RGB or evaluate the color combiner before knowing the closest hit.
 // Bit 0: the combiner reads the texture; bit 1: it reads vertex alpha.

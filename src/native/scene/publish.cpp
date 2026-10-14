@@ -31,6 +31,7 @@ namespace remix {
     frame.m_cameraValid = m_cameraValid;
     frame.m_temporalEpoch = m_temporalEpoch;
     frame.m_skyRadiance = m_skyRadiance;
+    frame.m_cameraMedium = m_cameraMedium;
     frame.m_light = m_light;
     frame.m_dome = m_dome;
     frame.m_visibilityPartition = m_visibilityPartition; // shared, immutable

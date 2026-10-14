@@ -15,18 +15,6 @@ using namespace remix::test;
 namespace scene = remix::scene;
 
 namespace {
-  void texture(remix::NativeResources &r, uint64_t hash, remixapi_Format format, const uint8_t (&pixel)[4]) {
-    remixapi_TextureInfo info{};
-    info.sType = REMIXAPI_STRUCT_TYPE_TEXTURE_INFO;
-    info.hash = hash;
-    info.format = format;
-    info.width = info.height = info.depth = info.mipLevels = 1;
-    info.data = pixel;
-    info.dataSize = 4;
-    remixapi_TextureHandle handle;
-    r.createTexture(info, handle);
-  }
-
   std::shared_ptr<scene::Material> drawn(remix::NativeResources &r, remixapi_MeshHandle mesh) {
     auto info = instance(mesh);
     r.drawInstance(info);

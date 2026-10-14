@@ -752,7 +752,7 @@ namespace remix {
     void configureSharc(Frame &frame, const TraceOptions &options, scene::TemporalEpoch epoch,
                         const std::vector<uint8_t> &geometry, uint64_t geometryGeneration,
                         const std::vector<uint8_t> &dynamicGeometry, bool hasReceivers);
-    void recordSharc(VkCommandBuffer command, const TraceOptions &options);
+    void recordSharc(VkCommandBuffer command);
     void finishSharc(VkCommandBuffer command);
     void sharcPipeline(trace::Stage stage, VkPipelineLayout pipelineLayout, VkPipeline &out);
     // Delta uploads (commitMesh): shading vertices assembled on the GPU from new

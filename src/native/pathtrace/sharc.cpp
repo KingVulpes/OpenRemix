@@ -368,7 +368,7 @@ namespace remix {
     std::copy_n(frame.eye, 3, sharc.previousEye);
   }
 
-  void PathTracer::Gpu::recordSharc(VkCommandBuffer command, const TraceOptions &options) {
+  void PathTracer::Gpu::recordSharc(VkCommandBuffer command) {
     if (!sharc.stats.active || !sharc.hasReceivers)
       return;
     // Previous resolve/query (including confidence) must finish before either

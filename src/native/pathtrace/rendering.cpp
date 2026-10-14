@@ -989,7 +989,7 @@ namespace remix {
     lap(breakdown.primaryMilliseconds);
     stageTime(4);
     recordRegir(command);
-    recordSharc(command, options);
+    recordSharc(command);
     recordOrca(command, extent, querySharc);
     recordSparse(command, extent);
     if (denoiser) {

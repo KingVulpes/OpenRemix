@@ -38,6 +38,10 @@ vec4 arg(uint index, vec4 texel, vec4 vertex) {
 vec4 combine(uint op, vec4 a, vec4 b) {
   return op == 1 ? a : op == 2 ? b : op == 6 ? min(a+b,vec4(1)) : min(a*b*(op==4||op==7?2:op==5?4:1),vec4(1));
 }
+// Colour operation 7: see combineColor in the path tracer's scene.glsl.
+vec4 combineColor(uint op, vec4 a, vec4 b) {
+  return op == 7 ? vec4(mix(a.rgb, min(a.rgb * b.rgb, vec3(1)), a.a), a.a) : combine(op, a, b);
+}
 #ifdef SPRITE
 vec3 displayColor(vec3 c) {
   c = max(c, vec3(0));
@@ -78,7 +82,7 @@ void main() {
   uint s = draw.state.x;
 #ifdef SPRITE
   // The texture-factor argument has no value here (factor holds the sprite's).
-  vec4 a = combine((s & 3) | ((s >> 10) & 4), arg((s >> 2) & 3, texel, vertex), arg((s >> 4) & 3, texel, vertex));
+  vec4 a = combineColor((s & 3) | ((s >> 10) & 4), arg((s >> 2) & 3, texel, vertex), arg((s >> 4) & 3, texel, vertex));
   vec4 b = combine(((s >> 6) & 3) | ((s >> 11) & 4), arg((s >> 8) & 3, texel, vertex), arg((s >> 10) & 3, texel, vertex));
   result = vec4(a.rgb, b.a) * draw.tint;
   if ((sprite & 0x40u) != 0u) {
@@ -97,7 +101,7 @@ void main() {
     result.rgb = (draw.state.w & 2) != 0 ? linearColor(source) : pow(k * source, vec3(2.2)) / k;
   }
 #else
-  vec4 a = combine((s & 3) | ((s >> 10) & 4), arg((s >> 2) & 3, texel, vertex), arg((s >> 4) & 3, texel, vertex));
+  vec4 a = combineColor((s & 3) | ((s >> 10) & 4), arg((s >> 2) & 3, texel, vertex), arg((s >> 4) & 3, texel, vertex));
   vec4 b = combine(((s >> 6) & 3) | ((s >> 11) & 4), arg((s >> 8) & 3, texel, vertex), arg((s >> 10) & 3, texel, vertex));
   result = vec4(a.rgb, b.a) * draw.tint;
 #endif

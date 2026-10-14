@@ -194,6 +194,9 @@ vec4 arg(uint index, vec4 texel, vec4 vertex, vec4 factor) {
   return index == 1 ? texel : index == 2 ? vertex : index == 3 ? factor : vec4(1);
 }
 vec4 combine(uint op, vec4 a, vec4 b) { return op == 1 ? a : op == 2 ? b : op == 6 ? min(a+b,vec4(1)) : min(a*b*(op==4||op==7?2:op==5?4:1),vec4(1)); }
+// Colour operation 7: the second argument tints the first where the first's
+// alpha says so (Source's $blendtintbybasealpha: a player model's coloured parts).
+vec4 combineColor(uint op, vec4 a, vec4 b) { return op == 7 ? vec4(mix(a.rgb, min(a.rgb*b.rgb,vec3(1)), a.a), a.a) : combine(op, a, b); }
 // Captured alpha blending represents coverage: uncovered texels transmit the
 // background unchanged, regardless of their RGB. Only authored thin-sheet
 // materials (constant opacity or glass) retain the colored-transmission model.
@@ -221,7 +224,7 @@ float materialAlpha(Surface s, vec2 uv, float vertex, bool sampled) {
 vec4 materialColor(Surface s, vec4 texel, vec4 vertex) {
   vertex.rgb = linearColor(vertex.rgb);
   uint op = s.state.x;
-  vec4 color = combine((op&3)|((op>>10)&4), arg((op>>2)&3,texel,vertex,s.factor), arg((op>>4)&3,texel,vertex,s.factor));
+  vec4 color = combineColor((op&3)|((op>>10)&4), arg((op>>2)&3,texel,vertex,s.factor), arg((op>>4)&3,texel,vertex,s.factor));
   vec4 alpha = combine(((op>>6)&3)|((op>>11)&4), arg((op>>8)&3,texel,vertex,s.factor), arg((op>>10)&3,texel,vertex,s.factor));
   vec4 result = vec4(color.rgb, alpha.a)*s.tint;
   if ((s.state.w&8)!=0) result.a*=0.2; // Basic thin tinted-sheet approximation.

@@ -161,7 +161,7 @@ namespace remix {
     forgetLightingPipeline(regir.presample);
     if (regir.presample)
       pipeline::destroyPipeline(device, regir.presample, nullptr);
-    for (auto pipeline : {sparse.compact, sparse.arguments}) {
+    for (auto pipeline : {sparse.compact, sparse.arguments, volume.update}) {
       forgetLightingPipeline(pipeline);
       if (pipeline)
         pipeline::destroyPipeline(device, pipeline, nullptr);

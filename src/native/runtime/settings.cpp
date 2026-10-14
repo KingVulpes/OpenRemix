@@ -163,6 +163,20 @@ namespace remix::config {
         TRACE(sparseResolutionExponent, 0, 1);
         TRACE(sparseQuality, 0, 1);
         TRACE(sparseMaxRate, .0625f, 1);
+        TRACE(volumetrics, 0, 1);
+        TRACE(volumetricOverride, 0, 1);
+        TRACE(volumetricDistance, .01f, 100000);
+        TRACE(volumetricHeightFalloff, 0, 100000);
+        TRACE(volumetricBaseHeight, -100000, 100000);
+        TRACE(volumetricUpAxis, 0, 2);
+        TRACE(volumetricScattering, 0, 100);
+        TRACE(volumetricMaxDistance, 1, 100000);
+        TRACE(volumetricCellSize, .02f, 16);
+        TRACE(volumetricCells, 16, 96);
+        TRACE(volumetricLevels, 1, 6);
+        TRACE(volumetricUpdateInterval, 1, 64);
+        TRACE(volumetricHistory, 1, 256);
+        TRACE(volumetricSteps, 1, 64);
         TRACE(orca, 0, 1);
         TRACE(orcaTile, 2, 8);
         TRACE(orcaCellSize, .01f, 4);
@@ -228,6 +242,9 @@ namespace remix::config {
           result.push_back(scalar(
               "rtx.native.pathtrace.lightColor." + std::string(1, "rgb"[i]),
               [i](auto &s) -> auto & { return s.trace.lightColor[i]; }, 0, 1));
+          result.push_back(scalar(
+              "rtx.native.pathtrace.volumetricColor." + std::string(1, "rgb"[i]),
+              [i](auto &s) -> auto & { return s.trace.volumetricColor[i]; }, 0, 1));
         }
         for (size_t i = 0; i < 4; ++i)
           result.push_back(scalar(

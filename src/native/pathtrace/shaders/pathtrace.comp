@@ -1093,6 +1093,7 @@ void replaceMirror(ivec2 pixel) {
   imageStore(psrMirror,pixel,packed);
 }
 #endif
+#include "volume.glsl"
 void main() {
   ivec2 pixel=ivec2(gl_GlobalInvocationID.xy);
   shadingPixel=pixel;
@@ -1130,6 +1131,9 @@ void main() {
   return;
 #elif defined(REGIR_PRESAMPLE_PASS)
   regirPresample(gl_WorkGroupID.x*64u+gl_LocalInvocationIndex);
+  return;
+#elif defined(VOLUME_UPDATE_PASS)
+  volumeUpdate(gl_WorkGroupID.x*64u+gl_LocalInvocationIndex);
   return;
 #elif defined(ORCA_SPARSE_PASS)
   // One sparse path per tile, at a pixel that changes every frame.
@@ -1609,22 +1613,6 @@ void main() {
 #endif
   }
   if(frame.firefly.z!=0)imageStore(meterMaterial,pixel,vec4(transparentMaterial+tint*imageLoad(meterMaterial,pixel).rgb,1));
-  vec3 color=transparent+tint*uintBitsToFloat(background.rgb);
-#ifdef TEMPORAL
-  vec3 foreground=transparent;
-#ifdef SINGLE_SHEET_PASS
-  // Emission and transmission remain unfiltered; NRD supplies the two surface
-  // lighting lobes during composition. Raw world output retains full radiance.
-  if(temporal.translucency.x!=0&&sheetCount==1)foreground=primary.color.a*primary.emission;
-#endif
-  if(temporal.hitDistance.w!=0) {
-    imageStore(composed,pixel,vec4(safeRadiance(foreground+tint*imageLoad(composed,pixel).rgb),1));
-    imageStore(rrDiffuse,pixel,vec4(transparentDiffuse+tint*imageLoad(rrDiffuse,pixel).rgb,0));
-    imageStore(rrSpecular,pixel,vec4(transparentSpecular+tint*imageLoad(rrSpecular,pixel).rgb,0));
-  }
-  imageStore(transparentLight,pixel,vec4(safeRadiance(foreground+tint*imageLoad(primaryPrevious,pixel).rgb),1));
-  imageStore(transmittance,pixel,vec4(signedCount<0?vec3(0):tint,opacityProduct));
-#endif
   float depth=1;
   if(frame.target.w!=0) {
     depth=imageLoad(primaryDepth,ivec2((vec2(pixel)+0.5)*vec2(imageSize(primaryDepth))/vec2(frame.target.xy))).x;
@@ -1651,6 +1639,39 @@ void main() {
       depthOrigin=offsetRay(hit.p,-hit.ng);
     }
   }
+  // Volumetrics: the medium in front of the first surface that is not a
+  // blended sheet (the depth above), over everything composed here. The
+  // material guides stay as they are: the medium has no albedo to demodulate.
+  vec3 guideTint=tint,fogLight=vec3(0);float fogTransmittance=1;
+  if(frame.volumeConfig.x!=0u) {
+    // The sky is not at its geometry: the raster depth of a sky box's faces
+    // drew the box into the medium, edges, corners and all.
+    float far=1e30;
+    float kind=frame.target.w!=0?imageLoad(primaryNormal,pixel).w:-1;
+    if(kind>0&&kind<2)far=length(imageLoad(primaryPosition,pixel).xyz-origin);
+    else if(kind!=0&&depth<1) {
+      vec4 surface=frame.inverseCamera*vec4((vec2(pixel)+.5)/vec2(frame.target.xy)*2-1,depth,1);
+      far=length(surface.xyz/surface.w-origin);
+    }
+    volumeMarch(origin,direction,far,fogLight,fogTransmittance);
+    transparent=fogLight+fogTransmittance*transparent;tint*=fogTransmittance;
+  }
+  vec3 color=transparent+tint*uintBitsToFloat(background.rgb);
+#ifdef TEMPORAL
+  vec3 foreground=transparent;
+#ifdef SINGLE_SHEET_PASS
+  // Emission and transmission remain unfiltered; NRD supplies the two surface
+  // lighting lobes during composition. Raw world output retains full radiance.
+  if(temporal.translucency.x!=0&&sheetCount==1)foreground=fogLight+fogTransmittance*primary.color.a*primary.emission;
+#endif
+  if(temporal.hitDistance.w!=0) {
+    imageStore(composed,pixel,vec4(safeRadiance(foreground+tint*imageLoad(composed,pixel).rgb),1));
+    imageStore(rrDiffuse,pixel,vec4(transparentDiffuse+guideTint*imageLoad(rrDiffuse,pixel).rgb,0));
+    imageStore(rrSpecular,pixel,vec4(transparentSpecular+guideTint*imageLoad(rrSpecular,pixel).rgb,0));
+  }
+  imageStore(transparentLight,pixel,vec4(safeRadiance(foreground+tint*imageLoad(primaryPrevious,pixel).rgb),1));
+  imageStore(transmittance,pixel,vec4(signedCount<0?vec3(0):tint,opacityProduct));
+#endif
   float count=float(frame.config.w);
   if (count>0) {
     color=(imageLoad(worldColor,pixel).rgb*count+color)/(count+1);

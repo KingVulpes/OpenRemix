@@ -22,6 +22,7 @@
 
 #include "api/state.h"
 #include "api/entrypoints.h"
+#include "pathtrace/volume_policy.h"
 
 namespace remix::api {
   remixapi_ErrorCode REMIXAPI_CALL requireRenderer() {
@@ -182,7 +183,17 @@ REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_SetFogState(const remixapi_Fo
   if (!info || info->sType != REMIXAPI_STRUCT_TYPE_FOG_INFO) {
     return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
   }
-  return ignoredEffect();
+  // The path tracer's volumetrics take their medium from it (volume.cpp).
+  remix::trace::GameFog fog;
+  fog.mode = info->mode;
+  fog.color[0] = info->color.x;
+  fog.color[1] = info->color.y;
+  fog.color[2] = info->color.z;
+  fog.scale = info->scale;
+  fog.end = info->end;
+  fog.density = info->density;
+  remix::trace::setGameFog(fog);
+  return REMIXAPI_ERROR_CODE_SUCCESS;
 }
 
 REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_AutoInstancePersistentLights() { return ignoredEffect(); }

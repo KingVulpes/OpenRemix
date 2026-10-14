@@ -3,6 +3,7 @@
 #include "usd/mods.h"
 #endif
 #include "api/entrypoints.h"
+#include "pathtrace/volume_policy.h"
 #include "platform/gpu_timings.h"
 #include "runtime/profiles.h"
 #include <algorithm>
@@ -223,6 +224,15 @@ void serviceDevRequests() {
                           sparse.rate * 100);
           else
             std::snprintf(line, sizeof(line), "# sparse rendering: off (%s)\n", sparse.reason);
+          text += line;
+        }
+        if (const auto volume = remix::trace::g_volumeState; volume.requested) {
+          if (volume.active)
+            std::snprintf(line, sizeof(line),
+                          "# volumetrics: on (%s), sight %.1f m, %u levels of %u^3 cells, march %.0f m\n", volume.source,
+                          volume.visibilityMeters, volume.levels, volume.cells, volume.reachMeters);
+          else
+            std::snprintf(line, sizeof(line), "# volumetrics: off (%s)\n", volume.reason);
           text += line;
         }
         const auto breakdown = g_runtime.frameBreakdown();

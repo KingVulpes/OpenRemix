@@ -96,6 +96,29 @@ namespace remix {
     bool sparseRendering = false, sparseAdaptiveRate = true;
     float sparseSamplingRate = .357f, sparseResolutionExponent = .69f;
     float sparseQuality = .5f, sparseMaxRate = .75f;
+    // Volumetrics (volume.cpp, volume.glsl): a participating medium lit by
+    // every light. Its density is the game's fog (remixapi_SetFogState), or
+    // with volumetricOverride the one given here: volumetricDistance is how
+    // far one sees through it (meters; 5% of the light is left there) and
+    // volumetricColor what it scatters. volumetricHeightFalloff > 0 thins
+    // either above volumetricBaseHeight along volumetricUpAxis (0 X, 1 Y,
+    // 2 Z): the height, in meters, over which the density falls to 37%.
+    // volumetricScattering scales the scattered light; the medium fills at
+    // most the first volumetricMaxDistance meters of a camera ray.
+    bool volumetrics = true, volumetricOverride = false;
+    float volumetricDistance = 80, volumetricColor[3] = {1, 1, 1};
+    float volumetricHeightFalloff = 0, volumetricBaseHeight = 0;
+    uint32_t volumetricUpAxis = 2;
+    float volumetricScattering = 1, volumetricMaxDistance = 250;
+    // The scattered light is held in volumetricLevels nested grids of
+    // volumetricCells^3 cells around the camera, the first of
+    // volumetricCellSize meters and each next one twice as coarse. A cell is
+    // relit every volumetricUpdateInterval frames and keeps the mean of its
+    // last volumetricHistory samples; a camera ray takes volumetricSteps
+    // samples of the grids.
+    float volumetricCellSize = .25f;
+    uint32_t volumetricCells = 48, volumetricLevels = 4;
+    uint32_t volumetricUpdateInterval = 8, volumetricHistory = 8, volumetricSteps = 12;
     bool orca = false;
     uint32_t orcaTile = 4;
     float orcaCellSize = .0625f; // smallest voxel, meters; levels grow by 4x

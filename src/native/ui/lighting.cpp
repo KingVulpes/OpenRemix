@@ -1,3 +1,4 @@
+#include "pathtrace/volume_policy.h"
 #include "runtime/runtime.h"
 #include "ui/widgets.h"
 #include <algorithm>
@@ -23,6 +24,103 @@ namespace remix {
       if (overrideSize)
         ui::SliderFloat("Sun diameter (degrees)", &options.sunAngularDiameter, 0.f, 3.f, "%.3f");
       ui::Checkbox("Sky illumination", &options.sky);
+    }
+    if (ImGui::CollapsingHeader("Volumetrics")) {
+      ui::Checkbox("Volumetric fog", &options.volumetrics);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Fog and haze lit by the sun, the sky and every local light. Uses the game's fog\n"
+                          "unless the override below is on.");
+      if (options.volumetrics) {
+        ui::Checkbox("Override the game's fog", &options.volumetricOverride);
+        if (options.volumetricOverride) {
+          ui::SliderFloat("Sight distance (m)", &options.volumetricDistance, 1.f, 2000.f, "%.0f",
+                          ImGuiSliderFlags_Logarithmic);
+          if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("How far one sees through the medium: 5%% of the light is left at this distance.");
+          ui::ColorEdit3("Scattering color", options.volumetricColor);
+        }
+        ui::SliderFloat("Scattered light", &options.volumetricScattering, 0.f, 8.f, "%.2f");
+        ui::SliderFloat("Height falloff (m)", &options.volumetricHeightFalloff, 0.f, 500.f, "%.1f");
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Above the base height the medium thins to 37%% over this height. 0: uniform.");
+        if (options.volumetricHeightFalloff > 0) {
+          ui::DragFloat("Base height (m)", &options.volumetricBaseHeight, .25f, -100000, 100000, "%.2f");
+          int axis = int(std::min(options.volumetricUpAxis, 2u));
+          if (ui::Combo("Up axis", &axis, "X\0Y\0Z\0"))
+            options.volumetricUpAxis = uint32_t(axis);
+        }
+        ui::SliderFloat("March distance (m)", &options.volumetricMaxDistance, 10.f, 2000.f, "%.0f",
+                        ImGuiSliderFlags_Logarithmic);
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("The medium fills at most this much of a camera ray, the sky's included.");
+        {
+          const int count = int(std::size(trace::volumeQualities));
+          int preset = count;
+          for (int i = 0; i < count; ++i) {
+            const auto &q = trace::volumeQualities[i];
+            if (std::abs(options.volumetricCellSize - q.cellSize) < 1e-4f && options.volumetricCells == q.cells &&
+                options.volumetricLevels == q.levels && options.volumetricSteps == q.steps)
+              preset = i;
+          }
+          if (ui::Combo("Volumetric quality", &preset, "Low\0Medium\0High\0Ultra\0Custom\0") && preset < count) {
+            const auto &q = trace::volumeQualities[preset];
+            options.volumetricCellSize = q.cellSize;
+            options.volumetricCells = q.cells;
+            options.volumetricLevels = q.levels;
+            options.volumetricSteps = q.steps;
+          }
+          if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("How finely the medium's light is stored and sampled: sharper shadows in the fog and\n"
+                              "smoother gradients from Low to Ultra, at more memory and GPU time.");
+        }
+        {
+          const int count = int(std::size(trace::volumeResponses));
+          int preset = count;
+          for (int i = 0; i < count; ++i)
+            if (options.volumetricUpdateInterval == trace::volumeResponses[i].interval &&
+                options.volumetricHistory == trace::volumeResponses[i].history)
+              preset = i;
+          if (ui::Combo("Volumetric response", &preset, "Smooth\0Balanced\0Fast\0Immediate\0Custom\0") &&
+              preset < count) {
+            options.volumetricUpdateInterval = trace::volumeResponses[preset].interval;
+            options.volumetricHistory = trace::volumeResponses[preset].history;
+          }
+          if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("How quickly the fog follows a change of lighting. Faster settings trace more rays\n"
+                              "each frame and flicker more.");
+        }
+        if (ImGui::TreeNode("Volumetric detail")) {
+          ui::SliderFloat("Cell size (m)", &options.volumetricCellSize, .05f, 2.f, "%.2f");
+          if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("The finest grid's cells: shadows in the fog are as sharp as these.");
+          int cells = int(options.volumetricCells), levels = int(options.volumetricLevels);
+          if (ui::SliderInt("Cells per side", &cells, 16, 96))
+            options.volumetricCells = uint32_t(cells) & ~1u;
+          if (ui::SliderInt("Grid levels", &levels, 1, 6))
+            options.volumetricLevels = uint32_t(levels);
+          int steps = int(options.volumetricSteps), interval = int(options.volumetricUpdateInterval),
+              history = int(options.volumetricHistory);
+          if (ui::SliderInt("Samples per camera ray", &steps, 1, 64))
+            options.volumetricSteps = uint32_t(steps);
+          if (ui::SliderInt("Frames between a cell's updates", &interval, 1, 64))
+            options.volumetricUpdateInterval = uint32_t(interval);
+          if (ui::SliderInt("Samples a cell averages", &history, 1, 256))
+            options.volumetricHistory = uint32_t(history);
+          const float cellSize = std::clamp(options.volumetricCellSize, .02f, 16.f);
+          const uint32_t side = trace::volumeCells(options), count = trace::volumeLevels(options);
+          ImGui::TextWrapped("Grids span %.0f m to %.0f m; %.1f MiB; lighting settles in about %u frames",
+                             cellSize * side, cellSize * side * float(1u << (count - 1)),
+                             double(side) * side * side * count * 32 / (1024 * 1024),
+                             std::clamp(options.volumetricUpdateInterval, 1u, 64u) *
+                                 std::clamp(options.volumetricHistory, 1u, 256u));
+          ImGui::TreePop();
+        }
+        const auto volume = trace::g_volumeState;
+        if (volume.active)
+          ImGui::TextWrapped("Volumetrics: on (%s), sight %.1f m", volume.source, volume.visibilityMeters);
+        else
+          ImGui::TextWrapped("Volumetrics: off (%s)", volume.reason);
+      }
     }
     if (ImGui::CollapsingHeader("Local lighting")) {
       ui::Checkbox("Local lights", &options.localLights);

@@ -858,6 +858,7 @@ namespace remix {
     const bool querySharc = sharc.stats.active && (sharc.hasReceivers || options.sharcDebug);
     configureIndirect(frame, options, querySharc);
     configureSparse(command, frame, options, extent);
+    configureVolume(command, frame, options);
     beginRayProfile(command, frame);
     frame.config[2] = uint32_t(sequence++);
     // Opt-in diagnostic offset for independently seeded HDR references.
@@ -989,6 +990,7 @@ namespace remix {
     lap(breakdown.primaryMilliseconds);
     stageTime(4);
     recordRegir(command);
+    recordVolume(command);
     recordSharc(command);
     recordOrca(command, extent, querySharc);
     recordSparse(command, extent);

@@ -135,8 +135,18 @@ namespace remix::trace::detail {
     // indirect dispatch. sparseConfig: active, threshold levels passed of 256.
     uint64_t sparseList = 0, sparseCount = 0;
     uint32_t sparseConfig[4] = {};
+    // Volumetrics (volume.cpp, volume.glsl). volumeConfig: active, cells per
+    // side, levels, update interval. volumeFrame: update counter, history
+    // samples, march steps, reset. volumeParams: smallest cell (world units),
+    // march distance, scattered light scale, base height. volumeMedium:
+    // scattering albedo, extinction per world unit. volumeHeight: up axis,
+    // density falloff per world unit. volumeEye/Previous: the windows' centre.
+    uint64_t volumeGrid = 0, volumeReserved = 0;
+    uint32_t volumeConfig[4] = {}, volumeFrame[4] = {};
+    float volumeParams[4] = {}, volumeMedium[4] = {}, volumeHeight[4] = {};
+    float volumeEye[4] = {}, volumePrevious[4] = {};
   };
-  static_assert(sizeof(Frame) == 912 && offsetof(Frame, sparseList) == 880 && offsetof(Frame, sparseConfig) == 896 && offsetof(Frame, cameraCull) == 864 && offsetof(Frame, cutConfig) == 816 && offsetof(Frame, orcaParams) == 800 && offsetof(Frame, regirConfig) == 752 && offsetof(Frame, restirCurrent) == 656 && offsetof(Frame, visibilityNodes) == 592 && offsetof(Frame, pathConfig) == 528 &&
+  static_assert(sizeof(Frame) == 1040 && offsetof(Frame, volumeGrid) == 912 && offsetof(Frame, volumePrevious) == 1024 && offsetof(Frame, sparseList) == 880 && offsetof(Frame, sparseConfig) == 896 && offsetof(Frame, cameraCull) == 864 && offsetof(Frame, cutConfig) == 816 && offsetof(Frame, orcaParams) == 800 && offsetof(Frame, regirConfig) == 752 && offsetof(Frame, restirCurrent) == 656 && offsetof(Frame, visibilityNodes) == 592 && offsetof(Frame, pathConfig) == 528 &&
                 offsetof(Frame, firefly) == 512 && offsetof(Frame, indirectResults) == 496 &&
                 offsetof(Frame, lightGuideRead) == 384 && offsetof(Frame, lightGuideConfig) == 400 &&
                 offsetof(Frame, lightNodes) == 336 && offsetof(Frame, localConfig) == 352 &&
@@ -489,6 +499,20 @@ namespace remix {
       const char *inactiveReason = "not requested";
     } sparse;
     void configureSparse(VkCommandBuffer command, Frame &frame, const TraceOptions &options, VkExtent2D extent);
+    // Volumetrics (volume.cpp): the medium's scattered light in nested
+    // world-space grids, one buffer for every level's cells.
+    struct Volume {
+      VkPipeline update = VK_NULL_HANDLE;
+      std::unique_ptr<Buffer> cells;
+      bool active = false, pipelineFailed = false;
+      bool valid = false; // the cells belong to `eye` and the sizes below
+      uint32_t cellsPerSide = 0, levels = 0, counter = 0;
+      float cellUnits = 0, eye[3] = {};
+      VkDeviceSize bytes = 0; // requested size of `cells`
+      const char *inactiveReason = "not requested";
+    } volume;
+    void configureVolume(VkCommandBuffer command, Frame &frame, const TraceOptions &options);
+    void recordVolume(VkCommandBuffer command);
     void recordSparse(VkCommandBuffer command, VkExtent2D extent);
     // Per-frame radiance cache from sparse paths (orca.cpp, orca.glsl).
     struct Orca {

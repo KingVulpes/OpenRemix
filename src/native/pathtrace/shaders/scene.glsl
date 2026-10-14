@@ -78,6 +78,13 @@ layout(set=0,binding=3,std140) uniform Frame {
   uvec4 cameraCull; // active camera culling (1 back faces, 2 visibility), probe distance before a surface (float bits)
   uint64_t sparseList, sparseCount; // sparse rendering: selected pixels, their count and dispatch
   uvec4 sparseConfig; // sparse rendering active, threshold levels passed of 256, reserved
+  uint64_t volumeGrid, volumeReserved; // volumetrics (volume.glsl): the cells of every level
+  uvec4 volumeConfig; // active, cells per side, levels, update interval (frames)
+  uvec4 volumeFrame; // update counter, history samples, march steps, reset
+  vec4 volumeParams; // smallest cell (world units), march distance, scattered light scale, base height
+  vec4 volumeMedium; // scattering albedo; extinction per world unit
+  vec4 volumeHeight; // up axis; density falloff per world unit above the base height (0: uniform)
+  vec4 volumeEye, volumePrevious; // the windows' centre this frame and last
 } frame;
 layout(set=0,binding=6) uniform sampler2D textures[4096];
 // remixapi_InstanceInfoMaskEXT CUT: the camera does not see a surface where

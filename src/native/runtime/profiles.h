@@ -1,6 +1,9 @@
 #pragma once
 #include "runtime/settings.h"
 #include <filesystem>
+#include <set>
+#include <utility>
+#include <vector>
 
 namespace remix::config {
   struct PanelState {
@@ -18,6 +21,11 @@ namespace remix::config {
     static std::filesystem::path defaultDirectory();
     static bool validName(std::string_view name);
     bool edit(const Settings &settings);
+    // A host's default for a setting (remixapi_SetConfigDefaultEXT): applied
+    // now, and to every profile loaded or created later, wherever the profile
+    // has no value of its own (a key its file does not list). False: an
+    // unknown key or an invalid value.
+    bool setDefault(const std::string &key, const std::string &value);
     bool load(const std::string &name);
     bool create(const std::string &name);
     bool duplicate(const std::string &name);
@@ -45,11 +53,15 @@ namespace remix::config {
   private:
     bool unique(const std::string &name);
     bool writeProfile(const std::string &name, bool replace);
-    bool readProfile(const std::string &name, Settings &settings, UnknownSettings &unknown);
+    bool readProfile(const std::string &name, Settings &settings, UnknownSettings &unknown,
+                     std::set<std::string> *listed = nullptr);
+    void applyDefaults();
     bool fail(const std::string &message);
     void remember();
     Settings m_current, m_saved;
     UnknownSettings m_unknown;
+    std::set<std::string> m_listed; // the keys the active profile's file has
+    std::vector<std::pair<std::string, std::string>> m_defaults; // the host's, in order
     std::filesystem::path m_directory, m_folder;
     std::vector<std::string> m_files;
     std::string m_active = "Default", m_last, m_message;

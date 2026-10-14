@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <atomic>
 #include <charconv>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
@@ -169,9 +170,11 @@ namespace remix::config {
       // Do not write state during startup, including a fallback after failure.
       Settings loaded;
       UnknownSettings unknown;
-      if (readProfile(m_last, loaded, unknown)) {
+      std::set<std::string> listed;
+      if (readProfile(m_last, loaded, unknown, &listed)) {
         m_current = m_saved = loaded;
         m_unknown = std::move(unknown);
+        m_listed = std::move(listed);
         m_active = m_last;
         m_persisted = true;
       } else {
@@ -211,7 +214,35 @@ namespace remix::config {
     return true;
   }
 
-  bool Profiles::readProfile(const std::string &name, Settings &settings, UnknownSettings &unknown) {
+  bool Profiles::setDefault(const std::string &key, const std::string &value) {
+    Settings check = m_current;
+    std::string error;
+    if (set(check, key, value) != SetResult::Success || !validate(check, error))
+      return false;
+    auto known = std::find_if(m_defaults.begin(), m_defaults.end(), [&](const auto &d) { return d.first == key; });
+    if (known != m_defaults.end())
+      known->second = value;
+    else
+      m_defaults.emplace_back(key, value);
+    if (!m_listed.count(key)) {
+      set(m_current, key, value);
+      set(m_saved, key, value);
+    }
+    return true;
+  }
+
+  // The host's defaults, where the active profile has no value of its own:
+  // in what is saved as well (the profile holds them unchanged).
+  void Profiles::applyDefaults() {
+    for (const auto &[key, value] : m_defaults)
+      if (!m_listed.count(key)) {
+        set(m_current, key, value);
+        set(m_saved, key, value);
+      }
+  }
+
+  bool Profiles::readProfile(const std::string &name, Settings &settings, UnknownSettings &unknown,
+                             std::set<std::string> *listed) {
     if (!validName(name))
       return fail("Invalid profile name");
     std::string text, error;
@@ -220,6 +251,27 @@ namespace remix::config {
       return fail("Cannot read profile: " + name);
     if (!parse(text, settings, unknown, warnings, error))
       return fail(name + ": " + error);
+    if (listed) {
+      // "key = value" lines (comments and blank lines aside).
+      listed->clear();
+      auto trim = [](std::string_view v) {
+        while (!v.empty() && std::isspace(static_cast<unsigned char>(v.front())))
+          v.remove_prefix(1);
+        while (!v.empty() && std::isspace(static_cast<unsigned char>(v.back())))
+          v.remove_suffix(1);
+        return v;
+      };
+      std::string_view rest = text;
+      while (!rest.empty()) {
+        const auto end = rest.find('\n');
+        auto line = trim(rest.substr(0, end));
+        rest = end == rest.npos ? std::string_view{} : rest.substr(end + 1);
+        const auto equal = line.find('=');
+        if (line.empty() || line[0] == '#' || equal == line.npos)
+          continue;
+        listed->insert(std::string(trim(line.substr(0, equal))));
+      }
+    }
     clearMessage();
     for (const auto &warning : warnings) {
       if (!m_message.empty())
@@ -232,10 +284,13 @@ namespace remix::config {
   bool Profiles::load(const std::string &name) {
     Settings loaded;
     UnknownSettings unknown;
-    if (!readProfile(name, loaded, unknown))
+    std::set<std::string> listed;
+    if (!readProfile(name, loaded, unknown, &listed))
       return false;
     m_current = m_saved = loaded;
     m_unknown = std::move(unknown);
+    m_listed = std::move(listed);
+    applyDefaults();
     m_active = m_last = name;
     m_persisted = true;
     m_needsSave = false;
@@ -265,6 +320,8 @@ namespace remix::config {
     m_active = name;
     m_current = m_saved = {};
     m_unknown.clear();
+    m_listed.clear();
+    applyDefaults();
     m_persisted = false;
     m_needsSave = true;
     return true;

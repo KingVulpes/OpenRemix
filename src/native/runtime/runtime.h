@@ -144,6 +144,8 @@ public:
   remixapi_DenoisingStatisticsEXT denoisingStatistics() const;
   remixapi_ErrorCode selectBackend(const char *value);
   remixapi_ErrorCode configureTracing(const char *key, const char *value);
+  // remixapi_SetConfigDefaultEXT: a host's default (config::Profiles::setDefault).
+  remixapi_ErrorCode configureDefault(const char *key, const char *value);
   remixapi_BackendCapabilitiesEXT backendCapabilities() const;
   remixapi_TracingStatisticsEXT tracingStatistics() const;
   remixapi_SharcStatisticsEXT sharcStatistics() const;

@@ -69,6 +69,21 @@ namespace remix {
     return configureSetting((std::string("rtx.native.pathtrace.") + key).c_str(), value);
   }
 
+  remixapi_ErrorCode RemixNativeRuntime::configureDefault(const char *key, const char *value) {
+    if (!m_profiles.setDefault(key, value))
+      return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+    const auto &settings = m_profiles.current();
+    if (settings.backend && !m_traceSupported) {
+      // A path-tracing default where it cannot run: the raster backend stays.
+      auto next = settings;
+      next.backend = 0;
+      m_profiles.edit(next);
+    }
+    m_raster.setKeepCompressedTextures(m_profiles.current().compressedTextures);
+    m_raster.setRefreshGeometry(m_profiles.current().refreshGeometry);
+    return REMIXAPI_ERROR_CODE_SUCCESS;
+  }
+
   namespace {
   std::string resourceKey(const config::Settings &settings, VkExtent2D extent,
                           bool perspective, bool local) {

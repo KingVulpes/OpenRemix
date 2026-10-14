@@ -748,6 +748,15 @@ typedef struct remixapi_DenoisingStatisticsEXT {
 extern "C" {
 #endif
 
+// A host's default for a runtime setting (a SetConfigVariable key): it applies
+// to every profile that has no value of its own for the key (the key is not
+// in its saved file; an unsaved or new profile has none), now and when a
+// profile is loaded or created later. What a user saved stays. Settings a
+// host wants regardless go through SetConfigVariable.
+typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_SetConfigDefaultEXT)(const char* key, const char* value);
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_SetConfigDefaultEXT(const char* key, const char* value);
+
+
 typedef enum remixapi_InputEventType {
   REMIXAPI_INPUT_RESET = 1, // Release all held input (focus/capture change or queue overflow).
   REMIXAPI_INPUT_KEY = 2,

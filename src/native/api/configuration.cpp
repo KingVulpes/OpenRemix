@@ -60,3 +60,16 @@ namespace remix::api {
 } // namespace remix::api
 
 using namespace remix::api;
+
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_SetConfigDefaultEXT(const char *key, const char *value) {
+  if (!key || !*key || !value)
+    return REMIXAPI_ERROR_CODE_INVALID_ARGUMENTS;
+  std::lock_guard lock(g_apiMutex);
+  if (!g_runtime.isInitialized())
+    return REMIXAPI_ERROR_CODE_NOT_INITIALIZED;
+  if (std::strncmp(key, "rtx.native.", 11) != 0)
+    // Legacy renderer namespaces: accepted and ignored, as SetConfigVariable.
+    return std::strncmp(key, "rtx.", 4) == 0 ? REMIXAPI_ERROR_CODE_SUCCESS
+                                           : REMIXAPI_ERROR_CODE_FEATURE_UNAVAILABLE;
+  return g_runtime.configureDefault(key, value);
+}

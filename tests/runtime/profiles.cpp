@@ -241,5 +241,25 @@ int main(int argc, char **argv) {
   auto invalid = changed;
   invalid.trace.lightColor[0] = std::numeric_limits<float>::infinity();
   require(!profiles.edit(invalid) && profiles.current() == edited, "Invalid UI snapshot partially applied");
+  {
+    // Host defaults (remixapi_SetConfigDefaultEXT): what a saved profile lists
+    // stays; what it does not list, and an unsaved or new profile, take them.
+    const fs::path dir = root / "defaults";
+    fs::create_directories(dir / "profiles");
+    write(dir / "profiles" / "Mine.conf", "profile.version = 1\nrtx.native.pathtrace.restir = 0\n");
+    write(dir / "state.conf", "lastProfile = Mine\n");
+    config::Profiles p;
+    p.startup(dir);
+    require(p.active() == "Mine", "Defaults: startup profile");
+    require(p.setDefault("rtx.native.pathtrace.restir", "1") && !p.current().trace.restir,
+            "A saved value outlives a host default");
+    require(p.setDefault("rtx.native.pathtrace.localRange", "0") && p.current().trace.localRange == 0 && !p.dirty(),
+            "A host default fills what a profile does not list, unsaved changes aside");
+    require(!p.setDefault("rtx.native.pathtrace.noSuchSetting", "1"), "Unknown default rejected");
+    require(p.create("Fresh") && p.current().trace.restir && p.current().trace.localRange == 0,
+            "A new profile starts from the host defaults");
+    require(p.load("Mine") && !p.current().trace.restir && p.current().trace.localRange == 0,
+            "A loaded profile keeps its own values over the defaults");
+  }
   return 0;
 }

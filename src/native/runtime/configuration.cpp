@@ -121,7 +121,7 @@ namespace remix {
         m_pipelines ? m_pipelines->statistics() : pipeline::Statistics{};
     return pipelines.completed != pipelines.requested || bool(m_preparation) || bool(m_postPreparation) ||
            m_rasterPreparing || (m_ngxPreparing && m_ngxPreparing->load()) ||
-           (m_traceSupported && m_profiles.current().backend && !m_pathTracer &&
+           (m_traceSupported && m_profiles.current().backend && !m_pathTracer && !m_worldCameraHold &&
             m_preparationFailure.empty());
   }
   void RemixNativeRuntime::retireTracer(std::unique_ptr<PathTracer> tracer,
@@ -214,6 +214,8 @@ namespace remix {
     else if (m_worldCameraWait == std::chrono::steady_clock::time_point{})
       m_worldCameraWait = now;
     const bool holding = wantsWorldCamera && now - m_worldCameraWait < std::chrono::seconds(120);
+    // Not loading while held: the raster backend presents the menu as it is.
+    m_worldCameraHold = holding;
     const auto requestedKey =
         resourceKey(settings, m_swapchainExtent, perspective, local);
     if (requestedKey != m_reconstructionFailureKey) {
@@ -396,7 +398,7 @@ namespace remix {
     std::copy(m_appliedSettings.clearColor.begin(),
               m_appliedSettings.clearColor.end(), m_clearColor);
     m_loading = (m_preparation && needsNgx) ||
-                (settings.backend && m_traceSupported && !m_pathTracer) ||
+                (settings.backend && m_traceSupported && !m_pathTracer && !holding) ||
                 m_ngxPreparing->load() != 0;
   }
 

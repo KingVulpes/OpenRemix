@@ -400,6 +400,7 @@ private:
   // loading screen) with no renderer yet: prepareSettings holds the first
   // preparation for the world's camera, within a bound.
   std::chrono::steady_clock::time_point m_worldCameraWait{};
+  bool m_worldCameraHold = false; // holding now: not loading, nothing pending
   std::shared_ptr<std::atomic<unsigned>> m_ngxPreparing =
       std::make_shared<std::atomic<unsigned>>(0);
   TraceOptions m_traceOptions;

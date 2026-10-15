@@ -207,10 +207,12 @@ namespace remix {
         std::vector<LightingRequest> requests;
         const bool separateIndirect = indirectPlanned(options);
         auto make = [&](trace::Stage stage, VkPipeline &out) {
+          // The multi-sheet pass compiles in the background: the composition
+          // pass composes layered pixels from the front sheet's light meanwhile.
           requests.push_back({lightingStage(stage), temporalLayout, &out,
                               &out == &temporalCompute || &out == &splitDirectCompute || &out == &indirectPass.pipeline,
                               true, &out == &splitDirectCompute, &out != &psrCompute && &out != &frontGuidesCompute,
-                              separateIndirect && &out == &temporalCompute});
+                              separateIndirect && &out == &temporalCompute, &out == &temporalTransparencyCompute});
         };
         // The separate indirect pass and its consumer compile together.
         if (separateIndirect && !indirectPass.pipeline)

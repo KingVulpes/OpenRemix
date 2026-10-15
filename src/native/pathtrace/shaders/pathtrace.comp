@@ -63,6 +63,10 @@ layout(push_constant) uniform Features { layout(offset=28) uint bits; } features
 #define enablePbrReuse ((features.bits&4u)!=0u)
 #define enableAngularEmitters ((features.bits&8u)!=0u)
 #define firstOpaqueHit ((features.bits&16u)!=0u)
+// The multi-sheet pass is not ready (compiling off the activation batch):
+// the single-sheet composition pass composes deeper sheets from the front
+// sheet's light per unit albedo meanwhile.
+#define multiSheetFallback ((features.bits&32u)!=0u)
 // rtx.native.pathtrace.shadowEarlyOut: boolean visibility layers stop at the
 // first blocker (visibility.glsl). A setting, so it stays a variant: both
 // implementations in one binary push the stage to 255 registers.
@@ -1301,13 +1305,13 @@ void main() {
   uvec4 background=imageLoad(backgroundTransmission,pixel);
   rng=hash(background.a^0x73686565u); // its own sequence after the opaque pass's
   float signedCount=imageLoad(worldColor,pixel).a;
-  bool single=abs(signedCount)==1;
+  bool front=abs(signedCount)>=1; // the front sheet, also of a layered pixel (multiSheetFallback)
   vec3 origin,direction;
   ray((vec2(pixel)+.5+frame.jitter.xy)/vec2(frame.target.xy)*2-1,frame.inverseCamera,origin,direction);
   Hit hit;hit.t=1e30;hit.p=vec3(0);hit.n=vec3(0);hit.blended=false;hit.pbr=false;hit.thick=vec2(0);
-  if(single)hit=frame.target.w!=0?rasterPrimary(pixel,origin):cameraHit(origin,direction);
+  if(front)hit=frame.target.w!=0?rasterPrimary(pixel,origin):cameraHit(origin,direction);
   hit.wo=-direction;
-  bool lit=inBounds&&single&&hit.blended;
+  bool lit=inBounds&&front&&hit.blended;
   // The water patch (waterPrepare/waterShare, barriers every invocation
   // reaches) supplies non-PBR sheets' GI from two traced lanes of four.
   bool patched=false,patchTrace=false;
@@ -1718,7 +1722,7 @@ void main() {
   Hit primary;primary.p=vec3(0);primary.n=vec3(0);primary.blended=false;primary.pbr=false;primary.thick=vec2(0);
   if(sheetCount!=0
 #ifdef SINGLE_SHEET_PASS
-      &&sheetCount==1
+      &&(sheetCount==1||multiSheetFallback)
 #endif
      )primary=frame.target.w!=0?rasterPrimary(pixel,origin):cameraHit(origin,direction);
   // Layers past a translucent body follow its refracted ray; the first
@@ -1727,30 +1731,32 @@ void main() {
   float firstSheet=sheetCount!=0&&primary.blended?primary.t:-1;
   vec4 sharedIndirect=vec4(0);
 #ifdef SINGLE_SHEET_PASS
-  if(sheetCount>1)return;
+  if(sheetCount>1&&!multiSheetFallback)return; // the multi-sheet pass composes these
 #endif
   if(!inBounds)return;
   // Without traced sheet indirect, deeper sheets reuse the front sheet's direct
   // light (per unit albedo): one set of light samples and shadow rays per pixel.
   vec3 reusedDirect=vec3(-1);
-#ifdef SINGLE_SHEET_PASS
-  if(sheetCount==1) {
-    Hit hit=primary;hit.wo=-direction;
-#else
   // Traversal is deterministic and consumes no RNG. Shade front-to-back
   // immediately, keeping only the current sheet live across continuation rays.
   for(uint layer=0;layer<sheetCount;++layer) {
     Hit hit=primary;hit.wo=-direction;
-#endif
 #ifdef SINGLE_SHEET_PASS
-      // Lit by the sheet lighting pass (SHEET_LIGHTING_PASS): its direct light
-      // and paths or reused GI, as one radiance, specular and hit distance.
-      vec3 surfaceSpecular;float surfaceDistance;
-      vec3 surfaceLight=unpackSheet(SheetResults(frame.sheetResults).pixels[uint(pixel.x)+uint(pixel.y)*frame.target.x],
-                                    surfaceSpecular,surfaceDistance)+hit.emission;
+      vec3 surfaceSpecular=vec3(0);float surfaceDistance=0;vec3 surfaceLight;
+      if(layer==0) {
+        // Lit by the sheet lighting pass (SHEET_LIGHTING_PASS): its direct
+        // light and paths or reused GI, as one radiance, specular and hit distance.
+        surfaceLight=unpackSheet(SheetResults(frame.sheetResults).pixels[uint(pixel.x)+uint(pixel.y)*frame.target.x],
+                                 surfaceSpecular,surfaceDistance)+hit.emission;
+        vec3 factor=materialFactor(hit);
+        if(!hit.pbr&&all(greaterThan(factor,vec3(1e-3))))reusedDirect=max(surfaceLight-hit.emission,vec3(0))/factor;
 #ifdef TEMPORAL
-      frontRadiance(hit,pixel,max(surfaceLight-hit.emission,vec3(0)),surfaceSpecular,surfaceDistance);
+        if(sheetCount==1)frontRadiance(hit,pixel,max(surfaceLight-hit.emission,vec3(0)),surfaceSpecular,surfaceDistance);
 #endif
+      } else {
+        // multiSheetFallback: deeper sheets take the front sheet's light.
+        surfaceLight=(reusedDirect.x>=0?reusedDirect*materialFactor(hit):vec3(0))+hit.emission;
+      }
 #else
       // One continuation call site: sample 0 lights the sheet itself, unless
       // a deeper non-PBR sheet reuses the front one's direct light.
@@ -1777,7 +1783,7 @@ void main() {
 #if defined(TEMPORAL) && defined(SINGLE_SHEET_PASS)
         // The denoised front layer is composed with this share as well.
         vec4 front=imageLoad(frontAlbedo,pixel);
-        if(temporal.translucency.x!=0&&front.a>0)imageStore(frontAlbedo,pixel,vec4(front.rgb,hit.color.a));
+        if(temporal.translucency.x!=0&&sheetCount==1&&front.a>0)imageStore(frontAlbedo,pixel,vec4(front.rgb,hit.color.a));
 #endif
       }
 #ifdef TEMPORAL
@@ -1791,9 +1797,7 @@ void main() {
       if(frame.firefly.z!=0)transparentMaterial+=tint*hit.color.a*(hit.color.rgb+hit.self);
       transparent+=tint*hit.color.a*surfaceLight;
       tint*=through;opacityProduct*=1-hit.color.a;
-#ifndef SINGLE_SHEET_PASS
     if(layer+1<sheetCount)primary=cameraHit(offsetRay(primary.p,-primary.ng),layerDirection);
-#endif
   }
   if(frame.firefly.z!=0)imageStore(meterMaterial,pixel,vec4(transparentMaterial+tint*imageLoad(meterMaterial,pixel).rgb,1));
   float depth=1;

@@ -30,6 +30,7 @@ namespace remix::trace::detail {
     featurePbrReuse = 4,
     featureAngularEmitters = 8,
     featureFirstOpaqueHit = 16,
+    featureMultiSheetFallback = 32, // the composition pass composes layered pixels itself
   };
   // What a stage outside the lighting selection sees: decals on, the rest off.
   inline constexpr uint32_t defaultFeatures = featureDecals;
@@ -249,6 +250,7 @@ namespace remix {
     // The front sheet's lighting (SHEET_LIGHTING_PASS) for the single-sheet
     // composition pass, and its transport (16 bytes a pixel).
     VkPipeline sheetCompute{}, sheetTemporalCompute{};
+    bool multiSheetFailed = false; // the multi-sheet pass's compile failed: the composition pass composes layers
     std::unique_ptr<Buffer> sheetResults;
     VkPipeline compute = VK_NULL_HANDLE, composite[2] = {};
     VkPipeline splitDirectCompute = VK_NULL_HANDLE;
@@ -870,6 +872,7 @@ namespace remix {
       bool splitDirect = false;
       bool variants = true; // selected through selectLightingPipeline: prewarm its variants
       bool separateIndirect = false; // an opaque pass built as the separate indirect pass's consumer
+      bool background = false; // compiled off the awaited batch; requested again when needed
     };
     // Decompresses and compiles the requests whose pipeline does not exist yet
     // as one batch, concurrently on the compiler workers, and registers each as a lighting

@@ -110,14 +110,24 @@ namespace remix {
       return entry;
     };
     if (deferLighting) {
-      pipeline::prefetchComputePipelines(device, uint32_t(infos.size()), infos.data());
+      // A background request (the multi-sheet pass) compiles on idle workers
+      // and is not awaited: the frame asks for it again when it needs it.
+      std::vector<VkComputePipelineCreateInfo> awaited, background;
+      for (size_t i = 0; i < requests.size(); ++i)
+        (requests[i].background ? background : awaited).push_back(infos[i]);
+      if (!awaited.empty())
+        pipeline::prefetchComputePipelines(device, uint32_t(awaited.size()), awaited.data());
+      if (!background.empty())
+        pipeline::prefetchComputePipelines(device, uint32_t(background.size()), background.data(), true);
       // The scene variants follow every deferred batch (finishLightingPipelines):
       // idle workers take them while the batches compile, and gameplay never
       // waits for one.
       for (size_t i = 0; i < requests.size(); ++i)
         if (requests[i].variants)
           deferredVariants.push_back(describe(i));
-      deferredLighting.insert(deferredLighting.end(), requests.begin(), requests.end());
+      for (const auto &request : requests)
+        if (!request.background)
+          deferredLighting.push_back(request);
       return;
     }
     const auto result = pipeline::createComputePipelines(device, VK_NULL_HANDLE, uint32_t(infos.size()),

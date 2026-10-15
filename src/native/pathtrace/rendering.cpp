@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <map>
 #include <tuple>
 
@@ -1184,8 +1185,30 @@ namespace remix {
     }
     barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+    // The multi-sheet pass compiles off the activation batch; until it is
+    // ready the composition pass composes layered pixels from the front
+    // sheet's light (REMIX_MULTI_SHEET_FALLBACK=1 keeps it so, for comparison).
+    static const bool forceFallback = [] {
+      const auto *value = std::getenv("REMIX_MULTI_SHEET_FALLBACK");
+      return value && std::strcmp(value, "1") == 0;
+    }();
+    if (denoiser && !temporalTransparencyCompute && !multiSheetFailed && !forceFallback) {
+      try {
+        createLightingPipelines({{lightingStage(trace::Stage::temporalTransparency), temporalLayout,
+                                  &temporalTransparencyCompute, false}});
+      } catch (VkResult error) {
+        if (error == VK_ERROR_DEVICE_LOST) throw;
+        if (error != VK_NOT_READY) {
+          multiSheetFailed = true;
+          std::fprintf(stderr, "Multi-sheet pass unavailable (%d); composing layered pixels from the front sheet\n", int(error));
+        }
+      }
+    }
+    const auto multiSheetPipeline = forceFallback ? VK_NULL_HANDLE : denoiser ? temporalTransparencyCompute : transparencyCompute;
     const auto singleTransparencyPipeline =
         selectLightingPipeline(denoiser ? singleTemporalTransparencyCompute : singleTransparencyCompute);
+    if (!multiSheetPipeline)
+      selectedFeatures |= featureMultiSheetFallback;
     {
       gpu::GpuScope scope(command, "Trace transparency (single sheet)", extent);
       bindSelected(command, singleTransparencyPipeline);
@@ -1195,10 +1218,9 @@ namespace remix {
     // The batch shader only visits counts > 1, so these pixels remain untouched.
     barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
-    const auto transparencyPipeline =
-        selectLightingPipeline(denoiser ? temporalTransparencyCompute : transparencyCompute);
+    const auto transparencyPipeline = multiSheetPipeline ? selectLightingPipeline(multiSheetPipeline) : VK_NULL_HANDLE;
     const auto transparencyKey = selectedLightingKey;
-    {
+    if (transparencyPipeline) {
       gpu::GpuScope scope(command, "Trace transparency (multi-sheet)", extent);
       bindSelected(command, transparencyPipeline);
       vkCmdDispatch(command, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);

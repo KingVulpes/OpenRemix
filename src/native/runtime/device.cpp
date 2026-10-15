@@ -289,6 +289,8 @@ namespace remix {
       // Material samplers filter anisotropically wherever supported (raster
       // and traced surfaces with UV gradients; see RasterRenderer::Gpu).
       features.features.samplerAnisotropy = available.samplerAnisotropy;
+      // Line polygon mode for wireframe instances (remixapi_InstanceInfoWireframeEXT).
+      features.features.fillModeNonSolid = available.fillModeNonSolid;
     }
     // Physical-device queries need only support, not device enablement.
     m_memoryBudget = m_instanceApiVersion >= VK_API_VERSION_1_1 &&

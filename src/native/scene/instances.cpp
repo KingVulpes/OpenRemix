@@ -417,6 +417,7 @@ namespace remix {
           draw.depthWrite = d.depthWrite;
           draw.depthCompare = d.depthCompare;
         }
+        draw.wireframe = d.wireframe;
         draw.depthBias = (d.categoryFlags & (REMIXAPI_INSTANCE_CATEGORY_BIT_DECAL_DYNAMIC |
                                              REMIXAPI_INSTANCE_CATEGORY_BIT_DECAL_STATIC |
                                              REMIXAPI_INSTANCE_CATEGORY_BIT_DECAL_SINGLE_OFFSET)) != 0;
@@ -587,6 +588,15 @@ namespace remix::scene {
         // Neither is a scene instance: no identity, duplicate check or lineage.
         d.traceIdentity = false;
       }
+    }
+    if (const auto *wire = static_cast<const remixapi_InstanceInfoWireframeEXT *>(
+            extension(info.pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_WIREFRAME_EXT))) {
+      if (wire->flags)
+        throw invalid;
+      // A raster-only overlay of lines, whatever its identity says.
+      d.wireframe = true;
+      d.classification = REMIXAPI_INSTANCE_RASTER_ONLY_EXT;
+      d.traceIdentity = false;
     }
     if (const auto *culling = static_cast<const remixapi_InstanceInfoCameraCullingEXT *>(
             extension(info.pNext, REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_CAMERA_CULLING_EXT))) {

@@ -12,7 +12,7 @@ namespace remix {
              uint64_t(b.enabled) << 26 | uint64_t(draw.doubleSided) << 27 | uint64_t(draw.depth) << 28 |
              uint64_t(draw.depth && (draw.depthWriteOverride ? draw.depthWrite : (!b.enabled || draw.ui)))
                  << 29 |
-             uint64_t(draw.depthCompare) << 30 | uint64_t(draw.depthBias) << 33;
+             uint64_t(draw.depthCompare) << 30 | uint64_t(draw.depthBias) << 33 | uint64_t(draw.wireframe) << 34;
     }
   } // namespace
 
@@ -181,7 +181,7 @@ namespace remix {
         .scissorCount = 1};
     const VkPipelineRasterizationStateCreateInfo raster = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-        .polygonMode = VK_POLYGON_MODE_FILL,
+        .polygonMode = draw.wireframe && fillModeNonSolid ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL,
         .cullMode = VkCullModeFlags(draw.doubleSided ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT),
         .frontFace = VK_FRONT_FACE_CLOCKWISE,
         .depthBiasEnable = draw.depthBias,

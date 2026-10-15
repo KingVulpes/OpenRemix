@@ -366,6 +366,22 @@ typedef struct remixapi_InstanceRasterStateEXT {
   remixapi_Bool disableColorWrites; /* depth-only prepass; zero preserves color writes */
 } remixapi_InstanceRasterStateEXT;
 
+// Optional InstanceInfo pNext: the instance is drawn as the edges of its
+// triangles (D3D's D3DFILL_WIREFRAME): a raster-only overlay of one-pixel
+// lines whatever its identity classification and blend mode say (never
+// traced, lit or shadowing; no identity), coloured as any raster-only
+// instance (material x vertex colour through InstanceInfoBlendEXT's texture
+// stages and tFactor) and depth-tested as InstanceRasterStateEXT says against
+// the frame's depth. Single-sided instances lose their back faces' edges, as
+// with culling. A device without non-solid fill (fillModeNonSolid) draws the
+// triangles filled. flags must be 0.
+#define REMIXAPI_STRUCT_TYPE_INSTANCE_INFO_WIREFRAME_EXT ((remixapi_StructType)0x7fff101d)
+typedef struct remixapi_InstanceInfoWireframeEXT {
+  remixapi_StructType sType;
+  const void* pNext;
+  uint32_t flags;
+} remixapi_InstanceInfoWireframeEXT;
+
 // Stable identity is scoped to the caller's world/object lifetime. GPU instancing
 // adds the array index; each mesh surface retains its geometry index. Zero IDs are
 // reserved for legacy frame-local draws. rasterVisible does not affect tracing.

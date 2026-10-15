@@ -118,6 +118,8 @@ namespace remix {
       vkGetPhysicalDeviceFeatures(physical, &features);
       if (features.samplerAnisotropy)
         g.maxAnisotropy = std::min(16.f, g.properties.limits.maxSamplerAnisotropy);
+      // Enabled with it (wireframe instances).
+      g.fillModeNonSolid = features.fillModeNonSolid == VK_TRUE;
     }
     for (auto format : {VK_FORMAT_D32_SFLOAT, VK_FORMAT_D16_UNORM}) {
       VkFormatProperties p;

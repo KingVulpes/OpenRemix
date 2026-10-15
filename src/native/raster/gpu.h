@@ -489,6 +489,7 @@ namespace remix {
     void copyLevels(VkCommandBuffer command, VkImage image, uint32_t levels,
                     const std::vector<VkBufferImageCopy> &copies);
     bool textureCompression = false; // Device enabled textureCompressionBC.
+    bool fillModeNonSolid = false;   // wireframe draws as lines (else filled)
     float maxAnisotropy = 0;         // Material sampler anisotropy (0: samplerAnisotropy unavailable).
     bool memoryBudget = false;       // VK_EXT_memory_budget queries available.
     // Top mip levels to leave out of a new texture: large textures give up

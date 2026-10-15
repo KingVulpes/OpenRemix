@@ -44,4 +44,5 @@ _Static_assert(sizeof(remixapi_HostPassAttributeEXT) == 16, "Host pass attribute
 _Static_assert(sizeof(remixapi_HostPassEXT) == 272, "Host pass ABI");
 _Static_assert(sizeof(remixapi_HostPassListEXT) == 32, "Host pass list ABI");
 _Static_assert(sizeof(remixapi_HostPassStatisticsEXT) == 72, "Host pass statistics ABI");
+_Static_assert(sizeof(remixapi_InstanceInfoWireframeEXT) == 24, "Wireframe instance ABI");
 int main(void) { return 0; }

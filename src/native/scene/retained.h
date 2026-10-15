@@ -33,6 +33,7 @@ namespace remix::scene {
     std::shared_ptr<std::vector<Matrix>> bones;
     // remixapi_InstanceInfoHaloEXT: a halo source, kept out of the scene.
     bool halo = false;
+    bool wireframe = false; // remixapi_InstanceInfoWireframeEXT
     Halo haloParameters;
     // remixapi_InstanceInfoMaskEXT. maskSource: a coverage source, kept out of
     // the scene (maskParameters). Otherwise maskGroup != 0 marks a masked

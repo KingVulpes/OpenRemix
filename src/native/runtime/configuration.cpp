@@ -24,6 +24,7 @@
 #include "upscale/camera.h"
 #include "upscale/ngx.h"
 
+#include <cstdio>
 #include <algorithm>
 #include <array>
 #include <cstdlib>
@@ -200,6 +201,19 @@ namespace remix {
     // a scene-dependent optimization is being prepared.
     const bool local = m_localSourcesSeen ||
                        (settings.trace.sigma && settings.trace.localLights);
+    // A menu or loading screen has no perspective camera. A renderer prepared
+    // for it runs without the upscaler (NRD denoising in place of DLSS-RR)
+    // and is replaced as soon as the world appears, its compiles having held
+    // the workers meanwhile. Hold the first preparation for the world's
+    // camera, within a bound.
+    const auto now = std::chrono::steady_clock::now();
+    const bool wantsWorldCamera = !m_pathTracer && !m_preparation && settings.backend && m_traceSupported &&
+                                  settings.trace.upscaler != upscale::Mode::Off && !perspective;
+    if (!wantsWorldCamera)
+      m_worldCameraWait = {};
+    else if (m_worldCameraWait == std::chrono::steady_clock::time_point{})
+      m_worldCameraWait = now;
+    const bool holding = wantsWorldCamera && now - m_worldCameraWait < std::chrono::seconds(120);
     const auto requestedKey =
         resourceKey(settings, m_swapchainExtent, perspective, local);
     if (requestedKey != m_reconstructionFailureKey) {
@@ -260,7 +274,7 @@ namespace remix {
       if (m_preparation && m_preparation->key != key)
         retire();
       if (key != m_activePreparationKey && key != m_failedPreparationKey &&
-          !m_preparation) {
+          !m_preparation && !holding) {
         auto next = std::make_shared<PreparedConfiguration>();
         next->key = key;
         next->generation = ++m_preparationGeneration;
@@ -304,6 +318,8 @@ namespace remix {
           next->tracer = std::move(tracer);
           (void)sdkGuard;
         });
+        m_pipelines->note("renderer preparation " +
+                          std::to_string(next->generation) + " started");
         m_preparation = std::move(next);
         m_preparationFailure.clear();
       }
@@ -339,6 +355,15 @@ namespace remix {
                 (unsigned long long)statistics.created,
                 (unsigned long long)statistics.reused,
                 (unsigned long long)statistics.cacheHits);
+            char event[160];
+            std::snprintf(event, sizeof(event),
+                          "renderer preparation %llu active after %.0f ms",
+                          (unsigned long long)m_preparation->generation,
+                          std::chrono::duration<double, std::milli>(
+                              std::chrono::steady_clock::now() -
+                              m_preparation->started)
+                              .count());
+            m_pipelines->note(event);
             m_preparation.reset();
             m_backend = m_targetBackend = 1;
             m_traceUnavailable.clear();

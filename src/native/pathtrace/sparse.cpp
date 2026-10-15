@@ -37,8 +37,8 @@ void PathTracer::Gpu::configureSparse(VkCommandBuffer command, Frame &frame, con
     return;
   if (!s.compact || !s.arguments) {
     try {
-      createLightingPipelines({{trace::Stage::sparseCompact, layout, &s.compact, false, false},
-                               {trace::Stage::sparseArgs, layout, &s.arguments, false, false}});
+      createLightingPipelines({{trace::Stage::sparseCompact, layout, &s.compact, false, false, false, false},
+                               {trace::Stage::sparseArgs, layout, &s.arguments, false, false, false, false}});
     } catch (VkResult error) {
       // Still compiling in the background: retry on a later frame.
       if (error == VK_ERROR_DEVICE_LOST)
@@ -97,11 +97,11 @@ void PathTracer::Gpu::recordSparse(VkCommandBuffer command, VkExtent2D extent) {
           VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT,
           VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
   vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &set, 0, nullptr);
-  vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, s.compact);
+  bindTrace(command, s.compact, layout, defaultFeatures);
   vkCmdDispatch(command, (extent.width + 15) / 16, (extent.height + 15) / 16, 1);
   barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
           VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
-  vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, s.arguments);
+  bindTrace(command, s.arguments, layout, defaultFeatures);
   vkCmdDispatch(command, 1, 1, 1);
   barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
           VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,

@@ -13,7 +13,7 @@ void PathTracer::Gpu::configureRegir(Frame &frame, const TraceOptions &options) 
   std::fill_n(frame.regirConfig, 4, 0u);
   if (options.regir && !r.presample && !r.pipelineFailed) {
     try {
-      createLightingPipelines({{trace::Stage::regirPresample, layout, &r.presample, false, false}});
+      createLightingPipelines({{trace::Stage::regirPresample, layout, &r.presample, false, false, false, false}});
     } catch (VkResult error) {
       // Still compiling in the background: retry on a later frame.
       if (error == VK_ERROR_DEVICE_LOST)
@@ -69,7 +69,7 @@ void PathTracer::Gpu::recordRegir(VkCommandBuffer command) {
             VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
             VK_ACCESS_SHADER_WRITE_BIT);
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &set, 0, nullptr);
-    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, r.presample);
+    bindTrace(command, r.presample, layout, defaultFeatures);
     vkCmdDispatch(command, Regir::capacity * Regir::slots / 64, 1, 1);
   }
   barrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,

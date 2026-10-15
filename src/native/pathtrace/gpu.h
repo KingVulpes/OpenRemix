@@ -22,6 +22,20 @@
 #include <unordered_set>
 
 namespace remix::trace::detail {
+  // Per-dispatch switches of the tracing stages (pathtrace.comp `features`),
+  // pushed with each pipeline by Gpu::bindTrace.
+  enum Feature : uint32_t {
+    featureDecals = 1,
+    featureRoulette = 2,
+    featurePbrReuse = 4,
+    featureAngularEmitters = 8,
+    featureFirstOpaqueHit = 16,
+  };
+  // What a stage outside the lighting selection sees: decals on, the rest off.
+  inline constexpr uint32_t defaultFeatures = featureDecals;
+  inline constexpr uint32_t featuresOffset = 28; // after the composite's fragment constants
+  inline constexpr VkPushConstantRange pushRanges[] = {{VK_SHADER_STAGE_FRAGMENT_BIT, 0, featuresOffset},
+                                                       {VK_SHADER_STAGE_COMPUTE_BIT, featuresOffset, 4}};
   using namespace scene;
 
   inline void check(VkResult result) {
@@ -150,8 +164,9 @@ namespace remix::trace::detail {
     float volumeEye[4] = {}, volumePrevious[4] = {};
     // remixapi_CameraMediumEXT: transmittance colour, measurement distance (0: in air).
     float cameraMedium[4] = {};
+    uint64_t sheetResults = 0; // SheetResults: the sheet lighting pass's transport
   };
-  static_assert(sizeof(Frame) == 1056 && offsetof(Frame, volumeGrid) == 912 && offsetof(Frame, volumePrevious) == 1024 && offsetof(Frame, sparseList) == 880 && offsetof(Frame, sparseConfig) == 896 && offsetof(Frame, cameraCull) == 864 && offsetof(Frame, cutConfig) == 816 && offsetof(Frame, orcaParams) == 800 && offsetof(Frame, regirConfig) == 752 && offsetof(Frame, restirCurrent) == 656 && offsetof(Frame, visibilityNodes) == 592 && offsetof(Frame, pathConfig) == 528 &&
+  static_assert(sizeof(Frame) == 1064 && offsetof(Frame, volumeGrid) == 912 && offsetof(Frame, volumePrevious) == 1024 && offsetof(Frame, sparseList) == 880 && offsetof(Frame, sparseConfig) == 896 && offsetof(Frame, cameraCull) == 864 && offsetof(Frame, cutConfig) == 816 && offsetof(Frame, orcaParams) == 800 && offsetof(Frame, regirConfig) == 752 && offsetof(Frame, restirCurrent) == 656 && offsetof(Frame, visibilityNodes) == 592 && offsetof(Frame, pathConfig) == 528 &&
                 offsetof(Frame, firefly) == 512 && offsetof(Frame, indirectResults) == 496 &&
                 offsetof(Frame, lightGuideRead) == 384 && offsetof(Frame, lightGuideConfig) == 400 &&
                 offsetof(Frame, lightNodes) == 336 && offsetof(Frame, localConfig) == 352 &&
@@ -231,41 +246,83 @@ namespace remix {
     VkPipelineLayout layout = VK_NULL_HANDLE;
     VkPipeline transparencyCompute{}, temporalTransparencyCompute{};
     VkPipeline singleTransparencyCompute{}, singleTemporalTransparencyCompute{}, frontGuidesCompute{}, psrCompute{};
+    // The front sheet's lighting (SHEET_LIGHTING_PASS) for the single-sheet
+    // composition pass, and its transport (16 bytes a pixel).
+    VkPipeline sheetCompute{}, sheetTemporalCompute{};
+    std::unique_ptr<Buffer> sheetResults;
     VkPipeline compute = VK_NULL_HANDLE, composite[2] = {};
     VkPipeline splitDirectCompute = VK_NULL_HANDLE;
     struct IndirectPass {
       std::unique_ptr<Buffer> results;
-      VkPipeline pipeline[2] = {};
+      VkPipeline pipeline = VK_NULL_HANDLE;
       bool active = false, failed = false;
-      // Automatic selection targets combined lighting without SHARC queries.
-      // The environment override can disable it or force other supported modes.
+      // 2: the indirect bounces trace in their own pass (the default: the
+      // opaque pass and it each carry one copy of the light sampler, and
+      // compile in half the time of the combined kernel). 1: only for combined
+      // lighting without SHARC queries (REMIX_SPLIT_INDIRECT=auto). 0: off (=0).
       uint32_t mode = [] {
         const auto *value = std::getenv("REMIX_SPLIT_INDIRECT");
-        return !value ? 1u : std::strcmp(value, "1") == 0 ? 2u : 0u;
+        return !value ? 2u : std::strcmp(value, "0") == 0 ? 0u : std::strcmp(value, "auto") == 0 ? 1u : 2u;
       }();
       const char *modeFile = std::getenv("REMIX_INDIRECT_MODE_FILE");
       uint64_t controlReset = UINT64_MAX;
     } indirectPass;
     void configureIndirect(Frame &frame, const TraceOptions &options, bool querySharc);
+    // Whether the separate indirect pass is built for these options.
+    bool indirectPlanned(const TraceOptions &options) const {
+      return indirectPass.mode != 0 && !indirectPass.failed && options.bounces != 0 && !options.sparseRendering;
+    }
     void configureProfile(const TraceOptions &options);
     void destroyIndirect();
+    // A lighting pipeline's variants (selectLightingPipeline), keyed by the
+    // variant bits; the pair's bool: a request was made (its result pending
+    // while the pipeline is null).
     struct LightingPipeline {
       const uint32_t *code = nullptr;
       size_t bytes = 0;
       VkPipelineLayout layout = VK_NULL_HANDLE;
-      VkPipeline withoutLocal = VK_NULL_HANDLE;
-      VkPipeline withGuiding = VK_NULL_HANDLE;
-      VkPipeline withResampling[2] = {};
-      bool resamplingAttempted[2] = {};
       std::map<uint32_t, std::pair<VkPipeline, bool>> specialized;
-      bool attempted = false, guidingAttempted = false;
       bool supportsGuiding = true;
       bool supportsRoulette = true;
       bool preferFirstHit = true;
-      VkPipeline smallSet[2] = {};
-      bool smallAttempted[2] = {};
+      bool splitDirect = false;  // the split direct pass: combined-mode variants
+      bool baseEarlyOut = false; // the source's shadowEarlyOut specialization
+      bool baseSeparateIndirect = false; // the source consumes the separate indirect pass
+      bool variants = true;      // selected through selectLightingPipeline: variants prewarmed
     };
     std::unordered_map<VkPipeline, LightingPipeline> lightingPipelines;
+    // Variant key bits (selectedLightingKey). Sparse launch mode occupies the
+    // two bits from variantSparseShift.
+    enum VariantBit : uint32_t {
+      variantGuided = 1,
+      variantSmallSet = 2,
+      variantResampling = 4,
+      variantSplit = 8,
+      variantCombinedDirect = 16,
+      variantLocal = 64,
+      variantProfile = 256,
+      variantSeparateIndirect = 1024,
+      variantEarlyOut = 8192,
+      variantSparseShift = 14,
+    };
+    // The options the lighting pipelines were last configured with
+    // (beginFrame): the settings the scene variants are prewarmed for.
+    TraceOptions lightingOptions{};
+    bool prewarmPending = false; // a variant setting changed: prewarm after the frame's requests
+    // On a SHARC-capable device the cache-querying stages are the only
+    // lighting family (lightingStage): the query is gated per frame, the
+    // registers are the same (168 measured) and the compiles halve.
+    bool cachedStages = false;
+    void querySharcSupport(); // sets sharc.stats.supported and cachedStages
+    trace::Stage lightingStage(trace::Stage uncached) const;
+    std::vector<LightingPipeline> deferredVariants; // sources whose variants follow the deferred batches
+    // Compiles (or, prefetching, schedules) the source's variant for `key`.
+    VkResult requestLightingVariant(LightingPipeline &source, uint32_t key, VkPipeline *out, bool prefetch);
+    // Schedules the variants the scene can select for this source under the
+    // current settings, so gameplay never waits for a compile: with and
+    // without local lights, the small set, resampling, guiding and split
+    // lighting.
+    void prewarmLightingVariants(LightingPipeline &source);
     struct RayProfile {
       std::unique_ptr<Buffer> counters, readback;
       bool pending = false;
@@ -305,6 +362,14 @@ namespace remix {
     const char *stageProfile = std::getenv("REMIX_STACK_PROFILE");
     const char *stateProfile = stageProfile ? std::getenv("REMIX_TRACE_STATE") : nullptr;
     uint32_t selectedLightingKey = 0;
+    // The selected pipeline's per-dispatch switches and layout (bindTrace).
+    uint32_t selectedFeatures = trace::detail::defaultFeatures;
+    VkPipelineLayout selectedLayout = VK_NULL_HANDLE;
+    void bindTrace(VkCommandBuffer command, VkPipeline pipeline, VkPipelineLayout pipelineLayout, uint32_t features);
+    // Binds the pipeline selectLightingPipeline just returned.
+    void bindSelected(VkCommandBuffer command, VkPipeline pipeline) {
+      bindTrace(command, pipeline, selectedLayout, selectedFeatures);
+    }
     std::string traceState;
     // The tables every ray and light sample reads (surface table, light tree
     // and emitters, potentially visible light table, frame constants) are
@@ -522,13 +587,13 @@ namespace remix {
     // Per-frame radiance cache from sparse paths (orca.cpp, orca.glsl).
     struct Orca {
       static constexpr uint32_t capacity = 1u << 18;
-      VkPipeline sparse[2] = {}; // without, with SHARC path tails
+      VkPipeline sparse = VK_NULL_HANDLE;
       std::unique_ptr<Buffer> table;
       bool active = false, pipelineFailed = false;
       uint32_t tile = 4;
     } orca;
     void configureOrca(Frame &frame, const TraceOptions &options);
-    void recordOrca(VkCommandBuffer command, VkExtent2D extent, bool querySharc);
+    void recordOrca(VkCommandBuffer command, VkExtent2D extent);
     void recordRegir(VkCommandBuffer command);
     void recordRestir(VkCommandBuffer command, VkExtent2D extent);
     void beginLightGuiding(VkCommandBuffer command);
@@ -720,10 +785,9 @@ namespace remix {
     remixapi_TracingStatisticsEXT stats = {.structSize = sizeof(remixapi_TracingStatisticsEXT)};
     struct Sharc {
       std::unique_ptr<Buffer> hash, accumulation, resolved, counters, readback;
-      VkPipeline update{}, resolve{}, query{}, transparency{}, singleTransparency{}, temporal{}, temporalTransparency{}, singleTemporalTransparency{},
-          confidence{};
+      VkPipeline update{}, resolve{};
       VkQueryPool timestamps{};
-      bool clear = true, pending = false, attempted = false, hasReceivers = false;
+      bool clear = true, pending = false, hasReceivers = false;
       scene::TemporalEpoch epoch{};
       uint64_t reset = 0, warmFrames = 0;
       uint32_t scale = 0, bounces = 0, responsiveFrames = 0, warmTarget = 64;
@@ -783,7 +847,6 @@ namespace remix {
                         const std::vector<uint8_t> &dynamicGeometry, bool hasReceivers);
     void recordSharc(VkCommandBuffer command);
     void finishSharc(VkCommandBuffer command);
-    void sharcPipeline(trace::Stage stage, VkPipelineLayout pipelineLayout, VkPipeline &out);
     // Delta uploads (commitMesh): shading vertices assembled on the GPU from new
     // positions and normals (0: the previous version's, unchanged) and the
     // previous version's texture coordinates and colors. Jobs run after this frame's copies, before the BLAS builds.
@@ -804,6 +867,9 @@ namespace remix {
       VkPipelineLayout layout = VK_NULL_HANDLE;
       VkPipeline *out = nullptr;
       bool supportsGuiding = true, supportsRoulette = true;
+      bool splitDirect = false;
+      bool variants = true; // selected through selectLightingPipeline: prewarm its variants
+      bool separateIndirect = false; // an opaque pass built as the separate indirect pass's consumer
     };
     // Decompresses and compiles the requests whose pipeline does not exist yet
     // as one batch, concurrently on the compiler workers, and registers each as a lighting

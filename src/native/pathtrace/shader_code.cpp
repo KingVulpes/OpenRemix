@@ -1,4 +1,5 @@
 #include "pathtrace/shader_code.h"
+#include "runtime/pipelines.h"
 #include <xz.h>
 #include <mutex>
 #include <stdexcept>
@@ -48,6 +49,7 @@ namespace remix::trace {
       if (result != XZ_STREAM_END || buffer.out_pos != source.bytes)
         throw std::runtime_error("Embedded shader failed to decompress");
       entry.words = std::move(words);
+      pipeline::nameCode(entry.words.data(), stageNames[size_t(stage)]);
     });
     return {entry.words.data(), entry.words.size() * sizeof(uint32_t)};
   }

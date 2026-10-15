@@ -54,20 +54,25 @@ layout(set=0,binding=13,rgba16f) PRIMARY_ACCESS uniform image2D primaryEmission;
 layout(set=0,binding=14,rgba16f) PRIMARY_ACCESS uniform image2D primaryPbr;
 layout(set=0,binding=15,rgba16f) uniform image2D meterMaterial;
 
-layout(constant_id=11) const bool enableDecals=true;
+// Per-dispatch switches, pushed with the pipeline (Gpu::bindTrace). They were
+// specialization constants: as variants each cost a 20-45 s compile, while
+// trimming code only, not registers (168 on Turing with all five dynamic).
+layout(push_constant) uniform Features { layout(offset=28) uint bits; } features;
+#define enableDecals ((features.bits&1u)!=0u)
+#define enableRussianRoulette ((features.bits&2u)!=0u)
+#define enablePbrReuse ((features.bits&4u)!=0u)
+#define enableAngularEmitters ((features.bits&8u)!=0u)
+#define firstOpaqueHit ((features.bits&16u)!=0u)
 // rtx.native.pathtrace.shadowEarlyOut: boolean visibility layers stop at the
-// first blocker (visibility.glsl). Off in pipelines not specialized for it.
+// first blocker (visibility.glsl). A setting, so it stays a variant: both
+// implementations in one binary push the stage to 255 registers.
 layout(constant_id=12) const bool shadowEarlyOut=false;
 layout(constant_id=0) const bool enableLocalLights=true;
 layout(constant_id=1) const bool enableLocalGuiding=true;
 layout(constant_id=2) const bool enableSmallLights=false;
 layout(constant_id=3) const bool enableLightResampling=false;
 layout(constant_id=9) const bool separateIndirect=false;
-layout(constant_id=8) const bool firstOpaqueHit=false;
 layout(constant_id=7) const bool enableRayProfile=false;
-layout(constant_id=6) const bool enablePbrReuse=false;
-layout(constant_id=10) const bool enableRussianRoulette=false;
-layout(constant_id=5) const bool enableAngularEmitters=false;
 #ifdef SPLIT_LOCAL_PASS
 layout(constant_id=4) const bool enableSplitLighting=true;
 #else
@@ -511,14 +516,14 @@ vec3 sunVisibility(Hit receiver,ivec2 pixel,out float blockerDistance) {
 #endif
 #include "pbr_reuse.glsl"
 bool skipSheetLocal=false; // set around direct() for PBR sheets (see sheetLocalLights)
-#if defined(TEMPORAL) && defined(SINGLE_SHEET_PASS)
+#ifdef SHEET_LIGHTING_PASS
 vec3 direct(Hit hit,bool primary,out vec3 specular,out float distance) {
 #else
 vec3 direct(Hit hit,bool primary,out vec3 specular) {
 #endif
   vec3 toLight=-frame.lightDirection.xyz;
   float cosine=max(0,dot(hit.n,toLight));
-#if defined(TEMPORAL) && defined(SINGLE_SHEET_PASS)
+#ifdef SHEET_LIGHTING_PASS
   distance=0;
 #else
   float distance;
@@ -546,7 +551,7 @@ vec3 direct(Hit hit,bool primary,out vec3 specular) {
   }
   return local;
 }
-#if defined(TEMPORAL) && defined(SINGLE_SHEET_PASS)
+#ifdef SHEET_LIGHTING_PASS
 vec3 direct(Hit hit,bool primary,out vec3 specular) {
   float distance;return direct(hit,primary,specular,distance);
 }
@@ -651,6 +656,9 @@ vec3 cacheLimitPrevious(SharcParameters parameters,SharcState state,vec3 radianc
 #endif
 #ifdef SHARC_QUERY
 bool cacheRadiance(Hit hit,float footprint,out vec3 radiance) {
+  // The only lighting family on a SHARC-capable device: no cache this frame
+  // (inactive, or no receivers yet) means no query.
+  if((frame.sharcConfig.x&1u)==0u&&frame.sharcConfig.w==0u)return false;
   if(!cacheSurface(hit))return false;
   SharcParameters parameters=cacheParameters();
   if(!cacheFootprintFits(hit,footprint))return false;
@@ -666,7 +674,7 @@ bool cacheRadiance(Hit hit,float footprint,out vec3 radiance) {
   return found;
 }
 #endif
-#if defined(TEMPORAL) && defined(SINGLE_SHEET_PASS)
+#if defined(TEMPORAL) && defined(SHEET_LIGHTING_PASS)
 #include "translucent_reuse.glsl"
 #endif
 #include "orca.glsl"
@@ -727,7 +735,7 @@ vec3 continuation(Hit primary,int lobe,float probability,out vec3 firstDirection
       else throughput*=transmissionColor(hit.color.rgb,hit.tinted);
       origin=offsetRay(hit.p,-hit.ng);continue;
     }
-#if defined(TEMPORAL) && defined(SINGLE_SHEET_PASS)
+#if defined(TEMPORAL) && defined(SHEET_LIGHTING_PASS)
     vec3 opaqueRadiance;
     if(translucentRadiance(hit,opaqueRadiance)) {
       result+=throughput*opaqueRadiance;
@@ -811,8 +819,8 @@ vec3 continuation(Hit primary,out vec3 firstDirection,out float pathDistance,out
 vec3 continuation(Hit primary,out vec3 firstDirection,out float pathDistance) {
   vec3 specular;return continuation(primary,firstDirection,pathDistance,specular);
 }
-#ifdef TEMPORAL
 float nearestDistance(float a,float b) { return a>0&&b>0?min(a,b):max(a,b); }
+#ifdef TEMPORAL
 // NRD's probabilistic lobe selection at a PBR primary surface (NRD sample,
 // TraceOpaque): each path samples one lobe, 0 diffuse or 1 specular, and only
 // that lobe's signal receives its radiance (over the probability) and hit
@@ -928,7 +936,7 @@ void updateCache(ivec2 pixel) {
   }
 }
 #endif
-#ifdef SINGLE_SHEET_PASS
+#ifdef SHEET_LIGHTING_PASS
 #include "water_indirect.glsl"
 #endif
 // Accumulate exactly the same per-sample signals in either dispatch. Only
@@ -952,10 +960,32 @@ struct IndirectResult {
   vec3 radiance; uint state;
   float distance; // nearest specular path distance of a PBR surface (DLSS-RR)
 };
-struct IndirectTransport { vec3 radiance; uint state; };
+// The separate indirect pass's result for the opaque pass, 16 bytes a pixel:
+// radiance and the specular path distance as halves, the random state after.
+struct IndirectTransport { uint rg,bd,state,pad; };
 layout(buffer_reference, std430, buffer_reference_align=16) buffer IndirectResults {
   IndirectTransport pixels[];
 };
+IndirectTransport packIndirect(vec3 radiance,float distance,uint state) {
+  radiance=min(radiance,vec3(65504));
+  return IndirectTransport(packHalf2x16(radiance.rg),packHalf2x16(vec2(radiance.b,min(distance,65504))),state,0u);
+}
+// The sheet lighting pass's result for the single-sheet composition pass, 16
+// bytes a pixel: the front sheet's radiance, specular and hit distance as
+// halves (zero where the pixel has no single front sheet).
+struct SheetTransport { uint rg,bs,sg,d; };
+layout(buffer_reference, std430, buffer_reference_align=16) buffer SheetResults {
+  SheetTransport pixels[];
+};
+SheetTransport packSheet(vec3 light,vec3 specular,float distance) {
+  light=min(light,vec3(65504));specular=min(specular,vec3(65504));
+  return SheetTransport(packHalf2x16(light.rg),packHalf2x16(vec2(light.b,specular.r)),packHalf2x16(specular.gb),
+                        packHalf2x16(vec2(min(distance,65504),0)));
+}
+vec3 unpackSheet(SheetTransport t,out vec3 specular,out float distance) {
+  vec2 rg=unpackHalf2x16(t.rg),bs=unpackHalf2x16(t.bs),sg=unpackHalf2x16(t.sg),d=unpackHalf2x16(t.d);
+  specular=vec3(bs.y,sg);distance=d.x;return vec3(rg,bs.x);
+}
 #ifdef TEMPORAL
 // REBLUR's indirect inputs of a pixel without samples: sky, blended primaries
 // and, with the specular path distance kept, DLSS-RR frames.
@@ -1243,6 +1273,42 @@ void main() {
   Hit primary=frame.target.w!=0?rasterPrimary(pixel,origin):cameraHit(origin,direction);
   frontGuides(primary,pixel);
   return;
+#elif defined(SHEET_LIGHTING_PASS)
+  // The front sheet's light for the single-sheet composition pass: its direct
+  // light, then its paths, or the water patch's reused GI (waterIndirect, whose
+  // barriers every invocation reaches). The composition pass draws the sheet,
+  // the media and the layers past it with no light sampler of its own.
+  bool inBounds=all(lessThan(pixel,ivec2(frame.target.xy)));
+  pixel=min(pixel,ivec2(frame.target.xy)-1);
+  uint index=uint(pixel.x)+uint(pixel.y)*frame.target.x;
+  uvec4 background=imageLoad(backgroundTransmission,pixel);
+  rng=hash(background.a^0x73686565u); // its own sequence after the opaque pass's
+  float signedCount=imageLoad(worldColor,pixel).a;
+  bool single=abs(signedCount)==1;
+  vec3 origin,direction;
+  ray((vec2(pixel)+.5+frame.jitter.xy)/vec2(frame.target.xy)*2-1,frame.inverseCamera,origin,direction);
+  Hit hit;hit.t=1e30;hit.p=vec3(0);hit.n=vec3(0);hit.blended=false;hit.pbr=false;hit.thick=vec2(0);
+  if(single)hit=frame.target.w!=0?rasterPrimary(pixel,origin):cameraHit(origin,direction);
+  hit.wo=-direction;
+  vec4 sharedIndirect=vec4(0);float sharedDistance=0;
+  if(frame.jitter.z!=0)sharedIndirect=waterIndirect(hit,inBounds&&signedCount==1&&hit.blended,pixel,sharedDistance);
+  if(!inBounds)return;
+  if(!single||!hit.blended){SheetResults(frame.sheetResults).pixels[index]=packSheet(vec3(0),vec3(0),0);return;}
+  vec3 specular;float distance;
+  skipSheetLocal=hit.pbr&&(frame.pathConfig.z&3u)==0;
+  vec3 light=direct(hit,true,specular,distance);
+  skipSheetLocal=false;
+  distance=nearestDistance(distance,sharedDistance);
+  if(sharedIndirect.a!=0)light+=materialFactor(hit)*sharedIndirect.rgb;
+  else if((frame.pathConfig.z&1u)==0&&!hit.pbr)light+=materialFactor(hit)*sheetIndirect(pixel,hit,direction);
+  else for(uint i=0;i<frame.config.x;++i) {
+    vec3 d,s;float t;
+    light+=materialFactor(hit)*continuation(hit,d,t,s)/float(frame.config.x);
+    specular+=materialFactor(hit)*s/float(frame.config.x);
+    distance=nearestDistance(distance,t);
+  }
+  SheetResults(frame.sheetResults).pixels[index]=packSheet(light,specular,distance);
+  return;
 #elif defined(INDIRECT_PASS)
   if(any(greaterThanEqual(pixel,ivec2(frame.target.xy))))return;
   rng=hash(uint(pixel.x)+uint(pixel.y)*frame.target.x+hash(frame.config.z));
@@ -1250,14 +1316,19 @@ void main() {
   ray((vec2(pixel)+.5+frame.jitter.xy)/vec2(frame.target.xy)*2-1,frame.inverseCamera,origin,direction);
   Hit primary=frame.target.w!=0?rasterPrimary(pixel,origin):cameraHit(origin,direction);
   uint passed;primary=pastSheets(primary,origin,direction,passed);
+  rng=hash(rng^0x696e6469u); // its own sequence, apart from the direct pass's
   vec3 diffuseFactor=vec3(1),specularFactor=vec3(1);
+#ifdef TEMPORAL
   if(primary.t<1e30&&primary.pbr)
     NRD_MaterialFactors(primary.n,primary.wo,primary.color.rgb*(1-primary.rm.y),
       mix(vec3(.04),primary.color.rgb,primary.rm.y),primary.rm.x,diffuseFactor,specularFactor);
+#endif
   IndirectResult result=traceIndirect(primary,pixel,diffuseFactor,specularFactor);
   IndirectResults(frame.indirectResults).pixels[uint(pixel.x)+uint(pixel.y)*frame.target.x]=
-    IndirectTransport(result.radiance,result.state);
+    packIndirect(result.radiance,result.distance,result.state);
+#ifdef TEMPORAL
   if(primary.t==1e30||primary.blended)clearIndirect(pixel,0);
+#endif
   return;
 #elif defined(SPLIT_LIGHTING_PASS)
   if(any(greaterThanEqual(pixel,ivec2(frame.target.xy))))return;
@@ -1459,7 +1530,11 @@ void main() {
 #endif
     if(separateIndirect) {
       IndirectTransport result=IndirectResults(frame.indirectResults).pixels[uint(pixel.x)+uint(pixel.y)*frame.target.x];
-      indirect=result.radiance;rng=result.state;
+      vec2 rg=unpackHalf2x16(result.rg),bd=unpackHalf2x16(result.bd);
+      indirect=vec3(rg,bd.x);rng=result.state;
+#ifdef TEMPORAL
+      specularDistance=bd.y;
+#endif
     } else {
       IndirectResult result;
 #ifdef TEMPORAL
@@ -1625,11 +1700,6 @@ void main() {
   float firstSheet=sheetCount!=0&&primary.blended?primary.t:-1;
   vec4 sharedIndirect=vec4(0);
 #ifdef SINGLE_SHEET_PASS
-  uint directSeed=rng;
-  float sharedDistance=0;
-  if(frame.jitter.z!=0)
-    sharedIndirect=waterIndirect(primary,inBounds&&signedCount==1&&primary.blended,pixel,sharedDistance);
-  rng=directSeed; // Reused GI must not change the full-resolution direct sample.
   if(sheetCount>1)return;
 #endif
   if(!inBounds)return;
@@ -1645,22 +1715,15 @@ void main() {
   for(uint layer=0;layer<sheetCount;++layer) {
     Hit hit=primary;hit.wo=-direction;
 #endif
-#if defined(TEMPORAL) && defined(SINGLE_SHEET_PASS)
-      vec3 surfaceSpecular;
-      float surfaceDistance;
-      skipSheetLocal=hit.pbr&&(frame.pathConfig.z&3u)==0;
-      vec3 surfaceLight=direct(hit,true,surfaceSpecular,surfaceDistance)+hit.emission;
-      skipSheetLocal=false;
-      surfaceDistance=nearestDistance(surfaceDistance,sharedDistance);
-      if(sharedIndirect.a!=0)surfaceLight+=materialFactor(hit)*sharedIndirect.rgb;
-      else if((frame.pathConfig.z&1u)==0&&!hit.pbr)surfaceLight+=materialFactor(hit)*sheetIndirect(pixel,hit,direction);
-      else for(uint i=0;i<frame.config.x;++i) {
-        vec3 d,s;float t;
-        surfaceLight+=materialFactor(hit)*continuation(hit,d,t,s)/float(frame.config.x);
-        surfaceSpecular+=materialFactor(hit)*s/float(frame.config.x);
-        surfaceDistance=nearestDistance(surfaceDistance,t);
-      }
+#ifdef SINGLE_SHEET_PASS
+      // Lit by the sheet lighting pass (SHEET_LIGHTING_PASS): its direct light
+      // and paths or reused GI, as one radiance, specular and hit distance.
+      vec3 surfaceSpecular;float surfaceDistance;
+      vec3 surfaceLight=unpackSheet(SheetResults(frame.sheetResults).pixels[uint(pixel.x)+uint(pixel.y)*frame.target.x],
+                                    surfaceSpecular,surfaceDistance)+hit.emission;
+#ifdef TEMPORAL
       frontRadiance(hit,pixel,max(surfaceLight-hit.emission,vec3(0)),surfaceSpecular,surfaceDistance);
+#endif
 #else
       vec3 surfaceLight;
       if((frame.pathConfig.z&1u)==0&&!hit.pbr&&reusedDirect.x>=0)surfaceLight=reusedDirect*materialFactor(hit);

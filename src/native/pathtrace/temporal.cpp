@@ -1,17 +1,16 @@
 #include "pathtrace/gpu.h"
 #include "pathtrace/shader_code.h"
 #include "runtime/pipelines.h"
+#include <algorithm>
 #include "upscale/ngx.h"
 
 namespace remix {
   using namespace trace::detail;
   void PathTracer::Gpu::destroyIndirect() {
-    for (auto &pipeline : indirectPass.pipeline) {
-      forgetLightingPipeline(pipeline);
-      if (pipeline)
-        pipeline::destroyPipeline(device, pipeline, nullptr);
-      pipeline = VK_NULL_HANDLE;
-    }
+    forgetLightingPipeline(indirectPass.pipeline);
+    if (indirectPass.pipeline)
+      pipeline::destroyPipeline(device, indirectPass.pipeline, nullptr);
+    indirectPass.pipeline = VK_NULL_HANDLE;
     indirectPass.results.reset();
     indirectPass.active = indirectPass.failed = false;
   }
@@ -36,48 +35,33 @@ namespace remix {
 
   void PathTracer::Gpu::configureIndirect(Frame &frame, const TraceOptions &options, bool querySharc) {
     indirectPass.active = false;
-    if (rrActive() || !indirectPass.mode || indirectPass.failed || !denoiser || !postSplit ||
-        !splitLightingActive || !localIlluminationActive || !options.bounces || (options.pbrLocalReuse && options.localDirectClamp == 0 && options.indirectClamp == 0) ||
-        (indirectPass.mode == 1 && (querySharc || options.separateLocalLighting != 3)))
+    if (!indirectPlanned(options))
+      return;
+    // Mode 1 (auto): only where the combined kernel's registers made it pay.
+    if (indirectPass.mode == 1 &&
+        (rrActive() || !denoiser || !postSplit || !splitLightingActive || !localIlluminationActive ||
+         (options.pbrLocalReuse && options.localDirectClamp == 0 && options.indirectClamp == 0) || querySharc ||
+         options.separateLocalLighting != 3))
       return;
     try {
-      auto &pipeline = indirectPass.pipeline[querySharc];
-      if (!pipeline) {
-        const auto source = trace::shader(querySharc ? trace::Stage::sharcIndirectTemporal : trace::Stage::indirectTemporal);
-        VkShaderModuleCreateInfo info{.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-                                       .codeSize = source.bytes, .pCode = source.code};
-        VkShaderModule module{};
-        check(pipeline::createShaderModule(device, &info, nullptr, &module));
-        const VkBool32 guidance = VK_FALSE;
-        const VkSpecializationMapEntry entry{1, 0, sizeof(guidance)};
-        const VkSpecializationInfo specialization{1, &entry, sizeof(guidance), &guidance};
-        VkComputePipelineCreateInfo create{.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-                                            .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                                      .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = module,
-                                                      .pName = "main", .pSpecializationInfo = &specialization},
-                                            .layout = temporalLayout};
-        const auto result = pipeline::createComputePipelines(
-            device, VK_NULL_HANDLE, 1, &create, nullptr, &pipeline);
-        pipeline::destroyShaderModule(device, module, nullptr);
-        if (result == VK_NOT_READY)
-          return;
-        check(result);
-        lightingPipelines[pipeline] = {source.code, source.bytes, temporalLayout};
-        // On the measured Turing driver, first-hit termination raises the
-        // uncached producer from 128 to 168 registers. Local visibility only
-        // returns a boolean, so closest-blocker traversal preserves transport.
-        lightingPipelines[pipeline].preferFirstHit = querySharc;
-      }
+      // The transport exists whenever a consumer base pipeline may run, with
+      // or without its producer (rendering.cpp clears it then).
       const VkDeviceSize bytes = VkDeviceSize(extent.width) * extent.height * 16;
       if (!indirectPass.results || indirectPass.results->size < bytes) {
-        auto next = buffer(bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false);
+        auto next = buffer(bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false);
         if (indirectPass.results) retiredBuffers.push_back(std::move(indirectPass.results));
         indirectPass.results = std::move(next);
       }
       frame.indirectResults = indirectPass.results->address;
+      // Normally part of the lighting batch (beginFrame, createRawPipelines);
+      // here for a configuration that gained the pass later.
+      if (!indirectPass.pipeline)
+        createLightingPipelines({{lightingStage(denoiser ? trace::Stage::indirectTemporal : trace::Stage::indirect),
+                                  denoiser ? temporalLayout : layout, &indirectPass.pipeline, true}});
       indirectPass.active = true;
     } catch (VkResult error) {
       if (error == VK_ERROR_DEVICE_LOST) throw;
+      if (error == VK_NOT_READY) return; // compiling: inline tracing meanwhile
       indirectPass.failed = true;
       std::fprintf(stderr, "Separate indirect pass unavailable (%d); using inline tracing\n", int(error));
     }
@@ -107,6 +91,10 @@ namespace remix {
     if (singleTemporalTransparencyCompute)
       pipeline::destroyPipeline(device, singleTemporalTransparencyCompute, nullptr);
     singleTemporalTransparencyCompute = VK_NULL_HANDLE;
+    forgetLightingPipeline(sheetTemporalCompute);
+    if (sheetTemporalCompute)
+      pipeline::destroyPipeline(device, sheetTemporalCompute, nullptr);
+    sheetTemporalCompute = VK_NULL_HANDLE;
     forgetLightingPipeline(temporalTransparencyCompute);
     forgetLightingPipeline(temporalCompute);
     forgetLightingPipeline(confidenceCompute);
@@ -137,6 +125,15 @@ namespace remix {
     postFailure.clear();
   }
   void PathTracer::Gpu::beginFrame(const TraceOptions &options) {
+    // A changed variant setting: prewarm the scene's variants for its value.
+    const bool variantSettings =
+        lightingOptions.shadowEarlyOut != options.shadowEarlyOut || lightingOptions.localGuiding != options.localGuiding ||
+        lightingOptions.separateLocalLighting != options.separateLocalLighting ||
+        std::max(lightingOptions.emissiveCandidates, lightingOptions.sphereCandidates) !=
+            std::max(options.emissiveCandidates, options.sphereCandidates);
+    lightingOptions = options;
+    // After this frame's own requests (rendering.cpp), so they get workers first.
+    prewarmPending |= variantSettings;
     retiredPreviousVertices.clear(); // beginFrame runs after the previous submission fence.
     const auto &caps = postCapabilities;
     const bool reblur = options.denoiser && !options.accumulate && !options.sharcDebug && caps.reblurShSupported;
@@ -197,16 +194,27 @@ namespace remix {
                          options.separateLocalLighting == 1,
                          rrActive() && caps.reblurShSupported);
         VkDescriptorSetLayout layouts[] = {setLayout, next->inputLayout()};
+        // The same push ranges as `layout`, so both families' dispatches
+        // take the pushed per-dispatch switches.
         VkPipelineLayoutCreateInfo li{.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                       .setLayoutCount = 2,
-                                      .pSetLayouts = layouts};
+                                      .pSetLayouts = layouts,
+                                      .pushConstantRangeCount = uint32_t(std::size(pushRanges)),
+                                      .pPushConstantRanges = pushRanges};
         check(pipeline::createPipelineLayout(device, &li, nullptr,
                                              &temporalLayout));
         // One batch: the temporal lighting passes compile concurrently.
         std::vector<LightingRequest> requests;
+        const bool separateIndirect = indirectPlanned(options);
         auto make = [&](trace::Stage stage, VkPipeline &out) {
-          requests.push_back({stage, temporalLayout, &out, &out == &temporalCompute || &out == &splitDirectCompute});
+          requests.push_back({lightingStage(stage), temporalLayout, &out,
+                              &out == &temporalCompute || &out == &splitDirectCompute || &out == &indirectPass.pipeline,
+                              true, &out == &splitDirectCompute, &out != &psrCompute && &out != &frontGuidesCompute,
+                              separateIndirect && &out == &temporalCompute});
         };
+        // The separate indirect pass and its consumer compile together.
+        if (separateIndirect && !indirectPass.pipeline)
+          make(trace::Stage::indirectTemporal, indirectPass.pipeline);
         if (postSplit && postSigma)
           make(trace::Stage::splitLocalSigmaTemporal, temporalCompute);
         else if (postSplit)
@@ -225,6 +233,7 @@ namespace remix {
         make(trace::Stage::psr, psrCompute);
         make(trace::Stage::singleTemporalTransparency,
              singleTemporalTransparencyCompute);
+        make(trace::Stage::sheetLightingTemporal, sheetTemporalCompute);
         if (postSplit)
           make(trace::Stage::splitLocalDirect, splitDirectCompute);
         if (postSplit && options.restir) {

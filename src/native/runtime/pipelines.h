@@ -23,9 +23,16 @@ public:
   void cancel(const PreparationQueue::Ticket &job);
   void stop();
   Statistics statistics() const;
+  // Dev aid (pipelines.request): every compile and cache save so far, with
+  // the events noted beside them, as text.
+  void note(const std::string &event);
+  std::string report() const;
   struct Impl;
   std::unique_ptr<Impl> impl;
 };
+
+// Names the SPIR-V at `code` in compile reports; the code stays alive.
+void nameCode(const void *code, const char *name);
 
 // The wrappers intern immutable definitions, never images, descriptor pools or
 // histories. A main-thread cache miss schedules work and returns VK_NOT_READY.
@@ -48,8 +55,9 @@ VKAPI_ATTR VkResult VKAPI_CALL createComputePipelines(
 // Schedules the compiles createComputePipelines would perform and returns
 // without waiting; a later createComputePipelines of the same pipelines
 // awaits them. Lets a worker queue independent batches before blocking.
+// Background compiles run only on otherwise idle workers, until requested.
 VKAPI_ATTR void VKAPI_CALL prefetchComputePipelines(
-    VkDevice, uint32_t, const VkComputePipelineCreateInfo *);
+    VkDevice, uint32_t, const VkComputePipelineCreateInfo *, bool background = false);
 VKAPI_ATTR VkResult VKAPI_CALL createGraphicsPipelines(
     VkDevice, VkPipelineCache, uint32_t, const VkGraphicsPipelineCreateInfo *,
     const VkAllocationCallbacks *, VkPipeline *);

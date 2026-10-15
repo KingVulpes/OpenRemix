@@ -87,6 +87,7 @@ layout(set=0,binding=3,std140) uniform Frame {
   vec4 volumeHeight; // up axis; density falloff per world unit above the base height (0: uniform)
   vec4 volumeEye, volumePrevious; // the windows' centre this frame and last
   vec4 cameraMedium; // remixapi_CameraMediumEXT: transmittance colour, measurement distance (0: in air)
+  uint64_t sheetResults; // SheetResults: the sheet lighting pass's transport
 } frame;
 layout(set=0,binding=6) uniform sampler2D textures[4096];
 // remixapi_InstanceInfoMaskEXT CUT: the camera does not see a surface where

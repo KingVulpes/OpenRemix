@@ -3,6 +3,7 @@
 #include "platform/utf8_path.h"
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <map>
@@ -28,6 +29,14 @@ struct Key {
 };
 std::mutex registryMutex;
 std::map<VkDevice, Service::Impl *> registry;
+std::mutex nameMutex;
+std::map<const void *, std::string> codeNames;
+std::string codeName(const void *code, size_t bytes) {
+  std::lock_guard lock(nameMutex);
+  const auto found = codeNames.find(code);
+  return found != codeNames.end() ? found->second
+                                   : std::to_string(bytes) + "-byte module";
+}
 Service::Impl &service(VkDevice device) {
   std::lock_guard lock(registryMutex);
   return *registry.at(device);
@@ -187,6 +196,40 @@ struct Service::Impl {
     PreparationQueue::Ticket job;
   };
   std::map<std::string, std::shared_ptr<Pipeline>> pipelines;
+  // Dev report (guarded by mutex): compiles and saves, milliseconds since
+  // the service started.
+  const std::chrono::steady_clock::time_point born =
+      std::chrono::steady_clock::now();
+  std::map<uint64_t, std::string> moduleNames;
+  struct Record {
+    double queued = 0, started = 0, finished = 0;
+    bool hit = false, failed = false;
+    std::string name;
+  };
+  std::vector<Record> records;
+  std::vector<std::pair<double, std::string>> events;
+  double since() const {
+    return std::chrono::duration<double, std::milli>(
+               std::chrono::steady_clock::now() - born)
+        .count();
+  }
+  // A stage's module name and its non-zero specialization constants.
+  std::string stageName(const Stage &stage) {
+    auto name = moduleNames.count(uint64_t(stage.info.module))
+                    ? moduleNames[uint64_t(stage.info.module)]
+                    : std::string("module");
+    std::string constants;
+    for (const auto &entry : stage.entries) {
+      uint64_t value = 0;
+      std::memcpy(&value, stage.data.data() + entry.offset,
+                  std::min<size_t>(entry.size, sizeof(value)));
+      if (value)
+        constants += (constants.empty() ? "" : ",") +
+                     std::to_string(entry.constantID) +
+                     (value == 1 ? "" : "=" + std::to_string(value));
+    }
+    return constants.empty() ? name : name + "[" + constants + "]";
+  }
   // Cache writes are coalesced: a save covers every compile finished before it.
   std::mutex saveMutex;
   std::atomic<uint64_t> saveRequests{0};
@@ -250,10 +293,11 @@ struct Service::Impl {
   // Schedules a compile (or finds the existing one) without waiting, so a
   // batch of pipelines is queued before any of it is awaited.
   std::shared_ptr<Pipeline>
-  enqueue(std::string key,
+  enqueue(std::string key, std::string name,
           std::function<VkResult(VkPipeline *,
                                  VkPipelineCreationFeedbackCreateInfo *)>
-              compile) {
+              compile,
+          PreparationQueue::Kind kind = PreparationQueue::Kind::Parallel) {
     queue.checkCancelled();
     std::shared_ptr<Pipeline> result;
     {
@@ -265,12 +309,21 @@ struct Service::Impl {
           ++stats.reused;
         else
           ++stats.deduplicated;
+        // Wanted now: a prewarmed compile joins the ordinary ones.
+        if (kind != PreparationQueue::Kind::Background)
+          queue.promote(result->job);
       } else {
         result = std::make_shared<Pipeline>();
         ++stats.requested;
-        result->job = queue.request(key, [this, result,
+        const size_t record = records.size();
+        records.push_back({.queued = since(), .name = std::move(name)});
+        result->job = queue.request(key, [this, result, record,
                                           compile = std::move(compile)] {
           const auto start = std::chrono::steady_clock::now();
+          {
+            std::lock_guard lock(mutex);
+            records[record].started = since();
+          }
           VkPipelineCreationFeedback feedback{};
           VkPipelineCreationFeedbackCreateInfo info{
               .sType = VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO,
@@ -287,11 +340,14 @@ struct Service::Impl {
               ++stats.created;
             else
               ++stats.failed;
+            auto &entry = records[record];
+            entry.finished = since();
+            entry.failed = status != VK_SUCCESS;
             if (feedback.flags & VK_PIPELINE_CREATION_FEEDBACK_VALID_BIT) {
               stats.driverNanoseconds += feedback.duration;
-              stats.cacheHits += bool(
-                  feedback.flags &
-                  VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT);
+              entry.hit = feedback.flags &
+                          VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT;
+              stats.cacheHits += entry.hit;
             }
           }
           if (status != VK_SUCCESS) {
@@ -301,7 +357,7 @@ struct Service::Impl {
             throw status;
           }
           save();
-        }, PreparationQueue::Kind::Parallel);
+        }, kind);
         pipelines.emplace(std::move(key), result);
       }
     }
@@ -331,6 +387,7 @@ struct Service::Impl {
     if (savedRequest >= request)
       return; // A later save already included this compile.
     savedRequest = saveRequests.load();
+    const double started = since();
     try {
       size_t size = 0;
       if (vkGetPipelineCacheData(device, cache, &size, nullptr) != VK_SUCCESS ||
@@ -344,6 +401,11 @@ struct Service::Impl {
       const bool ok = writeCache(path, identity, bytes);
       std::lock_guard lock(mutex);
       stats.cacheWriteFailed = !ok;
+      char line[160];
+      std::snprintf(line, sizeof(line),
+                    "cache save of %.1f MiB took %.0f ms%s", size / 1048576.0,
+                    since() - started, ok ? "" : " (write failed)");
+      events.emplace_back(started, line);
     } catch (...) {
       std::lock_guard lock(mutex);
       stats.cacheWriteFailed = true;
@@ -415,6 +477,57 @@ Statistics Service::statistics() const {
   std::lock_guard lock(impl->mutex);
   return impl->stats;
 }
+void Service::note(const std::string &event) {
+  std::lock_guard lock(impl->mutex);
+  impl->events.emplace_back(impl->since(), event);
+}
+std::string Service::report() const {
+  auto &g = *impl;
+  std::lock_guard lock(g.mutex);
+  const auto &s = g.stats;
+  char line[512];
+  std::snprintf(line, sizeof(line),
+                "# pipelines requested %llu, created %llu, failed %llu, reused "
+                "%llu, deduplicated %llu, cache hits %llu; compile time %.0f ms "
+                "summed over %u workers; cache %s\n",
+                (unsigned long long)s.requested, (unsigned long long)s.created,
+                (unsigned long long)s.failed, (unsigned long long)s.reused,
+                (unsigned long long)s.deduplicated,
+                (unsigned long long)s.cacheHits, s.milliseconds,
+                Impl::compilerThreads(),
+                s.cacheLoaded ? "loaded" : "not loaded");
+  std::string text = line;
+  text += "# queued started finished compile(ms) hit name, and events "
+          "(milliseconds since the service started)\n";
+  // Compiles and events merged in time order.
+  std::vector<std::pair<double, std::string>> lines = g.events;
+  for (const auto &r : g.records) {
+    if (r.finished)
+      std::snprintf(line, sizeof(line), "%9.0f %9.0f %9.0f %8.0f %s %s%s",
+                    r.queued, r.started, r.finished, r.finished - r.started,
+                    r.hit ? "hit " : "miss", r.name.c_str(),
+                    r.failed ? " FAILED" : "");
+    else
+      std::snprintf(line, sizeof(line), "%9.0f %9s %9s %8s %s %s", r.queued,
+                    r.started ? "running" : "queued", "", "", "    ",
+                    r.name.c_str());
+    lines.emplace_back(r.queued, line);
+  }
+  std::stable_sort(lines.begin(), lines.end(),
+                   [](auto &a, auto &b) { return a.first < b.first; });
+  for (const auto &[time, entry] : lines) {
+    if (entry.empty() || entry[0] != ' ') {
+      std::snprintf(line, sizeof(line), "%9.0f # ", time);
+      text += line;
+    }
+    text += entry + "\n";
+  }
+  return text;
+}
+void nameCode(const void *code, const char *name) {
+  std::lock_guard lock(nameMutex);
+  codeNames[code] = name;
+}
 
 VKAPI_ATTR VkResult VKAPI_CALL
 createShaderModule(VkDevice d, const VkShaderModuleCreateInfo *i,
@@ -423,8 +536,16 @@ createShaderModule(VkDevice d, const VkShaderModuleCreateInfo *i,
   Key k;
   k.add(i->flags);
   k.blob(i->pCode, i->codeSize);
-  return service(d).intern(VK_OBJECT_TYPE_SHADER_MODULE, std::move(k), i, out,
-                           vkCreateShaderModule, vkDestroyShaderModule);
+  auto &g = service(d);
+  const auto result =
+      g.intern(VK_OBJECT_TYPE_SHADER_MODULE, std::move(k), i, out,
+               vkCreateShaderModule, vkDestroyShaderModule);
+  if (result == VK_SUCCESS) {
+    auto name = codeName(i->pCode, i->codeSize);
+    std::lock_guard lock(g.mutex);
+    g.moduleNames.emplace(uint64_t(*out), std::move(name));
+  }
+  return result;
 }
 VKAPI_ATTR VkResult VKAPI_CALL createSampler(VkDevice d,
                                              const VkSamplerCreateInfo *i,
@@ -622,7 +743,8 @@ VkResult resolveBatch(Service::Impl &g,
 } // namespace
 namespace {
 std::shared_ptr<Service::Impl::Pipeline>
-enqueueCompute(Service::Impl &g, const VkComputePipelineCreateInfo &info) {
+enqueueCompute(Service::Impl &g, const VkComputePipelineCreateInfo &info,
+               PreparationQueue::Kind kind = PreparationQueue::Kind::Parallel) {
   auto recipe = std::make_shared<Compute>(info);
   Key k;
   k.add(uint32_t(VK_PIPELINE_BIND_POINT_COMPUTE));
@@ -633,15 +755,21 @@ enqueueCompute(Service::Impl &g, const VkComputePipelineCreateInfo &info) {
     k.add(g.definition(VK_OBJECT_TYPE_PIPELINE_LAYOUT,
                        uint64_t(recipe->info.layout)));
   }
+  std::string name;
+  {
+    std::lock_guard lock(g.mutex);
+    name = g.stageName(recipe->stage);
+  }
   return g.enqueue(
-      std::move(k.bytes),
+      std::move(k.bytes), std::move(name),
       [recipe, &g](VkPipeline *p,
                    VkPipelineCreationFeedbackCreateInfo *feedback) {
         recipe->info.stage = recipe->stage.bind();
         recipe->info.pNext = feedback;
         return vkCreateComputePipelines(g.device, g.cache, 1, &recipe->info,
                                         nullptr, p);
-      });
+      },
+      kind);
 }
 } // namespace
 VKAPI_ATTR VkResult VKAPI_CALL
@@ -659,10 +787,11 @@ createComputePipelines(VkDevice d, VkPipelineCache, uint32_t count,
 }
 VKAPI_ATTR void VKAPI_CALL
 prefetchComputePipelines(VkDevice d, uint32_t count,
-                         const VkComputePipelineCreateInfo *infos) {
+                         const VkComputePipelineCreateInfo *infos, bool background) {
   auto &g = service(d);
   for (uint32_t n = 0; n < count; ++n)
-    enqueueCompute(g, infos[n]);
+    enqueueCompute(g, infos[n],
+                   background ? PreparationQueue::Kind::Background : PreparationQueue::Kind::Parallel);
 }
 VKAPI_ATTR VkResult VKAPI_CALL
 createGraphicsPipelines(VkDevice d, VkPipelineCache, uint32_t count,
@@ -770,8 +899,14 @@ createGraphicsPipelines(VkDevice d, VkPipelineCache, uint32_t count,
       k.add(b.alphaBlendOp);
       k.add(b.colorWriteMask);
     }
+    std::string name;
+    {
+      std::lock_guard lock(g.mutex);
+      for (const auto &s : r->stages)
+        name += (name.empty() ? "" : "+") + g.stageName(s);
+    }
     batch.push_back(g.enqueue(
-        std::move(k.bytes),
+        std::move(k.bytes), std::move(name),
         [r, &g](VkPipeline *p, VkPipelineCreationFeedbackCreateInfo *feedback) {
           r->bind();
           r->info.pNext = feedback;

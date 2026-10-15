@@ -867,6 +867,16 @@ namespace remix {
                       tables.dynamicInputs().empty() && temporalFrame.local[2] == 0 && !history.reset());
     const bool querySharc = sharc.stats.active && (sharc.hasReceivers || options.sharcDebug);
     configureIndirect(frame, options, querySharc);
+    {
+      // The sheet lighting pass's transport.
+      const VkDeviceSize bytes = VkDeviceSize(extent.width) * extent.height * 16;
+      if (!sheetResults || sheetResults->size < bytes) {
+        auto next = buffer(bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, false);
+        if (sheetResults) retiredBuffers.push_back(std::move(sheetResults));
+        sheetResults = std::move(next);
+      }
+      frame.sheetResults = sheetResults->address;
+    }
     configureSparse(command, frame, options, extent);
     configureVolume(command, frame, options);
     beginRayProfile(command, frame);
@@ -1002,7 +1012,7 @@ namespace remix {
     recordRegir(command);
     recordVolume(command);
     recordSharc(command);
-    recordOrca(command, extent, querySharc);
+    recordOrca(command, extent);
     recordSparse(command, extent);
     if (denoiser) {
       denoiser->setLocalTuning({options.localAntilagSigma, options.localAntilagSensitivity, options.localHistoryFrames,
@@ -1012,11 +1022,9 @@ namespace remix {
                       options.localFireflyFilter && (postLocalDenoise || options.bounces > 0));
     }
     stageTime(5);
-    // Idle caches have no eligible hit in either TLAS. Select the ordinary
-    // shader so unused hash-grid code does not reserve tracing registers.
-    // Keep the cache debug specialization available even in an empty scene.
-    const auto opaqueSource =
-        querySharc ? (denoiser ? sharc.temporal : sharc.query) : (denoiser ? temporalCompute : compute);
+    // One lighting family (lightingStage): the cache query is gated per
+    // frame by sharcConfig, so an idle cache costs no pipeline of its own.
+    const auto opaqueSource = denoiser ? temporalCompute : compute;
     VkPipeline opaquePipeline = VK_NULL_HANDLE;
     if (indirectPass.active) {
       opaquePipeline = selectLightingPipeline(opaqueSource, false, true);
@@ -1031,12 +1039,27 @@ namespace remix {
     if (!opaquePipeline)
       opaquePipeline = selectLightingPipeline(opaqueSource);
     const auto opaqueKey = selectedLightingKey;
+    const auto opaqueFeatures = selectedFeatures;
+    const auto opaqueLayout = selectedLayout;
+    // The consumer base pipeline without its producer this frame (the pass
+    // failed, or its inline variant is still compiling): black indirect light.
+    const auto opaqueEntry = lightingPipelines.find(opaqueSource);
+    const bool consumerAlone = !indirectPass.active && opaquePipeline == opaqueSource && indirectPass.results &&
+                               opaqueEntry != lightingPipelines.end() && opaqueEntry->second.baseSeparateIndirect;
+    if (consumerAlone) {
+      vkCmdFillBuffer(command, indirectPass.results->handle, 0, VK_WHOLE_SIZE, 0);
+      barrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+    }
     // Sparse rendering launches the opaque pass twice. Both variants compile
     // lazily; until they have, the frame is lit densely.
     VkPipeline sparseLit = VK_NULL_HANDLE, sparseGuides = VK_NULL_HANDLE;
+    uint32_t sparseLitFeatures = defaultFeatures, sparseGuidesFeatures = defaultFeatures;
     if (sparse.active && !indirectPass.active) {
       sparseLit = selectLightingPipeline(opaqueSource, false, false, 1);
+      sparseLitFeatures = selectedFeatures;
       sparseGuides = selectLightingPipeline(opaqueSource, false, false, 2);
+      sparseGuidesFeatures = selectedFeatures;
     }
     sparse.launched = sparseLit && sparseGuides;
     // A changed rate starts Ray Reconstruction's history over, so the image
@@ -1060,14 +1083,14 @@ namespace remix {
     }
     if (denoiser && temporalFrame.translucency[2]) {
       gpu::GpuScope scope(command, "Primary surface replacement", extent);
-      vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, psrCompute);
+      bindTrace(command, psrCompute, temporalLayout, defaultFeatures);
       vkCmdDispatch(command, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
       barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
               VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
     }
     if (denoiser && temporalFrame.translucency[0]) {
       gpu::GpuScope scope(command, "Translucency front guides", extent);
-      vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, frontGuidesCompute);
+      bindTrace(command, frontGuidesCompute, temporalLayout, defaultFeatures);
       vkCmdDispatch(command, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
       barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
               VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
@@ -1078,12 +1101,12 @@ namespace remix {
       barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
               VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
               VK_ACCESS_SHADER_WRITE_BIT);
-      indirectPipeline = selectLightingPipeline(indirectPass.pipeline[querySharc]);
+      indirectPipeline = selectLightingPipeline(indirectPass.pipeline);
       indirectKey = selectedLightingKey;
       gpu::GpuScope scope(command, querySharc ? "Trace indirect (separate pass, SHARC query)"
                                               : "Trace indirect (separate pass)",
                           extent);
-      vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, indirectPipeline);
+      bindSelected(command, indirectPipeline);
       vkCmdDispatch(command, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
       scope.close();
       barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
@@ -1099,17 +1122,17 @@ namespace remix {
         // The two launches write disjoint pixels.
         {
           gpu::GpuScope scope(command, "Sparse rendering: guides of unlit pixels", extent);
-          vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, sparseGuides);
+          bindTrace(command, sparseGuides, opaqueLayout, sparseGuidesFeatures);
           vkCmdDispatch(command, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
         }
         gpu::GpuScope scope(command, querySharc ? "Trace opaque, selected pixels: direct, sun, local, emissive, indirect+SHARC"
                                                 : "Trace opaque, selected pixels: direct, sun, local, emissive, indirect",
                             extent);
-        vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, sparseLit);
+        bindTrace(command, sparseLit, opaqueLayout, sparseLitFeatures);
         vkCmdDispatchIndirect(command, sparse.count->handle, 16);
       } else {
         gpu::GpuScope scope(command, name, extent);
-        vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, opaquePipeline);
+        bindTrace(command, opaquePipeline, opaqueLayout, opaqueFeatures);
         vkCmdDispatch(command, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
       }
     }
@@ -1123,8 +1146,7 @@ namespace remix {
               VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
     } else if (splitLightingActive && denoiser && postSplit) {
       gpu::GpuScope scope(command, "Trace split local/emissive direct", extent);
-      vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE,
-                        selectLightingPipeline(splitDirectCompute, options.separateLocalLighting == 3));
+      bindSelected(command, selectLightingPipeline(splitDirectCompute, options.separateLocalLighting == 3));
       vkCmdDispatch(command, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
       barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
               VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
@@ -1136,8 +1158,7 @@ namespace remix {
       if (postReblur) {
         barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
-        vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE,
-                          selectLightingPipeline(querySharc ? sharc.confidence : confidenceCompute));
+        bindSelected(command, selectLightingPipeline(confidenceCompute));
         gpu::GpuScope scope(command, "Trace indirect confidence (1/5 res)", (extent.width + 4) / 5,
                             (extent.height + 4) / 5);
         vkCmdDispatch(command, ((extent.width + 4) / 5 + 7) / 8, ((extent.height + 4) / 5 + 7) / 8, 1);
@@ -1153,12 +1174,21 @@ namespace remix {
       stageTime(8);
     }
     stageTime(11);
+    {
+      // The front sheet's light (direct, paths, reused GI), for the
+      // composition below; this frame's opaque radiance and NRD outputs are
+      // available to its reuse.
+      gpu::GpuScope scope(command, "Sheet lighting (front sheet)", extent);
+      bindSelected(command, selectLightingPipeline(denoiser ? sheetTemporalCompute : sheetCompute));
+      vkCmdDispatch(command, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
+    }
+    barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
     const auto singleTransparencyPipeline =
-        selectLightingPipeline(querySharc ? (denoiser ? sharc.singleTemporalTransparency : sharc.singleTransparency)
-                                          : (denoiser ? singleTemporalTransparencyCompute : singleTransparencyCompute));
+        selectLightingPipeline(denoiser ? singleTemporalTransparencyCompute : singleTransparencyCompute);
     {
       gpu::GpuScope scope(command, "Trace transparency (single sheet)", extent);
-      vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, singleTransparencyPipeline);
+      bindSelected(command, singleTransparencyPipeline);
       vkCmdDispatch(command, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
     }
     // Single-sheet composition replaces its scratch count with stable depth (0..1).
@@ -1166,13 +1196,19 @@ namespace remix {
     barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
     const auto transparencyPipeline =
-        selectLightingPipeline(querySharc ? (denoiser ? sharc.temporalTransparency : sharc.transparency)
-                                          : (denoiser ? temporalTransparencyCompute : transparencyCompute));
+        selectLightingPipeline(denoiser ? temporalTransparencyCompute : transparencyCompute);
     const auto transparencyKey = selectedLightingKey;
     {
       gpu::GpuScope scope(command, "Trace transparency (multi-sheet)", extent);
-      vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, transparencyPipeline);
+      bindSelected(command, transparencyPipeline);
       vkCmdDispatch(command, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
+    }
+    if (prewarmPending) {
+      // Behind this frame's own requests: those get the workers first.
+      prewarmPending = false;
+      for (auto &[source, entry] : lightingPipelines)
+        if (entry.variants)
+          prewarmLightingVariants(entry);
     }
     if (timestamps) {
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, timestamps, 3);

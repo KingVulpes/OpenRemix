@@ -2,7 +2,7 @@
 // This is a filtered path-tail approximation, restricted to matching diffuse or
 // rough dielectric endpoints. Failed checks leave the original tracer/RNG intact.
 bool translucentRadiance(Hit hit,out vec3 radiance) {
-#if defined(TEMPORAL) && defined(SINGLE_SHEET_PASS)
+#if defined(TEMPORAL) && defined(SHEET_LIGHTING_PASS)
   if(temporal.translucency.y==0||hit.blended||hit.t==1e30)return false;
   if(hit.pbr&&(hit.rm.x<.8||hit.rm.y>.05))return false;
   vec4 clip=frame.camera*vec4(hit.p,1);

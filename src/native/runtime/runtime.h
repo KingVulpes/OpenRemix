@@ -123,6 +123,9 @@ public:
             m_pipelines ? m_pipelines->statistics() : pipeline::Statistics{},
             m_preparationFailure};
   }
+  std::string pipelineReport() const {
+    return m_pipelines ? m_pipelines->report() : std::string("no device\n");
+  }
   bool hasStartedFrame() const {
     if (const auto *busy = busyState())
       return busy->frameStarted;
@@ -393,6 +396,10 @@ private:
   uint32_t m_reconstructionFailureMask = 0;
   std::string m_reconstructionFailureKey, m_reconstructionFailure;
   bool m_localSourcesSeen = false;
+  // When an upscaler profile first met a non-perspective camera (a menu or
+  // loading screen) with no renderer yet: prepareSettings holds the first
+  // preparation for the world's camera, within a bound.
+  std::chrono::steady_clock::time_point m_worldCameraWait{};
   std::shared_ptr<std::atomic<unsigned>> m_ngxPreparing =
       std::make_shared<std::atomic<unsigned>>(0);
   TraceOptions m_traceOptions;

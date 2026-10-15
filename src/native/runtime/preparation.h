@@ -34,13 +34,16 @@ private:
 // take Parallel jobs (independent pipeline compiles), so Serial jobs such as
 // configuration preparation never run concurrently with each other, and a
 // Serial job starts only after every job requested before it has finished.
+// Background jobs (prewarmed pipeline variants) are taken only by a worker
+// with no other work to take, never hold a Serial job back, and become
+// Parallel when promoted (requested for use).
 class PreparationQueue {
 public:
   enum class State { Queued, Running, Complete, Failed, Cancelled };
-  enum class Kind { Serial, Parallel };
+  enum class Kind { Serial, Parallel, Background };
   struct Job {
     std::atomic<State> state{State::Queued};
-    Kind kind = Kind::Serial;
+    std::atomic<Kind> kind{Kind::Serial};
     std::atomic<bool> cancelRequested{false};
     std::exception_ptr failure;
     std::function<void()> work;
@@ -52,6 +55,8 @@ public:
   ~PreparationQueue();
   Ticket request(const std::string &key, std::function<void()> work, Kind kind = Kind::Serial);
   void cancel(const Ticket &job);
+  // A queued Background job joins the Parallel jobs.
+  void promote(const Ticket &job);
   void stop();
   bool onWorker() const;
   // A preparation job can need a pipeline already queued behind it. Claim
@@ -65,8 +70,9 @@ private:
   void run(bool primary);
   std::mutex mutex;
   std::condition_variable wake, finished;
-  std::deque<Ticket> pending;
+  std::deque<Ticket> pending, background;
   std::vector<Ticket> active;
+  unsigned foregroundActive = 0; // of `active`, the Serial and Parallel jobs
   std::unordered_map<std::string, Ticket> jobs;
   bool stopping = false;
   std::vector<std::thread> workers;

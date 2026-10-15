@@ -37,7 +37,7 @@ void PathTracer::Gpu::configureVolume(VkCommandBuffer command, Frame &frame, con
     return;
   if (!v.update) {
     try {
-      createLightingPipelines({{trace::Stage::volumeUpdate, layout, &v.update, false, false}});
+      createLightingPipelines({{trace::Stage::volumeUpdate, layout, &v.update, false, false, false, false}});
     } catch (VkResult error) {
       // Still compiling in the background: retry on a later frame.
       if (error == VK_ERROR_DEVICE_LOST)
@@ -122,7 +122,7 @@ void PathTracer::Gpu::recordVolume(VkCommandBuffer command) {
   barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
           VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
   vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &set, 0, nullptr);
-  vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, v.update);
+  bindTrace(command, v.update, layout, defaultFeatures);
   const uint32_t count = v.cellsPerSide * v.cellsPerSide * v.cellsPerSide * v.levels;
   vkCmdDispatch(command, (count + 1 + 63) / 64, 1, 1);
   barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,

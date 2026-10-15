@@ -152,12 +152,14 @@ namespace remix {
     forgetLightingPipeline(singleTransparencyCompute);
     if (singleTransparencyCompute)
       pipeline::destroyPipeline(device, singleTransparencyCompute, nullptr);
-    for (auto &sparse : orca.sparse) {
-      forgetLightingPipeline(sparse);
-      if (sparse)
-        pipeline::destroyPipeline(device, sparse, nullptr);
-      sparse = VK_NULL_HANDLE;
-    }
+    forgetLightingPipeline(sheetCompute);
+    if (sheetCompute)
+      pipeline::destroyPipeline(device, sheetCompute, nullptr);
+    sheetResults.reset();
+    forgetLightingPipeline(orca.sparse);
+    if (orca.sparse)
+      pipeline::destroyPipeline(device, orca.sparse, nullptr);
+    orca.sparse = VK_NULL_HANDLE;
     forgetLightingPipeline(regir.presample);
     if (regir.presample)
       pipeline::destroyPipeline(device, regir.presample, nullptr);
@@ -266,6 +268,7 @@ namespace remix {
     auto &g = *m_gpu;
     g.physical = physical;
     g.device = device;
+    g.querySharcSupport();
     g.queueFamily = queueFamily;
     g.postFallback = std::make_unique<postfx::Renderer>();
     g.postFallback->initialize(physical, device, queueFamily, {1, 1}, {1, 1}, false, false, exposureState);
@@ -336,12 +339,11 @@ namespace remix {
                                             .pSetLayouts = &g.setLayout};
     check(vkAllocateDescriptorSets(device, &allocate, &g.set));
     const VkDescriptorSetLayout compositeSets[] = {g.setLayout, g.postSetLayout};
-    VkPushConstantRange push = {VK_SHADER_STAGE_FRAGMENT_BIT, 0, 28};
     VkPipelineLayoutCreateInfo layout = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                          .setLayoutCount = 2,
                                          .pSetLayouts = compositeSets,
-                                         .pushConstantRangeCount = 1,
-                                         .pPushConstantRanges = &push};
+                                         .pushConstantRangeCount = uint32_t(std::size(pushRanges)),
+                                         .pPushConstantRanges = pushRanges};
     check(pipeline::createPipelineLayout(device, &layout, nullptr, &g.layout));
     const trace::ShaderCode codes[] = {trace::shader(trace::Stage::comp), trace::shader(trace::Stage::vert),
                                        trace::shader(trace::Stage::frag)};
@@ -368,15 +370,20 @@ namespace remix {
   }
 
   void PathTracer::Gpu::createRawPipelines() {
-    if (compute && transparencyCompute && singleTransparencyCompute)
+    const bool separateIndirect = indirectPlanned(lightingOptions);
+    if (compute && transparencyCompute && singleTransparencyCompute && sheetCompute &&
+        (!separateIndirect || indirectPass.pipeline))
       return;
     // One batch: the raw lighting passes compile concurrently.
-    createLightingPipelines({
-        {trace::Stage::comp, layout, &compute},
-        {trace::Stage::transparency, layout, &transparencyCompute, false},
-        {trace::Stage::singleTransparency, layout,
-         &singleTransparencyCompute, false},
-    });
+    std::vector<LightingRequest> requests = {
+        {lightingStage(trace::Stage::comp), layout, &compute, true, true, false, true, separateIndirect},
+        {lightingStage(trace::Stage::transparency), layout, &transparencyCompute, false},
+        {lightingStage(trace::Stage::singleTransparency), layout, &singleTransparencyCompute, false},
+        {lightingStage(trace::Stage::sheetLighting), layout, &sheetCompute, false},
+    };
+    if (separateIndirect)
+      requests.push_back({lightingStage(trace::Stage::indirect), layout, &indirectPass.pipeline, true});
+    createLightingPipelines(requests);
   }
 
   void PathTracer::configureTarget(VkRenderPass pass, VkExtent2D extent, bool encodeOutput,

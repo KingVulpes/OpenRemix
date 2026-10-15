@@ -32,15 +32,29 @@ PreparationQueue::Ticket PreparationQueue::request(const std::string &key,
     job->state = State::Cancelled;
   else {
     job->work = std::move(work);
-    pending.push_back(job);
+    (kind == Kind::Background ? background : pending).push_back(job);
   }
   jobs.emplace(key, job);
-  // Any worker may take a Parallel job; only the first takes a Serial one.
-  if (kind == Kind::Parallel)
-    wake.notify_one();
-  else
+  // Any worker may take a Parallel or Background job; only the first takes a
+  // Serial one.
+  if (kind == Kind::Serial)
     wake.notify_all();
+  else
+    wake.notify_one();
   return job;
+}
+void PreparationQueue::promote(const Ticket &job) {
+  if (!job)
+    return;
+  std::lock_guard lock(mutex);
+  if (job->kind != Kind::Background || job->state != State::Queued)
+    return;
+  const auto found = std::find(background.begin(), background.end(), job);
+  if (found != background.end())
+    background.erase(found);
+  job->kind = Kind::Parallel;
+  pending.push_back(job);
+  wake.notify_one();
 }
 void PreparationQueue::cancel(const Ticket &job) {
   if (!job)
@@ -63,13 +77,15 @@ void PreparationQueue::stop() {
     stopping = true;
     for (auto &job : active)
       job->cancelRequested = true;
-    for (auto &job : pending) {
-      if (job->state != State::Queued)
-        continue;
-      discarded.push_back(std::move(job->work));
-      job->state = State::Cancelled;
+    for (auto *queue : {&pending, &background}) {
+      for (auto &job : *queue) {
+        if (job->state != State::Queued)
+          continue;
+        discarded.push_back(std::move(job->work));
+        job->state = State::Cancelled;
+      }
+      queue->clear();
     }
-    pending.clear();
     finished.notify_all();
   }
   wake.notify_all();
@@ -108,8 +124,10 @@ void PreparationQueue::execute(const Ticket &job) {
       return;
     job->state = State::Running;
     active.push_back(job);
+    foregroundActive += job->kind != Kind::Background;
     work = std::move(job->work);
   }
+  const bool foreground = job->kind != Kind::Background;
   running.push_back(job.get());
   try {
     work();
@@ -125,8 +143,9 @@ void PreparationQueue::execute(const Ticket &job) {
   {
     std::lock_guard lock(mutex);
     active.erase(std::find(active.begin(), active.end(), job));
+    foregroundActive -= foreground;
     finished.notify_all();
-    if (active.empty())
+    if (!foregroundActive)
       wake.notify_all(); // A Serial job may be waiting for the helpers.
   }
 }
@@ -142,19 +161,34 @@ void PreparationQueue::run(bool primary) {
       auto next = [&] {
         if (primary)
           return pending.empty() || pending.front()->kind == Kind::Parallel ||
-                         pending.front()->state != State::Queued || active.empty()
+                         pending.front()->state != State::Queued || !foregroundActive
                      ? pending.begin()
                      : pending.end();
         return std::find_if(pending.begin(), pending.end(), [](const Ticket &queued) {
           return queued->kind == Kind::Parallel || queued->state != State::Queued;
         });
       };
-      wake.wait(lock, [&] { return stopping || next() != pending.end(); });
+      // A Background job: for a helper with no Parallel job to take, or the
+      // first worker with nothing queued at all (a waiting Serial job must
+      // not wait for it too).
+      // Two workers (one with few) stay out of Background work, so a
+      // compile wanted now never waits for a prewarmed one to finish.
+      auto takeBackground = [&] {
+        const auto limit = std::max<size_t>(1, workers.size() > 2 ? workers.size() - 2 : 1);
+        return !background.empty() && active.size() - foregroundActive < limit &&
+               (!primary || std::none_of(pending.begin(), pending.end(),
+                                         [](const Ticket &queued) { return queued->state == State::Queued; }));
+      };
+      wake.wait(lock, [&] { return stopping || next() != pending.end() || takeBackground(); });
       if (stopping)
         break;
-      const auto found = next();
-      job = std::move(*found);
-      pending.erase(found);
+      if (const auto found = next(); found != pending.end()) {
+        job = std::move(*found);
+        pending.erase(found);
+      } else {
+        job = std::move(background.front());
+        background.pop_front();
+      }
     }
     execute(job);
   }

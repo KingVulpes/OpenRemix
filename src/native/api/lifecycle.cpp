@@ -80,6 +80,7 @@ namespace {
 //   config.request     "key = value" lines applied as SetConfigVariable
 //   screenshot.request presented frame to screenshot.png
 //   timings.request    GPU pass timings (rtx.native.gpuPassTimers) to timings.txt
+//   pipelines.request  every pipeline compile and cache save to pipelines.txt
 //   sequence.request   N (default 60) consecutive captures to sequence/NNN.png,
 //                      one per present while the previous one has completed
 // Each request file is deleted when served.
@@ -191,6 +192,14 @@ void serviceDevRequests() {
     if (!sequenceLeft)
       sequenceLeft = 60;
     sequenceIndex = 0;
+  }
+  if (take("pipelines.request", nullptr)) {
+    std::string text;
+    {
+      std::lock_guard lock(g_apiMutex);
+      text = g_runtime.pipelineReport();
+    }
+    std::ofstream(directory / "pipelines.txt") << text;
   }
   if (take("timings.request", nullptr)) {
     std::string text;

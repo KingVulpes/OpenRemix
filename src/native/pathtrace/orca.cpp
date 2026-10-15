@@ -10,10 +10,9 @@ void PathTracer::Gpu::configureOrca(Frame &frame, const TraceOptions &options) {
   frame.orcaTable = 0;
   std::fill_n(frame.orcaConfig, 4, 0u);
   std::fill_n(frame.orcaParams, 4, 0.f);
-  if (options.orca && !o.pipelineFailed && (!o.sparse[0] || !o.sparse[1])) {
+  if (options.orca && !o.pipelineFailed && !o.sparse) {
     try {
-      createLightingPipelines({{trace::Stage::orcaSparse, layout, &o.sparse[0], false},
-                               {trace::Stage::sharcOrcaSparse, layout, &o.sparse[1], false}});
+      createLightingPipelines({{lightingStage(trace::Stage::orcaSparse), layout, &o.sparse, false}});
     } catch (VkResult error) {
       // Still compiling in the background: retry on a later frame.
       if (error == VK_ERROR_DEVICE_LOST)
@@ -22,7 +21,7 @@ void PathTracer::Gpu::configureOrca(Frame &frame, const TraceOptions &options) {
         o.pipelineFailed = true;
     }
   }
-  o.active = options.orca && o.sparse[0] && o.sparse[1] && options.bounces > 0;
+  o.active = options.orca && o.sparse && options.bounces > 0;
   if (o.active && !o.table) {
     try {
       o.table = buffer(VkDeviceSize(Orca::capacity) * 40,
@@ -49,7 +48,7 @@ void PathTracer::Gpu::configureOrca(Frame &frame, const TraceOptions &options) {
 
 // After the G-buffer and SHARC (sparse path tails may query it), before any
 // pass reads the first bounce: clear the table and trace the sparse paths.
-void PathTracer::Gpu::recordOrca(VkCommandBuffer command, VkExtent2D extent, bool querySharc) {
+void PathTracer::Gpu::recordOrca(VkCommandBuffer command, VkExtent2D extent) {
   auto &o = orca;
   if (!o.active)
     return;
@@ -62,7 +61,7 @@ void PathTracer::Gpu::recordOrca(VkCommandBuffer command, VkExtent2D extent, boo
           VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
           VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
   vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &set, 0, nullptr);
-  vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, selectLightingPipeline(o.sparse[querySharc ? 1 : 0]));
+  bindSelected(command, selectLightingPipeline(o.sparse));
   const uint32_t tilesX = (extent.width + o.tile - 1) / o.tile, tilesY = (extent.height + o.tile - 1) / o.tile;
   vkCmdDispatch(command, (tilesX + 7) / 8, (tilesY + 7) / 8, 1);
   barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,

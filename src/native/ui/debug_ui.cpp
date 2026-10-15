@@ -1,3 +1,4 @@
+#include <cstdio>
 #include "runtime/runtime.h"
 #include "ui/context.h"
 #include "api/imgui_compat.h"
@@ -46,9 +47,14 @@ namespace remix {
               ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings);
       ImGui::TextUnformatted(m_loading ? "Preparing renderer"
                                        : "Preparing requested settings");
-      ImGui::Text("Pipelines: %llu / %llu completed",
-                  (unsigned long long)stats.completed,
-                  (unsigned long long)stats.requested);
+      // The compiles so far as a bar; the scene variants prewarmed in the
+      // background keep it going after activation.
+      char progress[48];
+      std::snprintf(progress, sizeof(progress), "%llu / %llu", (unsigned long long)stats.completed,
+                    (unsigned long long)stats.requested);
+      ImGui::TextUnformatted("Compiling shaders");
+      ImGui::ProgressBar(stats.requested ? float(double(stats.completed) / double(stats.requested)) : 0.f,
+                         ImVec2(280, 0), progress);
       if (m_preparation) {
         const auto seconds =
             std::chrono::duration<double>(std::chrono::steady_clock::now() -

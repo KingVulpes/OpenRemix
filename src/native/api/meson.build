@@ -3,6 +3,7 @@ api_sources = files(
   'configuration.cpp',
   'diagnostics.cpp',
   'game_values.cpp',
+  'host_passes.cpp',
   'imgui_compat.cpp',
   'input.cpp',
   'library.cpp',

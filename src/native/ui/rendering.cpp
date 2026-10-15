@@ -235,6 +235,15 @@ namespace remix {
                           (unsigned long long)memory.textureCount, memory.textureBytes / 1048576.0,
                           memory.compressedTextureBytes / 1048576.0, memory.geometryBytes / 1048576.0);
     }
+    // Shown to a host that uses host passes (remixapi_GetHostPassesEnabledEXT).
+    if (m_hostPasses.asked() && ImGui::CollapsingHeader("Game", ImGuiTreeNodeFlags_DefaultOpen)) {
+      ui::Checkbox("Pass-through game shaders (experimental)", &settings.hostPasses);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Replays the game's screen-space passes (post-processing effects, addon shaders)\n"
+                          "on the path-traced frame with the game's own shaders, before the HUD. Off: the\n"
+                          "game's shader passes are not replayed and the frame is composed without them.\n"
+                          "Applies from the next frame.");
+    }
     if (ImGui::CollapsingHeader("Geometry")) {
       ui::Checkbox("Refresh mesh geometry in place", &settings.refreshGeometry);
       if (ImGui::IsItemHovered())

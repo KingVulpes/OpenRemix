@@ -35,4 +35,13 @@ _Static_assert(sizeof(remixapi_CameraMediumEXT) == 40, "Camera medium ABI");
 _Static_assert(sizeof(remixapi_USDLoadOptionsEXT) == 32, "USD load version 1 ABI");
 _Static_assert(sizeof(remixapi_USDDrawOptionsEXT) == 16, "USD draw version 1 ABI");
 _Static_assert(sizeof(remixapi_USDDiagnosticsEXT) == 1088, "USD diagnostics version 1 ABI");
+_Static_assert(sizeof(remixapi_HostShaderBindingEXT) == 8, "Host shader binding ABI");
+_Static_assert(sizeof(remixapi_HostShaderInfoEXT) == 56, "Host shader info ABI");
+_Static_assert(sizeof(remixapi_HostPassBufferEXT) == 24, "Host pass buffer ABI");
+_Static_assert(sizeof(remixapi_HostPassSamplerEXT) == 32, "Host pass sampler ABI");
+_Static_assert(sizeof(remixapi_HostPassVertexBindingEXT) == 16, "Host pass vertex binding ABI");
+_Static_assert(sizeof(remixapi_HostPassAttributeEXT) == 16, "Host pass attribute ABI");
+_Static_assert(sizeof(remixapi_HostPassEXT) == 272, "Host pass ABI");
+_Static_assert(sizeof(remixapi_HostPassListEXT) == 32, "Host pass list ABI");
+_Static_assert(sizeof(remixapi_HostPassStatisticsEXT) == 72, "Host pass statistics ABI");
 int main(void) { return 0; }

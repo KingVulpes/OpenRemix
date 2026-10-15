@@ -54,6 +54,10 @@ namespace remix::config {
     // Diagnostics (and GetGpuPassTimingsEXT). Off by default; off records no
     // additional queries.
     bool gpuPassTimers = false;
+    // The host's screen-space passes with its own shaders
+    // (remixapi_SubmitHostPassesEXT): off, submissions are dropped and the
+    // frame is composed as without them. Experimental, so off by default.
+    bool hostPasses = false;
     // Hidden textures
     std::vector<uint64_t> hideTextures;
     bool operator==(const Settings &) const = default;

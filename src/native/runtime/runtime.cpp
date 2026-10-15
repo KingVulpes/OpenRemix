@@ -232,6 +232,7 @@ namespace remix {
     m_failedPostKey.clear();
     m_ngx.reset();
     m_raster.shutdownGpu();
+    m_hostPasses.destroy();
     m_pipelines.reset();
     m_activePreparationKey.clear();
     m_failedPreparationKey.clear();

@@ -375,6 +375,7 @@ namespace remix {
     m_gpuTimers.initialize(m_physicalDevice, m_device, m_queueFamily);
     m_pipelines = std::make_unique<pipeline::Service>(m_device, m_properties,
                                                       pipelineFeedback);
+    m_hostPasses.initialize(m_physicalDevice, m_device);
     return REMIXAPI_ERROR_CODE_SUCCESS;
   }
 

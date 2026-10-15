@@ -43,6 +43,7 @@ namespace remix::api {
         std::strcmp(key, "rtx.native.textures.keepCompressed") == 0 ||
         std::strcmp(key, "rtx.native.vramStatistics") == 0 ||
         std::strcmp(key, "rtx.native.meshes.refreshInPlace") == 0 ||
+        std::strcmp(key, "rtx.native.hostPasses") == 0 ||
         std::strcmp(key, "rtx.native.scene.persistentStatic") == 0 ||
         std::strcmp(key, "rtx.native.scene.persistentStaticValidation") == 0 ||
         std::strcmp(key, "rtx.native.asyncPresent") == 0 ||

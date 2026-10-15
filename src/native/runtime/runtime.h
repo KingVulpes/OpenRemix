@@ -30,6 +30,7 @@
 #include "platform/window.h"
 #include "raster/renderer.h"
 #include "runtime/frame_generation.h"
+#include "runtime/host_passes.h"
 #include "runtime/pipelines.h"
 #include "runtime/profiles.h"
 #include "runtime/screenshot.h"
@@ -134,6 +135,7 @@ public:
   bool hasFailed() const { return m_failed; }
   // The API's scene: every resource call, DrawInstance and retained update.
   RasterRenderer &raster() { return m_raster; }
+  HostPasses &hostPasses() { return m_hostPasses; }
   RemixSdlWindow &window() { return m_window; }
   remixapi_FeatureAvailability getFeatureAvailability() const;
   remixapi_DenoisingCapabilitiesEXT denoisingCapabilities() const {
@@ -421,6 +423,7 @@ private:
   PresentedScreenshot m_screenshot;
   bool m_screenshotSupported = false;
   std::shared_ptr<FrameSnapshot> m_lastFrame;
+  HostPasses m_hostPasses; // remixapi_HostPassEXT replay; needs the snapshot's swapchain usage
   bool m_snapshotSupported = false, m_snapshotAllocationFailed = false;
   bool m_initialized = false;
   uint64_t m_presentationCount = 0;

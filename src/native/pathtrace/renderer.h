@@ -63,6 +63,10 @@ namespace remix {
     void configureTarget(VkRenderPass pass, VkExtent2D extent, bool encodeOutput, VkFormat depthFormat,
                          VkImageView depthView, bool hardwareSrgb = false);
     VkRenderPass skyPass() const;
+    // The view depth of the frame being traced (the denoiser's guide, R32
+    // float, GENERAL layout, render resolution): what host passes sample as
+    // REMIXAPI_HOST_TARGET_VIEW_DEPTH_EXT. None without a denoiser.
+    VkImageView viewDepth() const;
     upscale::Statistics upscalingStatistics() const;
     // What frame generation needs of the frame just prepared: the upscaler's
     // depth and motion and the cameras of this and the previous frame

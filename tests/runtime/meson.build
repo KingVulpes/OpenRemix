@@ -1,8 +1,11 @@
 runtime_test = executable('remix-runtime-test', 'lifecycle.cpp',
   include_directories : [test_includes, include_directories('../../samples')], dependencies : [sdl3_dep, dl_dep, threads_dep])
 test('API stubs and failed startup cleanup', runtime_test, args : [remix.full_path()], timeout : 30)
+host_pass_test = executable('remix-host-pass-test', 'host_passes.cpp',
+  include_directories : test_includes, dependencies : [dl_dep, threads_dep])
 if get_option('gpu_tests')
   test('Vulkan presentation and lifecycle', runtime_test, args : [remix.full_path(), 'gpu'], timeout : 90)
+  test('Host passes on the GPU', host_pass_test, args : [remix.full_path()], timeout : 120)
   test('Compressed BC textures on the GPU', runtime_test, args : [remix.full_path(), 'compressed'], timeout : 90)
   if system != 'windows'
     test('Live process exit cleanup', runtime_test, args : [remix.full_path(), 'exit'], timeout : 30)

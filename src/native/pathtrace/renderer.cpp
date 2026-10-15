@@ -93,6 +93,9 @@ namespace remix {
   }
   std::shared_ptr<postfx::State> PathTracer::exposureState() const { return m_gpu->postFallback->state(); }
   VkExtent2D PathTracer::renderExtent() const { return m_gpu->extent; }
+  VkImageView PathTracer::viewDepth() const {
+    return m_gpu->denoiser ? m_gpu->denoiser->image(denoise::Depth).view : VK_NULL_HANDLE;
+  }
   void PathTracer::setPostProcessing(postfx::Renderer *renderer, bool retainExposure) {
     m_gpu->postProcessing = renderer ? renderer : m_gpu->postFallback.get();
     m_gpu->retainPostExposure = retainExposure;

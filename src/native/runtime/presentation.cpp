@@ -1494,8 +1494,20 @@ void RemixNativeRuntime::presented() {
       // Frame generation takes the frame as it is before the UI layer.
       const bool hudless = generated.count && m_frameGeneration && !m_loading;
       const bool split = halos || masks || hudless;
-      const int sceneLayers = split ? 1 : 3;
+      // The host's screen-space passes (remixapi_HostPassEXT) take the frame,
+      // view model included, between render passes before its UI layer.
+      const bool hostPasses = !m_loading && m_snapshotSupported && m_hostPasses.pending();
+      const int sceneLayers = split ? 1 : hostPasses ? 2 : 3;
       const bool skipSky = m_pathTracer != nullptr;
+      auto recordHostPasses = [&] {
+        gpu::GpuScope hostTime(buffer, "Host passes", m_swapchainExtent);
+        // The scene's depth stays in the target's depth attachment.
+        vkCmdEndRenderPass(buffer);
+        m_hostPasses.record(buffer, m_frameIndex, image, m_swapchainFormat, m_swapchainExtent, layout,
+                            m_pathTracer ? m_pathTracer->viewDepth() : VK_NULL_HANDLE);
+        pass.renderPass = m_resumePass;
+        vkCmdBeginRenderPass(buffer, &pass, VK_SUBPASS_CONTENTS_INLINE);
+      };
       if (!m_loading && m_pathTracer) {
         m_pathTracer->record(buffer);
         scope.close();
@@ -1540,7 +1552,7 @@ void RemixNativeRuntime::presented() {
           }
         }
       }
-      if (split && !hudless) {
+      if (split && !hudless && !hostPasses) {
         gpu::GpuScope overlay(buffer, "Raster overlay (view model, HUD)", m_swapchainExtent);
         raster.record(buffer, false, true, nullptr, {}, 2, 3);
       } else if (split) {
@@ -1548,11 +1560,19 @@ void RemixNativeRuntime::presented() {
           gpu::GpuScope overlay(buffer, "Raster overlay (view model)", m_swapchainExtent);
           raster.record(buffer, false, true, nullptr, {}, 2, 2);
         }
-        // The scene's depth stays in the target's depth attachment.
-        vkCmdEndRenderPass(buffer);
-        m_frameGeneration->captureHudless(buffer, image);
-        pass.renderPass = m_resumePass;
-        vkCmdBeginRenderPass(buffer, &pass, VK_SUBPASS_CONTENTS_INLINE);
+        if (hostPasses)
+          recordHostPasses();
+        if (hudless) {
+          // The scene's depth stays in the target's depth attachment.
+          vkCmdEndRenderPass(buffer);
+          m_frameGeneration->captureHudless(buffer, image);
+          pass.renderPass = m_resumePass;
+          vkCmdBeginRenderPass(buffer, &pass, VK_SUBPASS_CONTENTS_INLINE);
+        }
+        gpu::GpuScope overlay(buffer, "Raster overlay (HUD)", m_swapchainExtent);
+        raster.record(buffer, false, true, nullptr, {}, 3, 3);
+      } else if (hostPasses) {
+        recordHostPasses();
         gpu::GpuScope overlay(buffer, "Raster overlay (HUD)", m_swapchainExtent);
         raster.record(buffer, false, true, nullptr, {}, 3, 3);
       }

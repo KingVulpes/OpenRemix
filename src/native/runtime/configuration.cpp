@@ -54,6 +54,8 @@ namespace remix {
     // Texture creation needs no frame boundary: later CreateTexture calls see it.
     m_raster.setKeepCompressedTextures(m_profiles.current().compressedTextures);
     m_raster.setRefreshGeometry(m_profiles.current().refreshGeometry);
+    // The host's next submission already sees it (else from the next frame).
+    m_hostPasses.setEnabled(m_profiles.current().hostPasses);
     return REMIXAPI_ERROR_CODE_SUCCESS;
   }
 
@@ -82,6 +84,7 @@ namespace remix {
     }
     m_raster.setKeepCompressedTextures(m_profiles.current().compressedTextures);
     m_raster.setRefreshGeometry(m_profiles.current().refreshGeometry);
+    m_hostPasses.setEnabled(m_profiles.current().hostPasses);
     return REMIXAPI_ERROR_CODE_SUCCESS;
   }
 
@@ -172,6 +175,7 @@ namespace remix {
   }
   void RemixNativeRuntime::prepareSettings() {
     const auto &settings = m_profiles.current();
+    m_hostPasses.setEnabled(settings.hostPasses);
     const auto ngxCapabilities = m_ngx->capabilities();
     const bool needsNgx = settings.trace.upscaler != upscale::Mode::Off &&
                           settings.trace.upscaler != upscale::Mode::Fsr31 &&

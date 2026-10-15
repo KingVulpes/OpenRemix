@@ -748,6 +748,186 @@ typedef struct remixapi_DenoisingStatisticsEXT {
 extern "C" {
 #endif
 
+// Host passes: screen-space passes with the host's own shaders, replayed
+// after the frame is composed and before its UI: the host's post-processing
+// effects (a Source game's pp/* materials, screen overlays), on its own
+// render targets or the frame. The host compiles its D3D9 shaders to SPIR-V
+// (DXVK's dxso layout: descriptor set 0 with the bindings it numbers, a push
+// constant block at offset 0 for both stages, vertex locations by semantic)
+// and registers them once; each frame it submits the passes in order, with
+// their constants, samplers, vertices and target. The runtime copies all the
+// data at submit; nothing need outlive the call.
+typedef uint64_t remixapi_HostShaderHandleEXT; // 0: none
+// A host render target, by the host's own identity of it (a texture); 0 is
+// the frame itself, as composed so far (raw bytes, UNORM). Handles from
+// REMIXAPI_HOST_TARGET_RESERVED_EXT up are the runtime's own images: passes
+// sample them, nothing targets, copies into or updates them.
+typedef uint64_t remixapi_HostTargetHandleEXT;
+#define REMIXAPI_HOST_TARGET_RESERVED_EXT ((remixapi_HostTargetHandleEXT)0xffffffff00000000ull)
+// The view depth of the path-traced frame: R32 float, the distance along the
+// camera's axis (scene units) of the primary surface each pixel shows, 1e10
+// and above where there is none; at the tracer's render resolution. A pass
+// sampling it is skipped when no frame was path-traced.
+#define REMIXAPI_HOST_TARGET_VIEW_DEPTH_EXT ((remixapi_HostTargetHandleEXT)0xffffffff00000001ull)
+// The frame's depth buffer (D32 float, the frame's size), for the host to
+// fill: a draw targeting it writes depth only (gl_FragDepth), a clear sets it
+// to clearColor[0]. Draws on the frame test and write it as their `depth` says.
+#define REMIXAPI_HOST_TARGET_FRAME_DEPTH_EXT ((remixapi_HostTargetHandleEXT)0xffffffff00000002ull)
+#define REMIXAPI_HOST_DEPTH_WRITE_EXT 0x100u
+
+#define REMIXAPI_HOST_SHADER_VERTEX_EXT 1u
+#define REMIXAPI_HOST_SHADER_FRAGMENT_EXT 2u
+#define REMIXAPI_HOST_BINDING_UNIFORM_BUFFER_EXT 0u
+#define REMIXAPI_HOST_BINDING_SAMPLER_EXT 1u
+typedef struct remixapi_HostShaderBindingEXT {
+  uint32_t binding; // descriptor set 0
+  uint32_t type;    // REMIXAPI_HOST_BINDING_*
+} remixapi_HostShaderBindingEXT;
+
+#define REMIXAPI_STRUCT_TYPE_HOST_SHADER_INFO_EXT ((remixapi_StructType)0x7fff1030)
+typedef struct remixapi_HostShaderInfoEXT {
+  remixapi_StructType sType;
+  const void* pNext;
+  uint32_t stage; // REMIXAPI_HOST_SHADER_*
+  const uint32_t* code;
+  uint64_t codeBytes;
+  const remixapi_HostShaderBindingEXT* bindings;
+  uint32_t bindingCount;
+  uint32_t pushConstantBytes; // a block at offset 0, both stages (0: none)
+} remixapi_HostShaderInfoEXT;
+
+typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_RegisterHostShaderEXT)(
+    const remixapi_HostShaderInfoEXT* info, remixapi_HostShaderHandleEXT* out);
+typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_DestroyHostShaderEXT)(remixapi_HostShaderHandleEXT shader);
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_RegisterHostShaderEXT(
+    const remixapi_HostShaderInfoEXT* info, remixapi_HostShaderHandleEXT* out);
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_DestroyHostShaderEXT(remixapi_HostShaderHandleEXT shader);
+
+typedef struct remixapi_HostPassBufferEXT { // a uniform buffer binding's contents
+  uint32_t binding;
+  const void* data;
+  uint32_t bytes;
+} remixapi_HostPassBufferEXT;
+typedef struct remixapi_HostPassSamplerEXT { // a combined image sampler binding
+  uint32_t binding;
+  remixapi_HostTargetHandleEXT target; // the host target sampled, 0 the frame
+  uint32_t linear;                     // filter: 1 linear, 0 nearest
+  uint32_t addressU, addressV;         // 0 repeat, 1 clamp to edge, 2 mirror
+} remixapi_HostPassSamplerEXT;
+typedef struct remixapi_HostPassVertexBindingEXT {
+  const void* data;
+  uint32_t bytes;
+  uint32_t stride;
+} remixapi_HostPassVertexBindingEXT;
+typedef struct remixapi_HostPassAttributeEXT {
+  uint32_t location;
+  uint32_t binding; // a vertex binding of the pass
+  uint32_t format;  // VkFormat
+  uint32_t offset;
+} remixapi_HostPassAttributeEXT;
+
+#define REMIXAPI_HOST_PASS_DRAW_EXT 0u
+#define REMIXAPI_HOST_PASS_COPY_EXT 1u  // source rectangle to target rectangle, scaled (linear or nearest)
+#define REMIXAPI_HOST_PASS_CLEAR_EXT 2u // the target to clearColor
+// How a host target's channels read when sampled, for formats Vulkan does
+// not render to as such: luminance (red replicated, alpha one), luminance
+// and alpha (red replicated, alpha kept), or no alpha (alpha reads one).
+#define REMIXAPI_HOST_CHANNELS_DEFAULT_EXT 0u
+#define REMIXAPI_HOST_CHANNELS_LUMINANCE_EXT 1u
+#define REMIXAPI_HOST_CHANNELS_LUMINANCE_ALPHA_EXT 2u
+#define REMIXAPI_HOST_CHANNELS_NO_ALPHA_EXT 3u
+typedef struct remixapi_HostPassEXT {
+  uint32_t kind;  // REMIXAPI_HOST_PASS_*
+  uint32_t depth; // a draw on the frame or its depth: 0 no depth test, else VkCompareOp + 1, | REMIXAPI_HOST_DEPTH_WRITE_EXT
+  remixapi_HostTargetHandleEXT target;
+  uint32_t targetWidth, targetHeight; // of a host target, for its creation
+  uint32_t targetFormat;              // VkFormat of a host target (0: the frame's)
+  uint32_t targetChannels;            // REMIXAPI_HOST_CHANNELS_*, likewise
+  // A draw.
+  remixapi_HostShaderHandleEXT vertexShader, fragmentShader;
+  const remixapi_HostPassBufferEXT* buffers;
+  uint32_t bufferCount;
+  const remixapi_HostPassSamplerEXT* samplers;
+  uint32_t samplerCount;
+  const void* pushConstants;
+  uint32_t pushConstantBytes;
+  const remixapi_HostPassVertexBindingEXT* vertexBindings;
+  uint32_t vertexBindingCount; // up to 4
+  const remixapi_HostPassAttributeEXT* attributes;
+  uint32_t attributeCount; // up to 16
+  const uint32_t* indices;
+  uint32_t indexCount;
+  uint32_t topology; // 0 triangle list, 1 triangle strip
+  uint32_t blendEnable;
+  uint32_t srcColorBlend, dstColorBlend, colorBlendOp; // VkBlendFactor / VkBlendOp
+  uint32_t srcAlphaBlend, dstAlphaBlend, alphaBlendOp;
+  uint32_t colorWriteMask; // VkColorComponentFlags
+  int32_t viewport[4]; // x, y, width, height in D3D's convention (y down); width 0: the whole target
+  int32_t scissor[4];  // likewise
+  // A copy.
+  remixapi_HostTargetHandleEXT source; // 0 the frame
+  int32_t sourceRect[4], targetRect[4]; // x, y, width, height; width 0: whole
+  uint32_t linear;
+  // A clear.
+  float clearColor[4];
+} remixapi_HostPassEXT;
+
+#define REMIXAPI_STRUCT_TYPE_HOST_PASS_LIST_EXT ((remixapi_StructType)0x7fff1031)
+typedef struct remixapi_HostPassListEXT {
+  remixapi_StructType sType;
+  const void* pNext;
+  const remixapi_HostPassEXT* passes;
+  uint32_t passCount;
+} remixapi_HostPassListEXT;
+// The passes of the next presented frame, in order (replacing any submitted
+// before it this frame). Pipelines compile on first use in the background: a
+// pass whose pipeline is not ready yet is skipped that frame.
+typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_SubmitHostPassesEXT)(const remixapi_HostPassListEXT* list);
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_SubmitHostPassesEXT(const remixapi_HostPassListEXT* list);
+
+// A host target's contents from the host's memory: a texture an effect
+// samples (RGBA or BGRA, 8 bits a channel, tightly packed), uploaded before
+// the next frame's passes. The target takes the size and format given.
+typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_UpdateHostTargetEXT)(
+    remixapi_HostTargetHandleEXT target, uint32_t width, uint32_t height, uint32_t vkFormat, const void* pixels,
+    uint64_t bytes);
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_UpdateHostTargetEXT(
+    remixapi_HostTargetHandleEXT target, uint32_t width, uint32_t height, uint32_t vkFormat, const void* pixels,
+    uint64_t bytes);
+
+// A volume (3D) texture's contents, likewise: sampled only (a 3D sampler
+// in the shader), never a pass's target.
+typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_UpdateHostVolumeEXT)(
+    remixapi_HostTargetHandleEXT target, uint32_t width, uint32_t height, uint32_t depth, uint32_t vkFormat,
+    const void* pixels, uint64_t bytes);
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_UpdateHostVolumeEXT(
+    remixapi_HostTargetHandleEXT target, uint32_t width, uint32_t height, uint32_t depth, uint32_t vkFormat,
+    const void* pixels, uint64_t bytes);
+
+// Whether host passes run: the user's setting (rtx.native.hostPasses, shown
+// in the Rendering tab as "Pass-through game shaders (experimental)" to a host
+// that has asked this). While it is off, SubmitHostPassesEXT and the target
+// updates succeed but are dropped; a host polls this each frame and keeps
+// its own work (recording, compiling shaders) for when it is on.
+typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_GetHostPassesEnabledEXT)(remixapi_Bool* enabled);
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetHostPassesEnabledEXT(remixapi_Bool* enabled);
+
+typedef struct remixapi_HostPassStatisticsEXT {
+  uint64_t structSize;
+  uint32_t passes, draws, copies, clears; // last frame
+  uint32_t skipped;                       // passes skipped last frame (pipeline compiling, invalid)
+  uint32_t shaders, targets;              // registered / alive
+  uint32_t pipelines;                     // created so far
+  // Why passes were skipped, last frame: copy source missing or rectangles
+  // out of bounds, shaders missing, pipeline not ready, descriptors
+  // exhausted, a buffer binding without data, a sampler binding without a
+  // sampler, a sampled target without an image, no view depth this frame.
+  uint32_t skippedCopySource, skippedShaders, skippedPipeline, skippedDescriptors;
+  uint32_t skippedBuffer, skippedSampler, skippedTarget, skippedViewDepth;
+} remixapi_HostPassStatisticsEXT;
+typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_GetHostPassStatisticsEXT)(remixapi_HostPassStatisticsEXT* out);
+REMIXAPI remixapi_ErrorCode REMIXAPI_CALL remixapi_GetHostPassStatisticsEXT(remixapi_HostPassStatisticsEXT* out);
+
 // A host's default for a runtime setting (a SetConfigVariable key): it applies
 // to every profile that has no value of its own for the key (the key is not
 // in its saved file; an unsaved or new profile has none), now and when a

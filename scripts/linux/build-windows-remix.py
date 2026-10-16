@@ -77,6 +77,14 @@ def main():
         xwin = fetch(deps, 'xwin', PINS['xwin']) / 'xwin'
         subprocess.run([str(xwin), '--accept-license', '--cache-dir', str(deps / 'cache'),
                         'splat', '--output', str(sdk)], check=True)
+    # Spellings the dependencies (OpenUSD) use that xwin's case symlinks miss
+    # (the SDK's files are lowercase; Windows does not care, Linux does).
+    for folder, names in (('sdk/include/um', ('Memoryapi.h', 'ShlwAPI.h', 'WinIoCtl.h', 'Winsock2.h')),
+                          ('sdk/lib/um/x86_64', ('Ws2_32.lib', 'Dbghelp.lib', 'Psapi.lib', 'Shlwapi.lib'))):
+        for name in names:
+            alias = sdk / folder / name
+            if not os.path.lexists(alias) and (sdk / folder / name.lower()).exists():
+                alias.symlink_to(name.lower())
     includes = ' '.join('/imsvc' + str(sdk / p) for p in
                         ('crt/include', 'sdk/include/ucrt', 'sdk/include/shared', 'sdk/include/um', 'sdk/include/winrt'))
     compiler = deps / 'clang-cl'

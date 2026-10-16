@@ -30,6 +30,13 @@ layout(location=3) out vec4 outPrevious;
 layout(location=4) out vec4 outEmission;
 layout(location=5) out vec4 outPbr;
 #endif
+// The fragment's reverse depth as the world camera maps it (gl_FragCoord.z,
+// except for a view model, whose depth test runs on its own scale; nearer than
+// the near plane is clamped to it).
+float worldDepth() {
+  if((draw.stableDepth&2u)==0u)return gl_FragCoord.z;
+  return clamp(dot(draw.reverseDepth,vec4(position,1))/(frame.camera*vec4(position,1)).w,0,1);
+}
 void main() {
   Surface s=surfaces[draw.surfaceIndex];
   // A CUT instance is not seen where its mask group covers. The G-buffer is
@@ -63,19 +70,20 @@ void main() {
 #ifdef STABLE_DEPTH
   // Blended sheets do not occlude raster particles or coplanar feedback.
   if((s.state.w&2)!=0)discard;
-  outDepth=1-gl_FragCoord.z;
+  outDepth=1-worldDepth();
 #else
   vec3 n=normalize(normal);
   if(dot(n,direction)>0)n=-n;
-  outPosition=vec4(position,1-gl_FragCoord.z);
-  // Zero is background, one opaque/cutout, two coverage, three a tinted sheet, four a decal.
+  outPosition=vec4(position,1-worldDepth());
+  // Zero is background, one opaque/cutout, two coverage, three a tinted sheet,
+  // four a decal; plus 8 on a view model (stableDepth bit 1).
   vec3 smoothNormal=shadingNormal(authoredNormal,n,normalize(-direction));
   vec3 t=tangent-smoothNormal*dot(smoothNormal,tangent);
   if(dot(t,t)<1e-12)t=cross(abs(smoothNormal.z)<.999?vec3(0,0,1):vec3(0,1,0),smoothNormal);
   t=normalize(t);
   vec3 b=cross(smoothNormal,t);
   if(dot(b,bitangent)<0)b=-b;
-  outNormal=vec4(materialNormal(s,uv,mat3(t,b,smoothNormal),normalize(-direction)),decalSurface(s)?4:blendedAtAlpha(s,albedo.a)?((s.state.w&32)!=0?3:2):1);
+  outNormal=vec4(materialNormal(s,uv,mat3(t,b,smoothNormal),normalize(-direction)),(decalSurface(s)?4:blendedAtAlpha(s,albedo.a)?((s.state.w&32)!=0?3:2):1)+((draw.stableDepth&2u)!=0u?8:0));
   vec2 rm=materialParameters(s,uv,albedo.rgb);
   outPbr=vec4(s.pbr.z!=0?rm.x:-1,rm.y,encodeGeometricNormal(n));
   outAlbedo=vec4(albedo.rgb+self,albedo.a);

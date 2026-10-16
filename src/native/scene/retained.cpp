@@ -462,6 +462,126 @@ namespace remix {
       m_replicaChanges.clear();
   }
 
+  bool NativeResources::applyViewModel(float scale) {
+    constexpr uint32_t world = REMIXAPI_CAMERA_TYPE_WORLD, viewModel = REMIXAPI_CAMERA_TYPE_VIEW_MODEL;
+    if (!m_cameraValid[world] || !m_cameraValid[viewModel] ||
+        std::none_of(m_draws.begin(), m_draws.end(), [](const scene::Draw &d) { return d.camera == viewModel; }))
+      return false;
+    const auto &worldProjection = m_projections[world];
+    auto projection = m_projections[viewModel];
+    // Perspective cameras only (w = view-space depth).
+    if (std::abs(worldProjection[15]) > 1e-6f || std::abs(projection[15]) > 1e-6f)
+      return false;
+    // The view model's field of view with the world camera's depth range
+    // (its own near and far planes would scale it: dxvk-remix's correction).
+    projection[10] = worldProjection[10];
+    projection[11] = worldProjection[11];
+    projection[14] = worldProjection[14];
+    // world position = inverse(world view) inverse(world projection) x
+    // view-model projection x shrink x view-model view x position.
+    // In double precision: the views' translations (the eye, far from the
+    // origin) nearly cancel, and the view model is a few units from the eye,
+    // where single precision's error of the cancelled terms moves it by
+    // pixels from frame to frame as the camera moves (a jittering gun).
+    using Double = std::array<double, 16>; // column-major, as scene::Matrix
+    const auto widen = [](const scene::Matrix &m) {
+      Double d;
+      std::copy(m.begin(), m.end(), d.begin());
+      return d;
+    };
+    const auto product = [](const Double &a, const Double &b) {
+      Double out{};
+      for (int c = 0; c < 4; ++c)
+        for (int r = 0; r < 4; ++r) {
+          double sum = 0;
+          for (int k = 0; k < 4; ++k)
+            sum += a[k * 4 + r] * b[c * 4 + k];
+          out[c * 4 + r] = sum;
+        }
+      return out;
+    };
+    const auto invert = [](const Double &m, Double &out) { // Gauss-Jordan, partial pivoting
+      double a[4][8];
+      for (int r = 0; r < 4; ++r)
+        for (int c = 0; c < 4; ++c) {
+          a[r][c] = m[c * 4 + r];
+          a[r][c + 4] = r == c;
+        }
+      for (int c = 0; c < 4; ++c) {
+        int pivot = c;
+        for (int r = c + 1; r < 4; ++r)
+          if (std::abs(a[r][c]) > std::abs(a[pivot][c]))
+            pivot = r;
+        if (std::abs(a[pivot][c]) < 1e-300)
+          return false;
+        std::swap(a[c], a[pivot]);
+        const double inverse = 1 / a[c][c];
+        for (double &v : a[c])
+          v *= inverse;
+        for (int r = 0; r < 4; ++r)
+          if (r != c) {
+            const double f = a[r][c];
+            for (int k = 0; k < 8; ++k)
+              a[r][k] -= f * a[c][k];
+          }
+      }
+      for (int r = 0; r < 4; ++r)
+        for (int c = 0; c < 4; ++c)
+          out[c * 4 + r] = a[r][c + 4];
+      return true;
+    };
+    Double shrink{};
+    shrink[0] = shrink[5] = shrink[10] = scale;
+    shrink[15] = 1;
+    Double inverseView, inverseProjection;
+    if (!invert(widen(m_authoredViews[world]), inverseView) || !invert(widen(worldProjection), inverseProjection))
+      return false;
+    const auto correction = product(
+        inverseView,
+        product(inverseProjection, product(widen(projection), product(shrink, widen(m_authoredViews[viewModel])))));
+    if (!std::all_of(correction.begin(), correction.end(), [](double v) { return std::isfinite(v); }))
+      return false;
+    for (auto &draw : m_draws)
+      if (draw.camera == viewModel && !draw.viewModel) {
+        const auto model = product(correction, widen(draw.model));
+        std::copy(model.begin(), model.end(), draw.model.begin());
+        draw.camera = world;
+        draw.viewModel = true;
+        // Traced now: its mask group cuts (a scope's body around the lens) and
+        // its camera culling applies, which DrawInstance (noteCut) could not
+        // know while it was a view-model-camera draw.
+        if (draw.traced()) {
+          if (draw.cutGroup)
+            m_cutGroups |= 1u << (draw.cutGroup - 1);
+          m_cameraCull |= draw.cameraCull;
+        }
+      }
+    // Its rasterized parts (mask silhouettes, overlays such as a scope's
+    // picture) and the frame's raster depth use the world camera, whose near
+    // plane would clip what reaches nearer (an eyepiece when aiming): the
+    // near plane moves in to the view model's own, shrunk, for this frame.
+    // A D3D-style projection (clip z = p10 z + p14, w = z): near = -p14 / p10.
+    auto &p = m_projections[world];
+    const float vmNear = -m_projections[viewModel][14] / m_projections[viewModel][10];
+    const float worldNear = -p[14] / p[10], nearPlane = vmNear * scale;
+    if (p[10] > 0 && p[11] > 0 && m_projections[viewModel][10] > 0 && std::isfinite(nearPlane) && nearPlane > 0 &&
+        nearPlane < worldNear) {
+      if (std::abs(1 - p[10]) > 1e-6f) {
+        const float farPlane = p[14] / (1 - p[10]); // finite far plane: kept
+        p[10] = farPlane / (farPlane - nearPlane);
+      }
+      p[14] = -nearPlane * p[10];
+      m_cameras[world] = scene::multiply(p, m_views[world]);
+      for (int c = 0; c < 4; ++c) {
+        double value = 0;
+        for (int k = 0; k < 4; ++k)
+          value += (double(p[k * 4 + 3]) - p[k * 4 + 2]) * m_views[world][c * 4 + k];
+        m_reverseDepth[world][c] = float(value);
+      }
+    }
+    return true;
+  }
+
   void NativeResources::expandStatic() {
     if (!m_staticDrawn)
       return;

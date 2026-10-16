@@ -59,7 +59,7 @@ layout(set=0,binding=3,std140) uniform Frame {
   uvec4 reuseConfig;
   uint64_t indirectResults, blueNoise;
   vec4 firefly; // outgoing local direct / indirect luminance limits; reserved
-  uvec4 pathConfig; // adaptive termination, minimum completed bounces, sheet flags (1 traced indirect, 2 local lights), secondary ray mask
+  uvec4 pathConfig; // adaptive termination, minimum completed bounces, sheet flags (1 traced indirect, 2 local lights), secondary ray mask (bits 0-7; bit 8: a view model is traced)
   vec4 domeTransform[3];
   uint64_t visibilityNodes, visibilityLeaves, visibilityTable, movedLights;
   uvec4 visibilityConfig; // table row words, moved light count, reserved
@@ -88,7 +88,16 @@ layout(set=0,binding=3,std140) uniform Frame {
   vec4 volumeEye, volumePrevious; // the windows' centre this frame and last
   vec4 cameraMedium; // remixapi_CameraMediumEXT: transmittance colour, measurement distance (0: in air)
   uint64_t sheetResults; // SheetResults: the sheet lighting pass's transport
+  uint64_t reservedFrame;
+  mat4 inverseCameraRelative; // camera rays: world = point.xyz / point.w + eye.xyz
 } frame;
+// Instance mask bit of view models (pathtrace/tlas_policy.h).
+const uint viewModelInstanceMask=8u;
+// Set when the camera's primary surface is a view model: the rays of its path
+// see view models too (they shadow themselves); every other ray passes them.
+bool viewModelPath=false;
+// The instance mask of shadow, light-visibility and bounce rays.
+uint secondaryMask(){return (frame.pathConfig.w&0xffu)|(viewModelPath?viewModelInstanceMask:0u);}
 layout(set=0,binding=6) uniform sampler2D textures[4096];
 // remixapi_InstanceInfoMaskEXT CUT: the camera does not see a surface where
 // its mask group's coverage is set (state.w bits 16-21: the group). Coverage

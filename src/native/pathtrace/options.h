@@ -56,6 +56,16 @@ namespace remix {
     // sprites): no transmission through them and no candidate alpha tests.
     // Camera and transparency rays still see them.
     bool skipBlendedSecondaryRays = true;
+    // View models (REMIXAPI_CAMERA_TYPE_VIEW_MODEL instances): path-traced in
+    // the world camera's view instead of rasterized with their own camera
+    // (NativeResources::applyViewModel). The camera sees them in front of
+    // everything; every other ray but those of paths that start on them
+    // passes them (no shadows on the world, the player's light through them,
+    // not in mirrors). viewModelScale shrinks them toward the eye (the same
+    // image, nearer) so their own rays start inside the player's space and
+    // not in a wall they reach into.
+    bool viewModel = false;
+    float viewModelScale = .5f;
     // Primary surface replacement: with raster primary visibility and a
     // denoiser, the surface a mirror (smooth metal or smooth black) reflects
     // replaces it as the pixel's primary surface, so it gets primary-quality

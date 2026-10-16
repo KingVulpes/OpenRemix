@@ -102,6 +102,7 @@ struct TraceFrame {
   // Instances with emitters (outside the static set), and those among them
   // the host identified as dynamic.
   uint32_t emittingInstances = 0, dynamicEmittingInstances = 0;
+  bool viewModel = false; // a traced view-model draw (Draw::viewModel) is in the frame
 };
 
 // statics: a persistent static set traced alongside draws. Its identities

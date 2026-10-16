@@ -166,8 +166,15 @@ namespace remix::trace::detail {
     // remixapi_CameraMediumEXT: transmittance colour, measurement distance (0: in air).
     float cameraMedium[4] = {};
     uint64_t sheetResults = 0; // SheetResults: the sheet lighting pass's transport
+    uint64_t reserved = 0;
+    // Camera rays (pathtrace.comp ray()): inverseCamera relative to the eye,
+    // which the shader adds back. In single precision the absolute matrix
+    // holds the eye's translation scaled by the inverse near plane, and loses
+    // the ray directions to rounding far from the origin (near geometry such
+    // as a view model jitters as the camera moves).
+    Matrix inverseCameraRelative{};
   };
-  static_assert(sizeof(Frame) == 1064 && offsetof(Frame, volumeGrid) == 912 && offsetof(Frame, volumePrevious) == 1024 && offsetof(Frame, sparseList) == 880 && offsetof(Frame, sparseConfig) == 896 && offsetof(Frame, cameraCull) == 864 && offsetof(Frame, cutConfig) == 816 && offsetof(Frame, orcaParams) == 800 && offsetof(Frame, regirConfig) == 752 && offsetof(Frame, restirCurrent) == 656 && offsetof(Frame, visibilityNodes) == 592 && offsetof(Frame, pathConfig) == 528 &&
+  static_assert(sizeof(Frame) == 1136 && offsetof(Frame, inverseCameraRelative) == 1072 && offsetof(Frame, volumeGrid) == 912 && offsetof(Frame, volumePrevious) == 1024 && offsetof(Frame, sparseList) == 880 && offsetof(Frame, sparseConfig) == 896 && offsetof(Frame, cameraCull) == 864 && offsetof(Frame, cutConfig) == 816 && offsetof(Frame, orcaParams) == 800 && offsetof(Frame, regirConfig) == 752 && offsetof(Frame, restirCurrent) == 656 && offsetof(Frame, visibilityNodes) == 592 && offsetof(Frame, pathConfig) == 528 &&
                 offsetof(Frame, firefly) == 512 && offsetof(Frame, indirectResults) == 496 &&
                 offsetof(Frame, lightGuideRead) == 384 && offsetof(Frame, lightGuideConfig) == 400 &&
                 offsetof(Frame, lightNodes) == 336 && offsetof(Frame, localConfig) == 352 &&
@@ -447,6 +454,7 @@ namespace remix {
     struct PrimaryRecording {
       std::vector<VkCommandPool> pools;
       std::vector<VkCommandBuffer> buffers; // two per pool: primary passes 0 and 1
+      VkCommandBuffer viewModel[2] = {};    // the view model's draws (from the first pool)
       bool reset = false;                   // pools reset for this frame
     } primaryRecording;
     void destroyPrimaryRecording(PrimaryRecording &recording);

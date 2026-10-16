@@ -148,6 +148,8 @@ namespace remix::config {
         TRACE(localHistoryConfidence, 0, 1);
         TRACE(translucentIndirect, 0, 1);
         TRACE(skipBlendedSecondaryRays, 0, 1);
+        TRACE(viewModel, 0, 1);
+        TRACE(viewModelScale, .05f, 1);
         TRACE(primarySurfaceReplacement, 0, 1);
         TRACE(sheetLocalLights, 0, 1);
         TRACE(sceneScale, .0001, 1000);

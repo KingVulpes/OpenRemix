@@ -78,7 +78,10 @@ TraceFrame prepareTraceFrame(const std::vector<Draw> &draws, double seconds, boo
       surface.uv = {1.f / material.columns, 1.f / material.rows,
                     float(animation % material.columns) / material.columns,
                     float(animation / material.columns) / material.rows};
-      if (material.suppressEmissionLight ||
+      // A view model's emission is seen, not sampled: it lights nothing
+      // from where it is placed (shrunk toward the eye).
+      frame.viewModel |= draw.viewModel;
+      if (draw.viewModel || material.suppressEmissionLight ||
           (material.emission[0] <= 0 && material.emission[1] <= 0 && material.emission[2] <= 0))
         continue;
       const auto reduction = emissionCache.reduce(draw, surface.uv);

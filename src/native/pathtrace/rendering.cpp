@@ -538,9 +538,26 @@ namespace remix {
     frame.localScale[3] = options.localRange > 0 ? 1.f / (options.localRange * options.localRange) : 0;
     frame.camera = resources.camera();
     primaryReverseDepth = resources.reverseDepth();
+    // Camera rays: invert the view and the projection separately. The camera
+    // matrix's clip z and w rows both carry the eye's translation and differ by
+    // the near plane, which single precision loses far from the origin (most
+    // with a near plane moved in for view models): ray origins would wander
+    // and near geometry (the gun) jitter as the camera moves.
     frame.inverseCamera = scene::inverse(frame.camera);
     const auto eye = scene::inverse(resources.view());
     std::copy_n(eye.data() + 12, 3, frame.eye);
+    // Camera rays: the view and the projection inverted separately, without
+    // the eye's translation (Frame::inverseCameraRelative).
+    try {
+      auto rotation = eye;
+      rotation[12] = rotation[13] = rotation[14] = 0;
+      frame.inverseCameraRelative = scene::multiply(rotation, scene::inverse(resources.projection()));
+    } catch (...) {
+      scene::Matrix toEye = scene::identity();
+      for (int c = 0; c < 3; ++c)
+        toEye[12 + c] = -frame.eye[c];
+      frame.inverseCameraRelative = scene::multiply(toEye, frame.inverseCamera);
+    }
     auto light = resources.light();
     if (options.overrideLight) {
       float norm =
@@ -629,7 +646,14 @@ namespace remix {
     frame.pathConfig[0] = rouletteActive;
     frame.pathConfig[1] = options.rouletteMinBounces;
     frame.pathConfig[2] = (options.translucentIndirect ? 1u : 0u) | (options.sheetLocalLights ? 2u : 0u);
-    frame.pathConfig[3] = options.skipBlendedSecondaryRays ? 0xffu & ~uint32_t(trace::blendedInstanceMask) : 0xffu;
+    // Bits 0-7: the instance mask of shadow, light-visibility and bounce rays
+    // (view models never; blended layers unless skipBlendedSecondaryRays is
+    // off). Bit 8: a traced view model is in the frame (camera rays look for
+    // it first; see cameraHit).
+    frame.pathConfig[3] = (options.skipBlendedSecondaryRays ? 0xffu & ~uint32_t(trace::blendedInstanceMask) : 0xffu) &
+                          ~uint32_t(trace::viewModelInstanceMask);
+    if (prepared.viewModel)
+      frame.pathConfig[3] |= 0x100u;
     append(&frame, sizeof(frame));
     append(&options.localFireflyFilter, sizeof(options.localFireflyFilter));
     append(&options.translucencyDenoiser, sizeof(options.translucencyDenoiser));
@@ -1343,6 +1367,10 @@ namespace remix {
       g.opacityCache.setOneSidedOpaque(options.hardwareFaceCulling);
       g.statics.invalidate();
     }
+    // View models move into the world camera's view (Draw::viewModel) before
+    // the tracer and the raster overlays see the frame's draws.
+    if (options.viewModel)
+      resources.applyViewModel(options.viewModelScale);
     Clock::time_point prepared{};
     scene::TraceFrame frame;
     if (profile) {

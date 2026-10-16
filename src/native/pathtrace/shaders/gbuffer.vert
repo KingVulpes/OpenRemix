@@ -46,5 +46,9 @@ void main() {
   }
   gl_Position=frame.camera*vec4(position,1);
   gl_Position.z=dot(draw.reverseDepth,vec4(position,1));
+  // A view model (stableDepth bit 1) is drawn on a cleared depth buffer after
+  // the scene: ordered by its own depth only (reverse, 1e-3/w: nearer is
+  // larger), and seen nearer than the world camera's near plane.
+  if((draw.stableDepth&2u)!=0u)gl_Position.z=1e-3;
   gl_Position.xy-=2*draw.jitter/vec2(frame.target.xy)*gl_Position.w;
 }

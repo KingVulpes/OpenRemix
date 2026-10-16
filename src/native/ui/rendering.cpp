@@ -73,6 +73,19 @@ namespace remix {
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Glass, sprites and other blended layers stay visible to the camera, but cast no\n"
                           "shadows and do not tint light passing through them. Cheaper wherever rays cross them.");
+      ui::Checkbox("Path-trace view models", &options.viewModel);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("First-person view models (VIEW_MODEL camera instances) are path-traced in the\n"
+                          "world camera's view, always in front of the scene, instead of rasterized with\n"
+                          "their own camera. They shadow themselves but not the world, let the player's\n"
+                          "light through and stay out of mirrors.");
+      ImGui::BeginDisabled(!options.viewModel);
+      ui::SliderFloat("View model scale", &options.viewModelScale, .05f, 1, "%.2f");
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Shrinks view models toward the eye: the same image, nearer, so their own shadow\n"
+                          "and bounce rays start inside the player's space instead of in a wall they reach\n"
+                          "into. 1: their true size.");
+      ImGui::EndDisabled();
       ui::Checkbox("Primary surface replacement (mirrors)", &options.primarySurfaceReplacement);
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Smooth metal and smooth black surfaces show the surface they reflect as if it were\n"

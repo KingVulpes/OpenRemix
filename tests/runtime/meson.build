@@ -57,6 +57,10 @@ if get_option('gpu_tests') and system == 'linux'
     dependencies : [runtime_test_dep, dl_dep])
   test('Background preparation presentation input and activation', preparation_gpu_test,
     args : [meson.current_build_dir() / 'preparation-images'], timeout : 180, is_parallel : false)
+  view_model_gpu_test = executable('remix-view-model-gpu-test', 'view_model_gpu.cpp',
+    include_directories : test_includes, dependencies : [runtime_test_dep, dl_dep])
+  test('Path-traced view models in front of the scene, without shadows on it', view_model_gpu_test,
+    args : [meson.current_build_dir() / 'view-model-images'], timeout : 180, is_parallel : false)
   test('Preparation retains last game frame through resize and VSync', preparation_gpu_test,
     args : [meson.current_build_dir() / 'retained-frame-images'],
     env : ['REMIX_TEST_LAST_FRAME=1'], timeout : 180, is_parallel : false)

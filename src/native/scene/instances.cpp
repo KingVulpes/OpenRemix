@@ -470,6 +470,9 @@ namespace remix {
         }
         if (d.categoryFlags & REMIXAPI_INSTANCE_CATEGORY_BIT_VIEW_MODEL) {
           draw.camera = REMIXAPI_CAMERA_TYPE_VIEW_MODEL;
+          // Follows the camera every frame: never part of the static set.
+          if (draw.classification == REMIXAPI_INSTANCE_STATIC_EXT)
+            draw.classification = REMIXAPI_INSTANCE_DYNAMIC_EXT;
         } else if (d.categoryFlags & REMIXAPI_INSTANCE_CATEGORY_BIT_SKY) {
           draw.camera = REMIXAPI_CAMERA_TYPE_SKY;
           draw.depth = false;

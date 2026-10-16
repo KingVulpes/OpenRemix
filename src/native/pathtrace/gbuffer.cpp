@@ -241,20 +241,31 @@ namespace remix {
                                   .pClearValues = clear};
       VkViewport viewport{0, 0, float(size.width), float(size.height), 0, 1};
       VkRect2D scissor{{0, 0}, size};
-      auto record = [&](VkCommandBuffer target, size_t first, size_t last) {
+      // View models (PrimaryDraw::viewModel) are drawn after everything else
+      // on a cleared depth buffer: in front of the scene whatever reaches into
+      // their space, ordered among themselves by their own depth (see
+      // gbuffer.vert), and seen nearer than the world camera's near plane.
+      auto record = [&](VkCommandBuffer target, size_t first, size_t last, bool viewModels = false) {
         vkCmdSetViewport(target, 0, 1, &viewport);
         vkCmdSetScissor(target, 0, 1, &scissor);
         vkCmdBindPipeline(target, VK_PIPELINE_BIND_POINT_GRAPHICS, primaryPipeline[pass]);
         vkCmdBindDescriptorSets(target, VK_PIPELINE_BIND_POINT_GRAPHICS, primaryLayout, 0, 1, &set, 0,
                                 nullptr);
+        if (viewModels) {
+          const VkClearAttachment depth{.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+                                        .colorAttachment = 0,
+                                        .clearValue = {.depthStencil = {0, 0}}};
+          const VkClearRect rect{scissor, 0, 1};
+          vkCmdClearAttachments(target, 1, &depth, 1, &rect);
+        }
         for (size_t i = first; i < last; ++i) {
           const auto &draw = primaryDraw(i);
-          if (pass && draw.blended)
+          if ((pass && draw.blended) || draw.viewModel != viewModels)
             continue;
           PrimaryPush push{draw.model,
                            {pass ? 0.f : temporalFrame.jitter[0], pass ? 0.f : temporalFrame.jitter[1]},
                            draw.surfaceIndex,
-                           pass,
+                           pass | uint32_t(draw.viewModel) << 1,
                            primaryReverseDepth};
           vkCmdPushConstants(target, primaryLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                              0, sizeof(push), &push);
@@ -264,6 +275,9 @@ namespace remix {
       // The same commands in the same order; thousands of draws are split
       // into contiguous ranges recorded concurrently as secondary buffers.
       const size_t count = primaryCount();
+      bool viewModels = false;
+      for (size_t i = 0; i < count && !viewModels; ++i)
+        viewModels = primaryDraw(i).viewModel;
       const size_t tasks =
           workers && count >= 4096 ? std::min<size_t>(workers->threads(), (count + 2047) / 2048) : 0;
       vkCmdBeginRenderPass(command, &begin,
@@ -291,6 +305,14 @@ namespace remix {
           recording.buffers.insert(recording.buffers.end(), buffers, buffers + 2);
         }
         std::vector<VkCommandBuffer> secondaries(tasks);
+        VkCommandBuffer &viewModelBuffer = recording.viewModel[pass];
+        if (viewModels && !viewModelBuffer) {
+          const VkCommandBufferAllocateInfo allocate{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+                                                     .commandPool = recording.pools[0],
+                                                     .level = VK_COMMAND_BUFFER_LEVEL_SECONDARY,
+                                                     .commandBufferCount = 1};
+          check(vkAllocateCommandBuffers(device, &allocate, &viewModelBuffer));
+        }
         workers->run(tasks, [&](size_t task) {
           const auto target = recording.buffers[task * 2 + pass];
           const VkCommandBufferInheritanceInfo inheritance{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO,
@@ -306,9 +328,26 @@ namespace remix {
           check(vkEndCommandBuffer(target));
           secondaries[task] = target;
         });
-        vkCmdExecuteCommands(command, uint32_t(tasks), secondaries.data());
-      } else
+        if (viewModels) {
+          const VkCommandBufferInheritanceInfo inheritance{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO,
+                                                           .renderPass = primaryPass[pass],
+                                                           .subpass = 0,
+                                                           .framebuffer = primaryFramebuffer[pass]};
+          const VkCommandBufferBeginInfo info{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                              .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT |
+                                                       VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT,
+                                              .pInheritanceInfo = &inheritance};
+          check(vkBeginCommandBuffer(viewModelBuffer, &info));
+          record(viewModelBuffer, 0, count, true);
+          check(vkEndCommandBuffer(viewModelBuffer));
+          secondaries.push_back(viewModelBuffer);
+        }
+        vkCmdExecuteCommands(command, uint32_t(secondaries.size()), secondaries.data());
+      } else {
         record(command, 0, count);
+        if (viewModels)
+          record(command, 0, count, true);
+      }
       vkCmdEndRenderPass(command);
     }
     primaryInitialized = true;

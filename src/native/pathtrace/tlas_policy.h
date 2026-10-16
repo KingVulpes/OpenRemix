@@ -16,6 +16,8 @@ namespace remix::trace {
     // instance carries blendedInstanceMask, which shadow and bounce rays may
     // exclude (rtx.native.pathtrace.skipBlendedSecondaryRays).
     bool blended = false;
+    // A view model (Draw::viewModel): viewModelInstanceMask only.
+    bool viewModel = false;
     bool operator==(const InstanceInput &) const = default;
   };
   // VkGeometryInstanceFlagBitsKHR values (static_assert-ed in tlas.cpp):
@@ -46,7 +48,11 @@ namespace remix::trace {
   // Instance masks: the separate static and dynamic TLASes keep 0xff; the
   // combined one tags its parts so a query could select either (every query
   // uses 0xff, so it sees both, as the two traversals did).
-  constexpr uint8_t allInstancesMask = 0xff, staticInstanceMask = 1, dynamicInstanceMask = 2, blendedInstanceMask = 4;
+  // View models: only camera rays (and rays of paths that start on one)
+  // include this bit; no other instance carries it.
+  constexpr uint8_t viewModelInstanceMask = 8;
+  constexpr uint8_t allInstancesMask = 0xff & ~viewModelInstanceMask, staticInstanceMask = 1, dynamicInstanceMask = 2,
+                    blendedInstanceMask = 4;
   inline uint8_t instanceMask(bool combined, bool dynamic) {
     return !combined ? allInstancesMask : dynamic ? dynamicInstanceMask : staticInstanceMask;
   }

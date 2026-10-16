@@ -163,6 +163,15 @@ namespace remix {
     // without the set would have put it, for consumers other than the tracer
     // (raster rendering), and clears staticDrawn.
     void expandStatic();
+    // Path-traced view models: this frame's VIEW_MODEL-camera draws move into
+    // the world camera's view, placed so that it projects them where their own
+    // camera would (its field of view; the world camera's depth range), shrunk
+    // toward the eye by `scale` (the same image, nearer), and become world
+    // draws marked viewModel (traced, or raster-only overlays depth-tested
+    // against the traced frame). Uses the host's cameras (not the free
+    // camera). False: no valid perspective world or view-model camera; the
+    // draws stay as they were.
+    bool applyViewModel(float scale);
     // Asynchronous presentation ("rtx.native.asyncPresent"). publishFrame
     // hands this frame to `frame`, a second NativeResources that a render
     // thread reads while API calls keep changing this one, and ends the frame

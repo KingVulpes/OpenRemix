@@ -366,6 +366,19 @@ typedef struct remixapi_InstanceRasterStateEXT {
   remixapi_Bool disableColorWrites; /* depth-only prepass; zero preserves color writes */
 } remixapi_InstanceRasterStateEXT;
 
+// View models (REMIXAPI_INSTANCE_CATEGORY_BIT_VIEW_MODEL instances, with a
+// REMIXAPI_CAMERA_TYPE_VIEW_MODEL camera) are path-traced when
+// rtx.native.pathtrace.viewModel is on (off: rasterized with their camera):
+// placed in the world camera's view so that it projects them where their own
+// camera would (its field of view, the world camera's depth range), shrunk
+// toward the eye by rtx.native.pathtrace.viewModelScale (the same image,
+// nearer). The camera sees them in front of everything, whatever reaches
+// nearer (raster and ray-traced primary visibility alike); shadow, bounce and
+// reflection rays pass them, except those of a path that starts on one (they
+// shadow themselves, not the world); their emission lights nothing. Static
+// classifications are traced as dynamic. Raster-only view-model instances
+// are drawn in the same place with the world camera, depth-tested against
+// the traced frame. Needs perspective world and view-model cameras.
 // Optional InstanceInfo pNext: the instance is drawn as the edges of its
 // triangles (D3D's D3DFILL_WIREFRAME): a raster-only overlay of one-pixel
 // lines whatever its identity classification and blend mode say (never

@@ -26,6 +26,7 @@ namespace remix {
     std::copy(std::begin(m_tint), std::end(m_tint), frame.m_tint);
     frame.m_cameras = m_cameras;
     frame.m_views = m_views;
+    frame.m_authoredViews = m_authoredViews; // the host's own (applyViewModel ignores the free camera)
     frame.m_projections = m_projections;
     frame.m_reverseDepth = m_reverseDepth;
     frame.m_cameraValid = m_cameraValid;

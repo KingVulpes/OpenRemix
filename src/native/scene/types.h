@@ -259,6 +259,10 @@ namespace remix {
       // remixapi_InstanceInfoWireframeEXT: drawn as its triangles' edges
       // (raster-only, line polygon mode).
       bool wireframe = false;
+      // A view-model draw moved into the world camera's view
+      // (NativeResources::applyViewModel): traced in front of the scene, seen
+      // by no ray but the camera's and those of paths that start on it.
+      bool viewModel = false;
       bool alphaOverride = false;
       uint32_t compare = 7;
       float reference = 0;

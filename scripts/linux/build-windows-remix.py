@@ -19,7 +19,7 @@ def main():
     parser.add_argument('--deps', type=Path, default=root / '_work/deps/windows')
     parser.add_argument('--cmake', default='cmake')
     parser.add_argument('--jobs', type=int, default=8)
-    parser.add_argument('--skip-tests', action='store_true')
+    parser.add_argument('--tests', action='store_true', help='run the test suite under Wine after building')
     args = parser.parse_args()
     build, deps = args.build.resolve(), args.deps.resolve()
     prefix = deps / 'prefix'
@@ -129,7 +129,7 @@ cpp_link_args = ['-static-libgcc', '-pthread']
         setup += ['--reconfigure']
     subprocess.run(setup, check=True)
     subprocess.run(['meson', 'compile', '-C', str(build), '-j', str(args.jobs)], check=True)
-    if not args.skip_tests:
+    if args.tests:
         subprocess.run(['meson', 'test', '-C', str(build), '--print-errorlogs', '--num-processes', '1'], check=True)
     print('Windows runtime:', build / 'src/native/remix.dll')
     print('Runtime dependencies:', prefix / 'bin')

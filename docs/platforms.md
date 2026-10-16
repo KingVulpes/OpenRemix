@@ -40,8 +40,8 @@ python3 scripts/common/package-remix.py --target windows --build _work/build/win
 
 Use `--cmake /path/to/cmake` if CMake is outside PATH. The cross-build entry point
 builds the pinned SDL3, generates a Windows import library from the verified Vulkan
-1.4.309 export definition, and runs CPU tests in an isolated Wine prefix under
-`_work/deps/windows`. Windows or Proton supplies the Vulkan loader and GPU driver.
+1.4.309 export definition, and with `--tests` runs CPU tests in an isolated Wine
+prefix under `_work/deps/windows`. Windows or Proton supplies the Vulkan loader and GPU driver.
 The cross-built package includes the MinGW runtime DLLs alongside SDL3 and remix.dll.
 
 ### Build on Windows

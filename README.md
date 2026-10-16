@@ -19,6 +19,11 @@ The entire codebase is different, the only Remix-part of OpenRemix is the compat
 - Background pipeline preparation and persistent shader caching.
 - Optional OpenUSD scenes, mod replacements, hot reload, and Linux toolkit viewport.
 
+## Projects Using OpenRemix
+- [BetaRT](https://github.com/sambow23/BetaRT/tree/openremix)
+- [garrys-mod-rtx-remixed-2](https://github.com/sambow23/garrys-mod-rtx-remixed-2)
+- [UnityRTX](https://github.com/Veitaserum4/UnityRTX/tree/unity-bridge-openremix)
+
 ## Building
 
 Targets: Linux/Windows x64 and macOS/Android arm64. Use Clang, Python 3.9+,

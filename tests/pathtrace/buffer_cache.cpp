@@ -75,7 +75,8 @@ int main() {
     assert(!destroyed.count(handle));
     owner.reset();
     assert(destroyed.count(handle));
-    assert(unmapped.count(memory));
+    remix::MemoryRelease::drain(); // memory is freed on its own thread; the mapping ends with it
+    assert(freed.count(memory) && !unmapped.count(memory));
   }
   {
     auto cache = std::make_shared<BufferCache>();
@@ -115,6 +116,7 @@ int main() {
     overflow.reset();
     assert(destroyed.count(handle));
   }
+  remix::MemoryRelease::drain();
   assert(destroyed.size() == nextHandle - 1 && freed.size() == destroyed.size());
   {
     auto cache = std::make_shared<BufferCache>();

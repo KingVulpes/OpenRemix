@@ -44,7 +44,11 @@ remixapi_MaterialHandle material(remixapi_Interface &api, uint64_t hash, float r
   info.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO;
   info.pNext = &opaque;
   info.hash = hash;
+#ifdef _WIN32
+  info.albedoTexture = L"";
+#else
   info.albedoTexture = "";
+#endif
   remixapi_MaterialHandle handle = nullptr;
   ok(api.CreateMaterial(&info, &handle));
   return handle;

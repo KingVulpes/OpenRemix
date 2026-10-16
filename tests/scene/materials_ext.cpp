@@ -270,7 +270,11 @@ namespace {
     opaque.albedoConstant = {1, 1, 1};
     opaque.opacityConstant = 1;
     opaque.alphaTestType = 7;
+#ifdef _WIN32
+    opaque.roughnessTexture = L"0x61";
+#else
     opaque.roughnessTexture = "0x61";
+#endif
     remixapi_MaterialInfo info{};
     info.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_INFO;
     info.pNext = &opaque;
@@ -303,7 +307,11 @@ namespace {
     encoding.encoding = 5;
     rejected([&] { r.createMaterial(info, handle); }); // a roughness map
     opaque.roughnessTexture = nullptr;
+#ifdef _WIN32
+    info.normalTexture = L"0x61";
+#else
     info.normalTexture = "0x61";
+#endif
     info.hash = 0x63;
     r.createMaterial(info, handle);
     const auto water = drawn(r, quad(r, 0x64, handle));

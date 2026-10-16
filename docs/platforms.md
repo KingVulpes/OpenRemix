@@ -32,6 +32,8 @@ SDL3, the sample, SDK headers, pin and license notices. No Vulkan driver is bund
 Linux hosts can use Clang with the x86_64 MinGW-w64 headers, libraries and runtime,
 plus Python, CMake, Meson, Ninja, pkg-config, LLVM binutils and Wine:
 
+Arch Linux specific packages: `sudo pacman -S --needed clang llvm mingw-w64-gcc meson ninja cmake pkgconf python wine git`
+
 ```sh
 python3 scripts/linux/build-windows-remix.py
 python3 scripts/common/package-remix.py --target windows --build _work/build/windows-cross \

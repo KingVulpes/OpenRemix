@@ -35,17 +35,22 @@ namespace remix {
 
   void PathTracer::Gpu::configureIndirect(Frame &frame, const TraceOptions &options, bool querySharc) {
     indirectPass.active = false;
-    if (!indirectPlanned(options))
-      return;
     // Mode 1 (auto): only where the combined kernel's registers made it pay.
-    if (indirectPass.mode == 1 &&
-        (rrActive() || !denoiser || !postSplit || !splitLightingActive || !localIlluminationActive ||
-         (options.pbrLocalReuse && options.localDirectClamp == 0 && options.indirectClamp == 0) || querySharc ||
-         options.separateLocalLighting != 3))
+    const bool planned =
+        indirectPlanned(options) &&
+        !(indirectPass.mode == 1 &&
+          (rrActive() || !denoiser || !postSplit || !splitLightingActive || !localIlluminationActive ||
+           (options.pbrLocalReuse && options.localDirectClamp == 0 && options.indirectClamp == 0) || querySharc ||
+           options.separateLocalLighting != 3));
+    // Consumer base pipelines exist once the transport does.
+    if (!planned && !indirectPass.results)
       return;
     try {
       // The transport exists whenever a consumer base pipeline may run, with
-      // or without its producer (rendering.cpp clears it then).
+      // or without its producer (rendering.cpp clears it then): also after
+      // the pass is turned off (sparse rendering, no bounces), while the
+      // opaque pass's inline variant compiles. Without it the consumer reads
+      // through a null address: a GPU context-switch timeout (Xid 109).
       const VkDeviceSize bytes = VkDeviceSize(extent.width) * extent.height * 16;
       if (!indirectPass.results || indirectPass.results->size < bytes) {
         auto next = buffer(bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, false);
@@ -53,6 +58,8 @@ namespace remix {
         indirectPass.results = std::move(next);
       }
       frame.indirectResults = indirectPass.results->address;
+      if (!planned)
+        return;
       // Normally part of the lighting batch (beginFrame, createRawPipelines);
       // here for a configuration that gained the pass later.
       if (!indirectPass.pipeline)

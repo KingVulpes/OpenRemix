@@ -276,10 +276,10 @@ uint alphaOperands(Surface s) {
   uint a=combineOp==2?0u:first,b=combineOp==1?0u:second;
   return uint(a==1||b==1)|uint(a==2||b==2)<<1;
 }
-float materialAlpha(Surface s, vec2 uv, float vertex, bool sampled) {
+// materialColor's alpha from the texture's alpha (texel) and the vertex's.
+float materialAlphaOf(Surface s, float texel, float vertex) {
   if ((s.state.w&1)!=0) return 1;
   uint op=s.state.x;
-  float texel=sampled?textureLod(textures[nonuniformEXT(s.textureState.x)],uv*s.uv.xy+s.uv.zw,0).a:1;
   uint first=(op>>8)&3,second=(op>>10)&3;
   float a=first==1?texel:first==2?vertex:first==3?s.factor.a:1;
   float b=second==1?texel:second==2?vertex:second==3?s.factor.a:1;
@@ -287,6 +287,11 @@ float materialAlpha(Surface s, vec2 uv, float vertex, bool sampled) {
   float alpha=(combineOp==1?a:combineOp==2?b:combineOp==6?min(a+b,1):min(a*b*(combineOp==4||combineOp==7?2:combineOp==5?4:1),1))*s.tint.a;
   if ((s.state.w&8)!=0) alpha*=.2;
   return clamp(alpha,0,1);
+}
+float materialAlpha(Surface s, vec2 uv, float vertex, bool sampled) {
+  if ((s.state.w&1)!=0) return 1;
+  float texel=sampled?textureLod(textures[nonuniformEXT(s.textureState.x)],uv*s.uv.xy+s.uv.zw,0).a:1;
+  return materialAlphaOf(s,texel,vertex);
 }
 vec4 materialColor(Surface s, vec4 texel, vec4 vertex) {
   vertex.rgb = linearColor(vertex.rgb);

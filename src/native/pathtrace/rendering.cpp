@@ -670,7 +670,7 @@ namespace remix {
         options.sharcReset,     options.sharcCapacityLog2,       options.sharcSceneScale,
         options.sharcDownscale, options.sharcAccumulationFrames, options.sharcStaleFrames,
         options.sharcMotionFrames, options.sharcMaxUpdatePaths, options.sharcDynamicSurfaces,
-        options.sharcGlossySurfaces};
+        options.sharcGlossySurfaces, options.sharcFootprintTest};
     append(cacheSettings, sizeof(cacheSettings));
     append(&options.sharcFireflyClamp, sizeof(options.sharcFireflyClamp));
     const auto temporalEpoch = resources.temporalEpoch();

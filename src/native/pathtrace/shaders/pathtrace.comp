@@ -716,7 +716,7 @@ bool cacheRadiance(Hit hit,float footprint,out vec3 radiance) {
   if((frame.sharcConfig.x&1u)==0u&&frame.sharcConfig.w==0u)return false;
   if(!cacheSurface(hit))return false;
   SharcParameters parameters=cacheParameters();
-  if(!cacheFootprintFits(hit,footprint))return false;
+  if((frame.sharcConfig.x&8u)==0u&&!cacheFootprintFits(hit,footprint))return false;
 #ifndef CONFIDENCE_PASS
   bool measure=(hash(uint(shadingPixel.x)+uint(shadingPixel.y)*frame.target.x)&63u)==0;
   if(measure)atomicAdd(CacheCounters(frame.sharcCounters).data[1],1u);

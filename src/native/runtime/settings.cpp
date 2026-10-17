@@ -232,6 +232,7 @@ namespace remix::config {
         TRACE(sharcMaxUpdatePaths, 0, 16777216);
         TRACE(sharcDynamicSurfaces, 0, 1);
         TRACE(sharcGlossySurfaces, 0, 1);
+        TRACE(sharcFootprintTest, 0, 1);
         TRACE(sky, 0, 1);
         TRACE(forceRebuild, 0, 1);
         TRACE(fsrSharpness, 0, 1);

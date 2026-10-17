@@ -221,6 +221,10 @@ namespace remix {
     // PBR surfaces smoother than REMIX_SHARC_PBR_MIN_ROUGHNESS hold cache
     // entries as if they were that rough, where otherwise paths trace on.
     bool sharcGlossySurfaces = true;
+    // A path reads the cache only where its spread at the hit covers a cell
+    // (footprint > cell diagonal). Off: every cacheable vertex reads it,
+    // ~1.5 ms faster on df_range, but coarse far cells read too dark.
+    bool sharcFootprintTest = true;
     uint64_t sharcReset = 0; // Runtime action sequence; excluded from profiles.
     bool overrideLight = false;
     float lightDirection[3] = {-0.4f, -0.8f, -0.3f};

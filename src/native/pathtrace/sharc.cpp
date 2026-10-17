@@ -376,7 +376,8 @@ namespace remix {
                                          options.sharcMaxUpdatePaths)
         ++sharc.downscale;
     frame.sharcConfig[0] = uint32_t(hasReceivers) | uint32_t(options.sharcDynamicSurfaces) << 1 |
-                           uint32_t(options.sharcGlossySurfaces) << 2;
+                           uint32_t(options.sharcGlossySurfaces) << 2 |
+                           uint32_t(!options.sharcFootprintTest) << 3;
     frame.sharcConfig[1] = sharc.stats.capacity;
     frame.sharcConfig[2] = sharc.downscale;
     frame.sharcConfig[3] = options.sharcDebug;

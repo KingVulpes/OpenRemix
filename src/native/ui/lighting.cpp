@@ -287,6 +287,10 @@ namespace remix {
       ui::SliderFloat("Update sample limit (x cell mean, 0: none)", &options.sharcFireflyClamp, 0, 100);
       ui::Checkbox("Cache on moving surfaces", &options.sharcDynamicSurfaces);
       ui::Checkbox("Cache on glossy surfaces", &options.sharcGlossySurfaces);
+      ui::Checkbox("Footprint test on cache reads", &options.sharcFootprintTest);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("On: a path reads cached lighting only where it has spread wider than a cache cell.\n"
+                          "Off: faster (fewer traced bounces), but coarse distant cells can read too dark.");
       auto cache = sharcStatistics();
       ImGui::TextWrapped("%s | %u / %u entries | %.1f MiB",
                          cache.active ? (cache.updatePaths ? "Caching" : "Enabled (idle)") : "Inactive",

@@ -498,59 +498,49 @@ vec3 localLighting(Hit hit,uint state,uint samples,out float lightDistance,bool 
     selectionPdf=(1-guideMix)*selectionPdf+(index==preferred?guideMix:0);
     if(selectionPdf<=0)continue;
     LightEmitter light=emitters.data[nodes.data[index].links.z];
+    // The sample's light (physical, its specular share), point and distance;
+    // a triangle or a sphere, then one visibility call site for both.
+    vec3 physical,physicalSpecular,endpoint;float distance;
     if(light.radiance.w!=0) {
       LocalCandidate candidate=triangleCandidate(light,hit,state,useGuiding,blue,sampleIndex*8u);
-      if(localLuminance(candidate.physical)<=0)continue;
-      vec3 estimate=candidate.physical/selectionPdf;
-      vec3 visibility=localVisibility(offsetRay(hit.p,hit.ng),candidate.endpoint);
-      vec3 contribution=estimate*visibility,specularContribution=candidate.specular/selectionPdf*visibility;
-      clampLighting(hit,contribution,specularContribution,threshold);
-      result+=contribution;specular+=specularContribution;
-      if(useGuiding)localDirection(candidate.endpoint-hit.p,contribution);
-      if(enableLocalGuiding&&useGuiding&&guideKey!=0&&(hash(state^0xd1b54a35u)&63u)==0)
-        trainLightGuide(guideKey,index,guided,visibility,candidate.physical,false);
-      float weight=localLuminance(estimate);
-      lightDistance+=candidate.distance*weight;distanceWeight+=weight;
-      continue;
+      physical=candidate.physical;physicalSpecular=candidate.specular;endpoint=candidate.endpoint;distance=candidate.distance;
+    } else {
+      vec3 delta=light.positionRadius.xyz-hit.p;
+      float distance2=dot(delta,delta),radius=light.positionRadius.w;
+      float attenuation=localFalloff(distance2);
+      if(attenuation==0)continue;
+      bool inside=distance2<=radius*radius;
+      vec3 axis=distance2>1e-20?delta*inversesqrt(distance2):hit.n;
+      float sinMax2=min(1,radius*radius/max(distance2,1e-20));
+      // Stable for small, distant lights: 1-sqrt(1-x) = x/(1+sqrt(1-x)).
+      float oneMinusCos=inside?2:sinMax2/(1+sqrt(max(0,1-sinMax2)));
+      vec2 sampleU=localEmitterSample(vec2(lightRandom(state),lightRandom(state)),blue,sampleIndex*8u);
+      float cosTheta=1-sampleU.x*oneMinusCos;
+      float sinTheta=sqrt(max(0,(1-cosTheta)*(1+cosTheta)));
+      float phi=6.28318530718*sampleU.y;
+      vec3 tangent=normalize(cross(abs(axis.z)<.999?vec3(0,0,1):vec3(0,1,0),axis));
+      vec3 direction=normalize(axis*cosTheta+sinTheta*(cos(phi)*tangent+sin(phi)*cross(axis,tangent)));
+      float cosine=max(0,dot(hit.n,direction));
+      if(cosine==0)continue;
+      float projected=dot(delta,direction);
+      vec3 perpendicular=delta-direction*projected;
+      float root=sqrt(max(0,radius*radius-dot(perpendicular,perpendicular)));
+      distance=max(0,inside?projected+root:projected-root);
+      vec3 scale=light.radiance.rgb*emitterShaping(light,-direction)*(2*oneMinusCos*cosine*attenuation)*frame.localScale.x;
+      physical=materialResponse(hit,direction,physicalSpecular)*scale;physicalSpecular*=scale;
+      endpoint=hit.p+direction*distance;
     }
-    // Keep the established sphere math in this fast path. Factoring its
-    // early-outs through a candidate return changes the driver's generated
-    // control flow at every secondary vertex in large-light scenes.
-    vec3 delta=light.positionRadius.xyz-hit.p;
-    float distance2=dot(delta,delta),radius=light.positionRadius.w;
-    float attenuation=localFalloff(distance2);
-    if(attenuation==0)continue;
-    bool inside=distance2<=radius*radius;
-    vec3 axis=distance2>1e-20?delta*inversesqrt(distance2):hit.n;
-    float sinMax2=min(1,radius*radius/max(distance2,1e-20));
-    // Stable for small, distant lights: 1-sqrt(1-x) = x/(1+sqrt(1-x)).
-    float oneMinusCos=inside?2:sinMax2/(1+sqrt(max(0,1-sinMax2)));
-    vec2 sampleU=localEmitterSample(vec2(lightRandom(state),lightRandom(state)),blue,sampleIndex*8u);
-    float cosTheta=1-sampleU.x*oneMinusCos;
-    float sinTheta=sqrt(max(0,(1-cosTheta)*(1+cosTheta)));
-    float phi=6.28318530718*sampleU.y;
-    vec3 tangent=normalize(cross(abs(axis.z)<.999?vec3(0,0,1):vec3(0,1,0),axis));
-    vec3 direction=normalize(axis*cosTheta+sinTheta*(cos(phi)*tangent+sin(phi)*cross(axis,tangent)));
-    float cosine=max(0,dot(hit.n,direction));
-    if(cosine==0)continue;
-    float projected=dot(delta,direction);
-    vec3 perpendicular=delta-direction*projected;
-    float root=sqrt(max(0,radius*radius-dot(perpendicular,perpendicular)));
-    float distance=max(0,inside?projected+root:projected-root);
-    vec3 specularResponse;
-    vec3 scale=light.radiance.rgb*emitterShaping(light,-direction)*(2*oneMinusCos*cosine*attenuation)*frame.localScale.x;
-    vec3 physical=materialResponse(hit,direction,specularResponse)*scale;
     // A spot light facing away or a back-facing response: no visibility ray.
     if(localLuminance(physical)<=0)continue;
     vec3 estimate=physical/selectionPdf;
-    vec3 visibility=localVisibility(offsetRay(hit.p,hit.ng),hit.p+direction*distance);
-    vec3 contribution=estimate*visibility,specularContribution=specularResponse*scale/selectionPdf*visibility;
+    vec3 visibility=localVisibility(offsetRay(hit.p,hit.ng),endpoint);
+    vec3 contribution=estimate*visibility,specularContribution=physicalSpecular/selectionPdf*visibility;
     clampLighting(hit,contribution,specularContribution,threshold);
     result+=contribution;specular+=specularContribution;
-    if(useGuiding)localDirection(direction,contribution);
+    if(useGuiding)localDirection(endpoint-hit.p,contribution);
     if(enableLocalGuiding&&useGuiding&&guideKey!=0&&(hash(state^0xd1b54a35u)&63u)==0)
       trainLightGuide(guideKey,index,guided,visibility,physical,false);
-    float weight=dot(estimate,vec3(.2126,.7152,.0722));
+    float weight=localLuminance(estimate);
     lightDistance+=distance*weight;distanceWeight+=weight;
   }
   lightDistance=distanceWeight>0?lightDistance/distanceWeight:0;

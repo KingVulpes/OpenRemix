@@ -271,17 +271,22 @@ Hit closestGeometry(vec3 origin,vec3 direction,float maximum,bool motion) {
 // Tagged decals coat the receiver's material; lighting is evaluated and filtered
 // once on that receiver. This also gives partial decal texels stable motion/NRD
 // guides instead of feeding their independently sampled lighting around NRD.
-Hit resolveDecals(Hit first,vec3 origin,vec3 direction,float maximum,bool motion) {
-  if(!enableDecals||!first.decal)return first;
-  Hit hit=first;
+// The first query and the queries past each decal are one call site: every
+// closestGeometry (two inlined scene queries) is inlined wherever closest() is.
+Hit closest(vec3 origin,vec3 direction,float maximum,bool motion) {
+  Hit first,hit;
   vec3 color=vec3(0),normal=vec3(0),emission=vec3(0),self=vec3(0);
   vec2 parameters=vec2(0);
   // `through` carries color into the layers below: alpha paint covers them,
   // multiplicative paint (D3D DESTCOLOR*SRCCOLOR, mod2x) tints them and keeps
   // the receiver's normal and roughness.
   float remaining=1;vec3 through=vec3(1);
-  float lastDecal=first.t;
-  for(uint layer=0;layer<32&&hit.decal;++layer) {
+  float lastDecal=0,minimum=0;
+  // Layer 0 is the first surface; up to 32 decals above the receiver.
+  for(uint layer=0;layer<33;++layer) {
+    hit=closestGeometry(origin,direction,maximum,motion,minimum);
+    if(layer==0)first=hit;
+    if(!enableDecals||!hit.decal||layer==32)break;
     if(hit.decalMode!=0u) {
       // mod2x is authored in sRGB (128 is neutral): scale so linear(128/255) maps to one.
       through*=hit.color.rgb*(hit.decalMode==2u?4.634:1.);
@@ -295,9 +300,9 @@ Hit resolveDecals(Hit first,vec3 origin,vec3 direction,float maximum,bool motion
     lastDecal=hit.t;
     // Keep the ray origin fixed. The normal-offset used for lighting rays can
     // jump through a decal's close receiver at large world coordinates.
-    float minimum=uintBitsToFloat(floatBitsToUint(hit.t)+1u);
-    hit=closestGeometry(origin,direction,maximum,motion,minimum);
+    minimum=uintBitsToFloat(floatBitsToUint(hit.t)+1u);
   }
+  if(!enableDecals||!first.decal)return first;
   // Paint coats the surface right behind it. A ray that starts at the paint's
   // plane without meeting that surface behind it left the painted surface
   // itself (bounce, sky and light rays from under the paint): it must not see
@@ -331,9 +336,6 @@ Hit resolveDecals(Hit first,vec3 origin,vec3 direction,float maximum,bool motion
   hit.rm=vec2(sqrt(max(parameters.x,0)),parameters.y);
   return hit;
 }
-Hit closest(vec3 origin,vec3 direction,float maximum,bool motion) {
-  return resolveDecals(closestGeometry(origin,direction,maximum,motion),origin,direction,maximum,motion);
-}
 Hit closest(vec3 origin,vec3 direction) { return closest(origin,direction,1e30,true); }
 // A ray along the pixel's line of sight: the primary ray and its continuations
 // through transparent sheets. It does not see what the pixel's coverage cuts,
@@ -358,7 +360,8 @@ Hit secondaryHit(vec3 origin,vec3 direction) {
   traceMask=bounceMask();Hit hit=closest(origin,direction,1e30,false);traceMask=cameraMask;return hit;
 }
 // First visibility comes from rasterization; secondary rays still query the full scene.
-Hit rasterPrimary(ivec2 pixel, vec3 origin) {
+// A painted pixel's ray is traced again (rasterPrimary, primarySurface).
+Hit rasterSurface(ivec2 pixel, vec3 origin) {
   vec4 position=imageLoad(primaryPosition,pixel), normal=imageLoad(primaryNormal,pixel);
   // The kind plus 8: a view model (gbuffer.frag).
   if(normal.w>=8){normal.w-=8;viewModelPath=true;}
@@ -384,6 +387,10 @@ Hit rasterPrimary(ivec2 pixel, vec3 origin) {
     hit.t=length(eye-hit.p);hit.wo=normalize(eye-hit.p);
   }
 #endif
+  return hit;
+}
+Hit rasterPrimary(ivec2 pixel, vec3 origin) {
+  Hit hit=rasterSurface(pixel,origin);
   // Re-query painted pixels to obtain the ray traversal's exact intersection
   // distance. Raster-interpolated positions can round to the other side of a
   // very close receiver; the common resolver advances tMin without an offset.
@@ -429,18 +436,51 @@ vec3 bodyDirection(Hit hit,vec3 direction,float ior) {
   vec3 r=refract(direction,n,frame.cameraMedium.w>0?ior:1/ior);
   return dot(r,r)>0?normalize(r):direction;
 }
-// The first surface behind the sheets a camera ray meets (at most 32), the ray
-// bent at the first translucent body it crosses. layers: the sheets passed.
-Hit pastSheets(Hit hit,inout vec3 origin,inout vec3 direction,out uint layers) {
-  bool bent=false;
-  for(layers=0;layers<32&&hit.blended;++layers) {
-    if(!bent&&hit.tinted) {
-      vec2 body=sheetBody(hit,direction);
-      if(body.x>=1){direction=bodyDirection(hit,direction,body.x);bent=true;}
+// The pixel's primary surface (raster G-buffer or camera ray, a painted
+// pixel's ray traced again) and, with `sheets`, the first surface behind the
+// sheets in front of it (at most 32), the ray bent at the first translucent
+// body it crosses; layers: the sheets passed. One cameraHit call site serves the
+// primary ray, the decal re-query, every sheet layer and a raster sheet's
+// translucent body (sheetBody): each site inlines the scene queries.
+// front: the first surface's geometry diagnostic (with `diagnose`).
+Hit primarySurface(ivec2 pixel,inout vec3 origin,inout vec3 direction,bool sheets,out uint layers,bool diagnose,out vec3 front) {
+  front=vec3(0);layers=0;
+  bool raster=frame.target.w!=0,bent=false,body=false,trace=!raster,first=true;
+  vec3 traceOrigin=origin,traceDirection=direction;
+  Hit hit;
+  if(raster) {
+    hit=rasterSurface(pixel,origin);
+    if(hit.decal){trace=true;traceDirection=normalize(hit.p-origin);}
+  }
+  // At most: the primary (and its re-query), then per layer a body query and the layer's ray.
+  for(uint step=0;step<66u;++step) {
+    if(trace) {
+      Hit traced=cameraHit(traceOrigin,traceDirection);trace=false;
+      if(body) {
+        body=false;
+        vec2 thick=traced.t<1e30&&traced.blended?traced.thick:vec2(0);
+        if(thick.x>=1){direction=bodyDirection(hit,direction,thick.x);bent=true;}
+        origin=offsetRay(hit.p,-hit.ng);traceOrigin=origin;traceDirection=direction;trace=true;++layers;
+        continue;
+      }
+      hit=traced;
     }
-    origin=offsetRay(hit.p,-hit.ng);hit=cameraHit(origin,direction);
+    if(first){first=false;if(diagnose&&frame.splitLocal.w!=0)front=debugGeometry(hit,pixel);}
+    if(!sheets||layers>=32u||!hit.blended)break;
+    if(!bent&&hit.tinted) {
+      if(hit.thick.x==0&&raster) {
+        // A raster sheet carries no material record: its ray is traced for it.
+        body=true;traceOrigin=offsetRay(hit.p,hit.ng);traceDirection=direction;trace=true;
+        continue;
+      }
+      if(hit.thick.x>=1){direction=bodyDirection(hit,direction,hit.thick.x);bent=true;}
+    }
+    origin=offsetRay(hit.p,-hit.ng);traceOrigin=origin;traceDirection=direction;trace=true;++layers;
   }
   return hit;
+}
+Hit primarySurface(ivec2 pixel,inout vec3 origin,inout vec3 direction,bool sheets,out uint layers) {
+  vec3 front;return primarySurface(pixel,origin,direction,sheets,layers,false,front);
 }
 // Cosine-weighted hemisphere: disk projection, pdf = cos(theta)/pi (ch. 15-16).
 vec3 diffuseDirection(vec3 n) {
@@ -550,17 +590,21 @@ vec3 direct(Hit hit,bool primary,out vec3 specular,out float distance) {
     local=materialFactor(hit)*localLighting(hit,rng,primary?frame.localConfig.y:1u,distance,false,specular,primary?frame.firefly.x:0);
     specular*=materialFactor(hit);
   }
-  if(cosine>0&&any(greaterThan(frame.lightRadiance.rgb,vec3(0)))) {
-    vec3 diffuse,sunSpecular;materialLobes(hit,toLight,diffuse,sunSpecular);
-    vec3 visibility=shadow(offsetRay(hit.p,hit.ng),toLight);
-    local+=(diffuse+sunSpecular)*cosine*frame.lightRadiance.rgb*visibility;
-    specular+=sunSpecular*cosine*frame.lightRadiance.rgb*visibility;
-  }
-  if(frame.skyRadiance.w!=0) {
-    vec3 direction,environmentSpecular;
-    vec3 weight=materialSample(hit,direction,environmentSpecular);
-    vec3 illumination=environmentRadiance(direction)*shadow(offsetRay(hit.p,hit.ng),direction);
-    local+=weight*illumination;specular+=environmentSpecular*illumination;
+  // The sun (0) and the sky (1) share one shadow() call site: each inlined
+  // copy is a set of visibility queries.
+  for(uint source=0;source<2;++source) {
+    vec3 direction=toLight,weight,lobeSpecular;
+    if(source==0) {
+      if(cosine<=0||!any(greaterThan(frame.lightRadiance.rgb,vec3(0))))continue;
+      vec3 diffuse;materialLobes(hit,toLight,diffuse,lobeSpecular);
+      weight=(diffuse+lobeSpecular)*cosine*frame.lightRadiance.rgb;lobeSpecular*=cosine*frame.lightRadiance.rgb;
+    } else {
+      if(frame.skyRadiance.w==0)continue;
+      weight=materialSample(hit,direction,lobeSpecular);
+    }
+    vec3 visibility=shadow(offsetRay(hit.p,hit.ng),direction);
+    if(source==1)visibility*=environmentRadiance(direction);
+    local+=weight*visibility;specular+=lobeSpecular*visibility;
   }
   return local;
 }
@@ -1299,8 +1343,7 @@ void main() {
   rng=hash(uint(pixel.x)+uint(pixel.y)*frame.target.x+hash(frame.config.z^0x73706172u));
   vec3 origin,direction;
   ray((vec2(pixel)+.5+frame.jitter.xy)/vec2(frame.target.xy)*2-1,frame.inverseCameraRelative,frame.eye.xyz,origin,direction);
-  Hit primary=frame.target.w!=0?rasterPrimary(pixel,origin):cameraHit(origin,direction);
-  uint passed;primary=pastSheets(primary,origin,direction,passed);
+  uint passed;Hit primary=primarySurface(pixel,origin,direction,true,passed);
   if(primary.t<1e30&&!primary.blended) {
     vec3 firstDirection,specular;float firstDistance;
     continuation(primary,firstDirection,firstDistance,specular);
@@ -1314,7 +1357,7 @@ void main() {
   if(any(greaterThanEqual(pixel,ivec2(frame.target.xy))))return;
   vec3 origin,direction;
   ray((vec2(pixel)+.5+frame.jitter.xy)/vec2(frame.target.xy)*2-1,frame.inverseCameraRelative,frame.eye.xyz,origin,direction);
-  Hit primary=frame.target.w!=0?rasterPrimary(pixel,origin):cameraHit(origin,direction);
+  uint passed;Hit primary=primarySurface(pixel,origin,direction,false,passed);
   frontGuides(primary,pixel);
   return;
 #elif defined(SHEET_LIGHTING_PASS)
@@ -1332,7 +1375,8 @@ void main() {
   vec3 origin,direction;
   ray((vec2(pixel)+.5+frame.jitter.xy)/vec2(frame.target.xy)*2-1,frame.inverseCameraRelative,frame.eye.xyz,origin,direction);
   Hit hit;hit.t=1e30;hit.p=vec3(0);hit.n=vec3(0);hit.blended=false;hit.pbr=false;hit.thick=vec2(0);
-  if(front)hit=frame.target.w!=0?rasterPrimary(pixel,origin):cameraHit(origin,direction);
+  uint passed;
+  if(front)hit=primarySurface(pixel,origin,direction,false,passed);
   hit.wo=-direction;
   bool lit=inBounds&&front&&hit.blended;
   // The water patch (waterPrepare/waterShare, barriers every invocation
@@ -1368,8 +1412,7 @@ void main() {
   rng=hash(uint(pixel.x)+uint(pixel.y)*frame.target.x+hash(frame.config.z));
   vec3 origin,direction;
   ray((vec2(pixel)+.5+frame.jitter.xy)/vec2(frame.target.xy)*2-1,frame.inverseCameraRelative,frame.eye.xyz,origin,direction);
-  Hit primary=frame.target.w!=0?rasterPrimary(pixel,origin):cameraHit(origin,direction);
-  uint passed;primary=pastSheets(primary,origin,direction,passed);
+  uint passed;Hit primary=primarySurface(pixel,origin,direction,true,passed);
   rng=hash(rng^0x696e6469u); // its own sequence, apart from the direct pass's
   vec3 diffuseFactor=vec3(1),specularFactor=vec3(1);
 #ifdef TEMPORAL
@@ -1394,8 +1437,7 @@ void main() {
   if(normal.a>0) {
     vec3 origin,direction;
     ray((vec2(pixel)+.5+frame.jitter.xy)/vec2(frame.target.xy)*2-1,frame.inverseCameraRelative,frame.eye.xyz,origin,direction);
-    Hit hit=frame.target.w!=0?rasterPrimary(pixel,origin):cameraHit(origin,direction);
-    uint passed;hit=pastSheets(hit,origin,direction,passed);
+    uint passed;Hit hit=primarySurface(pixel,origin,direction,true,passed);
     uint state=hash(uint(pixel.x)+uint(pixel.y)*frame.target.x+hash(frame.config.z^0x52455354u));
     initial=restirInitial(hit,state,imageLoad(guideDepth,pixel).x,pixel);
   }
@@ -1410,8 +1452,7 @@ void main() {
   if(normal.a>0) {
     vec3 origin,direction;
     ray((vec2(pixel)+.5+frame.jitter.xy)/vec2(frame.target.xy)*2-1,frame.inverseCameraRelative,frame.eye.xyz,origin,direction);
-    Hit hit=frame.target.w!=0?rasterPrimary(pixel,origin):cameraHit(origin,direction);
-    uint passed;hit=pastSheets(hit,origin,direction,passed);
+    uint passed;Hit hit=primarySurface(pixel,origin,direction,true,passed);
     uint state=hash(uint(pixel.x)+uint(pixel.y)*frame.target.x+hash(frame.config.z));
     // The runtime check also keeps the unspecialized fallback correct if the
     // dedicated combined pipeline cannot be created.
@@ -1541,11 +1582,9 @@ void main() {
   vec2 jitter=frame.jitter.xy;
   vec3 origin,direction;ray((vec2(pixel)+.5+jitter)/vec2(frame.target.xy)*2-1,frame.inverseCameraRelative,frame.eye.xyz,origin,direction);
 #ifndef TRANSPARENCY_PASS
-  Hit primary=frame.target.w!=0?rasterPrimary(pixel,origin):cameraHit(origin,direction);
-  vec3 diagnostic=frame.splitLocal.w!=0?debugGeometry(primary,pixel):vec3(0);
   // Opaque lighting owns the initial random sequence used by confidence retracing.
-  uint sheetCount=0;
-  primary=pastSheets(primary,origin,direction,sheetCount);
+  uint sheetCount=0;vec3 diagnostic;
+  Hit primary=primarySurface(pixel,origin,direction,true,sheetCount,true,diagnostic);
 #ifdef TEMPORAL
   if(temporal.translucency.x!=0&&sheetCount!=1) {
     imageStore(frontDepth,pixel,vec4(1e10));
@@ -1747,7 +1786,7 @@ void main() {
 #ifdef SINGLE_SHEET_PASS
       &&(sheetCount==1||multiSheetFallback)
 #endif
-     )primary=frame.target.w!=0?rasterPrimary(pixel,origin):cameraHit(origin,direction);
+     ){uint passed;primary=primarySurface(pixel,origin,direction,false,passed);}
   // Layers past a translucent body follow its refracted ray; the first
   // sheet's distance bounds the medium a camera inside a body looks through.
   vec3 layerDirection=direction;

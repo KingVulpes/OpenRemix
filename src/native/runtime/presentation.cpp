@@ -1400,7 +1400,12 @@ void RemixNativeRuntime::presented() {
     // The API's scene, or the published frame (asynchronous presentation).
     auto &raster = renderer();
     if (m_pathTracer && !m_loading)
-      measured(breakdown.traceBeginMilliseconds, [&] { m_pathTracer->beginFrame(m_traceOptions, raster); });
+      measured(breakdown.traceBeginMilliseconds, [&] {
+        m_pathTracer->beginFrame(m_traceOptions, raster);
+        // Queue order puts reconstruction recreated in beginFrame ahead of this frame.
+        std::lock_guard lock(m_queueMutex);
+        m_pathTracer->finishReconstruction(m_queue);
+      });
     raster.setSkyTarget(m_pathTracer ? m_pathTracer->skyPass() : VK_NULL_HANDLE);
     if (!m_loading) {
       gpu::GpuScope scope(buffer, "Raster uploads and skinning");

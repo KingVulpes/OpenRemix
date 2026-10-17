@@ -84,6 +84,9 @@ namespace remix {
                               bool local, uint32_t failedBackends = 0,
                               const std::string &failure = {});
     bool finishPreparation(VkQueue queue);
+    // Submits the setup of reconstruction recreated in place (a Ray
+    // Reconstruction model or preset change in beginFrame) ahead of the frame.
+    void finishReconstruction(VkQueue queue);
     void beginFrame(const TraceOptions &options, const RasterRenderer &resources);
     void selectFrame(uint32_t slot);
     void submitted();

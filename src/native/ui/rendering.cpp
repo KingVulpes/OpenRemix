@@ -134,8 +134,36 @@ namespace remix {
           savedQuality = uint32_t(quality);
         if (amd)
           ui::SliderFloat("FSR sharpening", &options.fsrSharpness, 0.f, 1.f, "%.2f");
-        else
+        else {
           ui::Checkbox("DLSS Ray Reconstruction", &options.dlssRayReconstruction);
+          if (options.dlssRayReconstruction) {
+            int model = int(options.dlssRayReconstructionModel);
+            if (ui::Combo("Ray Reconstruction model", &model, "Transformer\0CNN\0"))
+              options.dlssRayReconstructionModel = uint32_t(model);
+            if (ImGui::IsItemHovered())
+              ImGui::SetTooltip("Transformer: the current model (DLSS 310.9.1), sharper reflections and detail.\n"
+                                "CNN: the earlier convolutional model (DLSS 310.2.1), softer, about half the\n"
+                                "cost on RTX 20 series GPUs. Changing it restarts DLSS (not while DLSS frame\n"
+                                "generation runs).");
+            ui::Checkbox("Choose the model preset", &options.dlssRayReconstructionPresetOverride);
+            if (options.dlssRayReconstructionPresetOverride) {
+              // NGX presets 1-3 (A-C) are the CNN library's, 4-6 (D-F) the transformer's.
+              const bool cnn = options.dlssRayReconstructionModel == 1;
+              const uint32_t first = cnn ? 1 : 4;
+              int preset = int(options.dlssRayReconstructionPreset) - int(first);
+              if (preset < 0 || preset > 2)
+                preset = cnn ? 2 : 1;
+              if (ui::Combo("Model preset", &preset, cnn ? "A\0B\0C\0" : "D\0E\0F (experimental)\0") ||
+                  options.dlssRayReconstructionPreset < first || options.dlssRayReconstructionPreset > first + 2)
+                options.dlssRayReconstructionPreset = first + uint32_t(preset);
+              if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", cnn ? "A-C: the CNN presets of DLSS 310.2.1; C is the default."
+                                            : "E: the latest transformer (the default). D: the first transformer.\n"
+                                              "F: DLSS 310.9.1's new default; Vulkan validation reports hazards\n"
+                                              "in it on Linux 615 drivers.");
+            }
+          }
+        }
       }
       if (rrActive) {
         ui::Checkbox("Sparse rendering", &options.sparseRendering);
@@ -175,6 +203,11 @@ namespace remix {
         }
       }
       ImGui::TextWrapped("Active: %s", upscale::name(fsr.backend));
+      if (fsr.backend == upscale::Backend::DlssRr)
+        ImGui::TextWrapped("Ray Reconstruction: %s, preset %c", fsr.rrCnn ? "CNN (DLSS 310.2.1)" : "transformer",
+                           fsr.rrPreset >= 1 && fsr.rrPreset <= 6 ? char('A' + fsr.rrPreset - 1) : '-');
+      if (!fsr.rrNote.empty())
+        ImGui::TextWrapped("%s", fsr.rrNote.c_str());
       ImGui::TextWrapped("%ux%u -> %ux%u | reconstruction %.2f ms", fsr.render.width, fsr.render.height,
                          fsr.display.width, fsr.display.height, fsr.milliseconds);
       if (!fsr.failure.empty())

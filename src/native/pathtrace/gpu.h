@@ -413,6 +413,12 @@ namespace remix {
     upscale::Mode requestedUpscaler = upscale::Mode::Off;
     upscale::Backend requestedBackend = upscale::Backend::Native;
     bool rrRequested = true;
+    // Ray Reconstruction's requested model (true: CNN) and preset (0: the
+    // model's own; else NGX's 1-6), the preset created and why the requested
+    // model is not the loaded one.
+    bool rrCnnRequested = false;
+    uint32_t rrPresetRequested = 0, rrPresetCreated = 0;
+    std::string rrModelNote;
     uint32_t failedBackends = 0;
     uint64_t reconstructionFailures = 0, reconstructedFrames = 0, reconstructionResets = 0;
     uint32_t reconstructionWarmFrames = 0;

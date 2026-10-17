@@ -11,6 +11,13 @@ namespace remix {
     bool denoiser = true, taa = true, validation = false;
     upscale::Mode upscaler = upscale::Mode::Dlss;
     bool dlssRayReconstruction = true;
+    // Ray Reconstruction's model: 0 transformer (DLSS 310.9.1, preset E), 1 CNN
+    // (DLSS 310.2.1, preset C; about half the cost on Turing). With the
+    // override, dlssRayReconstructionPreset (NGX's 1-6, A-F) instead; a preset
+    // of the other model's library is replaced by the model's own.
+    uint32_t dlssRayReconstructionModel = 0;
+    bool dlssRayReconstructionPresetOverride = false;
+    uint32_t dlssRayReconstructionPreset = 5;
     uint32_t dlssQuality = 3;
     bool prism = true, gamma22 = true;
     bool autoExposure = true, bloom = true;

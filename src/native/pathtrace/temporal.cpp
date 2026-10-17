@@ -314,6 +314,8 @@ namespace remix {
                        ? options.fsrQuality
                        : options.dlssQuality;
     g.rrRequested = options.dlssRayReconstruction;
+    g.rrCnnRequested = options.dlssRayReconstructionModel == 1;
+    g.rrPresetRequested = options.dlssRayReconstructionPresetOverride ? options.dlssRayReconstructionPreset : 0;
     g.failedBackends = failedBackends;
     g.fsrFailure = failure;
     // Schedule every pass's lighting pipelines before awaiting any of them.
@@ -332,6 +334,11 @@ namespace remix {
     g.preparing = false;
     return true;
   }
+  void PathTracer::finishReconstruction(VkQueue queue) {
+    auto &g = *m_gpu;
+    if (g.upscaler)
+      g.upscaler->finishInitialization(queue);
+  }
   void PathTracer::beginFrame(const TraceOptions &options,
                               const RasterRenderer &) {
     auto &g = *m_gpu;
@@ -344,11 +351,17 @@ namespace remix {
     const auto backend = !eligible || options.upscaler == upscale::Mode::Off ? upscale::Backend::Native :
         options.upscaler == upscale::Mode::Fsr31 ? upscale::Backend::Fsr31 : upscale::Backend::DlssSr;
     const auto quality = options.upscaler == upscale::Mode::Fsr31 ? options.fsrQuality : options.dlssQuality;
+    const bool rrCnn = options.dlssRayReconstructionModel == 1;
+    const uint32_t rrPreset = options.dlssRayReconstructionPresetOverride ? options.dlssRayReconstructionPreset : 0;
     bool changed = options.upscaler != g.requestedUpscaler || quality != g.fsrQuality || options.dlssRayReconstruction != g.rrRequested;
     if (changed) { g.failedBackends = 0; g.fsrFailure.clear(); }
     changed |= backend != g.requestedBackend;
+    // A model or preset change recreates Ray Reconstruction only.
+    changed |= options.dlssRayReconstruction && backend == upscale::Backend::DlssSr &&
+               (rrCnn != g.rrCnnRequested || rrPreset != g.rrPresetRequested);
     g.requestedUpscaler = options.upscaler; g.requestedBackend = backend;
     g.fsrQuality = quality; g.rrRequested = options.dlssRayReconstruction;
+    g.rrCnnRequested = rrCnn; g.rrPresetRequested = rrPreset;
     if (changed || !g.extent.width)
       g.createTarget();
     if (options.upscaler != upscale::Mode::Off && !options.accumulate && !options.sharcDebug) {
@@ -382,7 +395,9 @@ namespace remix {
     if (g.ngx) {
       auto caps = g.ngx->capabilities();
       result.srSupported = caps.sr; result.rrSupported = caps.rr; result.sdkAvailable = caps.sdk;
+      result.rrCnnPackaged = caps.rrCnnPackaged; result.rrCnn = caps.rrCnn;
     }
+    result.rrPreset = g.rrPresetCreated; result.rrNote = g.rrModelNote;
     result.failures += g.reconstructionFailures;
     result.frames += g.reconstructedFrames; result.resets += g.reconstructionResets;
     if (result.failure.empty()) result.failure = g.fsrFailure;

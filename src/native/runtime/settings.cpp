@@ -103,6 +103,12 @@ namespace remix::config {
                                  {"off", "auto", "fsr31", "dlss"}));
         result.push_back(choices("rtx.native.pathtrace.dlssRayReconstruction",
                                  FIELD(trace.dlssRayReconstruction), {"0", "1"}));
+        result.push_back(choices("rtx.native.pathtrace.dlssRayReconstructionModel",
+                                 FIELD(trace.dlssRayReconstructionModel), {"transformer", "cnn"}));
+        result.push_back(choices("rtx.native.pathtrace.dlssRayReconstructionPresetOverride",
+                                 FIELD(trace.dlssRayReconstructionPresetOverride), {"0", "1"}));
+        result.push_back(choices("rtx.native.pathtrace.dlssRayReconstructionPreset",
+                                 FIELD(trace.dlssRayReconstructionPreset), {"default", "A", "B", "C", "D", "E", "F"}));
         result.push_back(
             choices("rtx.native.pathtrace.primaryVisibility", FIELD(trace.rasterPrimary), {"ray", "raster"}));
         result.push_back(

@@ -24,6 +24,15 @@ namespace remix {
       if (overrideSize)
         ui::SliderFloat("Sun diameter (degrees)", &options.sunAngularDiameter, 0.f, 3.f, "%.3f");
       ui::Checkbox("Sky illumination", &options.sky);
+      if (options.sky) {
+        int rays = int(options.skySamples);
+        if (ui::SliderInt("Sky rays per pixel", &rays, 1, 16))
+          options.skySamples = uint32_t(rays);
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Sky visibility rays at each pixel's surface, averaged. Indoors few directions\n"
+                            "reach an opening, so one ray finds the sky rarely and brightly and the light\n"
+                            "boils; more rays steady it. Each is one shadow ray.");
+      }
     }
     if (ImGui::CollapsingHeader("Volumetrics")) {
       ui::Checkbox("Volumetric fog", &options.volumetrics);
@@ -157,6 +166,11 @@ namespace remix {
             "one shadow ray. Helps a dominant nearby light (a flashlight) among many distant ones.");
       ImGui::BeginDisabled(rrActive);
       ui::Checkbox("Blue noise local lights", &options.blueNoiseLocalLights);
+      ui::Checkbox("Blue noise bounce and sky directions", &options.blueNoiseSky);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Each pixel's first bounce and sky rays take directions from a blue-noise sequence:\n"
+                          "neighbouring pixels and frames cover the sky evenly, which steadies the light\n"
+                          "after denoising. No extra rays.");
       ImGui::EndDisabled();
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Uses blue noise for primary torch and emissive sample positions with local "
@@ -200,8 +214,11 @@ namespace remix {
       }
       {
         int history = int(options.indirectHistoryFrames);
-        if (ui::SliderInt("Indirect denoiser history (0 = default)", &history, 0, 64))
+        if (ui::SliderInt("Indirect denoiser history (0 = default)", &history, 0, 63))
           options.indirectHistoryFrames = uint32_t(history);
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Frames REBLUR averages bounce light over. The default is half a second of frames.\n"
+                            "Longer hides more boiling; lighting changes take longer to settle.");
       }
       ui::Checkbox("Presampled light cells (ReGIR)", &options.regir);
       if (ImGui::IsItemHovered())

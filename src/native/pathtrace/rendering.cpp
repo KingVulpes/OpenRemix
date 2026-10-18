@@ -645,7 +645,8 @@ namespace remix {
     frame.firefly[1] = options.indirectClamp;
     frame.pathConfig[0] = rouletteActive;
     frame.pathConfig[1] = options.rouletteMinBounces;
-    frame.pathConfig[2] = (options.translucentIndirect ? 1u : 0u) | (options.sheetLocalLights ? 2u : 0u);
+    frame.pathConfig[2] = (options.translucentIndirect ? 1u : 0u) | (options.sheetLocalLights ? 2u : 0u) |
+                          std::clamp(options.skySamples, 1u, 16u) << 8;
     // Bits 0-7: the instance mask of shadow, light-visibility and bounce rays
     // (view models never; blended layers unless skipBlendedSecondaryRays is
     // off). Bit 8: a traced view model is in the frame (camera rays look for

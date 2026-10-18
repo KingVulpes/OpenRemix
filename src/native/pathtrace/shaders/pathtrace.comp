@@ -483,8 +483,17 @@ Hit primarySurface(ivec2 pixel,inout vec3 origin,inout vec3 direction,bool sheet
   vec3 front;return primarySurface(pixel,origin,direction,sheets,layers,false,front);
 }
 // Cosine-weighted hemisphere: disk projection, pdf = cos(theta)/pi (ch. 15-16).
+// A 2D sample handed to the next direction sampler (diffuseDirection,
+// materialSample, lobeSample), used once; negative: it draws its own.
+vec2 directionSample=vec2(-1);
+vec2 directionRandom() {
+  vec2 u=directionSample;directionSample=vec2(-1);
+  if(u.x>=0)return u;
+  u.x=random();u.y=random();return u;
+}
 vec3 diffuseDirection(vec3 n) {
-  float u=random(), angle=6.28318530718*random();
+  vec2 sampleU=directionRandom();
+  float u=sampleU.x, angle=6.28318530718*sampleU.y;
   vec3 t=normalize(cross(abs(n.z)<0.999 ? vec3(0,0,1) : vec3(0,1,0),n));
   return normalize(t*(sqrt(u)*cos(angle))+cross(n,t)*(sqrt(u)*sin(angle))+n*sqrt(1-u));
 }
@@ -752,12 +761,24 @@ Hit orcaFirst;vec3 orcaDirection,orcaThroughput,orcaBefore;bool orcaRecorded=fal
 // so a stage lighting a surface and its paths carries one copy of the light
 // sampler. maxBounces: the path's bounces (frame.config.y), 0 for the surface
 // alone (the returned path radiance is then meaningless).
+// Blue-noise 2D samples for a path's first-surface directions (bounce and sky
+// rays; rtx.native.pathtrace.blueNoiseSky), one stream per ray and per path
+// of the pixel. Offset from the local lights' use of the same table.
+uint firstSurfacePaths=0u;
+vec2 firstSurfaceNoise(uint ray) {
+  if((uint(frame.jitter.w)&4u)==0u)return vec2(-1);
+  vec2 blue=blueNoiseSample(shadingPixel+ivec2(17,71),frame.config.z,16392u,31u);
+  uint rotation=hash((firstSurfacePaths*16u+ray)^0x736b7921u);
+  return fract(blue+vec2(rotation>>8,hash(rotation)>>8)*(1.0/16777216.0));
+}
 vec3 continuation(Hit primary,int lobe,float probability,out vec3 firstDirection,out float pathDistance,out vec3 specular,
                   bool lightPrimary,uint maxBounces,out vec3 primaryLight,out vec3 primarySpecular,out float primaryDistance) {
   profilePath(0u);
+  ++firstSurfacePaths;
   primaryLight=vec3(0);primarySpecular=vec3(0);primaryDistance=0;
   uint rouletteState=enableRussianRoulette?hash(rng^0x726f756cu):0u;
   vec3 specularWeight=vec3(0),weight;
+  directionSample=firstSurfaceNoise(0u);
   if(lobe<0||!primary.pbr) {
     lobe=-1;probability=1;
     weight=materialSample(primary,firstDirection,specularWeight);
@@ -765,15 +786,43 @@ vec3 continuation(Hit primary,int lobe,float probability,out vec3 firstDirection
     weight=lobeSample(primary,lobe==0,firstDirection)/probability;
     if(lobe==1)specularWeight=weight;
   }
+  directionSample=vec2(-1);
   pathDistance=0;specular=vec3(0);
   bool dead=primary.pbr&&!any(greaterThan(weight,vec3(0)));
-  if(dead&&!lightPrimary){profilePath(6u);return vec3(0);}
   vec3 direction=firstDirection,origin=offsetRay(primary.p,primary.ng);
   vec3 throughput=primary.pbr?weight/max(materialFactor(primary),vec3(1e-6)):vec3(1),result=vec3(0);
   // Explicit environment visibility also evaluates dome lighting at zero
   // diffuse bounces. Continuation misses then contribute only non-dome skies.
-  if(!dead&&frame.skyRadiance.w!=0)
-    result=throughput*environmentRadiance(firstDirection)*shadow(origin,firstDirection);
+  // The sky takes `skyRays` directions from the path's lobe and averages them:
+  // the path's own first direction, and the others (with their specular share)
+  // added once the path is done. They count even when the path's sample died.
+  uint skyRays=max(1u,(frame.pathConfig.z>>8)&31u);
+  vec3 extraSky=vec3(0),extraSkySpecular=vec3(0);
+  // One shadow() call site for all of them (each inlined copy is a set of
+  // visibility queries).
+  for(uint k=0u;k<skyRays&&frame.skyRadiance.w!=0;++k) {
+    vec3 skyDirection=firstDirection,skySpecular=specularWeight,skyWeight=weight;
+    if(k!=0u) {
+      directionSample=firstSurfaceNoise(k);
+      skyWeight=lobe<0?materialSample(primary,skyDirection,skySpecular)
+                      :lobeSample(primary,lobe==0,skyDirection)/probability;
+      directionSample=vec2(-1);
+      if(lobe==0)skySpecular=vec3(0);else if(lobe==1)skySpecular=skyWeight;
+    }
+    if(primary.pbr&&!any(greaterThan(skyWeight,vec3(0))))continue;
+    vec3 sky=(primary.pbr?skyWeight/max(materialFactor(primary),vec3(1e-6)):vec3(1))
+             *environmentRadiance(skyDirection)*shadow(origin,skyDirection)/float(skyRays);
+    if(k==0u)result=sky;
+    else {
+      extraSky+=sky;
+      if(primary.pbr)extraSkySpecular+=sky*skySpecular/max(skyWeight,vec3(1e-20));
+    }
+  }
+  if(dead&&!lightPrimary) {
+    profilePath(6u);specular=extraSkySpecular;
+    clampLighting(primary,extraSky,specular,frame.firefly.y/probability);
+    return extraSky;
+  }
   vec3 previousVertex=primary.p;
 #ifdef SHARC_QUERY
   // A diffuse-lobe ray has the footprint of a diffuse surface.
@@ -879,12 +928,13 @@ vec3 continuation(Hit primary,int lobe,float probability,out vec3 firstDirection
       profilePath(11u);
     }
   }
-  specular=result*specularWeight/max(weight,vec3(1e-20));
+  specular=result*specularWeight/max(weight,vec3(1e-20))+extraSkySpecular;
 #ifdef ORCA_SPARSE_PASS
   // Radiance leaving the first vertex toward the primary surface.
   if(orcaRecorded&&all(greaterThan(orcaThroughput,vec3(0))))
     orcaInsert(orcaFirst,orcaDirection,(result-orcaBefore)/orcaThroughput);
 #endif
+  result+=extraSky;
   // The firefly limit applies to the lobe's estimate, not to the compensation
   // for the pixels that sampled the other lobe.
   clampLighting(primary,result,specular,frame.firefly.y/probability);

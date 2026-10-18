@@ -29,6 +29,10 @@ namespace remix {
     bool sigma = true;
     bool blueNoiseShadows = true;
     bool blueNoiseLocalLights = true;
+    // Blue-noise directions for a path's first bounce and its sky rays
+    // (skySamples): neighbouring pixels and frames probe the hemisphere
+    // evenly, so the denoiser averages spread samples instead of clumps.
+    bool blueNoiseSky = true;
     bool localLights = true, localDenoiser = true;
     bool torchLights = true, emissiveLights = true;
     uint32_t emissiveCandidates = 1;
@@ -176,8 +180,15 @@ namespace remix {
     // detail every frame; a higher rate keeps moving surfaces sharper and
     // leaves fewer frames to anti-alias them (0.05 is the rate at rest).
     float taaMotionRate = .15f;
-    // Indirect-light denoiser history cap in frames (0 = NRD's default).
+    // Indirect-light denoiser history in frames, 1-63 (0 = NRD's default,
+    // 0.5 s of frames). Longer averages away more of the sparse bounce light
+    // and follows lighting changes more slowly.
     uint32_t indirectHistoryFrames = 0;
+    // Sky visibility rays at a path's first surface (1-16), each in its own
+    // direction from the path's lobe. Indoors only a narrow set of directions
+    // reaches an opening: one ray finds it rarely and brightly, which boils
+    // after denoising. Each ray is a shadow query; the bounce path is unchanged.
+    uint32_t skySamples = 2;
     uint32_t restirCandidates = 32;     // initial light-tree candidates per pixel
     uint32_t restirSpatialSamples = 8; // neighbor reservoirs per pixel
     float restirSpatialRadius = 30;    // pixels

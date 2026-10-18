@@ -125,6 +125,7 @@ namespace remix::config {
         TRACE(sigma, 0, 1);
         TRACE(blueNoiseShadows, 0, 1);
         TRACE(blueNoiseLocalLights, 0, 1);
+        TRACE(blueNoiseSky, 0, 1);
         TRACE(autoExposure, 0, 1);
         TRACE(exposure, .05, 8);
         TRACE(autoExposureTarget, .02, .6);
@@ -194,7 +195,8 @@ namespace remix::config {
         TRACE(orcaLevels, 1, 8);
         TRACE(orcaMinSamples, 1, 64);
         TRACE(orcaMaxError, 0, 4);
-        TRACE(indirectHistoryFrames, 0, 64);
+        TRACE(indirectHistoryFrames, 0, 63);
+        TRACE(skySamples, 1, 16);
         TRACE(taaMotionRate, .05, 1);
         TRACE(movingGradients, 0, 1);
         TRACE(movingLightTolerance, .001, 10);

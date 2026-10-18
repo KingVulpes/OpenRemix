@@ -59,7 +59,7 @@ layout(set=0,binding=3,std140) uniform Frame {
   uvec4 reuseConfig;
   uint64_t indirectResults, blueNoise;
   vec4 firefly; // outgoing local direct / indirect luminance limits; reserved
-  uvec4 pathConfig; // adaptive termination, minimum completed bounces, sheet flags (1 traced indirect, 2 local lights), secondary ray mask (bits 0-7; bit 8: a view model is traced)
+  uvec4 pathConfig; // adaptive termination, minimum completed bounces, sheet flags (1 traced indirect, 2 local lights; bits 8-12 sky rays at a first surface), secondary ray mask (bits 0-7; bit 8: a view model is traced)
   vec4 domeTransform[3];
   uint64_t visibilityNodes, visibilityLeaves, visibilityTable, movedLights;
   uvec4 visibilityConfig; // table row words, moved light count, reserved

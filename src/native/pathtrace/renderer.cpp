@@ -2,7 +2,6 @@
 #include "pathtrace/shader_code.h"
 #include "runtime/pipelines.h"
 #include "upscale/ngx.h"
-#include <thread>
 
 namespace remix {
   using namespace scene;
@@ -387,23 +386,8 @@ namespace remix {
     };
     if (separateIndirect)
       requests.push_back({lightingStage(trace::Stage::indirect), layout, &indirectPass.pipeline, true});
-    // The raw passes are what every frame falls back to, so this waits for
-    // them. Off the compiler workers a pipeline another worker is still
-    // compiling answers VK_NOT_READY; escaping the render thread, that failed
-    // the runtime for good (a frozen image when temporal setup fell back to
-    // raw tracing with cold shader caches). Each retry asks only for what is
-    // still missing.
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(2);
-    for (;;) {
-      try {
-        createLightingPipelines(requests);
-        return;
-      } catch (VkResult error) {
-        if (error != VK_NOT_READY || std::chrono::steady_clock::now() > deadline)
-          throw;
-      }
-      std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
+    // The raw passes are what every frame falls back to.
+    awaitLightingPipelines(requests);
   }
 
   void PathTracer::configureTarget(VkRenderPass pass, VkExtent2D extent, bool encodeOutput,

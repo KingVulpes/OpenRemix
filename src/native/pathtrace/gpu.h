@@ -896,6 +896,9 @@ namespace remix {
     // separate passes' pipelines compile together. No pass reads its pipeline
     // handles before recording.
     void createLightingPipelines(const std::vector<LightingRequest> &requests);
+    // createLightingPipelines that waits (up to two minutes) for pipelines
+    // another worker is still compiling, for passes a frame cannot go without.
+    void awaitLightingPipelines(const std::vector<LightingRequest> &requests);
     void finishLightingPipelines();
     bool deferLighting = false;
     std::vector<LightingRequest> deferredLighting;

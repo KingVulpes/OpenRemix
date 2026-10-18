@@ -2,6 +2,7 @@
 #include "pathtrace/shader_code.h"
 #include "runtime/pipelines.h"
 #include <algorithm>
+#include <thread>
 #include "upscale/ngx.h"
 
 namespace remix {
@@ -190,9 +191,15 @@ namespace remix {
     postLocal = local;
     postLocalDenoise = localDenoise;
     postSplit = split;
+    // Pipelines still compiling on the workers (VK_NOT_READY off a worker,
+    // also from the denoiser's own passes) are waited for, every feature
+    // kept: taken as a failure, that dropped split local lighting or the
+    // denoiser and upscaler for good.
+    const auto compileDeadline = std::chrono::steady_clock::now() + std::chrono::minutes(2);
     for (unsigned attempt = 0; attempt < 4; ++attempt) {
       postAttempted = true;
       std::string failure;
+      bool compiling = false;
       try {
         auto next = std::make_unique<denoise::Renderer>();
         next->initialize(physical, device, extent, reblur, queueFamily,
@@ -251,7 +258,7 @@ namespace remix {
         }
         if (reblur)
           make(trace::Stage::confidence, confidenceCompute);
-        createLightingPipelines(requests);
+        awaitLightingPipelines(requests);
         denoiser = std::move(next);
         return;
       } catch (VkResult r) {
@@ -259,11 +266,18 @@ namespace remix {
           throw;
         if (r == VK_ERROR_DEVICE_LOST)
           throw;
+        compiling = r == VK_NOT_READY && std::chrono::steady_clock::now() < compileDeadline;
         failure = "Temporal resource initialization failed (Vulkan " + std::to_string(r) + ")";
       } catch (const std::exception &e) {
         if (preparing)
           throw;
         failure = std::string("Temporal initialization failed: ") + e.what();
+      }
+      if (compiling) {
+        destroyPost();
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        --attempt;
+        continue;
       }
       const bool retry = postSplit || postLocalDenoise || postLocal || postSigma;
       const bool dropSplit = postSplit;

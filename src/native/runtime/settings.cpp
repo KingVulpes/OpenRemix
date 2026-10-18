@@ -197,6 +197,9 @@ namespace remix::config {
         TRACE(orcaMaxError, 0, 4);
         TRACE(indirectHistoryFrames, 0, 63);
         TRACE(skySamples, 1, 16);
+        TRACE(skyGuiding, 0, 1);
+        TRACE(skyGuideCellSize, .05, 100);
+        TRACE(skyGuideShare, 0, .95);
         TRACE(taaMotionRate, .05, 1);
         TRACE(movingGradients, 0, 1);
         TRACE(movingLightTolerance, .001, 10);

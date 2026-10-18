@@ -875,6 +875,7 @@ namespace remix {
     frame.emissiveNodes = emissiveNodes ? emissiveNodes->address : 0;
     frame.emissiveEmitters = emissiveEmitters ? emissiveEmitters->address : 0;
     configureLightGuiding(frame, options);
+    configureSkyGuiding(frame, options);
     configureRestir(frame, options, extent);
     configureRegir(frame, options);
     configureOrca(frame, options);
@@ -1026,6 +1027,7 @@ namespace remix {
     {
       gpu::GpuScope scope(command, "Light guiding clear");
       beginLightGuiding(command);
+      beginSkyGuiding(command);
     }
     auto stageTime = [&](uint32_t query) {
       if (timestamps)

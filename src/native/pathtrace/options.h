@@ -189,6 +189,12 @@ namespace remix {
     // reaches an opening: one ray finds it rarely and brightly, which boils
     // after denoising. Each ray is a shadow query; the bounce path is unchanged.
     uint32_t skySamples = 2;
+    // Sky guiding: each world cell (skyGuideCellSize meters over sceneScale)
+    // learns which directions its sky rays found the sky in, and the extra
+    // sky rays (skySamples above 1) sample those directions with share
+    // skyGuideShare, the rest by the BRDF. Diffuse and legacy surfaces only.
+    bool skyGuiding = true;
+    float skyGuideCellSize = 2, skyGuideShare = .5f;
     uint32_t restirCandidates = 32;     // initial light-tree candidates per pixel
     uint32_t restirSpatialSamples = 8; // neighbor reservoirs per pixel
     float restirSpatialRadius = 30;    // pixels

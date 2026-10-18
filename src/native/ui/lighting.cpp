@@ -32,6 +32,17 @@ namespace remix {
           ImGui::SetTooltip("Sky visibility rays at each pixel's surface, averaged. Indoors few directions\n"
                             "reach an opening, so one ray finds the sky rarely and brightly and the light\n"
                             "boils; more rays steady it. Each is one shadow ray.");
+        ImGui::BeginDisabled(options.skySamples < 2);
+        ui::Checkbox("Sky guiding", &options.skyGuiding);
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Each area learns which directions reach the sky (openings, windows) and the\n"
+                            "extra sky rays aim there. Diffuse and legacy surfaces; needs 2 or more rays.");
+        if (options.skyGuiding) {
+          ui::SliderFloat("Guided share", &options.skyGuideShare, 0.f, .95f, "%.2f");
+          ui::DragFloat("Sky guide cell size", &options.skyGuideCellSize, .01f, .05f, 100, "%.2f m");
+          options.skyGuideCellSize = std::clamp(options.skyGuideCellSize, .05f, 100.f);
+        }
+        ImGui::EndDisabled();
       }
     }
     if (ImGui::CollapsingHeader("Volumetrics")) {

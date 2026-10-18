@@ -581,6 +581,7 @@ vec3 sunVisibility(Hit receiver,ivec2 pixel,out float blockerDistance) {
   blockerDistance=min(distance,65000);return vec3(0);
 }
 #include "light_bvh.glsl"
+#include "sky_guiding.glsl"
 #if defined(RESTIR_INITIAL) || defined(RESTIR_SPATIAL)
 #include "restir.glsl"
 #endif
@@ -798,20 +799,50 @@ vec3 continuation(Hit primary,int lobe,float probability,out vec3 firstDirection
   // added once the path is done. They count even when the path's sample died.
   uint skyRays=max(1u,(frame.pathConfig.z>>8)&31u);
   vec3 extraSky=vec3(0),extraSkySpecular=vec3(0);
+  // Sky guiding (sky_guiding.glsl) on a diffuse or legacy surface: every sky
+  // ray trains its cell's guide, and the extra ones draw from the guide with
+  // its share, the rest from the diffuse BRDF, weighted by the mixture PDF.
+  bool guided=skyGuideActive()&&(!primary.pbr||lobe==0);
+  // One path in eight trains the guide (by pixel and frame): only the bins'
+  // proportions matter, and every pixel of a cell adding to the same few
+  // words serialized on the atomics (~1 ms at 960x540).
+  bool training=guided&&(hash(uint(shadingPixel.x)+uint(shadingPixel.y)*frame.target.x+frame.config.z*0x9e3779b9u)&7u)==0u;
+  uint skySlot=guided?skyGuideSlot(primary):~0u,skyFace=lightGuideFace(primary.n);
+  float skyShare=skySlot!=~0u?skyGuideShare():0.;
+  mat3 skyBasis=shadingBasis(primary.n);vec3 skyWo=transpose(skyBasis)*primary.wo;
   // One shadow() call site for all of them (each inlined copy is a set of
   // visibility queries).
   for(uint k=0u;k<skyRays&&frame.skyRadiance.w!=0;++k) {
     vec3 skyDirection=firstDirection,skySpecular=specularWeight,skyWeight=weight;
-    if(k!=0u) {
+    float skyCosine=dot(firstDirection,primary.n);
+    // The PDF the direction was drawn with (guided rays: the mixture's).
+    float skyPdf=primary.pbr?eonPdf(skyWo,transpose(skyBasis)*firstDirection,primary.rm.x):max(skyCosine,0.)/3.14159265;
+    if(k!=0u&&guided) {
+      vec2 u=firstSurfaceNoise(k);
+      if(u.x<0){u.x=random();u.y=random();}
+      if(random()<skyShare)skyDirection=skyGuideDirection(skySlot,skyFace,u);
+      else if(primary.pbr)skyDirection=skyBasis*eonSample(skyWo,primary.rm.x,u.x,u.y).xyz;
+      else{directionSample=u;skyDirection=diffuseDirection(primary.n);}
+      skyCosine=dot(skyDirection,primary.n);
+      float basePdf=primary.pbr?eonPdf(skyWo,transpose(skyBasis)*skyDirection,primary.rm.x):max(skyCosine,0.)/3.14159265;
+      skyPdf=(skyShare>0?skyShare*skyGuidePdf(skySlot,skyFace,skyDirection):0.)+(1-skyShare)*basePdf;
+      skyWeight=vec3(0);skySpecular=vec3(0);
+      if(skyCosine>0&&dot(skyDirection,primary.ng)>0&&skyPdf>0) {
+        if(primary.pbr){vec3 diffuse,unused;materialLobes(primary,skyDirection,diffuse,unused);skyWeight=diffuse*skyCosine/skyPdf/probability;}
+        else skyWeight=vec3(skyCosine/3.14159265/skyPdf); // over the albedo, as a legacy path's throughput
+      }
+    } else if(k!=0u) {
       directionSample=firstSurfaceNoise(k);
       skyWeight=lobe<0?materialSample(primary,skyDirection,skySpecular)
                       :lobeSample(primary,lobe==0,skyDirection)/probability;
       directionSample=vec2(-1);
       if(lobe==0)skySpecular=vec3(0);else if(lobe==1)skySpecular=skyWeight;
     }
-    if(primary.pbr&&!any(greaterThan(skyWeight,vec3(0))))continue;
-    vec3 sky=(primary.pbr?skyWeight/max(materialFactor(primary),vec3(1e-6)):vec3(1))
-             *environmentRadiance(skyDirection)*shadow(origin,skyDirection)/float(skyRays);
+    if((primary.pbr||(guided&&k!=0u))&&!any(greaterThan(skyWeight,vec3(0))))continue;
+    vec3 skyLight=environmentRadiance(skyDirection)*shadow(origin,skyDirection);
+    if(training&&skyPdf>0)trainSkyGuide(primary,skyDirection,dot(skyLight,vec3(.2126,.7152,.0722))/skyPdf);
+    vec3 sky=(primary.pbr?skyWeight/max(materialFactor(primary),vec3(1e-6)):guided&&k!=0u?skyWeight:vec3(1))
+             *skyLight/float(skyRays);
     if(k==0u)result=sky;
     else {
       extraSky+=sky;

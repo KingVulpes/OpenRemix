@@ -166,7 +166,13 @@ namespace remix::trace::detail {
     // remixapi_CameraMediumEXT: transmittance colour, measurement distance (0: in air).
     float cameraMedium[4] = {};
     uint64_t sheetResults = 0; // SheetResults: the sheet lighting pass's transport
-    uint64_t reserved = 0;
+    // Sky guiding (sky_guiding.cpp, sky_guiding.glsl): each world cell's
+    // learned sky directions, last frame's (read, 0: none yet) and this
+    // frame's. skyGuideConfig: slot capacity, cells per world unit (float
+    // bits), guided share of the extra sky rays (float bits), active.
+    uint64_t skyGuideRead = 0;
+    uint64_t skyGuideWrite = 0, skyGuideReserved = 0;
+    uint32_t skyGuideConfig[4] = {};
     // Camera rays (pathtrace.comp ray()): inverseCamera relative to the eye,
     // which the shader adds back. In single precision the absolute matrix
     // holds the eye's translation scaled by the inverse near plane, and loses
@@ -174,7 +180,8 @@ namespace remix::trace::detail {
     // as a view model jitters as the camera moves).
     Matrix inverseCameraRelative{};
   };
-  static_assert(sizeof(Frame) == 1136 && offsetof(Frame, inverseCameraRelative) == 1072 && offsetof(Frame, volumeGrid) == 912 && offsetof(Frame, volumePrevious) == 1024 && offsetof(Frame, sparseList) == 880 && offsetof(Frame, sparseConfig) == 896 && offsetof(Frame, cameraCull) == 864 && offsetof(Frame, cutConfig) == 816 && offsetof(Frame, orcaParams) == 800 && offsetof(Frame, regirConfig) == 752 && offsetof(Frame, restirCurrent) == 656 && offsetof(Frame, visibilityNodes) == 592 && offsetof(Frame, pathConfig) == 528 &&
+  static_assert(sizeof(Frame) == 1168 && offsetof(Frame, inverseCameraRelative) == 1104 &&
+                offsetof(Frame, skyGuideRead) == 1064 && offsetof(Frame, skyGuideConfig) == 1088 && offsetof(Frame, volumeGrid) == 912 && offsetof(Frame, volumePrevious) == 1024 && offsetof(Frame, sparseList) == 880 && offsetof(Frame, sparseConfig) == 896 && offsetof(Frame, cameraCull) == 864 && offsetof(Frame, cutConfig) == 816 && offsetof(Frame, orcaParams) == 800 && offsetof(Frame, regirConfig) == 752 && offsetof(Frame, restirCurrent) == 656 && offsetof(Frame, visibilityNodes) == 592 && offsetof(Frame, pathConfig) == 528 &&
                 offsetof(Frame, firefly) == 512 && offsetof(Frame, indirectResults) == 496 &&
                 offsetof(Frame, lightGuideRead) == 384 && offsetof(Frame, lightGuideConfig) == 400 &&
                 offsetof(Frame, lightNodes) == 336 && offsetof(Frame, localConfig) == 352 &&
@@ -553,6 +560,18 @@ namespace remix {
                                                         sizeof(remixapi_LocalLightGuidingStatisticsEXT)};
     } lightGuiding;
     void configureLightGuiding(Frame &frame, const TraceOptions &options);
+    // Sky guiding (sky_guiding.cpp): per world cell and facing, a histogram
+    // of the directions its first-surface sky rays found the sky in, trained
+    // this frame and read the next (two banks, like lightGuiding).
+    struct SkyGuiding {
+      static constexpr uint32_t capacity = 16384, stride = 68; // words per slot: key, total, 2 reserved, 64 bins
+      std::unique_ptr<Buffer> history[2];
+      uint32_t writeIndex = 0;
+      bool valid = false, attempted = false, active = false;
+      float cellSize = 0;
+    } skyGuiding;
+    void configureSkyGuiding(Frame &frame, const TraceOptions &options);
+    void beginSkyGuiding(VkCommandBuffer command);
     // ReSTIR DI (restir.cpp, restir.glsl).
     struct Restir {
       VkPipeline initial = VK_NULL_HANDLE, spatial = VK_NULL_HANDLE;

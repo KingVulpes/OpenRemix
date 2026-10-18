@@ -435,6 +435,10 @@ namespace remix {
       g.lightGuiding.valid = true;
       ++g.lightGuiding.stats.renderedFrames;
     }
+    if (g.skyGuiding.active) {
+      g.skyGuiding.writeIndex ^= 1;
+      g.skyGuiding.valid = true;
+    }
     if (g.pbrReuse.active) {
       g.pbrReuse.writeIndex ^= 1;
       g.pbrReuse.valid = true;

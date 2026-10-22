@@ -61,6 +61,13 @@ namespace remix::trace {
     uint32_t lights = 0; // the combined tree's input in the slowest frame
   };
   inline SceneCostTotals g_sceneCosts;
+
+  // Light hierarchy uploads since this was last read (diagnostics): whole
+  // copies, copies of only the changes, bytes and copy regions.
+  struct LightUploads {
+    uint64_t whole = 0, partial = 0, bytes = 0, regions = 0;
+  };
+  inline LightUploads g_lightUploads;
 } // namespace remix::trace
 
 namespace remix {

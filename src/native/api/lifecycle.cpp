@@ -364,6 +364,14 @@ void serviceDevRequests() {
                           f.emitters / n, f.find / n, f.partition / n, f.draws / n, f.emitterCount / n);
             text += line;
           }
+          {
+            const auto u = std::exchange(remix::trace::g_lightUploads, {});
+            std::snprintf(line, sizeof(line),
+                          "# light uploads since the last dump: whole %llu, changes only %llu; %.1f MiB in %llu copy regions\n",
+                          (unsigned long long)u.whole, (unsigned long long)u.partial, u.bytes / 1048576.0,
+                          (unsigned long long)u.regions);
+            text += line;
+          }
           const auto churn = remix::scene::g_lightChurn;
           remix::scene::g_lightChurn = {};
           remix::scene::g_lightChurn.unlit = churn.unlit; // a state, not a count

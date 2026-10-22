@@ -548,6 +548,11 @@ namespace remix {
     std::unique_ptr<Buffer> lightNodes, lightEmitters;
     std::unique_ptr<Buffer> movedLights; // this frame's scene::LightBvh::moved()
     uint64_t lightBufferGeneration = 0, torchBufferGeneration = 0, emissiveBufferGeneration = 0;
+    // The hierarchy (LightBvh::instance) each slot's buffers hold; with the
+    // generation above, what an upload of only the changes builds on.
+    uint64_t lightBufferInstance = 0, torchBufferInstance = 0, emissiveBufferInstance = 0;
+    scene::LightBvh::Ranges changedEmitters, changedNodes; // upload scratch
+    std::vector<uint8_t> lightUploadPacking;
     struct LightGuiding {
       static constexpr uint32_t capacity = 65536;
       std::unique_ptr<Buffer> history[2], readback;
@@ -861,6 +866,7 @@ namespace remix {
           emissiveEmitters;
       std::unique_ptr<Buffer> sharcReadback, guidingReadback, reuseReadback, rayReadback;
       uint64_t lightGeneration = 0, torchGeneration = 0, emissiveGeneration = 0;
+      uint64_t lightInstance = 0, torchInstance = 0, emissiveInstance = 0;
       std::vector<std::unique_ptr<Buffer>> uploads;
       Staging staging;
       PrimaryRecording primaryRecording;

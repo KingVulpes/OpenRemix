@@ -49,6 +49,9 @@ namespace remix {
     swap(lightBufferGeneration, frame.lightGeneration);
     swap(torchBufferGeneration, frame.torchGeneration);
     swap(emissiveBufferGeneration, frame.emissiveGeneration);
+    swap(lightBufferInstance, frame.lightInstance);
+    swap(torchBufferInstance, frame.torchInstance);
+    swap(emissiveBufferInstance, frame.emissiveInstance);
     swap(retiredPreviousVertices, frame.retiredVertices);
     for (unsigned i = 0; i < 3; ++i)
       swap(tlas[i].instances, frame.instances[i]);

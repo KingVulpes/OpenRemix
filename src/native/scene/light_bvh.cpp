@@ -177,6 +177,7 @@ namespace remix::scene {
         buildTotalMilliseconds += buildMilliseconds = updateMilliseconds;
     };
     ++m_update;
+    m_changing = generation + 1;
     auto phaseStart = start;
     const bool timed = sceneTimings();
     const auto mark = [&](unsigned phase) {
@@ -253,6 +254,7 @@ namespace remix::scene {
       active = depth = staticLights = dynamicLights = retiredSlots = unlitDynamicSlots = instanceLights = 0;
       m_due = ~0ull;
       m_builtAt = m_update;
+      m_structure = m_changing;
       ++builds;
       ++buildReasons[lastBuildReason = Cleared];
       ++visibilityGeneration;
@@ -666,6 +668,7 @@ namespace remix::scene {
       bounds(0);
     }
     m_builtAt = m_update;
+    m_structure = m_changing;
     ++builds;
     ++buildReasons[lastBuildReason = reason];
   }
@@ -673,6 +676,7 @@ namespace remix::scene {
   // The dynamic part again, from m_lights behind the static emitters. Static
   // nodes, emitters and leaf ranks stay as they are.
   void LightBvh::buildDynamic() {
+    m_structure = m_changing;
     if (m_lights.size() == m_staticCount) {
       m_lights.emplace_back();
       m_stamps.push_back(0);
@@ -747,9 +751,38 @@ namespace remix::scene {
     bounds(index);
   }
 
+  bool LightBvh::changedSince(uint64_t instance, uint64_t since, Ranges &emitters, Ranges &nodes) const {
+    emitters.clear();
+    nodes.clear();
+    if (instance != m_instance || since < m_structure || since > generation ||
+        m_emitterChanged.size() < m_emitters.size() || m_nodeChanged.size() < m_nodes.size())
+      return false;
+    // Ranges of entries changed after `since`, joined across gaps of up to
+    // kJoin unchanged ones (fewer, larger copies).
+    constexpr uint32_t kJoin = 8;
+    const auto collect = [&](const std::vector<uint64_t> &changed, uint32_t count, Ranges &out) {
+      for (uint32_t i = 0; i < count; ++i)
+        if (changed[i] > since) {
+          if (!out.empty() && i - out.back().second <= kJoin)
+            out.back().second = i + 1;
+          else
+            out.emplace_back(i, i + 1);
+        }
+    };
+    collect(m_emitterChanged, uint32_t(m_emitters.size()), emitters);
+    collect(m_nodeChanged, uint32_t(m_nodes.size()), nodes);
+    return true;
+  }
+
   void LightBvh::bounds(uint32_t index) {
     auto &node = m_nodes[index];
+    if (m_nodeChanged.size() < m_nodes.size())
+      m_nodeChanged.resize(m_nodes.size());
+    m_nodeChanged[index] = m_changing;
     if (node.links[3] == 1) {
+      if (m_emitterChanged.size() < m_emitters.size())
+        m_emitterChanged.resize(m_emitters.size());
+      std::fill_n(m_emitterChanged.begin() + node.links[2], std::max(node.links[1], 1u), m_changing);
       // A leaf's emitters: bounds of the lit ones (all when none is, as for
       // internal nodes below), summed power, and each one's share of it.
       const uint32_t first = node.links[2], count = std::max(node.links[1], 1u);

@@ -9,6 +9,7 @@
 #include <functional>
 #include <limits>
 #include <random>
+#include <set>
 #include <remix/remix_native_ext.h>
 
 namespace {
@@ -698,6 +699,88 @@ int main() {
     require(bvh.unlitDynamicSlots == 0 && bvh.dynamicLights == 60 && bvh.active == 61,
             "A rebuild kept the slots of a prop gone for good");
     std::puts("Dynamic slots: props out of view keep them, gone ones go with a rebuild passed");
+  }
+  {
+    // Upload deltas: an older copy of the emitters and nodes, patched with
+    // the ranges changedSince reports, equals the current ones; a build, or
+    // another hierarchy, needs a whole copy.
+    std::mt19937 random(77);
+    std::vector<SphereLight> lights;
+    for (unsigned i = 0; i < 3000; ++i) {
+      SphereLight light;
+      light.id = 1 + i;
+      light.group = 1 + 2 * (i / 30);
+      light.rank = i % 30;
+      light.triangle = 1;
+      light.dynamic = i >= 1500;
+      light.radiance[0] = 1 + float(i % 3);
+      for (unsigned v = 0; v < 3; ++v) {
+        light.corners[v][0] = float(i % 100) + (v == 1);
+        light.corners[v][1] = float(i / 100) + (v == 2);
+        for (unsigned c = 0; c < 3; ++c)
+          light.position[c] += light.corners[v][c] / 3;
+      }
+      light.radius = 1;
+      lights.push_back(light);
+    }
+    LightBvh bvh;
+    bvh.setClusterSize(8);
+    bvh.update(lights);
+    // Dynamic lights out of view keep their slots; settle the first builds.
+    for (unsigned step = 0; step < 2 * LightBvh::kBuildInterval; ++step)
+      bvh.update(lights);
+    LightBvh::Ranges emitterRanges, nodeRanges;
+    const auto copies = [&] { return std::pair{bvh.emitters(), bvh.nodes()}; };
+    for (unsigned round = 0; round < 20; ++round) {
+      const uint64_t since = bvh.generation;
+      auto [emitters, nodes] = copies();
+      for (unsigned step = 0; step < 1 + round % 4; ++step) {
+        auto frame = lights;
+        // A few static lights dim; dynamic props of 30 lights flicker out of
+        // view (a seventh of them, and five at random).
+        for (unsigned d = 0; d < 3; ++d)
+          frame[random() % 1500].radiance[1] = float(round + 1);
+        std::set<uint64_t> away;
+        for (unsigned p = 0; p < 5; ++p)
+          away.insert(50 + random() % 50);
+        std::erase_if(frame, [&](const SphereLight &light) {
+          const uint64_t prop = (light.id - 1) / 30;
+          return light.dynamic && (away.count(prop) || prop % 7 == round % 7);
+        });
+        bvh.update(frame);
+      }
+      require(bvh.changedSince(bvh.instance(), since, emitterRanges, nodeRanges),
+              "Refits asked for a whole upload");
+      require(emitters.size() == bvh.emitters().size() && nodes.size() == bvh.nodes().size(),
+              "Refits changed the hierarchy's size");
+      size_t patched = 0;
+      for (const auto &[first, end] : emitterRanges) {
+        std::copy(bvh.emitters().begin() + first, bvh.emitters().begin() + end, emitters.begin() + first);
+        patched += end - first;
+      }
+      for (const auto &[first, end] : nodeRanges)
+        std::copy(bvh.nodes().begin() + first, bvh.nodes().begin() + end, nodes.begin() + first);
+      require(std::memcmp(emitters.data(), bvh.emitters().data(), emitters.size() * sizeof(LightEmitter)) == 0 &&
+                  std::memcmp(nodes.data(), bvh.nodes().data(), nodes.size() * sizeof(LightNode)) == 0,
+              "Patched copy differs from the hierarchy");
+      require(patched < emitters.size() / 2, "Upload deltas cover most emitters");
+    }
+    require(bvh.changedSince(bvh.instance(), bvh.generation, emitterRanges, nodeRanges) && emitterRanges.empty() &&
+                nodeRanges.empty(),
+            "An up-to-date copy has changes");
+    LightBvh other;
+    other.update(lights);
+    require(!bvh.changedSince(other.instance(), bvh.generation, emitterRanges, nodeRanges),
+            "Another hierarchy's copy was patched");
+    const uint64_t before = bvh.generation;
+    auto grown = lights;
+    SphereLight added = lights[0];
+    added.id = 99999;
+    added.group = 99999;
+    grown.push_back(added);
+    bvh.update(grown); // a new dynamic-part light: the dynamic part is built again
+    require(!bvh.changedSince(bvh.instance(), before, emitterRanges, nodeRanges), "A build was patched");
+    std::puts("Upload deltas: patched copies match, builds and other hierarchies copy whole passed");
   }
   {
     // Leaves of up to N emitters of one surface: runs of a group in rank

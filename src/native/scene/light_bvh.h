@@ -2,6 +2,7 @@
 #include <cstdlib>
 #include "scene/types.h"
 #include <array>
+#include <atomic>
 #include <utility>
 #include <vector>
 
@@ -70,7 +71,18 @@ namespace remix::scene {
 
   class LightBvh {
   public:
+    LightBvh() : m_instance(nextInstance()) {}
     bool update(const std::vector<SphereLight> &lights);
+    // Upload deltas. A GPU copy made at `generation` of this hierarchy (by
+    // instance()) is brought up to date by copying only the emitters and
+    // nodes changed since, as [first, end) ranges (nearby ones merged):
+    // refits mark what bounds() rewrote. False when it must be copied whole
+    // (built since, or another hierarchy's copy). Props flickering in and out
+    // of view changed a few thousand of ~100k emitters a frame while all
+    // 12 MB were copied, ~4 ms over a Thunderbolt eGPU's PCIe link.
+    using Ranges = std::vector<std::pair<uint32_t, uint32_t>>;
+    bool changedSince(uint64_t instance, uint64_t generation, Ranges &emitters, Ranges &nodes) const;
+    uint64_t instance() const { return m_instance; }
     // Emitters a leaf holds at most (1: a leaf per emitter). A change makes
     // the next update build the hierarchy anew.
     void setClusterSize(uint32_t size);
@@ -163,6 +175,15 @@ namespace remix::scene {
     std::vector<uint64_t> m_stamps;
     std::vector<uint8_t> m_present; // per static slot: its light is submitted
     std::vector<uint64_t> m_seen;   // per static slot: the update it was last submitted in
+    // Per emitter and node: the generation that last rewrote it (refits);
+    // m_structure: the generation of the last build (all rewritten).
+    std::vector<uint64_t> m_emitterChanged, m_nodeChanged;
+    uint64_t m_structure = 0, m_changing = 0; // m_changing: this update's generation
+    uint64_t m_instance = 0;
+    static uint64_t nextInstance() {
+      static std::atomic<uint64_t> next{1};
+      return next++;
+    }
     std::vector<uint64_t> m_dynamicSeen; // the same per dynamic light (absent ones are kept unlit)
     // Scratch of update (storage kept): see there.
     std::vector<uint32_t> m_extraIndex, m_mergeSource;

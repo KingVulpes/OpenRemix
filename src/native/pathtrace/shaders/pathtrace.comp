@@ -1948,7 +1948,10 @@ void main() {
         surfaceLight=unpackSheet(SheetResults(frame.sheetResults).pixels[uint(pixel.x)+uint(pixel.y)*frame.target.x],
                                  surfaceSpecular,surfaceDistance)+hit.emission;
         vec3 factor=materialFactor(hit);
-        if(!hit.pbr&&all(greaterThan(factor,vec3(1e-3))))reusedDirect=max(surfaceLight-hit.emission,vec3(0))/factor;
+        // Deeper layers take its direct light per unit albedo, or with layer
+        // reuse (pathConfig.z bit 2) its whole light, PBR or not.
+        if((!hit.pbr||(frame.pathConfig.z&4u)!=0)&&all(greaterThan(factor,vec3(1e-3))))
+          reusedDirect=max(surfaceLight-hit.emission,vec3(0))/factor;
 #ifdef TEMPORAL
         if(sheetCount==1)frontRadiance(hit,pixel,max(surfaceLight-hit.emission,vec3(0)),surfaceSpecular,surfaceDistance);
 #endif

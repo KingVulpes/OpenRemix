@@ -187,6 +187,11 @@ vec3 carriedNormal(vec3 n,vec3 e1,vec3 e2,vec3 f1,vec3 f2) {
   vec3 m=((r1*d22-r2*d12)*f1+(r2*d11-r1*d12)*f2)/g2+dot(n,g)*inversesqrt(g2)*inversesqrt(h2)*h;
   float l=dot(m,m);return l>1e-12?m*inversesqrt(l):n;
 }
+// Above zero (closest()'s paint queries): paint candidates within this
+// distance of the ray's origin across the paint are passed. Paint is
+// double-sided, so a ray leaving a painted surface meets every layer above
+// it; one query passes them all.
+float originPaint=0;
 void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, inout Hit hit,bool motion,float minimum) {
   rayQueryEXT query;
   profileRay(0);
@@ -200,6 +205,14 @@ void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, ino
     if(cameraRay&&cameraCulled(s.state.w,rayQueryGetIntersectionFrontFaceEXT(query,false),origin,direction,rayQueryGetIntersectionTEXT(query,false)))continue;
     s.indices=s.traceIndices;
     if ((s.state.w&4)==0 && !rayQueryGetIntersectionFrontFaceEXT(query,false)) {profileRay(4);continue;}
+    if(originPaint>0) {
+      uint base=rayQueryGetIntersectionPrimitiveIndexEXT(query,false)*3;
+      vec3 a=s.vertices.v[s.indices.i[base]].position.xyz;
+      mat4x3 model=rayQueryGetIntersectionObjectToWorldEXT(query,false);
+      vec3 n=cross(model*vec4(s.vertices.v[s.indices.i[base+1]].position.xyz-a,0),model*vec4(s.vertices.v[s.indices.i[base+2]].position.xyz-a,0));
+      float t=rayQueryGetIntersectionTEXT(query,false);
+      if(abs(dot(direction,n))*t<=originPaint*length(n))continue;
+    }
     profileAlpha(s,0);
     if (acceptCandidate(s,rayQueryGetIntersectionPrimitiveIndexEXT(query,false),rayQueryGetIntersectionBarycentricsEXT(query,false))) rayQueryConfirmIntersectionEXT(query);
     else profileRay(3);
@@ -271,22 +284,45 @@ Hit closestGeometry(vec3 origin,vec3 direction,float maximum,bool motion) {
 // Tagged decals coat the receiver's material; lighting is evaluated and filtered
 // once on that receiver. This also gives partial decal texels stable motion/NRD
 // guides instead of feeding their independently sampled lighting around NRD.
-// The first query and the queries past each decal are one call site: every
-// closestGeometry (two inlined scene queries) is inlined wherever closest() is.
+// The receiver is found first by a query that leaves out instances of paint
+// alone (decalInstanceMask); the paint in front of it is then peeled front to
+// back by queries that see only those instances, each returning the nearest
+// paint texel (alpha-tested) past the last; paint the ray starts at (bounce,
+// sky and light rays from under it) belongs to the surface the ray leaves and
+// is passed (originPaint). The receiver query visits no quad of a stack of
+// paint, and covering paint ends the peel at once.
+// Every query is one call site: every closestGeometry (two inlined scene
+// queries) is inlined wherever closest() is.
 Hit closest(vec3 origin,vec3 direction,float maximum,bool motion) {
-  Hit first,hit;
+  Hit first,hit,receiver;
   vec3 color=vec3(0),normal=vec3(0),emission=vec3(0),self=vec3(0);
   vec2 parameters=vec2(0);
   // `through` carries color into the layers below: alpha paint covers them,
   // multiplicative paint (D3D DESTCOLOR*SRCCOLOR, mod2x) tints them and keeps
   // the receiver's normal and roughness.
   float remaining=1;vec3 through=vec3(1);
-  float lastDecal=0,minimum=0;
-  // Layer 0 is the first surface; up to 32 decals above the receiver.
-  for(uint layer=0;layer<33;++layer) {
-    hit=closestGeometry(origin,direction,maximum,motion,minimum);
-    if(layer==0)first=hit;
-    if(!enableDecals||!hit.decal||layer==32)break;
+  float lastDecal=0,minimum=0,end=maximum;
+  const float attach=frame.visibilityProbe.y;
+  const uint mask=traceMask;
+  const bool paint=enableDecals&&(mask&decalInstanceMask)!=0u;
+  uint layers=0u;
+  // Step 0 finds the receiver; the steps after it, up to 32 layers of paint.
+  for(uint step=0;step<33;++step) {
+    traceMask=step==0u?(paint?mask&~decalInstanceMask:mask):decalInstanceMask;
+    originPaint=step==0u?0.:attach;
+    hit=closestGeometry(origin,direction,end,motion,minimum);
+    originPaint=0;
+    if(step==0u) {
+      receiver=hit;
+      if(!paint)break;
+      end=receiver.t<1e30?receiver.t:maximum;
+      continue;
+    }
+    if(hit.t>=1e30)break;
+    // Keep the ray origin fixed. The normal-offset used for lighting rays can
+    // jump through a decal's close receiver at large world coordinates.
+    minimum=uintBitsToFloat(floatBitsToUint(hit.t)+1u);
+    if(layers==0u)first=hit;
     if(hit.decalMode!=0u) {
       // mod2x is authored in sRGB (128 is neutral): scale so linear(128/255) maps to one.
       through*=hit.color.rgb*(hit.decalMode==2u?4.634:1.);
@@ -298,25 +334,20 @@ Hit closest(vec3 origin,vec3 direction,float maximum,bool motion) {
       remaining*=1-hit.color.a;through*=1-hit.color.a;
     }
     lastDecal=hit.t;
-    // Keep the ray origin fixed. The normal-offset used for lighting rays can
-    // jump through a decal's close receiver at large world coordinates.
-    minimum=uintBitsToFloat(floatBitsToUint(hit.t)+1u);
+    // Nothing shows past paint that covers all.
+    if(++layers>=32u||all(lessThan(through,vec3(1./1024))))break;
   }
-  if(!enableDecals||!first.decal)return first;
-  // Paint coats the surface right behind it. A ray that starts at the paint's
-  // plane without meeting that surface behind it left the painted surface
-  // itself (bounce, sky and light rays from under the paint): it must not see
-  // the paint, which would otherwise shade its own receiver.
-  // The gap is measured across the paint, not along the ray: a grazing ray
-  // travels 1/cos further between the paint and its receiver, and paint lifted
-  // an inch stopped being attached from 60 degrees off the normal (mod2x paint
-  // then stood as an opaque grey quad). The facing term is floored so a ray
-  // skimming past the paint's edge cannot attach it to a surface far behind
-  // (at most 20 x attach along the ray).
-  const float attach=frame.visibilityProbe.y;
+  traceMask=mask;
+  hit=receiver;
+  if(layers==0u)return receiver;
+  // Paint coats the surface right behind it. The gap is measured across the
+  // paint, not along the ray: a grazing ray travels 1/cos further between the
+  // paint and its receiver, and paint lifted an inch stopped being attached
+  // from 60 degrees off the normal (mod2x paint then stood as an opaque grey
+  // quad). The facing term is floored so a ray skimming past the paint's edge
+  // cannot attach it to a surface far behind (at most 20 x attach along the ray).
   const float facing=max(abs(dot(direction,first.ng)),.05);
   const bool attached=hit.t<1e30&&!hit.decal&&(hit.t-lastDecal)*facing<=attach;
-  if(!attached&&!hit.decal&&abs(dot(direction,first.ng))*first.t<=attach)return hit;
   // Multiplicative paint over glass tints what is seen through it (a sheet
   // without coverage of its own) instead of standing as an opaque quad.
   if(attached&&hit.blended&&remaining==1) {

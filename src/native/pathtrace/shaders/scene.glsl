@@ -105,6 +105,11 @@ bool viewModelPath=false;
 uint secondaryMask(){return (frame.pathConfig.w&0xffu)|(viewModelPath?viewModelInstanceMask:0u);}
 // Bounce (reflection and indirect) rays: the secondary mask plus reflection-only instances.
 uint bounceMask(){return secondaryMask()|reflectionOnlyInstanceMask;}
+// Shadow and light-visibility rays pass paint (each query skips decal
+// surfaces): instances of decals alone are left out of their traversal, so a
+// ray leaving a painted wall does not visit every quad of paint above it.
+const uint decalInstanceMask=32u;
+uint shadowMask(){return secondaryMask()&~decalInstanceMask;}
 layout(set=0,binding=6) uniform sampler2D textures[4096];
 // remixapi_InstanceInfoMaskEXT CUT: the camera does not see a surface where
 // its mask group's coverage is set (state.w bits 16-21: the group). Coverage

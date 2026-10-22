@@ -467,6 +467,7 @@ void splitLocalLighting(Hit hit,uint state,uint samples,out vec3 torch,out vec3 
   vec3 torchSpecular,emissionSpecular;
   splitLocalLighting(hit,state,samples,torch,emission,torchDistance,emissionDistance,torchSpecular,emissionSpecular);
 }
+bool regirLookup=true; // localLighting may use ReGIR pools (false at directly seen surfaces)
 // Returns material-demodulated total radiance and its specular component.
 vec3 localLighting(Hit hit,uint state,uint samples,out float lightDistance,bool useGuiding,out vec3 specular,float threshold) {
   specular=vec3(0);lightDistance=0;
@@ -494,8 +495,12 @@ vec3 localLighting(Hit hit,uint state,uint samples,out float lightDistance,bool 
   if(enableSmallLights&&nodes.data[0].links.w<=4)
     return smallLocalLighting(nodes,emitters,hit,state,adaptiveSamples,guideKey,preferred,guideMix,lightDistance,useGuiding,blue,0u,specular,threshold);
   vec3 result=vec3(0);float distanceWeight=0;
-  // Bounce vertices draw from the cell's presampled pool (regir.glsl).
-  uint pool=useGuiding?regirNone:regirPool(hit.p,state);
+  // Bounce vertices draw from the cell's presampled pool (regir.glsl). Not
+  // directly seen surfaces (regirLookup false: transparent sheets): every
+  // pixel looking up a cell shares its few slots for the frame, so a slot
+  // whose light the cell rates unlikely but is near lit about one pixel in
+  // K with a large weight, cell-sized splotches the denoiser kept.
+  uint pool=useGuiding||!regirLookup?regirNone:regirPool(hit.p,state);
   for(uint sampleIndex=0;sampleIndex<adaptiveSamples;++sampleIndex) {
     bool guided=guideMix>0&&lightRandom(state)<guideMix;
     uint index=0;float selectionPdf=1,u=lightRandom(state);

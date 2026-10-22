@@ -597,7 +597,9 @@ vec3 direct(Hit hit,bool primary,out vec3 specular,out float distance) {
   // carry local light reflected from the scene. Sun and sky stay.
   if(skipSheetLocal) {
   } else if(!reuseLocal(hit,local)) {
+    regirLookup=!primary;
     local=materialFactor(hit)*localLighting(hit,rng,primary?frame.localConfig.y:1u,distance,false,specular,primary?frame.firefly.x:0);
+    regirLookup=true;
     specular*=materialFactor(hit);
   }
   // The sun (0) and the sky (1) share one shadow() call site: each inlined

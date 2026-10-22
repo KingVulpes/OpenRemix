@@ -54,6 +54,18 @@ void RemixNativeRuntime::presented() {
   ++m_presentationCount;
 }
   namespace {
+    // A prepared frame that ends up not traced (presentation skipped, or an
+    // error on the way) gives its lighting state back to the tracer that
+    // prepared it, if that tracer is still the runtime's.
+    struct LightingReturn {
+      const std::unique_ptr<PathTracer> &tracer;
+      const PathTracer *owner = tracer.get();
+      scene::TraceFrame *frame = nullptr;
+      ~LightingReturn() {
+        if (frame && tracer && tracer.get() == owner)
+          tracer->returnScene(*frame);
+      }
+    };
     struct CompletePerformance {
       remixapi_FramePerformanceEXT &out;
       remixapi_FrameBreakdownEXT &breakdown;
@@ -630,6 +642,9 @@ void RemixNativeRuntime::presented() {
       setupTime.stop();
       if (m_pathTracer && m_targetBackend && !m_loading)
         traceScene = measured(p.sceneMilliseconds, [&] { return m_pathTracer->prepareScene(frame, m_traceOptions); });
+      LightingReturn lightingReturn{m_pathTracer};
+      if (traceScene)
+        lightingReturn.frame = &*traceScene;
       VkResult result = measured(p.fenceMilliseconds, [&] {
         return vkWaitForFences(m_device, 1, &m_frames[m_frameIndex].fence, VK_TRUE, 1000000000);
       });
@@ -851,6 +866,9 @@ void RemixNativeRuntime::presented() {
       if (m_pathTracer && m_targetBackend && !m_loading)
         traceScene = measured(p.sceneMilliseconds,
                               [&] { return m_pathTracer->prepareScene(m_raster, m_traceOptions); });
+      LightingReturn lightingReturn{m_pathTracer};
+      if (traceScene)
+        lightingReturn.frame = &*traceScene;
       // Bounded waits keep unavailable surfaces and a stalled GPU from blocking the caller indefinitely.
       VkResult result = measured(p.fenceMilliseconds, [&] {
         return vkWaitForFences(m_device, 1, &m_frames[m_frameIndex].fence, VK_TRUE, 1000000000);
@@ -1420,6 +1438,8 @@ void RemixNativeRuntime::presented() {
                             [&] { return m_pathTracer->prepareScene(raster, m_traceOptions); });
         traceScene = &*prepared;
       }
+      LightingReturn lightingReturn{m_pathTracer};
+      lightingReturn.frame = traceScene;
       // Role CUT (remixapi_InstanceInfoMaskEXT): the coverage that hides
       // traced instances from the camera, ahead of primary visibility.
       if (raster.cutCoverage().count) {

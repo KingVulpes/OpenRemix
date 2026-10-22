@@ -7,6 +7,23 @@ layout(buffer_reference,std430,buffer_reference_align=16) readonly buffer LightN
 float lightRandom(inout uint state) {
   state=hash(state+0x9e3779b9u);return float(state>>8)*(1.0/16777216.0);
 }
+// A leaf's emitters are consecutive (links: leaf rank, emitter count, first
+// emitter, 1): one is chosen by its share of the leaf's power (shaping.z: the
+// running share through it, shaping.w: its own), which the caller's PDF takes.
+// A leaf of one draws no random number.
+uint leafEmitter(LightEmitters emitters,uvec4 links,inout uint state,out float share) {
+  share=1;
+  uint count=max(links.y,1u);
+  if(count==1)return links.z;
+  float u=lightRandom(state);
+  uint low=0,high=count-1;
+  while(low<high) {
+    uint middle=(low+high)/2;
+    if(u<emitters.data[links.z+middle].shaping.z)high=middle;else low=middle+1;
+  }
+  share=emitters.data[links.z+low].shaping.w;
+  return links.z+low;
+}
 float localFalloff(float distance2) {
   float reach=frame.localScale.y;
   if(reach<=0)return 1;
@@ -277,7 +294,9 @@ vec3 smallLocalLighting(LightNodes nodes,LightEmitters emitters,Hit hit,uint sta
     for(uint index=0;index<nodeCount;++index) {
       if(nodes.data[index].links.w!=1)continue;
       if(!lightNodeVisible(nodes,index,hit.p,hit.n))continue;
-      LocalCandidate candidate=localCandidate(emitters.data[nodes.data[index].links.z],hit,state,angular,blue,noiseBase+sampleIndex*8u+index);
+      float share;uint emitter=leafEmitter(emitters,nodes.data[index].links,state,share);
+      LocalCandidate candidate=localCandidate(emitters.data[emitter],hit,state,angular,blue,noiseBase+sampleIndex*8u+index);
+      candidate.physical/=share;candidate.specular/=share;
       float weight=localLuminance(candidate.physical);total+=weight;
       if(weight>0&&lightRandom(state)*total<weight) {selected=candidate;selectedIndex=index;}
       if(index==preferred)preferredSample=candidate;
@@ -354,7 +373,9 @@ vec3 resampledLocalLighting(LightNodes nodes,LightEmitters emitters,Hit hit,uint
       bool inCluster=lightInSubtree(nodes,index,guideRoot);
       pdf*=1-guideMix+(guideMix>0&&inCluster?guideMix/rootPdf:0);
       if(pdf<=0)continue;
-      LocalCandidate candidate=localCandidate(emitters.data[nodes.data[index].links.z],hit,state,true,blue,noiseBase+sampleIndex*8u+candidateIndex);
+      float share;uint emitter=leafEmitter(emitters,nodes.data[index].links,state,share);
+      pdf*=share;
+      LocalCandidate candidate=localCandidate(emitters.data[emitter],hit,state,true,blue,noiseBase+sampleIndex*8u+candidateIndex);
       vec3 physical=candidate.physical;
       candidate.physical/=pdf;candidate.specular/=pdf;
       float weight=localLuminance(candidate.physical);total+=weight;
@@ -497,7 +518,9 @@ vec3 localLighting(Hit hit,uint state,uint samples,out float lightDistance,bool 
     // Full mixture PDF, including the BVH component even for a guided draw.
     selectionPdf=(1-guideMix)*selectionPdf+(index==preferred?guideMix:0);
     if(selectionPdf<=0)continue;
-    LightEmitter light=emitters.data[nodes.data[index].links.z];
+    float share;uint emitter=leafEmitter(emitters,nodes.data[index].links,state,share);
+    selectionPdf*=share;
+    LightEmitter light=emitters.data[emitter];
     // The sample's light (physical, its specular share), point and distance;
     // a triangle or a sphere, then one visibility call site for both.
     vec3 physical,physicalSpecular,endpoint;float distance;

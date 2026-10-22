@@ -512,6 +512,7 @@ namespace remix {
     std::vector<std::shared_ptr<Arena>> arenas;
     std::unique_ptr<Buffer> scratch, table, uniform;
     scene::LightBvh lightBvh;
+    std::vector<scene::SphereLight> lightInput; // prepareScene's gathered lights (storage kept)
     scene::LightVisibility lightVisibility;
     std::unique_ptr<Buffer> visibilityNodes, visibilityLeaves, visibilityTable;
     uint64_t visibilityPartitionVersion = 0, visibilityTableVersion = 0;

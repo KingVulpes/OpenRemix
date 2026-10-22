@@ -89,11 +89,15 @@ struct TraceFrame {
   bool staticUnits = false;
   IdSet persistentIds; // nonzero caller identities of the frame
   std::vector<Emitter> emitters;
-  // Staged copies leave the last submitted lighting intact if presentation is skipped.
+  // The tracer's lighting state, moved here to be updated for this frame and
+  // moved back when it is traced (PathTracer::prepare) or, if presentation is
+  // skipped, by PathTracer::returnScene (staged until then). A copy each frame
+  // cost milliseconds with tens of thousands of emissive triangles.
   struct Lighting {
     LightBvh combined, torch, emissive;
     LightVisibility visibility; // for combined
     EmissionHistory history;
+    bool staged = false, families = false; // families: torch and emissive were updated
     bool hasEmissive = false;
     // Statistics: see emittingInstances below; CPU time of the light update.
     uint32_t emittingInstances = 0, dynamicEmittingInstances = 0;

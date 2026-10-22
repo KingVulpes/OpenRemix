@@ -148,6 +148,15 @@ namespace remix {
       ui::Checkbox("Emissive lighting", &options.emissiveLights);
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Controls light cast onto the world. Emissive textures remain visible.");
+      {
+        int cluster = int(std::clamp(options.emissiveClusterSize, 1u, 64u));
+        if (ui::SliderInt("Emissive triangles per light cluster", &cluster, 1, 64))
+          options.emissiveClusterSize = uint32_t(cluster);
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Neighbouring glowing triangles of a surface are grouped (1: none). Each keeps its\n"
+                            "shape and color; larger groups make the light tree cheaper to update and walk, at\n"
+                            "some noise close to large glowing surfaces.");
+      }
       ui::Checkbox("Adaptive local-light sampling", &options.adaptiveLocalSampling);
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Smoothly raises the local-light sample budget toward four near important light "

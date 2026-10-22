@@ -120,9 +120,10 @@ namespace remix::scene {
             (material.emission[0] <= 0 && material.emission[1] <= 0 && material.emission[2] <= 0))
           continue;
         const auto reduction = emission.reduce(prepared.draw, prepared.uv);
-        for (const auto &triangle : *reduction)
-          unit.emitters.push_back({triangleEmitter(prepared.draw, triangle.index, triangle.radiance), triangle.layout,
-                                   bool(material.emissionTexture)});
+        std::vector<SphereLight> lights;
+        triangleEmitters(prepared.draw, *reduction, lights);
+        for (size_t i = 0; i < lights.size(); ++i)
+          unit.emitters.push_back({lights[i], (*reduction)[i].layout, bool(material.emissionTexture)});
       }
       m_emittingDirty |= !unit.emitters.empty();
       if (!unit.singular) {
@@ -349,27 +350,10 @@ namespace remix::scene {
     return state && surface < state->vertices.size() ? state->vertices[surface] : 0;
   }
 
-  TraceFrame prepareSceneFrame(NativeResources &resources, StaticScene *statics, OpacityCache &opacity,
-                               WorkerPool *workers, bool opacityProfile, double seconds, bool filterEmission,
-                               SurfaceEmissionCache &emissionCache) {
-    bool units = statics && !opacityProfile && statics->sync(resources, opacity, emissionCache, workers);
-    if (units) {
-      // Frame-local static instances would interleave with the set, and
-      // colliding set keys make prepareTraceFrame reject the frame: trace
-      // such a frame from the full draw list, exactly as without the set.
-      bool local = statics->duplicates();
-      for (const auto &draw : resources.draws())
-        local |= draw.traced() && draw.classification == REMIXAPI_INSTANCE_STATIC_EXT;
-      units = !local;
-    }
-    if (!units)
-      resources.expandStatic();
-    auto frame = prepareTraceFrame(resources.draws(), seconds, filterEmission, emissionCache,
-                                   units ? statics : nullptr);
-    frame.staticUnits = units;
-    // The set's emitters join the frame's in trace order (the set's instances
-    // are all static; keys never collide).
-    if (units && !statics->emitting().empty()) {
+  std::vector<TraceFrame::Emitter> mergedEmitters(const TraceFrame &frame, const StaticScene *statics,
+                                                  bool filterEmission) {
+    // The set's instances are all static; keys never collide.
+    if (frame.staticUnits && statics && !statics->emitting().empty()) {
       std::vector<TraceFrame::Emitter> merged;
       const auto &emitting = statics->emitting();
       const auto &all = statics->units();
@@ -396,8 +380,29 @@ namespace remix::scene {
       }
       for (; next < emitting.size(); ++next)
         unitEmitters(all[emitting[next]]);
-      frame.emitters = std::move(merged);
+      return merged;
     }
+    return frame.emitters;
+  }
+
+  TraceFrame prepareSceneFrame(NativeResources &resources, StaticScene *statics, OpacityCache &opacity,
+                               WorkerPool *workers, bool opacityProfile, double seconds, bool filterEmission,
+                               SurfaceEmissionCache &emissionCache) {
+    bool units = statics && !opacityProfile && statics->sync(resources, opacity, emissionCache, workers);
+    if (units) {
+      // Frame-local static instances would interleave with the set, and
+      // colliding set keys make prepareTraceFrame reject the frame: trace
+      // such a frame from the full draw list, exactly as without the set.
+      bool local = statics->duplicates();
+      for (const auto &draw : resources.draws())
+        local |= draw.traced() && draw.classification == REMIXAPI_INSTANCE_STATIC_EXT;
+      units = !local;
+    }
+    if (!units)
+      resources.expandStatic();
+    auto frame = prepareTraceFrame(resources.draws(), seconds, filterEmission, emissionCache,
+                                   units ? statics : nullptr);
+    frame.staticUnits = units;
     // Coverage proof is CPU-only and can overlap the previous GPU submission.
     // Keep the result on this immutable frame, alongside its animated UVs.
     // Cached partitions are found on workers; the rest (new, revalidated or

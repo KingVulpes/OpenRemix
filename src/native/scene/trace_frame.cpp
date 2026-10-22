@@ -66,6 +66,8 @@ TraceFrame prepareTraceFrame(const std::vector<Draw> &draws, double seconds, boo
     return std::abs(det) < 1e-12f;
   });
   frame.emitterFirst.reserve(frame.instances.size() + 1);
+  // As many as last frame: growing the list copied megabytes.
+  frame.emitters.reserve(emissionCache.emitterHint);
   for (auto instance : frame.instances) {
     frame.emitterFirst.push_back(uint32_t(frame.emitters.size()));
     bool emitting = false, dynamicEmitting = false;
@@ -90,9 +92,9 @@ TraceFrame prepareTraceFrame(const std::vector<Draw> &draws, double seconds, boo
       // light tree's dynamic part (LightBvh).
       const bool dynamic = draw.classification == REMIXAPI_INSTANCE_DYNAMIC_EXT &&
                            frame.persistentIds.count(draw.instanceId) != 0;
-      for (const auto &triangle : *reduction) {
-        frame.emitters.push_back({triangleEmitter(draw, triangle.index, triangle.radiance),
-                                  animated ? triangle.layout : 0, animated});
+      const auto &lights = emissionCache.emitters(draw, reduction);
+      for (size_t i = 0; i < lights.size(); ++i) {
+        frame.emitters.push_back({lights[i], animated ? (*reduction)[i].layout : 0, animated});
         frame.emitters.back().light.dynamic = dynamic;
       }
       emitting |= !reduction->empty();
@@ -102,6 +104,7 @@ TraceFrame prepareTraceFrame(const std::vector<Draw> &draws, double seconds, boo
     frame.dynamicEmittingInstances += dynamicEmitting;
   }
   frame.emitterFirst.push_back(uint32_t(frame.emitters.size()));
+  emissionCache.emitterHint = frame.emitters.size();
   emissionCache.prune();
   return frame;
 }

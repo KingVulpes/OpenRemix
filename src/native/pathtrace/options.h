@@ -35,6 +35,11 @@ namespace remix {
     bool blueNoiseSky = true;
     bool localLights = true, localDenoiser = true;
     bool torchLights = true, emissiveLights = true;
+    // Emissive triangles of one surface a light-tree leaf holds at most (1: a
+    // leaf per triangle). Sampling picks a leaf, then one of its triangles by
+    // power: each keeps its own shape and color, and the tree to build and
+    // descend is that many times smaller.
+    uint32_t emissiveClusterSize = 16;
     uint32_t emissiveCandidates = 1;
     // RIS candidates in sets of more than four sphere lights without emissive
     // surfaces (1: plain BVH sampling). Candidates compare unshadowed

@@ -221,6 +221,12 @@ namespace remix {
       // Emitter of an instance the host identified as dynamic
       // (remixapi_InstanceIdentityEXT): kept in the light tree's dynamic part.
       bool dynamic = false;
+      // Triangle emitters: the surface draw they belong to (0 for sphere
+      // lights) and their place in a spatial order of its emitters. The light
+      // tree keeps a surface's emitters together in that order and makes
+      // leaves of runs of them (LightBvh::setClusterSize).
+      uint64_t group = 0;
+      uint32_t rank = 0;
       bool operator==(const SphereLight &) const = default;
     };
     struct DomeLight {

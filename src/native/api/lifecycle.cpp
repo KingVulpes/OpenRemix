@@ -1,4 +1,5 @@
 #include "api/state.h"
+#include "scene/light_bvh.h"
 #if REMIX_HAS_USD
 #include "usd/mods.h"
 #endif
@@ -325,6 +326,53 @@ void serviceDevRequests() {
                         a.written / 1048576.0, a.write, a.keptPrefix ? "kept" : "rewritten", a.sizes, a.storageInstances,
                         a.storageAccel, a.storage, a.topRecord);
           text += line;
+        }
+        {
+          const auto c = std::exchange(remix::trace::g_sceneCosts, {});
+          const double n = c.frames ? double(c.frames) : 1;
+          const auto &m = c.sum, &w = c.slowest;
+          std::snprintf(line, sizeof(line),
+                        "# scene preparation over %llu frames, mean %.2f ms: frame %.2f, prune %.2f, stage lighting "
+                        "%.2f, gather lights %.2f, family trees %.2f, light tree %.2f, visibility %.2f | slowest %.2f "
+                        "ms: frame %.2f, prune %.2f, stage %.2f, gather %.2f, family %.2f, tree %.2f (%u lights), "
+                        "visibility %.2f\n",
+                        (unsigned long long)c.frames, m.total / n, m.frame / n, m.prune / n, m.stage / n,
+                        m.gather / n, m.split / n, m.tree / n, m.visibility / n, w.total, w.frame, w.prune, w.stage,
+                        w.gather, w.split, w.tree, c.lights, w.visibility);
+          text += line;
+          const auto set = g_runtime.localLightSetStatistics();
+          const auto &r = set.buildsByReason;
+          std::snprintf(line, sizeof(line),
+                        "# light tree since launch: builds %llu (initial %llu, first dynamic %llu, settled %llu, "
+                        "retired %llu, cleared %llu; %.1f ms in all), refits %llu, dynamic part rebuilt %llu | now: static %u, "
+                        "dynamic %u, unlit slots %u, of dynamic instances %u, emitting instances outside the static set %u | visibility tables %llu (last %.2f ms, "
+                        "total %.1f)\n",
+                        (unsigned long long)set.builds, (unsigned long long)r[1], (unsigned long long)r[2],
+                        (unsigned long long)r[3], (unsigned long long)r[4], (unsigned long long)r[5],
+                        set.buildTotalMilliseconds, (unsigned long long)set.refits, (unsigned long long)set.dynamicBuilds, set.staticLights,
+                        set.dynamicLights, set.retiredSlots, set.dynamicInstanceLights, set.emittingInstances,
+                        (unsigned long long)set.tableBuilds, set.tableMilliseconds, set.tableTotalMilliseconds);
+          text += line;
+          const auto churn = remix::scene::g_lightChurn;
+          remix::scene::g_lightChurn = {};
+          remix::scene::g_lightChurn.unlit = churn.unlit; // a state, not a count
+          std::snprintf(line, sizeof(line),
+                        "# light tree dynamic part rebuilds since the last dump %llu: lights added %llu (of %llu surfaces), "
+                        "stale slots dropped %llu; unlit dynamic slots now %u\n",
+                        (unsigned long long)churn.rebuilds, (unsigned long long)churn.added, (unsigned long long)churn.addedSurfaces,
+                        (unsigned long long)churn.removed, churn.unlit);
+          text += line;
+          {
+            const double u = double(std::max<uint64_t>(churn.updates, 1));
+            const auto &ph = churn.phases;
+            std::snprintf(line, sizeof(line),
+                          "# light tree update phases over %llu updates, mean ms: order %.2f, copy %.2f, moved+compare %.2f, "
+                          "static match %.2f, dynamic merge %.2f, slot writes %.2f, bounds %.2f, builds %.2f, counts %.2f, "
+                          "significance %.2f (snapshots %llu)\n",
+                          (unsigned long long)churn.updates, ph[0] / u, ph[1] / u, ph[2] / u, ph[3] / u, ph[4] / u,
+                          ph[5] / u, ph[6] / u, ph[7] / u, ph[8] / u, ph[9] / u, (unsigned long long)churn.snapshots);
+            text += line;
+          }
         }
         {
           const auto b = std::exchange(remix::trace::g_blockCosts, {});

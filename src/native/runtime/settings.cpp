@@ -141,6 +141,7 @@ namespace remix::config {
         TRACE(localLights, 0, 1);
         TRACE(torchLights, 0, 1);
         TRACE(emissiveLights, 0, 1);
+        TRACE(emissiveClusterSize, 1, 64);
         TRACE(adaptiveLocalSampling, 0, 1);
         TRACE(stabilizeEmissiveLighting, 0, 1);
         TRACE(emissiveSolidAngleSampling, 0, 1);

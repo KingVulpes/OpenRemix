@@ -91,6 +91,11 @@ namespace remix {
     // lights at their own surface. Off: sun and sky only there (local light
     // still reaches them through their reflection paths).
     bool sheetLocalLights = true;
+    // Layers behind the front translucent layer of a pixel take its light
+    // (per unit material factor) instead of their own light samples and
+    // paths: one lit layer per pixel, however many it passes. Off: every
+    // layer is lit (PBR layers, or all with translucentIndirect).
+    bool layerReuse = true;
     // Exclude local lights outside the shading point's potentially visible
     // clusters (remixapi_SetVisibilityPartitionEXT), when a partition is set.
     // ReSTIR DI for primary local lighting (implies separateLocalLighting 3):

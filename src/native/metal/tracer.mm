@@ -799,7 +799,8 @@ namespace remix::metal {
     frame.pathConfig[1] = options.rouletteMinBounces;
     // Sheet flags (1 traced indirect, 2 local lights) and the secondary ray
     // mask: bounce rays may skip blended layers.
-    frame.pathConfig[2] = (options.translucentIndirect ? 1u : 0u) | (options.sheetLocalLights ? 2u : 0u);
+    frame.pathConfig[2] = (options.translucentIndirect ? 1u : 0u) | (options.sheetLocalLights ? 2u : 0u) |
+                          (options.layerReuse ? 4u : 0u);
     // Bits 0-7: the instance mask of shadow, light-visibility and bounce rays
     // (view models never; blended layers unless skipBlendedSecondaryRays is
     // off). Bit 8: a traced view model is in the frame (camera rays look for

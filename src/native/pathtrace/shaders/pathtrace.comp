@@ -401,7 +401,7 @@ Hit rasterPrimary(ivec2 pixel, vec3 origin) {
 // guides belong to the opaque receiver behind transparent sheets.
 vec3 debugGeometry(Hit hit,ivec2 pixel) {
   uint view=frame.splitLocal.w;
-  if(view>=8&&view!=12)return debugUnavailable(pixel); // filled by temporal composition when available
+  if(view>=8&&view!=12&&view!=14)return debugUnavailable(pixel); // filled by temporal composition when available
   if(hit.t==1e30)return vec3(0);
   if(view==12)return hit.pbr?vec3(hit.rm.x,hit.rm.y,0):vec3(0,0,1);
   if(view==1)return hit.color.rgb;
@@ -1454,7 +1454,10 @@ void main() {
   uvec4 background=imageLoad(backgroundTransmission,pixel);
   rng=hash(background.a^0x73686565u); // its own sequence after the opaque pass's
   float signedCount=imageLoad(worldColor,pixel).a;
-  bool front=abs(signedCount)>=1; // the front sheet, also of a layered pixel (multiSheetFallback)
+  // The front sheet: of a single-sheet pixel, or of a layered one the
+  // composition pass composes (multiSheetFallback); the multi-sheet pass
+  // lights its own.
+  bool front=abs(signedCount)==1||(abs(signedCount)>1&&multiSheetFallback);
   vec3 origin,direction;
   ray((vec2(pixel)+.5+frame.jitter.xy)/vec2(frame.target.xy)*2-1,frame.inverseCameraRelative,frame.eye.xyz,origin,direction);
   Hit hit;hit.t=1e30;hit.p=vec3(0);hit.n=vec3(0);hit.blended=false;hit.pbr=false;hit.thick=vec2(0);
@@ -1841,6 +1844,12 @@ void main() {
   if(frame.splitLocal.w!=0) {
     if(frame.splitLocal.w==6)diagnostic=local;
     if(frame.splitLocal.w==7)diagnostic=indirect;
+    // Translucent layers the camera ray passes: black none, blue 1, green 2,
+    // yellow 3, red 4, white 5 or more (the multi-sheet pass's work).
+    if(frame.splitLocal.w==14) {
+      const vec3 heat[6]=vec3[6](vec3(0),vec3(0,.2,1),vec3(0,.8,.1),vec3(1,.9,0),vec3(1,.1,0),vec3(1));
+      diagnostic=heat[min(sheetCount,5u)];
+    }
     color=diagnostic;
   }
   // Integer storage preserves every RNG bit, including float NaN/subnormal patterns.
@@ -1882,6 +1891,11 @@ void main() {
   // Without traced sheet indirect, deeper sheets reuse the front sheet's direct
   // light (per unit albedo): one set of light samples and shadow rays per pixel.
   vec3 reusedDirect=vec3(-1);
+  // With layer reuse (rtx.native.pathtrace.layerReuse), every layer behind
+  // the front one takes the front layer's whole light per unit material
+  // factor: one set of light samples and paths per pixel, however many
+  // layers (dxvk-remix and the NRD sample light no glass layer at all).
+  vec3 reusedLight=vec3(-1);
   // Traversal is deterministic and consumes no RNG. Shade front-to-back
   // immediately, keeping only the current sheet live across continuation rays.
   for(uint layer=0;layer<sheetCount;++layer) {
@@ -1904,9 +1918,11 @@ void main() {
       }
 #else
       // One continuation call site: sample 0 lights the sheet itself, unless
-      // a deeper non-PBR sheet reuses the front one's direct light.
-      bool reuse=(frame.pathConfig.z&1u)==0&&!hit.pbr&&reusedDirect.x>=0;
-      bool tail=(frame.pathConfig.z&1u)!=0||hit.pbr;
+      // a deeper sheet reuses the front one's light (layer reuse) or a
+      // deeper non-PBR sheet its direct light.
+      bool reuseAll=(frame.pathConfig.z&4u)!=0&&reusedLight.x>=0;
+      bool reuse=reuseAll||((frame.pathConfig.z&1u)==0&&!hit.pbr&&reusedDirect.x>=0);
+      bool tail=!reuseAll&&((frame.pathConfig.z&1u)!=0||hit.pbr);
       uint samples=tail?frame.config.x:0u;
       vec3 directLight=vec3(0),surfaceLight=vec3(0);
       skipSheetLocal=hit.pbr&&(frame.pathConfig.z&3u)==0;
@@ -1918,10 +1934,13 @@ void main() {
       }
       skipSheetLocal=false;
       vec3 factor=materialFactor(hit);
-      if(reuse)directLight=reusedDirect*factor;
+      if(reuseAll)directLight=reusedLight*factor;
+      else if(reuse)directLight=reusedDirect*factor;
       else if(!hit.pbr&&all(greaterThan(factor,vec3(1e-3))))reusedDirect=directLight/factor;
-      surfaceLight+=directLight+hit.emission;
-      if(!tail)surfaceLight+=factor*sheetIndirect(pixel,hit,direction);
+      surfaceLight+=directLight;
+      if(!tail&&!reuseAll)surfaceLight+=factor*sheetIndirect(pixel,hit,direction);
+      if((frame.pathConfig.z&4u)!=0&&reusedLight.x<0&&all(greaterThan(factor,vec3(1e-3))))reusedLight=surfaceLight/factor;
+      surfaceLight+=hit.emission;
 #endif
       vec3 through=transmissionColor(hit.color.rgb,hit.tinted)*(1-hit.color.a);
       if(hit.tinted&&thickSheet(hit,layerDirection,hit.color.a,through)) {

@@ -102,6 +102,11 @@ namespace remix {
         ImGui::SetTooltip("Samples torches and other local lights at water and glossy glass surfaces.\n"
                           "Off: sun and sky only there; reflections still show locally lit surroundings.");
       ImGui::EndDisabled();
+      ui::Checkbox("Deeper translucent layers reuse the front layer's light", &options.layerReuse);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Layers behind the first translucent layer of a pixel (the back of a glass pane,\n"
+                          "a window seen through another) take its light instead of sampling lights and\n"
+                          "tracing paths of their own: one lit layer per pixel. Off: every layer is lit.");
       ImGui::BeginDisabled(rrActive || options.indirectClamp > 0);
       ui::Checkbox("Reuse opaque lighting through translucency", &options.translucencyReuse);
       if (ImGui::IsItemHovered())

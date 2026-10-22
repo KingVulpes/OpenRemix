@@ -688,6 +688,7 @@ namespace remix {
     frame.pathConfig[0] = rouletteActive;
     frame.pathConfig[1] = options.rouletteMinBounces;
     frame.pathConfig[2] = (options.translucentIndirect ? 1u : 0u) | (options.sheetLocalLights ? 2u : 0u) |
+                          (options.layerReuse ? 4u : 0u) |
                           std::clamp(options.skySamples, 1u, 16u) << 8;
     // Bits 0-7: the instance mask of shadow, light-visibility and bounce rays
     // (view models never; blended layers unless skipBlendedSecondaryRays is
@@ -1244,16 +1245,6 @@ namespace remix {
       stageTime(8);
     }
     stageTime(11);
-    {
-      // The front sheet's light (direct, paths, reused GI), for the
-      // composition below; this frame's opaque radiance and NRD outputs are
-      // available to its reuse.
-      gpu::GpuScope scope(command, "Sheet lighting (front sheet)", extent);
-      bindSelected(command, selectLightingPipeline(denoiser ? sheetTemporalCompute : sheetCompute));
-      vkCmdDispatch(command, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
-    }
-    barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
     // The multi-sheet pass compiles off the activation batch; until it is
     // ready the composition pass composes layered pixels from the front
     // sheet's light (REMIX_MULTI_SHEET_FALLBACK=1 keeps it so, for comparison).
@@ -1274,6 +1265,21 @@ namespace remix {
       }
     }
     const auto multiSheetPipeline = forceFallback ? VK_NULL_HANDLE : denoiser ? temporalTransparencyCompute : transparencyCompute;
+    {
+      // The front sheet's light (direct, paths, reused GI), for the
+      // composition below; this frame's opaque radiance and NRD outputs are
+      // available to its reuse. Layered pixels take it only when the
+      // composition pass composes them (the multi-sheet pass lights its own
+      // front sheet).
+      gpu::GpuScope scope(command, "Sheet lighting (front sheet)", extent);
+      const auto sheetPipeline = selectLightingPipeline(denoiser ? sheetTemporalCompute : sheetCompute);
+      if (!multiSheetPipeline)
+        selectedFeatures |= featureMultiSheetFallback;
+      bindSelected(command, sheetPipeline);
+      vkCmdDispatch(command, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
+    }
+    barrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
     const auto singleTransparencyPipeline =
         selectLightingPipeline(denoiser ? singleTemporalTransparencyCompute : singleTransparencyCompute);
     if (!multiSheetPipeline)

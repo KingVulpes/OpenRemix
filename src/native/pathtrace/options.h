@@ -96,6 +96,10 @@ namespace remix {
     // paths: one lit layer per pixel, however many it passes. Off: every
     // layer is lit (PBR layers, or all with translucentIndirect).
     bool layerReuse = true;
+    // A translucent layer's paths end at their first hit: the radiance
+    // cache's light there (whatever the path's width), else the hit's direct
+    // light. Off: they continue like an opaque surface's paths.
+    bool shortSheetPaths = true;
     // Exclude local lights outside the shading point's potentially visible
     // clusters (remixapi_SetVisibilityPartitionEXT), when a partition is set.
     // ReSTIR DI for primary local lighting (implies separateLocalLighting 3):

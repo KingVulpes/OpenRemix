@@ -164,6 +164,7 @@ namespace remix::config {
         TRACE(primarySurfaceReplacement, 0, 1);
         TRACE(sheetLocalLights, 0, 1);
         TRACE(layerReuse, 0, 1);
+        TRACE(shortSheetPaths, 0, 1);
         TRACE(sceneScale, .0001, 1000);
         TRACE(lightVisibilityCulling, 0, 1);
         TRACE(cameraBackFaceCulling, 0, 1);

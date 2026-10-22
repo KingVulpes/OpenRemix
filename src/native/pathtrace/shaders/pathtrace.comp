@@ -722,13 +722,15 @@ vec3 cacheLimitPrevious(SharcParameters parameters,SharcState state,vec3 radianc
 }
 #endif
 #ifdef SHARC_QUERY
-bool cacheRadiance(Hit hit,float footprint,out vec3 radiance) {
+// anyFootprint: accept the cell however wide the path is at the hit (a
+// translucent layer's short path, see continuation).
+bool cacheRadiance(Hit hit,float footprint,bool anyFootprint,out vec3 radiance) {
   // The only lighting family on a SHARC-capable device: no cache this frame
   // (inactive, or no receivers yet) means no query.
   if((frame.sharcConfig.x&1u)==0u&&frame.sharcConfig.w==0u)return false;
   if(!cacheSurface(hit))return false;
   SharcParameters parameters=cacheParameters();
-  if((frame.sharcConfig.x&8u)==0u&&!cacheFootprintFits(hit,footprint))return false;
+  if(!anyFootprint&&(frame.sharcConfig.x&8u)==0u&&!cacheFootprintFits(hit,footprint))return false;
 #ifndef CONFIDENCE_PASS
   bool measure=(hash(uint(shadingPixel.x)+uint(shadingPixel.y)*frame.target.x)&63u)==0;
   if(measure)atomicAdd(CacheCounters(frame.sharcCounters).data[1],1u);
@@ -866,6 +868,12 @@ vec3 continuation(Hit primary,int lobe,float probability,out vec3 firstDirection
   uint bounce=0,layers=0;
   if(maxBounces==0)profilePath(8u);
   bool atPrimary=lightPrimary;
+  // A translucent layer's path (rtx.native.pathtrace.shortSheetPaths) ends
+  // at its first hit: the radiance cache's light there however narrow the
+  // path, else the hit's direct light. The layer's own light sampling stays;
+  // its reflection loses the deeper bounces a miss would have traced (the NRD
+  // sample shades the hits seen through glass from its caches alone).
+  bool shortPath=primary.blended&&(frame.pathConfig.z&8u)!=0;
   // Steps: up to 16 bounces, each through up to 32 blended layers (and the
   // primary's own vertex first).
   for(uint step=0;step<561&&(atPrimary||bounce<maxBounces);++step) {
@@ -906,9 +914,9 @@ vec3 continuation(Hit primary,int lobe,float probability,out vec3 firstDirection
     vec3 cached;
 #ifdef ORCA_SPARSE_PASS
     // Sparse paths measure the first vertex themselves; only tails use SHARC.
-    if(bounce>0&&cacheRadiance(hit,length(hit.p-previousVertex)*footprintScale,cached)) {
+    if(bounce>0&&cacheRadiance(hit,length(hit.p-previousVertex)*footprintScale,false,cached)) {
 #else
-    if(cacheRadiance(hit,length(hit.p-previousVertex)*footprintScale,cached)) {
+    if(cacheRadiance(hit,length(hit.p-previousVertex)*footprintScale,shortPath,cached)) {
 #endif
       result+=throughput*cached;profilePath(7u);break; // Cached outgoing radiance already includes this hit's direct light.
     }
@@ -934,7 +942,7 @@ vec3 continuation(Hit primary,int lobe,float probability,out vec3 firstDirection
       if(bounce==0)like=mix(like,1.,1-dot(specularWeight,luma)/max(dot(weight,luma),1e-20));
       diffuseMotion+=1-importance*(1-like);
     }
-    if(++bounce>=maxBounces){profilePath(8u);break;}
+    if(++bounce>=maxBounces||shortPath){profilePath(8u);break;}
     vec3 hitSpecular;
     vec3 hitWeight=materialSample(hit,direction,hitSpecular);
     // A diffusely sampled continuation ends the distance as well.

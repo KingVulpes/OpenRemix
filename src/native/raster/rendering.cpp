@@ -120,7 +120,7 @@ namespace remix {
     ordered.reserve(m_draws.size() + m_overlay.size() + m_uiDraws.size() + 1);
     std::deque<Draw> adjusted;
     for (const auto &draw : m_draws) {
-      if (draw.rasterVisible && (!tracing || !draw.traced())) {
+      if (draw.rasterVisible && !draw.reflectionOnly && (!tracing || !draw.traced())) {
         const Draw *source = &draw;
         // Traced barycentric depth and raster interpolation can differ by ULPs.
         // Bias coplanar EQUAL feedback toward the camera while preserving occlusion.

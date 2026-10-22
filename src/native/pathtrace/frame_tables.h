@@ -129,6 +129,7 @@ namespace remix::trace {
     uint32_t surfaceIndex = 0, count = 0;
     bool blended = false;
     bool viewModel = false; // drawn after the scene, in front of it (recordPrimary)
+    bool reflectionOnly = false; // not in the G-buffer (Draw::reflectionOnly)
   };
   // Per-material surface fields; the texture slots are frame indices.
   struct MaterialSlots {
@@ -723,6 +724,7 @@ namespace remix::trace {
                std::all_of(instance.begin(), instance.end(),
                            [](const auto &surface) { return surface.draw.blend.enabled && !surface.draw.decal; })};
       input.viewModel = draw.viewModel;
+      input.reflectionOnly = draw.reflectionOnly;
       write(sceneCursor, model.data(), sizeof(model));
       write(sceneCursor, &view.fingerprint, sizeof(view.fingerprint));
       write(sceneCursor, &draw.instanceId, sizeof(draw.instanceId));
@@ -786,7 +788,8 @@ namespace remix::trace {
           write(staticCursor, value.state, sizeof(value.state));
           write(staticCursor, value.material, sizeof(value.material));
         }
-        *primaryOut++ = {model, uint32_t(next), uint32_t(surface.surface->indices.size()), b.enabled, draw.viewModel};
+        *primaryOut++ = {model, uint32_t(next), uint32_t(surface.surface->indices.size()), b.enabled, draw.viewModel,
+                         draw.reflectionOnly};
         do {
           const auto &group = geometry.groups.at(groupIndex++);
           value.triangleMap = group.triangleMap ? geometry.input->address + group.triangleMap : 0;

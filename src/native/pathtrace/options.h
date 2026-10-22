@@ -203,6 +203,9 @@ namespace remix {
     // reaches an opening: one ray finds it rarely and brightly, which boils
     // after denoising. Each ray is a shadow query; the bounce path is unchanged.
     uint32_t skySamples = 2;
+    // Sky rays at a translucent layer's surface (glass, water), at most
+    // skySamples: each lit layer casts them on top of the surface behind it.
+    uint32_t sheetSkySamples = 2;
     // Sky guiding: each world cell (skyGuideCellSize meters over sceneScale)
     // learns which directions its sky rays found the sky in, and the extra
     // sky rays (skySamples above 1) sample those directions with share

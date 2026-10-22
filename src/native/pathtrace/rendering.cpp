@@ -689,7 +689,8 @@ namespace remix {
     frame.pathConfig[1] = options.rouletteMinBounces;
     frame.pathConfig[2] = (options.translucentIndirect ? 1u : 0u) | (options.sheetLocalLights ? 2u : 0u) |
                           (options.layerReuse ? 4u : 0u) | (options.shortSheetPaths ? 8u : 0u) |
-                          std::clamp(options.skySamples, 1u, 16u) << 8;
+                          std::clamp(options.skySamples, 1u, 16u) << 8 |
+                          std::clamp(std::min(options.sheetSkySamples, options.skySamples), 1u, 16u) << 16;
     // Bits 0-7: the instance mask of shadow, light-visibility and bounce rays
     // (view models never; blended layers unless skipBlendedSecondaryRays is
     // off). Bit 8: a traced view model is in the frame (camera rays look for

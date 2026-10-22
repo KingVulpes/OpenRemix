@@ -200,6 +200,7 @@ namespace remix::config {
         TRACE(orcaMaxError, 0, 4);
         TRACE(indirectHistoryFrames, 0, 63);
         TRACE(skySamples, 1, 16);
+        TRACE(sheetSkySamples, 1, 16);
         TRACE(skyGuiding, 0, 1);
         TRACE(skyGuideCellSize, .05, 100);
         TRACE(skyGuideShare, 0, .95);

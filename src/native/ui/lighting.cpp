@@ -32,6 +32,12 @@ namespace remix {
           ImGui::SetTooltip("Sky visibility rays at each pixel's surface, averaged. Indoors few directions\n"
                             "reach an opening, so one ray finds the sky rarely and brightly and the light\n"
                             "boils; more rays steady it. Each is one shadow ray.");
+        int sheetRays = int(std::min(options.sheetSkySamples, options.skySamples));
+        if (ui::SliderInt("Sky rays on translucent layers", &sheetRays, 1, int(options.skySamples)))
+          options.sheetSkySamples = uint32_t(sheetRays);
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Sky rays at glass and water surfaces, at most the rays above. Each lit layer\n"
+                            "casts them on top of the surface behind it, so fewer keep glass cheap.");
         ImGui::BeginDisabled(options.skySamples < 2);
         ui::Checkbox("Sky guiding", &options.skyGuiding);
         if (ImGui::IsItemHovered())

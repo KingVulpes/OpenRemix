@@ -801,7 +801,8 @@ vec3 continuation(Hit primary,int lobe,float probability,out vec3 firstDirection
   // The sky takes `skyRays` directions from the path's lobe and averages them:
   // the path's own first direction, and the others (with their specular share)
   // added once the path is done. They count even when the path's sample died.
-  uint skyRays=max(1u,(frame.pathConfig.z>>8)&31u);
+  // A translucent layer takes its own count (sheetSkySamples).
+  uint skyRays=max(1u,(frame.pathConfig.z>>(primary.blended?16:8))&31u);
   vec3 extraSky=vec3(0),extraSkySpecular=vec3(0);
   // Sky guiding (sky_guiding.glsl) on a diffuse or legacy surface: every sky
   // ray trains its cell's guide, and the extra ones draw from the guide with

@@ -375,20 +375,30 @@ namespace remix::scene {
             break;
           unitEmitters(unit);
         }
-        merged.insert(merged.end(), frame.emitters.begin() + frame.emitterFirst[i],
-                      frame.emitters.begin() + frame.emitterFirst[i + 1]);
+        const auto own = frame.flatEmitters(frame.emitterFirst[i], frame.emitterFirst[i + 1]);
+        merged.insert(merged.end(), own.begin(), own.end());
       }
       for (; next < emitting.size(); ++next)
         unitEmitters(all[emitting[next]]);
       return merged;
     }
-    return frame.emitters;
+    return frame.flatEmitters();
   }
 
   TraceFrame prepareSceneFrame(NativeResources &resources, StaticScene *statics, OpacityCache &opacity,
                                WorkerPool *workers, bool opacityProfile, double seconds, bool filterEmission,
                                SurfaceEmissionCache &emissionCache) {
+    using Clock = std::chrono::steady_clock;
+    auto &costs = g_frameCosts;
+    const bool timed = sceneTimings();
+    const auto ms = [](Clock::time_point a, Clock::time_point b) {
+      return std::chrono::duration<double, std::milli>(b - a).count();
+    };
+    const auto now = [&] { return timed ? Clock::now() : Clock::time_point{}; };
+    const auto began = now();
     bool units = statics && !opacityProfile && statics->sync(resources, opacity, emissionCache, workers);
+    const auto synced = now();
+    costs.sync += ms(began, synced);
     if (units) {
       // Frame-local static instances would interleave with the set, and
       // colliding set keys make prepareTraceFrame reject the frame: trace
@@ -400,6 +410,7 @@ namespace remix::scene {
     }
     if (!units)
       resources.expandStatic();
+    costs.local += ms(synced, now());
     auto frame = prepareTraceFrame(resources.draws(), seconds, filterEmission, emissionCache,
                                    units ? statics : nullptr);
     frame.staticUnits = units;
@@ -408,6 +419,7 @@ namespace remix::scene {
     // Cached partitions are found on workers; the rest (new, revalidated or
     // replaced entries) go through partition() in draw order, as before. The
     // profile's lookup and hit counters need every lookup in partition().
+    const auto found = now();
     if (!opacityProfile && workers) {
       constexpr size_t instancesPerTask = 512;
       const size_t count = frame.instances.size();
@@ -417,10 +429,14 @@ namespace remix::scene {
             surface.opacity = opacity.find(surface.draw, surface.uv);
       });
     }
+    const auto partitioned = now();
+    costs.find += ms(found, partitioned);
     for (auto instance : frame.instances)
       for (auto &surface : instance)
         if (!surface.opacity)
           surface.opacity = opacity.partition(surface.draw, surface.uv);
+    costs.partition += ms(partitioned, now());
+    ++costs.frames;
     return frame;
   }
 } // namespace remix::scene

@@ -1441,7 +1441,7 @@ namespace remix {
     // The static set's emitters where the set keeps them (scene::mergedEmitters
     // has them in trace order; the light tree orders its input itself), then
     // the frame's own.
-    size_t emitterCount = frame.emitters.size();
+    size_t emitterCount = frame.emitterCount;
     if (frame.staticUnits)
       for (const uint32_t slot : g.statics.emitting())
         emitterCount += g.statics.units()[slot].emitters.size();
@@ -1457,8 +1457,19 @@ namespace remix {
       for (const uint32_t slot : g.statics.emitting())
         for (const auto &source : g.statics.units()[slot].emitters)
           gather(source, filterEmission && source.animated);
-    for (const auto &source : frame.emitters)
-      gather(source, source.animated);
+    // The frame's runs: each light copied once, into the tree's input.
+    for (const auto &run : frame.emitters) {
+      const auto &source = *run.lights;
+      for (size_t i = 0; i < source.size(); ++i) {
+        lights.push_back(source[i]);
+        auto &light = lights.back();
+        light.dynamic = run.dynamic;
+        if (run.animated)
+          staged.history.apply(light, (*run.reduction)[i].layout);
+        if (!options.emissiveLights || !(light.radius > 1e-8f))
+          lights.pop_back();
+      }
+    }
     staged.history.end();
     staged.hasEmissive = lights.size() > sphereCount;
     const auto gathered = Clock::now();

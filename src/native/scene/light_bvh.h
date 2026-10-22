@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdlib>
 #include "scene/types.h"
 #include <array>
 #include <utility>
@@ -44,13 +45,23 @@ namespace remix::scene {
   // keeps the slots of lights that were present within kRetain updates, so
   // lights that leave the host's view for a while (out of its culling) return
   // to their slots instead of to the dynamic part.
+  // REMIX_SCENE_TIMINGS=1: time scene preparation's steps (LightChurn::phases,
+  // FrameCosts) for the timings dump; off, those clocks are not read.
+  inline bool sceneTimings() {
+    static const bool enabled = [] {
+      const char *value = std::getenv("REMIX_SCENE_TIMINGS");
+      return value && value[0] && value[0] != '0';
+    }();
+    return enabled;
+  }
+
   // Dynamic part rebuilds of all trees since this was last read
   // (diagnostics): lights that appeared (and their surfaces) and slots of
   // lights gone kRetain updates that were dropped.
   struct LightChurn {
     uint64_t rebuilds = 0, added = 0, removed = 0, addedSurfaces = 0;
     uint32_t unlit = 0; // the last update's unlit dynamic slots
-    // Time by phase of update (ms): order, copy, moved+compare, static
+    // Time by phase of update (ms, REMIX_SCENE_TIMINGS): order, copy, moved+compare, static
     // match, dynamic merge, slot writes, bounds, builds, counts, significance.
     double phases[10] = {};
     uint64_t updates = 0, snapshots = 0; // significance snapshots taken

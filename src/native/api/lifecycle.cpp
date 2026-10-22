@@ -353,6 +353,17 @@ void serviceDevRequests() {
                         set.dynamicLights, set.retiredSlots, set.dynamicInstanceLights, set.emittingInstances,
                         (unsigned long long)set.tableBuilds, set.tableMilliseconds, set.tableTotalMilliseconds);
           text += line;
+          if (remix::scene::sceneTimings()) {
+            const auto f = std::exchange(remix::scene::g_frameCosts, {});
+            const double n = double(std::max<uint64_t>(f.frames, 1));
+            std::snprintf(line, sizeof(line),
+                          "# frame step over %llu frames, mean ms: static set sync %.2f, local check %.2f, ids %.2f, "
+                          "instances %.2f, sort %.2f, emitters %.2f, opacity found %.2f, opacity new %.2f | draws %.0f, "
+                          "emitters %.0f a frame\n",
+                          (unsigned long long)f.frames, f.sync / n, f.local / n, f.ids / n, f.instances / n, f.sort / n,
+                          f.emitters / n, f.find / n, f.partition / n, f.draws / n, f.emitterCount / n);
+            text += line;
+          }
           const auto churn = remix::scene::g_lightChurn;
           remix::scene::g_lightChurn = {};
           remix::scene::g_lightChurn.unlit = churn.unlit; // a state, not a count
@@ -362,7 +373,7 @@ void serviceDevRequests() {
                         (unsigned long long)churn.rebuilds, (unsigned long long)churn.added, (unsigned long long)churn.addedSurfaces,
                         (unsigned long long)churn.removed, churn.unlit);
           text += line;
-          {
+          if (remix::scene::sceneTimings()) {
             const double u = double(std::max<uint64_t>(churn.updates, 1));
             const auto &ph = churn.phases;
             std::snprintf(line, sizeof(line),

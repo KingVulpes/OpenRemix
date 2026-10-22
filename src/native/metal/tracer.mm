@@ -418,7 +418,7 @@ namespace remix::metal {
                          options.emissiveLights && options.localLights ? mode : 0u);
     auto lights = options.torchLights ? resources.sphereLights() : std::vector<scene::SphereLight>{};
     const auto sphereCount = lights.size();
-    for (const auto &source : frame.emitters) {
+    for (const auto &source : frame.flatEmitters()) {
       auto light = source.light;
       if (source.animated)
         staged.history.apply(light, source.layout);

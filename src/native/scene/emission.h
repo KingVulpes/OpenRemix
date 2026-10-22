@@ -33,9 +33,10 @@ public:
   // The draw's emitters, triangleEmitter of each triangle of its reduction
   // (in its order): kept while the draw's identity, surface, transform,
   // sidedness and reduction stay the same (a prop at rest is not transformed
-  // again every frame). Skinned draws are made each time. Valid until the
-  // next call.
-  const std::vector<SphereLight> &emitters(const Draw &draw, const std::shared_ptr<const Reduction> &reduction);
+  // again every frame). Skinned draws are made each time. A list once
+  // returned is never changed (frames hold it).
+  std::shared_ptr<const std::vector<SphereLight>> emitters(const Draw &draw,
+                                                           const std::shared_ptr<const Reduction> &reduction);
   // Also drops the emitters no draw asked for since the last prune.
   void prune();
   size_t emitterHint = 0; // prepareTraceFrame's emitters last time
@@ -48,10 +49,9 @@ private:
     uint64_t instanceId = 0, used = 0;
     uint32_t instanceIndex = 0, surfaceIndex = 0;
     bool doubleSided = false;
-    std::vector<SphereLight> lights;
+    std::shared_ptr<std::vector<SphereLight>> lights;
   };
   std::unordered_map<uint64_t, Emitters> emitterEntries;
-  std::vector<SphereLight> skinnedEmitters;
   uint64_t emitterFrame = 1;
   using Key = std::tuple<std::array<float, 3>, std::array<float, 4>,
                          uint8_t, uint8_t, uint8_t, uint8_t, uint8_t, uint8_t, std::array<float, 4>>;

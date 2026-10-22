@@ -178,7 +178,10 @@ namespace remix::scene {
     };
     ++m_update;
     auto phaseStart = start;
+    const bool timed = sceneTimings();
     const auto mark = [&](unsigned phase) {
+      if (!timed)
+        return;
       const auto now = std::chrono::steady_clock::now();
       g_lightChurn.phases[phase] += std::chrono::duration<double, std::milli>(now - phaseStart).count();
       phaseStart = now;

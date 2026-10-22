@@ -175,12 +175,18 @@ namespace remix::scene {
       out[codes[r].second].rank = r;
   }
 
-  const std::vector<SphereLight> &SurfaceEmissionCache::emitters(const Draw &draw,
-                                                                 const std::shared_ptr<const Reduction> &reduction) {
-    const auto make = [&](std::vector<SphereLight> &lights) { triangleEmitters(draw, *reduction, lights); };
+  std::shared_ptr<const std::vector<SphereLight>>
+  SurfaceEmissionCache::emitters(const Draw &draw, const std::shared_ptr<const Reduction> &reduction) {
+    // A list a frame may still hold is replaced, not changed.
+    const auto make = [&](std::shared_ptr<std::vector<SphereLight>> &lights) {
+      if (!lights || lights.use_count() > 1)
+        lights = std::make_shared<std::vector<SphereLight>>();
+      triangleEmitters(draw, *reduction, *lights);
+    };
     if (draw.surface->bonesPerVertex && draw.bones) {
-      make(skinnedEmitters);
-      return skinnedEmitters;
+      std::shared_ptr<std::vector<SphereLight>> lights;
+      make(lights);
+      return lights;
     }
     const Surface *surface = draw.surface.get();
     const uint64_t identity[] = {draw.instanceId, uint64_t(draw.instanceIndex) << 32 | draw.surfaceIndex,

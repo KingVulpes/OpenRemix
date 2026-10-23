@@ -35,7 +35,10 @@ float lightWeight(LightNode node,vec3 p,vec3 n) {
   vec3 halfSize=.5*(node.maximum.xyz-node.minimumPower.xyz);
   vec3 delta=.5*(node.maximum.xyz+node.minimumPower.xyz)-p;
   float radius2=dot(halfSize,halfSize);
-  if(dot(delta,n)+sqrt(radius2)<=0)return 0;
+  // Cull by the box's farthest reach along the normal, not its enclosing
+  // sphere's: a wide cluster behind the receiving plane (lit windows of
+  // buildings beyond a wall) otherwise draws samples that all end at zero.
+  if(dot(delta,n)+dot(halfSize,abs(n))<=0)return 0;
   vec3 nearest=max(abs(delta)-halfSize,vec3(0));
   float cosine=min(1,(dot(delta,n)+sqrt(radius2))*inversesqrt(max(max(dot(delta,delta),radius2),1e-12)));
   // Nearest-box distance keeps nearby lights competitive, but becomes zero

@@ -192,6 +192,7 @@ namespace remix::scene {
     // Static and dynamic emitters; a part without lights keeps one unlit slot.
     uint32_t m_staticReal = 0, m_dynamicReal = 0;
     uint32_t m_staticCount = 0, m_staticNodes = 0, m_staticDepth = 0;
+    uint32_t m_splitDepthLimit = 0; // buildInto: cost-chosen splits above this level
     uint64_t m_update = kSettle, m_builtAt = 0, m_due = ~0ull;
   };
 } // namespace remix::scene

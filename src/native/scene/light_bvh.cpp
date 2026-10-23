@@ -21,6 +21,33 @@ namespace remix::scene {
       const double area = .5 * std::sqrt(x * x + y * y + z * z);
       return area * light.triangle / (4 * 3.141592653589793);
     }
+    // Common 4*pi*pi cancels in every selection probability.
+    double lightPower(const SphereLight &light) {
+      return powerScale(light) * (.2126 * light.radiance[0] + .7152 * light.radiance[1] + .0722 * light.radiance[2]);
+    }
+    // A run of leaves' emitter positions and count, for choosing splits.
+    struct Extent {
+      float minimum[3] = {std::numeric_limits<float>::max(), std::numeric_limits<float>::max(),
+                          std::numeric_limits<float>::max()};
+      float maximum[3] = {std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest(),
+                          std::numeric_limits<float>::lowest()};
+      double count = 0;
+      void add(const Extent &other) {
+        for (unsigned c = 0; c < 3; ++c) {
+          minimum[c] = std::min(minimum[c], other.minimum[c]);
+          maximum[c] = std::max(maximum[c], other.maximum[c]);
+        }
+        count += other.count;
+      }
+      // Half the box's perimeter, not its area: points on a plane or a line
+      // (a row of lamps) still have a size.
+      double size() const {
+        double d = 0;
+        for (unsigned c = 0; c < 3; ++c)
+          d += std::max(0., double(maximum[c]) - minimum[c]);
+        return d;
+      }
+    };
     LightEmitter emitterOf(const SphereLight &light) {
       LightEmitter e;
       std::copy_n(light.position, 3, e.positionRadius);
@@ -646,6 +673,7 @@ namespace remix::scene {
     m_leaves.assign(total, 0);
     m_nodes.reserve(2 * size_t(leaves) - 1);
     depth = 0;
+    m_splitDepthLimit = 2 * uint32_t(std::ceil(std::log2(std::max(leaves, 1u)))) + 2;
     std::vector<uint32_t> order(leaves);
     std::iota(order.begin(), order.end(), 0u);
     if (!m_split) {
@@ -694,6 +722,7 @@ namespace remix::scene {
     m_leaves.resize(total);
     m_nodes[2] = {};
     depth = m_staticDepth;
+    m_splitDepthLimit = 2 * uint32_t(std::ceil(std::log2(std::max(leaves, 1u)))) + 2;
     std::vector<uint32_t> order(leaves);
     std::iota(order.begin(), order.end(), 0u);
     buildInto(2, order, m_staticClusters, leaves, 2);
@@ -731,12 +760,71 @@ namespace remix::scene {
       for (unsigned c = 1; c < 3; ++c)
         if (maximum[c] - minimum[c] > maximum[axis] - minimum[axis])
           axis = c;
-      const uint32_t middle = begin + (end - begin) / 2;
-      std::nth_element(order.begin() + begin, order.begin() + middle, order.begin() + end,
-                       [&](uint32_t a, uint32_t b) {
-                         return m_centers[a][axis] != m_centers[b][axis] ? m_centers[a][axis] < m_centers[b][axis]
-                                                                         : a < b;
-                       });
+      uint32_t middle = begin + (end - begin) / 2;
+      const auto byAxis = [&](unsigned a) {
+        return [&, a](uint32_t x, uint32_t y) {
+          return m_centers[x][a] != m_centers[y][a] ? m_centers[x][a] < m_centers[y][a] : x < y;
+        };
+      };
+      // The count median on the widest axis keeps the tree balanced, but it
+      // can keep a small nearby light with huge distant emitters (a 3D
+      // skybox's lit windows) for several levels, where the shared box's
+      // distance regularization starves it. Take a surface area heuristic
+      // (by perimeter) split instead when it is at least twice as cheap,
+      // above a depth bound. It reads only the emitters' positions and
+      // counts, which refits keep: a refit must match a rebuild (power and
+      // radius change by refit).
+      if (level < m_splitDepthLimit) {
+        std::vector<Extent> extents(end - begin), suffix(end - begin + 1);
+        for (uint32_t i = begin; i < end; ++i) {
+          auto &extent = extents[i - begin];
+          const auto [first, count] = m_clusters[order[i]];
+          for (uint32_t e = first; e < first + count; ++e) {
+            const auto &light = m_lights[e];
+            for (unsigned c = 0; c < 3; ++c) {
+              extent.minimum[c] = std::min(extent.minimum[c], light.position[c]);
+              extent.maximum[c] = std::max(extent.maximum[c], light.position[c]);
+            }
+          }
+          extent.count = count;
+        }
+        const auto cost = [&](const Extent &e) { return e.count * e.size(); };
+        double medianCost = 0, bestCost = std::numeric_limits<double>::max();
+        unsigned bestAxis = axis;
+        uint32_t bestSplit = middle;
+        std::vector<uint32_t> sorted(order.begin() + begin, order.begin() + end), local(end - begin);
+        for (unsigned a = 0; a < 3; ++a) {
+          std::iota(local.begin(), local.end(), 0u);
+          std::sort(local.begin(), local.end(), [&](uint32_t x, uint32_t y) {
+            return byAxis(a)(sorted[x], sorted[y]);
+          });
+          suffix[end - begin] = {};
+          for (uint32_t i = end - begin; i-- > 0;) {
+            suffix[i] = suffix[i + 1];
+            suffix[i].add(extents[local[i]]);
+          }
+          Extent prefix;
+          for (uint32_t i = 1; i < end - begin; ++i) {
+            prefix.add(extents[local[i - 1]]);
+            const double c = cost(prefix) + cost(suffix[i]);
+            if (a == axis && begin + i == middle)
+              medianCost = c;
+            if (c < bestCost) {
+              bestCost = c;
+              bestAxis = a;
+              bestSplit = begin + i;
+            }
+          }
+        }
+        if (bestCost < .5 * medianCost) {
+          axis = bestAxis;
+          middle = bestSplit;
+        }
+      }
+      if (middle == begin + (end - begin) / 2)
+        std::nth_element(order.begin() + begin, order.begin() + middle, order.begin() + end, byAxis(axis));
+      else
+        std::sort(order.begin() + begin, order.begin() + end, byAxis(axis));
       const uint32_t left = uint32_t(m_nodes.size()), right = left + 1;
       m_nodes.emplace_back();
       m_nodes.emplace_back();
@@ -786,10 +874,7 @@ namespace remix::scene {
       // A leaf's emitters: bounds of the lit ones (all when none is, as for
       // internal nodes below), summed power, and each one's share of it.
       const uint32_t first = node.links[2], count = std::max(node.links[1], 1u);
-      // Common 4*pi*pi cancels in every selection probability.
-      const auto power = [&](const SphereLight &light) {
-        return powerScale(light) * (.2126 * light.radiance[0] + .7152 * light.radiance[1] + .0722 * light.radiance[2]);
-      };
+      const auto power = lightPower;
       double total = 0;
       for (uint32_t e = first; e < first + count; ++e)
         total += power(m_lights[e]);
@@ -839,18 +924,20 @@ namespace remix::scene {
 
   double LightBvh::weight(const LightNode &node, const float position[3], const float normal[3],
                           double range) {
-    double distance2 = 0, radius2 = 0, toward = 0, nearest2 = 0;
+    double distance2 = 0, radius2 = 0, toward = 0, reach = 0, nearest2 = 0;
     for (unsigned c = 0; c < 3; ++c) {
       const double half = .5 * (node.maximum[c] - node.minimumPower[c]);
       const double delta = .5 * (node.maximum[c] + node.minimumPower[c]) - position[c];
       distance2 += delta * delta;
       radius2 += half * half;
       toward += delta * normal[c];
+      reach += half * std::abs(normal[c]);
       const double nearest = std::max(std::abs(delta) - half, 0.);
       nearest2 += nearest * nearest;
     }
-    // Cull only when the entire enclosing sphere is below the receiving plane.
-    if (toward + std::sqrt(radius2) <= 0)
+    // Cull only when the entire box is below the receiving plane
+    // (light_bvh.glsl).
+    if (toward + reach <= 0)
       return 0;
     const double cosine =
         std::min(1., (toward + std::sqrt(radius2)) / std::sqrt(std::max({distance2, radius2, 1.e-12})));

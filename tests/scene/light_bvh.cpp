@@ -587,6 +587,7 @@ int main() {
     // Lights that leave the host's view (its culling) keep their slots for
     // kRetain updates, through builds, and return to them; gone longer, a
     // build drops them.
+    std::mt19937 random(400);
     std::vector<SphereLight> all;
     for (unsigned i = 0; i < 400; ++i) {
       SphereLight light;

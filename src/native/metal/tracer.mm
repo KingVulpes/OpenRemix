@@ -823,6 +823,14 @@ namespace remix::metal {
       frame.pathConfig[3] |= 0x100u;
     std::copy_n(resources.cameraMedium().data(), 4, frame.cameraMedium);
     frame.upAxis = float(std::min(options.volumetricUpAxis, 2u));
+    // pathtrace/rendering.cpp: light through translucent surfaces with a normal
+    // map draws caustics (visibility.glsl causticTint).
+    if (options.caustics && options.causticsStrength > 0) {
+      const uint64_t strength = uint64_t(std::lround(std::clamp(options.causticsStrength, 0.f, 1.f) * 255));
+      const uint64_t contrast = uint64_t(std::lround(std::clamp(options.causticsContrast, 0.f, 7.96875f) * 32));
+      const uint64_t depth = uint64_t(remix::trace::detail::halfBits(options.causticsDepth / options.sceneScale));
+      frame.caustics = strength | contrast << 8 | depth << 16;
+    }
 
     // Classify the empty space just above a shading point (2 cm); paint lies
     // at most 5 cm above its receiver; texture footprints are in output

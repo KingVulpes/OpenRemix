@@ -111,8 +111,9 @@ void volumeMarch(vec3 origin,vec3 direction,float far,out vec3 inscatter,out flo
 #ifdef VOLUME_UPDATE_PASS
 // What a local light sends to a point of the medium, unshadowed: its radiance
 // times its solid angle from there over 4 pi (isotropic phase). Distances
-// under half a cell are held there: a cell stands for its volume. `endpoint`:
-// the point of the emitter to test visibility to.
+// under half a cell are held there: a cell stands for its volume, and the
+// light's volumetric radiance scale (corners[1].w) applies. `endpoint`: the
+// point of the emitter to test visibility to.
 vec3 volumeCandidate(LightEmitter light,vec3 p,float size,inout uint state,out vec3 endpoint) {
   endpoint=p;
   vec3 toCentre=light.positionRadius.xyz-p;
@@ -143,7 +144,7 @@ vec3 volumeCandidate(LightEmitter light,vec3 p,float size,inout uint state,out v
   }
   vec3 delta=endpoint-p;
   if(dot(delta,delta)<=1e-12)return vec3(0);
-  return emitterRadiance(light,-normalize(delta))*(falloff*fraction*frame.localScale.x);
+  return emitterRadiance(light,-normalize(delta))*(falloff*fraction*frame.localScale.x*light.corners[1].w);
 }
 // The local lights at a point of the medium, with two visibility rays. Up to
 // 64 lights: every one is evaluated. More: 32 candidates drawn from a cell

@@ -224,6 +224,8 @@ namespace remix {
       // projection's up and the tangent of half its width.
       uint32_t cookie = 0;
       float cookieUp[3] = {0, 0, 1}, cookieTan = 0;
+      // Scale of its light in volumetric media (the light's volumetricRadianceScale).
+      float volumetric = 1;
       // Emitter of an instance the host identified as dynamic
       // (remixapi_InstanceIdentityEXT): kept in the light tree's dynamic part.
       bool dynamic = false;

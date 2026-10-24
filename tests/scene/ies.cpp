@@ -151,5 +151,38 @@ int main() {
     cookie.fovDegrees = 180;
     rejected("A cookie spanning 180 degrees was accepted");
   }
+  {
+    // A light's volumetric radiance scale reaches its emitter; negative
+    // scales are rejected.
+    remix::NativeResources resources;
+    remixapi_LightInfoSphereEXT sphere{};
+    sphere.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_SPHERE_EXT;
+    sphere.radius = .1f;
+    sphere.volumetricRadianceScale = 1;
+    remixapi_LightInfo info{};
+    info.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO;
+    info.pNext = &sphere;
+    info.hash = 1;
+    info.radiance = {10, 10, 10};
+    remixapi_LightHandle plain{}, scaled{};
+    resources.createLight(info, plain);
+    sphere.volumetricRadianceScale = 4;
+    info.hash = 2;
+    resources.createLight(info, scaled);
+    resources.drawLight(plain);
+    resources.drawLight(scaled);
+    for (const auto &light : resources.sphereLights())
+      require(approx(light.volumetric, light.id == 2 ? 4 : 1), "A light's volumetric scale was not its own");
+    bool failed = false;
+    try {
+      sphere.volumetricRadianceScale = -1;
+      info.hash = 3;
+      remixapi_LightHandle negative{};
+      resources.createLight(info, negative);
+    } catch (...) {
+      failed = true;
+    }
+    require(failed, "A negative volumetric scale was accepted");
+  }
   return 0;
 }

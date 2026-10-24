@@ -226,6 +226,7 @@ namespace remix::config {
         TRACE(taa, 0, 1);
         TRACE(waterIndirectReuse, 0, 1);
         TRACE(caustics, 0, 1);
+        TRACE(causticsFromNormals, 0, 1);
         TRACE(causticsStrength, 0, 1);
         TRACE(causticsScale, .01, 100);
         TRACE(causticsSpeed, 0, 10);

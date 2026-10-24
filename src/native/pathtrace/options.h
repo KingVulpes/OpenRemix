@@ -240,6 +240,9 @@ namespace remix {
     // between its lines get; the cell size and the depth below the surface
     // at which they are fully formed in meters (see sceneScale).
     bool caustics = true;
+    // Caustics from the water's normal map where it has one: its waves focus
+    // the light (strength scales the bending). Off: the web everywhere.
+    bool causticsFromNormals = true;
     float causticsStrength = .4f, causticsScale = .6f, causticsSpeed = .5f, causticsDepth = .5f;
     bool translucencyDenoiser = true, translucencyReuse = true;
     bool pbrLocalReuse = true; // Experimental previous-frame secondary local lighting.

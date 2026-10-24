@@ -128,6 +128,10 @@ namespace remix {
         ImGui::SetTooltip("Light through water draws a moving web of caustics on what it lights below\n"
                           "(an approximation: water materials that ask for it, and Source's water).");
       ImGui::BeginDisabled(!options.caustics);
+      ui::Checkbox("Caustics from the water's normal map", &options.causticsFromNormals);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Where the water has a normal map, its waves focus the light as they would bend it\n"
+                          "(strength scales the bending). Off, or without a map: a moving web.");
       ui::SliderFloat("Caustics strength", &options.causticsStrength, 0.f, 1.f, "%.2f");
       ui::SliderFloat("Caustics cell size (m)", &options.causticsScale, .05f, 4.f, "%.2f");
       ui::SliderFloat("Caustics speed", &options.causticsSpeed, 0.f, 3.f, "%.2f");

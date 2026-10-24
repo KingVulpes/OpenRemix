@@ -671,7 +671,9 @@ namespace remix {
       const auto half = [](float value) { return uint64_t(trace::detail::halfBits(value)); };
       frame.caustics = half(std::min(options.causticsStrength, 1.f)) |
                        half(options.causticsScale / options.sceneScale) << 16 |
-                       half(options.causticsSpeed) << 32 | half(options.causticsDepth / options.sceneScale) << 48;
+                       half(options.causticsSpeed) << 32 |
+                       half((options.causticsFromNormals ? 1.f : -1.f) * (options.causticsDepth / options.sceneScale))
+                           << 48;
     }
     frame.config[1] = options.bounces;
     frame.target[0] = extent.width;

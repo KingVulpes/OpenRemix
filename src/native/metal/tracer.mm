@@ -476,10 +476,14 @@ namespace remix::metal {
                             MTLAccelerationStructureInstanceOptionTriangleFrontFacingWindingCounterClockwise);
           instance.options = MTLAccelerationStructureInstanceOptions(remix::trace::instanceFlags(input, faceCulling));
           // pathtrace/tlas.cpp: view models only under their own mask (camera
-          // rays), blended layers under theirs (secondary rays may skip them).
-          instance.mask = input.viewModel ? remix::trace::viewModelInstanceMask
-                          : input.blended ? remix::trace::blendedInstanceMask
-                                          : remix::trace::allInstancesMask;
+          // rays), reflection-only instances under theirs (bounce rays), blended
+          // layers under theirs (secondary rays may skip them), decals under
+          // theirs (shadow rays pass them).
+          instance.mask = input.viewModel        ? remix::trace::viewModelInstanceMask
+                          : input.reflectionOnly ? remix::trace::reflectionOnlyInstanceMask
+                          : input.blended        ? remix::trace::blendedInstanceMask
+                          : input.decal          ? remix::trace::decalInstanceMask
+                                                 : remix::trace::allInstancesMask;
           instance.intersectionFunctionTableOffset = 0;
           instance.accelerationStructureIndex = entry->second;
           instance.userID = input.customIndex;
@@ -797,16 +801,19 @@ namespace remix::metal {
     const bool roulette = rouletteActive;
     frame.pathConfig[0] = roulette;
     frame.pathConfig[1] = options.rouletteMinBounces;
-    // Sheet flags (1 traced indirect, 2 local lights) and the secondary ray
-    // mask: bounce rays may skip blended layers.
+    // Sheet flags (1 traced indirect, 2 local lights) and the sky rays at a
+    // path's first surface (bits 8-15) and a sheet's (bits 16-23).
     frame.pathConfig[2] = (options.translucentIndirect ? 1u : 0u) | (options.sheetLocalLights ? 2u : 0u) |
-                          (options.layerReuse ? 4u : 0u) | (options.shortSheetPaths ? 8u : 0u);
+                          (options.layerReuse ? 4u : 0u) | (options.shortSheetPaths ? 8u : 0u) |
+                          std::clamp(options.skySamples, 1u, 16u) << 8 |
+                          std::clamp(std::min(options.sheetSkySamples, options.skySamples), 1u, 16u) << 16;
     // Bits 0-7: the instance mask of shadow, light-visibility and bounce rays
     // (view models never; blended layers unless skipBlendedSecondaryRays is
     // off). Bit 8: a traced view model is in the frame (camera rays look for
     // it first).
     frame.pathConfig[3] = (options.skipBlendedSecondaryRays ? 0xffu & ~uint32_t(remix::trace::blendedInstanceMask) : 0xffu) &
-                          ~uint32_t(remix::trace::viewModelInstanceMask);
+                          ~uint32_t(remix::trace::viewModelInstanceMask) &
+                          ~uint32_t(remix::trace::reflectionOnlyInstanceMask);
     if (prepared.viewModel)
       frame.pathConfig[3] |= 0x100u;
     std::copy_n(resources.cameraMedium().data(), 4, frame.cameraMedium);
@@ -1253,7 +1260,7 @@ namespace remix::metal {
       const auto fragmentPush = library(stable ? Stage::depthFrag : Stage::gbufferFrag).push;
       for (size_t i = 0; i < tables.primaryCount(); ++i) {
         const auto &draw = tables.primary(i);
-        if ((stable && draw.blended) || draw.viewModel != (part == 1))
+        if ((stable && draw.blended) || draw.viewModel != (part == 1) || draw.reflectionOnly)
           continue;
         PrimaryPush push{draw.model,
                          {stable ? 0.f : jitter[0], stable ? 0.f : jitter[1]},
@@ -1491,7 +1498,8 @@ namespace remix::metal {
                                          options.sharcMaxUpdatePaths)
         ++sharc.downscale;
     frame.sharcConfig[0] = uint32_t(hasReceivers) | uint32_t(options.sharcDynamicSurfaces) << 1 |
-                           uint32_t(options.sharcGlossySurfaces) << 2;
+                           uint32_t(options.sharcGlossySurfaces) << 2 |
+                           uint32_t(!options.sharcFootprintTest) << 3;
     frame.sharcConfig[1] = sharc.stats.capacity;
     frame.sharcConfig[2] = sharc.downscale;
     frame.sharcConfig[3] = options.sharcDebug;

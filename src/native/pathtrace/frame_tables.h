@@ -99,7 +99,10 @@ namespace remix::trace::detail {
     if (material.normalEncoding == 5) {
       for (unsigned i = 0; i < 3; ++i)
         decodeOut[1 + i] = detail::halfBits(material.scroll[2 * i]) | detail::halfBits(material.scroll[2 * i + 1]) << 16;
-      normal = material.scrollLayers == 3 ? 48 : 16;
+      // Two-channel maps (BC5) reconstruct Z here too (bit 0), as other encodings do:
+      // without it Z read 0 and the water's normals lay flat along its surface.
+      normal = (material.scrollLayers == 3 ? 48 : 16) |
+               uint32_t(material.normalTexture && material.normalTexture->pixels.twoChannel);
       return;
     }
     normal = material.normalEncoding == 1   ? 2

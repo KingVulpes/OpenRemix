@@ -508,9 +508,23 @@ vec3 localLighting(Hit hit,uint state,uint samples,out float lightDistance,bool 
   // whose light the cell rates unlikely but is near lit about one pixel in
   // K with a large weight, cell-sized splotches the denoiser kept.
   uint pool=useGuiding||!regirLookup?regirNone:regirPool(hit.p,state);
+  // The tree (or pool) variates of the samples that are not guided are
+  // stratified, (j + xi)/walked: samples no longer pile onto one bright
+  // cluster by chance. Each keeps its marginal distribution, so every
+  // estimate and PDF is as before; only their sum varies less.
+  uint guideSeed=hash(state^0x67756964u),walkSeed=hash(state^0x7374726au),walked=0,stratum=0;
   for(uint sampleIndex=0;sampleIndex<adaptiveSamples;++sampleIndex) {
-    bool guided=guideMix>0&&lightRandom(state)<guideMix;
-    uint index=0;float selectionPdf=1,u=lightRandom(state);
+    uint guideState=hash(guideSeed+sampleIndex);
+    walked+=guideMix>0&&lightRandom(guideState)<guideMix?0u:1u;
+  }
+  for(uint sampleIndex=0;sampleIndex<adaptiveSamples;++sampleIndex) {
+    uint guideState=hash(guideSeed+sampleIndex);
+    bool guided=guideMix>0&&lightRandom(guideState)<guideMix;
+    uint index=0;float selectionPdf=1,u=0;
+    if(!guided) {
+      uint strataState=hash(walkSeed+stratum*0x9e3779b9u);
+      u=min((float(stratum++)+lightRandom(strataState))/float(walked),.99999994);
+    }
     if(guided) {
       if(preferredPdf<0)preferredPdf=lightBasePdf(nodes,hit,preferred);
       index=preferred;selectionPdf=preferredPdf;

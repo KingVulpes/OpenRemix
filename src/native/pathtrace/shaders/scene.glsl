@@ -94,6 +94,7 @@ layout(set=0,binding=3,std140) uniform Frame {
   uint64_t iesProfiles; // IES profiles (scene/ies.h): 256 floats each
   uvec4 skyGuideConfig; // slot capacity, cells per world unit (float bits), guided share (float bits), active
   mat4 inverseCameraRelative; // camera rays: world = point.xyz / point.w + eye.xyz
+  uint64_t localProbeRead, localProbeWrite; // local occlusion probes: last frame's (0: none), this frame's
 } frame;
 // Instance mask bit of view models (pathtrace/tlas_policy.h).
 const uint viewModelInstanceMask=8u;

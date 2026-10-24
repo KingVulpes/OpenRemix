@@ -187,8 +187,13 @@ namespace remix::trace::detail {
     // the ray directions to rounding far from the origin (near geometry such
     // as a view model jitters as the camera moves).
     Matrix inverseCameraRelative{};
+    // Local occlusion probes (pathtrace.comp, localOcclusionConfidence): per
+    // pixel, the arrived share of its local light, last frame's (0: none)
+    // and this frame's.
+    uint64_t localProbeRead = 0, localProbeWrite = 0;
   };
-  static_assert(sizeof(Frame) == 1168 && offsetof(Frame, inverseCameraRelative) == 1104 &&
+  static_assert(sizeof(Frame) == 1184 && offsetof(Frame, localProbeRead) == 1168 &&
+                offsetof(Frame, inverseCameraRelative) == 1104 &&
                 offsetof(Frame, skyGuideRead) == 1064 && offsetof(Frame, skyGuideConfig) == 1088 && offsetof(Frame, volumeGrid) == 912 && offsetof(Frame, volumePrevious) == 1024 && offsetof(Frame, sparseList) == 880 && offsetof(Frame, sparseConfig) == 896 && offsetof(Frame, cameraCull) == 864 && offsetof(Frame, cutConfig) == 816 && offsetof(Frame, orcaParams) == 800 && offsetof(Frame, regirConfig) == 752 && offsetof(Frame, restirCurrent) == 656 && offsetof(Frame, visibilityNodes) == 592 && offsetof(Frame, pathConfig) == 528 &&
                 offsetof(Frame, firefly) == 512 && offsetof(Frame, indirectResults) == 496 &&
                 offsetof(Frame, lightGuideRead) == 384 && offsetof(Frame, lightGuideConfig) == 400 &&
@@ -600,6 +605,14 @@ namespace remix {
       std::vector<std::pair<uint64_t, uint32_t>> keys;
     } restir;
     void configureRestir(Frame &frame, const TraceOptions &options, VkExtent2D extent);
+    // Local occlusion probes (restir.cpp; pathtrace.comp, localOcclusionConfidence):
+    // last frame's and this frame's, ping-pong.
+    struct LocalProbes {
+      std::unique_ptr<Buffer> buffers[2];
+      uint32_t writeIndex = 0, width = 0, height = 0;
+      bool valid = false;
+    } localProbes;
+    void configureLocalProbes(Frame &frame, const TraceOptions &options, VkExtent2D extent);
     // Presampled light pools per world cell (regir.cpp, regir.glsl).
     struct Regir {
       static constexpr uint32_t capacity = 1u << 15, slots = 64;

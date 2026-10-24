@@ -335,6 +335,18 @@ void localDirection(vec3 toward,vec3 contribution) {
   localLightDirection+=vec4(toward*(weight*inversesqrt(length2)),weight);
 #endif
 }
+// The primary vertex's local light this frame with and without its shadow
+// rays (luminance of the samples' estimates): their ratio is the share of the
+// light that arrived. The next frame compares it (localOcclusionConfidence,
+// pathtrace.comp). Recorded while the pass that compares it sets localProbing.
+float localShadowed=0,localUnshadowed=0;bool localProbing=false;
+void noteLocalProbe(vec3 visibility,vec3 estimate) {
+#ifdef TEMPORAL
+  float unshadowed=localLuminance(estimate);
+  if(!localProbing||!(unshadowed>0)||!(unshadowed<1e30))return;
+  localUnshadowed+=unshadowed;localShadowed+=localLuminance(estimate*visibility);
+#endif
+}
 // Stratified light candidates for very small sets (RT Gems II, ch. 22-23).
 // One sphere direction per light, then a weighted reservoir and ONE visibility
 // query. E[physical / p] is the sum of these candidates; their expectation is
@@ -365,6 +377,7 @@ vec3 smallLocalLighting(LightNodes nodes,LightEmitters emitters,Hit hit,uint sta
     float pdf=(1-mixWeight)*localLuminance(selected.physical)/total+(selectedIndex==preferred?mixWeight:0);
     vec3 estimate=selected.physical/pdf;
     vec3 visibility=localVisibility(offsetRay(hit.p,hit.ng),selected.endpoint);
+    noteLocalProbe(visibility,estimate);
     vec3 contribution=estimate*visibility,specularContribution=selected.specular/pdf*visibility;
     clampLighting(hit,contribution,specularContribution,threshold);
     result+=contribution;specular+=specularContribution;
@@ -443,6 +456,7 @@ vec3 resampledLocalLighting(LightNodes nodes,LightEmitters emitters,Hit hit,uint
     if(total<=0)continue;
     vec3 estimate=selected.physical*(total/(float(count)*localLuminance(selected.physical)));
     vec3 visibility=localVisibility(offsetRay(hit.p,hit.ng),selected.endpoint);
+    noteLocalProbe(visibility,estimate);
     vec3 contribution=estimate*visibility,specularContribution=selected.specular*(total/(float(count)*localLuminance(selected.physical)))*visibility;
     clampLighting(hit,contribution,specularContribution,threshold);
     result+=contribution;specular+=specularContribution;
@@ -672,6 +686,7 @@ vec3 localLighting(Hit hit,uint state,uint samples,out float lightDistance,bool 
     if(localLuminance(physical)<=0)continue;
     vec3 estimate=physical/selectionPdf;
     vec3 visibility=localVisibility(offsetRay(hit.p,hit.ng),endpoint);
+    noteLocalProbe(visibility,estimate);
     vec3 contribution=estimate*visibility,specularContribution=physicalSpecular/selectionPdf*visibility;
     clampLighting(hit,contribution,specularContribution,threshold);
     result+=contribution;specular+=specularContribution;

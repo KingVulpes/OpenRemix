@@ -964,6 +964,7 @@ namespace remix {
     configureLightGuiding(frame, options);
     configureSkyGuiding(frame, options);
     configureRestir(frame, options, extent);
+    configureLocalProbes(frame, options, extent);
     configureRegir(frame, options);
     configureOrca(frame, options);
     if (options.pbrLocalReuse) {

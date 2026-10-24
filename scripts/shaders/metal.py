@@ -9,7 +9,7 @@ buffer(set); embedded.h maps every (set, binding) of a stage to its argument buf
 host binds resources by their Vulkan set and binding. --check compares the recorded SPIR-V digests
 only and needs no tools.
 """
-import hashlib, json, os, re, struct, subprocess, tempfile
+import hashlib, json, os, re, struct, subprocess, tempfile, threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import generate
@@ -86,20 +86,27 @@ for index, identifier in enumerate(NRD_IDENTIFIERS):
 NONE = 0xffff
 
 
+# process() translates stages on a thread pool: every worker may ask first.
+_cache_lock = threading.Lock()
+
+
 def spirv(backend, stage, cache={}):
     """The SPIR-V a Vulkan backend embeds for one stage."""
     if backend == 'nrd':
-        if backend not in cache:
-            text = (ROOT / 'src/native/denoise/shaders/nrd_embedded.h').read_text()
-            arrays = dict(re.findall(r'inline constexpr uint32_t (shader\d+)\[\] = \{(.*?)\};', text, re.S))
-            cache[backend] = []
-            for name in re.findall(r'\{"[^"]+", (shader\d+), sizeof', text):
-                words = [int(word, 16) for word in re.findall(r'0x[0-9a-fA-F]+', arrays[name])]
-                cache[backend].append(struct.pack('<' + 'I' * len(words), *words))
+        with _cache_lock:
+            if backend not in cache:
+                text = (ROOT / 'src/native/denoise/shaders/nrd_embedded.h').read_text()
+                arrays = dict(re.findall(r'inline constexpr uint32_t (shader\d+)\[\] = \{(.*?)\};', text, re.S))
+                stages = []
+                for name in re.findall(r'\{"[^"]+", (shader\d+), sizeof', text):
+                    words = [int(word, 16) for word in re.findall(r'0x[0-9a-fA-F]+', arrays[name])]
+                    stages.append(struct.pack('<' + 'I' * len(words), *words))
+                cache[backend] = stages
         return cache[backend][int(stage)]
     if backend in generate.OPTIMIZED:
-        if backend not in cache:
-            cache[backend] = generate.decompressed_stages(backend)
+        with _cache_lock:
+            if backend not in cache:
+                cache[backend] = generate.decompressed_stages(backend)
         return cache[backend][stage]
     text = (ROOT / 'src/native' / backend / 'shaders/embedded.h').read_text()
     match = re.search(r'\b' + stage + r'Shader\[\] = \{(.*?)\};', text, re.S)

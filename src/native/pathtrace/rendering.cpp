@@ -620,6 +620,7 @@ namespace remix {
     frame.sun[3] = localDebug ? (std::strcmp(localDebug, "budget") == 0 ? 2.f : 1.f) : 0.f;
     std::copy_n(light.direction, 3, frame.direction);
     std::copy_n(light.radiance, 3, frame.radiance);
+    frame.radiance[3] = light.volumetric; // the sun's scale in volumetric media (volume.glsl)
     if (options.sky)
       std::copy_n(resources.skyRadiance().data(), 3, frame.skyRadiance);
     if (options.sky && resources.dome().enabled) {

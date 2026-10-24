@@ -183,6 +183,18 @@ int main() {
       failed = true;
     }
     require(failed, "A negative volumetric scale was accepted");
+    // The sun's scale reaches the frame with its light.
+    remixapi_LightInfoDistantEXT sun{};
+    sun.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_DISTANT_EXT;
+    sun.direction = {0, 0, -1};
+    sun.angularDiameterDegrees = .5f;
+    sun.volumetricRadianceScale = 3;
+    info.pNext = &sun;
+    info.hash = 4;
+    remixapi_LightHandle sunHandle{};
+    resources.createLight(info, sunHandle);
+    resources.drawLight(sunHandle);
+    require(approx(resources.light().volumetric, 3), "The sun's volumetric scale was lost");
   }
   return 0;
 }

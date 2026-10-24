@@ -204,6 +204,7 @@ namespace remix {
       type = v->sType;
       z = vec(v->direction);
       angle = v->angularDiameterDegrees;
+      volumetric = v->volumetricRadianceScale;
     } else if (ext(REMIXAPI_STRUCT_TYPE_LIGHT_INFO_DOME_EXT)) {
       // Dome data is handled below using the same retained light resource.
       type = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_DOME_EXT;
@@ -333,6 +334,7 @@ namespace remix {
       definition.distant.angularDiameterDegrees = angle;
       std::copy(d.begin(), d.end(), definition.distant.direction);
       std::copy(radiance.begin(), radiance.end(), definition.distant.radiance);
+      definition.distant.volumetric = volumetric;
     } else if (type == REMIXAPI_STRUCT_TYPE_LIGHT_INFO_SPHERE_EXT) {
       prototype.radius = radius * std::max({length(x), length(y), length(z)});
       if (prototype.radius > 0)

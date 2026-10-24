@@ -247,6 +247,8 @@ namespace remix {
       float direction[3] = {0, -1, 0}; // Direction in which light travels.
       float radiance[3] = {};
       float angularDiameterDegrees = 0;
+      // Scale of its light in volumetric media (the light's volumetricRadianceScale).
+      float volumetric = 1;
       bool isDistant = false;
       bool operator==(const DistantLight &) const = default;
     };

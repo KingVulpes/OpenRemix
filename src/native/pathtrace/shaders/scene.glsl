@@ -38,7 +38,7 @@ layout(set=0,binding=3,std140) uniform Frame {
   mat4 camera;
   vec4 eye;
   vec4 lightDirection;
-  vec4 lightRadiance;
+  vec4 lightRadiance; // w: the sun's scale in volumetric media (volume.glsl)
   uvec4 config; // samples, indirect bounces, random sequence, accumulated frames
   uvec4 target; // width, height, structure mask, raster primary visibility
   vec4 jitter; // primary offset; z water reuse; w blue-noise sun/local bits

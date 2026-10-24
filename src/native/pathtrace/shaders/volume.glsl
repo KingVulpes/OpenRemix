@@ -223,7 +223,7 @@ void volumeUpdate(uint index) {
     float count=min(stored.w+1,32);
     stored=vec4(mix(stored.rgb,sky,1/count),count);
     cells.data[skyFirst+total]=stored;
-    cells.data[total]=vec4(stored.rgb+.25*frame.lightRadiance.rgb,count);
+    cells.data[total]=vec4(stored.rgb+.25*frame.lightRadiance.rgb*frame.lightRadiance.w,count);
     return;
   }
   uint level=index/perLevel,local=index%perLevel;
@@ -270,7 +270,7 @@ void volumeUpdate(uint index) {
       vec3 t=normalize(cross(abs(centre.z)<.999?vec3(0,0,1):vec3(0,1,0),centre));
       direction=normalize(centre+frame.sun.x*sqrt(u)*(cos(angle)*t+sin(angle)*cross(centre,t)));
     }
-    light+=.25*frame.lightRadiance.rgb*shadow(p,direction);
+    light+=.25*frame.lightRadiance.rgb*frame.lightRadiance.w*shadow(p,direction);
   }
   // The environment: two uniform directions (their density cancels the phase).
   for(uint i=0;i<2u;++i) {

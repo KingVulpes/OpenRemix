@@ -231,9 +231,9 @@ namespace remix::denoise {
         // PBR paths select one lobe per pixel (pathtrace.comp, primaryLobe):
         // the skipped lobe has hit distance 0, which REBLUR reconstructs from
         // its 3x3 neighbours, and NRD requires a prepass for such signals.
-        // The radii stay below NRD's GI defaults (30 and 50 pixels): this
-        // signal also carries direct local light (addPbrLocal), whose cast
-        // shadows a wide prepass spreads.
+        // The radii stay below NRD's GI defaults (30 and 50 pixels): the
+        // specular signal also carries direct local light
+        // (addPbrLocalSpecular), whose cast shadows a wide prepass spreads.
         settings.hitDistanceReconstructionMode = nrd::HitDistanceReconstructionMode::AREA_3X3;
         settings.diffusePrepassBlurRadius = 4.f;
         settings.specularPrepassBlurRadius = 8.f;

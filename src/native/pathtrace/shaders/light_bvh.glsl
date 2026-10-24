@@ -326,7 +326,7 @@ LocalCandidate localCandidate(LightEmitter light,Hit hit,inout uint state,bool a
 float localLuminance(vec3 value) { return dot(value,vec3(.2126,.7152,.0722)); }
 // Luminance-weighted direction (xyz) and weight (w) of the local-light samples
 // at the opaque primary vertex: the SH direction of their contribution to the
-// denoised PBR signal (addPbrLocal).
+// denoised PBR specular signal (addPbrLocalSpecular).
 vec4 localLightDirection=vec4(0);
 void localDirection(vec3 toward,vec3 contribution) {
 #ifdef TEMPORAL

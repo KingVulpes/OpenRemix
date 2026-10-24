@@ -204,14 +204,24 @@ vec3 localVisibility(vec3 origin,vec3 endpoint) {
 // A sphere candidate includes solid-angle weighting, but not discrete selection.
 struct LocalCandidate { vec3 physical; vec3 specular; vec3 endpoint; float distance; };
 #include "triangle_sampling.glsl"
+// IES profile (scene/ies.h): 256 samples from 0 to 180 degrees off the axis.
+layout(buffer_reference,std430,buffer_reference_align=4) readonly buffer IesProfiles { float bins[]; };
+float iesProfile(float profile,float cosine) {
+  if(profile<.5||frame.iesProfiles==0)return 1;
+  float x=acos(clamp(cosine,-1,1))*(255/3.14159265359);
+  uint i=min(uint(x),254u),base=(uint(profile+.5)-1u)*256u+i;
+  IesProfiles table=IesProfiles(frame.iesProfiles);
+  return mix(table.bins[base],table.bins[base+1],x-float(i));
+}
 float emitterShaping(LightEmitter light,vec3 outgoing) {
   float cosine=dot(light.directionCone.xyz,outgoing);
   float outer=light.directionCone.w;
-  if(outer<=-1)return light.shaping.y>0?pow(max(cosine,0),light.shaping.y):1;
+  float ies=iesProfile(light.shaping.z,cosine);
+  if(outer<=-1)return ies*(light.shaping.y>0?pow(max(cosine,0),light.shaping.y):1);
   if(cosine<=outer)return 0;
   float inner=cos(acos(clamp(outer,-1,1))*(1-clamp(light.shaping.x,0,1)));
   float edge=inner>outer?smoothstep(outer,inner,cosine):1;
-  return edge*(light.shaping.y>0?pow(max(cosine,0),light.shaping.y):1);
+  return ies*edge*(light.shaping.y>0?pow(max(cosine,0),light.shaping.y):1);
 }
 LocalCandidate triangleCandidate(LightEmitter light,Hit hit,inout uint state,bool angular,vec2 blue,uint stream) {
   LocalCandidate result;result.physical=result.specular=vec3(0);result.endpoint=hit.p;result.distance=0;

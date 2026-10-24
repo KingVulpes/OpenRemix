@@ -25,6 +25,21 @@ namespace remix {
         ImGui::TextWrapped("%s", shadows.unavailableReason);
       ImGui::BeginDisabled(rrActive);
       ui::Checkbox("Denoise local lighting", &options.localDenoiser);
+      ImGui::BeginDisabled(!options.localDenoiser);
+      int localHistory = int(options.localHistoryFrames);
+      if (ui::SliderInt("Local light history", &localHistory, 2, 64))
+        options.localHistoryFrames = uint32_t(localHistory);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Frames REBLUR averages local lighting over. Longer is cleaner; moving shadows\n"
+                          "and switched lights take longer to settle.");
+      ui::SliderFloat("Local anti-lag sigma", &options.localAntilagSigma, .1f, 16.f, "%.2f",
+                      ImGuiSliderFlags_Logarithmic);
+      ui::SliderFloat("Local anti-lag sensitivity", &options.localAntilagSensitivity, .1f, 16.f, "%.2f",
+                      ImGuiSliderFlags_Logarithmic);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("REBLUR anti-lag for local lighting: lower values drop history sooner where the\n"
+                          "light changed (faster shadows, more noise right after a change).");
+      ImGui::EndDisabled();
       ImGui::EndDisabled();
       ImGui::BeginDisabled(fsr.active);
       ui::Checkbox("Native resolution TAA", &options.taa);

@@ -427,6 +427,7 @@ namespace remix::metal {
     }
     staged.history.end();
     staged.hasEmissive = lights.size() > sphereCount;
+    staged.combined.setClusterSize(options.emissiveClusterSize);
     staged.combined.update(std::move(lights));
     return frame;
   }
@@ -743,11 +744,14 @@ namespace remix::metal {
       const bool sunNoise = options.blueNoiseShadows && frame.sun[1] && frame.sun[0] > 0;
       const bool localNoise = options.blueNoiseLocalLights && frame.localConfig[0] && denoiser && c.reblur &&
                               c.localDenoise && !options.accumulate;
-      if (sunNoise || localNoise) {
+      // First-surface bounce and sky directions: a repeating 32-frame pattern
+      // is for the denoiser, never for a progressive reference.
+      const bool skyNoise = options.blueNoiseSky && denoiser && c.reblur && !options.accumulate;
+      if (sunNoise || localNoise || skyNoise) {
         if (!blueNoise)
           blueNoise = buffer(remix::trace::blueNoiseSamples, sizeof(remix::trace::blueNoiseSamples));
         frame.blueNoise = blueNoise->address;
-        frame.jitter[3] = float(uint32_t(sunNoise) | uint32_t(localNoise) << 1);
+        frame.jitter[3] = float(uint32_t(sunNoise) | uint32_t(localNoise) << 1 | uint32_t(skyNoise) << 2);
       }
     }
     frame.sun[2] = frame.sun[1] != 0 ? float(options.shadowDebug) : 0;

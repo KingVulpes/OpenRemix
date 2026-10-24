@@ -82,6 +82,8 @@ namespace {
 //   screenshot.request presented frame to screenshot.png
 //   timings.request    GPU pass timings (rtx.native.gpuPassTimers) to timings.txt
 //   pipelines.request  every pipeline compile and cache save to pipelines.txt
+//   lighttree.request  the next frame's combined light tree to lighttree.bin
+//                      (LightBvh::save)
 //   sequence.request   N (default 60) consecutive captures to sequence/NNN.png,
 //                      one per present while the previous one has completed
 // Each request file is deleted when served.
@@ -201,6 +203,10 @@ void serviceDevRequests() {
       text = g_runtime.pipelineReport();
     }
     std::ofstream(directory / "pipelines.txt") << text;
+  }
+  if (take("lighttree.request", nullptr)) {
+    std::lock_guard lock(remix::scene::g_lightTreeSaveMutex);
+    remix::scene::g_lightTreeSavePath = std::filesystem::absolute(directory / "lighttree.bin", ec).string();
   }
   if (take("timings.request", nullptr)) {
     std::string text;

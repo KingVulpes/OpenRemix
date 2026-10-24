@@ -1534,6 +1534,13 @@ namespace remix {
     const auto split = Clock::now();
     staged.combined.setClusterSize(options.emissiveClusterSize);
     staged.combined.update(lights);
+    {
+      std::lock_guard lock(scene::g_lightTreeSaveMutex);
+      if (!scene::g_lightTreeSavePath.empty()) {
+        staged.combined.save(scene::g_lightTreeSavePath.c_str());
+        scene::g_lightTreeSavePath.clear();
+      }
+    }
     const auto treed = Clock::now();
     staged.visibility.update(resources.visibilityPartition(), staged.combined,
                              options.lightVisibilityCulling && options.localLights, .1f / options.sceneScale);

@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <limits>
 #include <numeric>
 #include <tuple>
@@ -921,6 +922,17 @@ namespace remix::scene {
       return 1;
     const auto t = std::clamp((distanceSquared / (range * range) - .5625) * (16. / 7.), 0., 1.);
     return (1 - t) * (1 - t) * (1 + 2 * t);
+  }
+
+  bool LightBvh::save(const char *path) const {
+    FILE *out = std::fopen(path, "wb");
+    if (!out)
+      return false;
+    const uint32_t counts[2] = {uint32_t(m_nodes.size()), uint32_t(m_emitters.size())};
+    const bool written = std::fwrite(counts, sizeof(counts), 1, out) == 1 &&
+                         std::fwrite(m_nodes.data(), sizeof(LightNode), m_nodes.size(), out) == m_nodes.size() &&
+                         std::fwrite(m_emitters.data(), sizeof(LightEmitter), m_emitters.size(), out) == m_emitters.size();
+    return std::fclose(out) == 0 && written;
   }
 
   double LightBvh::weight(const LightNode &node, const float position[3], const float normal[3],

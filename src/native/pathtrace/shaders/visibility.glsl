@@ -57,12 +57,17 @@ float causticFocus(Surface s,uint triangle,vec2 bary,float depth,float strength)
   // between thin lines. The light keeps at least 1 - strength of what passes.
   return clamp(1/max(abs(determinant(mat2(1)+bend*slopeGradient)),1e-3),1-strength,4.);
 }
+// Contrast raises either kind to a power: past 1 the lines brighten and the
+// cells darken further, whatever the water's waves would really do.
 float causticTint(Surface s,uint triangle,vec2 bary,vec3 p,vec3 n,float depth) {
   vec2 a=unpackHalf2x16(uint(frame.caustics)),b=unpackHalf2x16(uint(frame.caustics>>32));
-  if(a.x<=0)return 1;
+  // The low half: strength (8 bits) and contrast (8 bits, in 32nds).
+  uint low=uint(frame.caustics)&0xffffu;
+  float strength=float(low&255u)/255,contrast=float(low>>8)/32;
+  if(strength<=0)return 1;
   // Focus depth's sign bit: the web even where there is a normal map.
   bool fromNormals=(uint(frame.caustics>>48)&0x8000u)==0;
-  if(fromNormals&&s.pbrTextures.z!=0)return causticFocus(s,triangle,bary,depth,a.x);
+  if(fromNormals&&s.pbrTextures.z!=0)return min(pow(causticFocus(s,triangle,bary,depth,strength),contrast),8.);
   b.y=abs(b.y);
   if(a.y<=0)return 1;
   // A basis on the water plane, the same from either side of it.
@@ -74,7 +79,7 @@ float causticTint(Surface s,uint triangle,vec2 bary,vec3 p,vec3 n,float depth) {
   // Two webs drifting apart, the second finer and turned.
   float web=causticWeb(q,time,width);
   web=1-(1-web)*(1-.6*causticWeb(mat2(.8,-.6,.6,.8)*q*1.37+vec2(17.3,5.1),time*1.31+2.1,width));
-  return 1-a.x*focus*focus*(3-2*focus)*(1-web);
+  return pow(1-strength*focus*focus*(3-2*focus)*(1-web),contrast);
 }
 void queryVisibility(accelerationStructureEXT scene,vec3 origin,vec3 direction,inout VisibilityHit hit,bool anyOpaque) {
   rayQueryEXT query;

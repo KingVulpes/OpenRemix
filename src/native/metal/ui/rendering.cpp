@@ -132,6 +132,10 @@ namespace remix {
         ImGui::SetTooltip("Where the water has a normal map, its waves focus the light as they would bend it\n"
                           "(strength scales the bending). Off, or without a map: a moving web.");
       ui::SliderFloat("Caustics strength", &options.causticsStrength, 0.f, 1.f, "%.2f");
+      ui::SliderFloat("Caustics contrast", &options.causticsContrast, 0.f, 6.f, "%.2f");
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Exaggerates the caustics: past 1, brighter lines and darker cells\n"
+                          "(not physical; for water whose waves barely focus the light).");
       ui::SliderFloat("Caustics cell size (m)", &options.causticsScale, .05f, 4.f, "%.2f");
       ui::SliderFloat("Caustics speed", &options.causticsSpeed, 0.f, 3.f, "%.2f");
       ui::SliderFloat("Caustics focus depth (m)", &options.causticsDepth, 0.f, 4.f, "%.2f");

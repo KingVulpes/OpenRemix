@@ -131,9 +131,10 @@ namespace remix::trace::detail {
     uint32_t restirConfig[4] = {}; // candidates, spatial samples, temporal M cap, flags (1 initial visibility)
     float restirParams[4] = {};    // spatial radius (pixels), emitter count, reserved
     uint64_t regirRead = 0, regirWrite = 0, regirSlots = 0;
-    // Fake water caustics (visibility.glsl causticTint): half floats strength,
-    // cell size (world units) | speed, focus depth (world units; negative: the
-    // web even on water with a normal map); 0 off.
+    // Fake water caustics (visibility.glsl causticTint): strength (8 bits) and
+    // contrast (8 bits, 32nds), then half floats cell size (world units) |
+    // speed, focus depth (world units; negative: the web even on water with a
+    // normal map); 0 off.
     uint64_t caustics = 0;
     uint32_t regirConfig[4] = {}; // cell capacity, slots per cell, cells per world unit (float bits), active
     uint64_t orcaTable = 0, orcaReserved = 0;

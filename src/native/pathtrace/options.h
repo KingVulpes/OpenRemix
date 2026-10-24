@@ -244,6 +244,8 @@ namespace remix {
     // the light (strength scales the bending). Off: the web everywhere.
     bool causticsFromNormals = true;
     float causticsStrength = .4f, causticsScale = .6f, causticsSpeed = .5f, causticsDepth = .5f;
+    // Raises the caustics to a power: past 1, brighter lines and darker cells.
+    float causticsContrast = 1;
     bool translucencyDenoiser = true, translucencyReuse = true;
     bool pbrLocalReuse = true; // Experimental previous-frame secondary local lighting.
     bool sky = true;

@@ -669,7 +669,9 @@ namespace remix {
     }
     if (options.caustics && options.causticsStrength > 0 && options.causticsScale > 0) {
       const auto half = [](float value) { return uint64_t(trace::detail::halfBits(value)); };
-      frame.caustics = half(std::min(options.causticsStrength, 1.f)) |
+      const uint64_t strength = uint64_t(std::lround(std::clamp(options.causticsStrength, 0.f, 1.f) * 255));
+      const uint64_t contrast = uint64_t(std::lround(std::clamp(options.causticsContrast, 0.f, 7.96875f) * 32));
+      frame.caustics = (strength | contrast << 8) |
                        half(options.causticsScale / options.sceneScale) << 16 |
                        half(options.causticsSpeed) << 32 |
                        half((options.causticsFromNormals ? 1.f : -1.f) * (options.causticsDepth / options.sceneScale))

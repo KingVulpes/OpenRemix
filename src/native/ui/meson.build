@@ -1,5 +1,6 @@
 ui_sources = files(
   'debug_ui.cpp',
+  'menu_shortcut.cpp',
   'panel.cpp',
   'rendering.cpp',
   'lighting.cpp',

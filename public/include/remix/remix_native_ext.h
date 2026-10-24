@@ -994,6 +994,10 @@ typedef struct remixapi_WindowMetrics {
 // Events include ImGui-captured input, allowing application UI shortcuts. Clients
 // must honor WindowState.guiWantsKeyboard/guiWantsMouse for gameplay dispatch.
 // Existing state polling APIs remain independent and exclude captured input.
+// The panel's shortcut is the runtime's (Alt+X unless the user sets another in
+// the panel's header): remixapi_PumpEvents opens and closes the panel on it,
+// and its key events and text reach neither ImGui nor this queue. Clients need
+// no key of their own; GetUIState reports the panel.
 typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_PollInputEvents)(
   remixapi_InputEvent* events, uint32_t capacity, uint32_t* out_count);
 typedef remixapi_ErrorCode (REMIXAPI_PTR *PFN_remixapi_SetTextInputEnabled)(remixapi_Bool enabled);

@@ -155,6 +155,8 @@ namespace remix {
       uint32_t compare = 7;
       float reference = 0;
       bool drawAlpha = false, translucent = false, transmission = false;
+      // Light through it draws caustics: translucent, with a normal map.
+      bool caustics = false;
       uint8_t filter = 0, wrapU = 1, wrapV = 1;
       uint8_t rows = 1, columns = 1, fps = 0;
       // Set once the handle stops resolving to this object (replaced or

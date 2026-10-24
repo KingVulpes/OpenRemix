@@ -688,6 +688,12 @@ namespace remix {
       const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
       frame.animationTime = float(std::fmod(seconds, 4096.0));
     }
+    if (options.caustics && options.causticsStrength > 0) {
+      const uint64_t strength = uint64_t(std::lround(std::clamp(options.causticsStrength, 0.f, 1.f) * 255));
+      const uint64_t contrast = uint64_t(std::lround(std::clamp(options.causticsContrast, 0.f, 7.96875f) * 32));
+      const uint64_t depth = uint64_t(trace::detail::halfBits(options.causticsDepth / options.sceneScale));
+      frame.caustics = strength | contrast << 8 | depth << 16;
+    }
     frame.config[1] = options.bounces;
     frame.target[0] = extent.width;
     frame.target[1] = extent.height;

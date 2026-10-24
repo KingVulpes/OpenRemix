@@ -239,6 +239,16 @@ namespace remix {
     float sunAngularDiameter = -1; // -1 inherits the distant light's diameter.
     bool rasterPrimary = true;
     bool waterIndirectReuse = true;
+    // Caustics: light through translucent surfaces with normal maps (water,
+    // bumpy glass) focused by their waves or bumps. Strength scales the
+    // bending (.4: as the material bends it); contrast raises the result to a
+    // power (past 1, brighter lines and darker gaps).
+    bool caustics = true;
+    float causticsStrength = .4f, causticsContrast = 1;
+    // Caustics fade in over this depth (meters, see sceneScale) behind the
+    // surface: shallow water and thin glass have none, as light has not yet
+    // been focused. 0: at once.
+    float causticsDepth = .5f;
     bool translucencyDenoiser = true, translucencyReuse = true;
     bool pbrLocalReuse = true; // Experimental previous-frame secondary local lighting.
     bool sky = true;

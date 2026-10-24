@@ -667,6 +667,12 @@ namespace remix {
       const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
       frame.animationTime = float(std::fmod(seconds, 4096.0));
     }
+    if (options.caustics && options.causticsStrength > 0 && options.causticsScale > 0) {
+      const auto half = [](float value) { return uint64_t(trace::detail::halfBits(value)); };
+      frame.caustics = half(std::min(options.causticsStrength, 1.f)) |
+                       half(options.causticsScale / options.sceneScale) << 16 |
+                       half(options.causticsSpeed) << 32 | half(options.causticsDepth / options.sceneScale) << 48;
+    }
     frame.config[1] = options.bounces;
     frame.target[0] = extent.width;
     frame.target[1] = extent.height;

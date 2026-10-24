@@ -123,6 +123,16 @@ namespace remix {
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Shares diffuse lighting across small flat water patches with TAA or FSR.\nEdges, "
                           "overlapping layers and raw reference rendering retain full sampling.");
+      ui::Checkbox("Water caustics", &options.caustics);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Light through water draws a moving web of caustics on what it lights below\n"
+                          "(an approximation: water materials that ask for it, and Source's water).");
+      ImGui::BeginDisabled(!options.caustics);
+      ui::SliderFloat("Caustics strength", &options.causticsStrength, 0.f, 1.f, "%.2f");
+      ui::SliderFloat("Caustics cell size (m)", &options.causticsScale, .05f, 4.f, "%.2f");
+      ui::SliderFloat("Caustics speed", &options.causticsSpeed, 0.f, 3.f, "%.2f");
+      ui::SliderFloat("Caustics focus depth (m)", &options.causticsDepth, 0.f, 4.f, "%.2f");
+      ImGui::EndDisabled();
       ImGui::BeginDisabled(rrActive || options.localDirectClamp > 0 || options.indirectClamp > 0);
       ui::Checkbox("Experimental PBR lighting reuse", &options.pbrLocalReuse);
       ImGui::EndDisabled();

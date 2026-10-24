@@ -2,6 +2,42 @@
 // motion vertices or cache metadata. SIGMA needs the nearest blocker; ordinary
 // visibility can terminate at any accepted opaque blocker.
 struct VisibilityHit { float t; bool blocked; vec3 p; vec3 n; vec3 transmission; };
+// Fake water caustics (rtx.native.pathtrace.caustics): light crossing a
+// caustics surface (state.w bit 11: remixapi_MaterialInfoCausticsEXT, Source's
+// water) is drawn into a moving web, as a wavy surface focuses it. The web
+// lies on the water where the ray crosses it, so it travels with the light's
+// direction; it forms over the focus depth below the surface (`depth`: the
+// ray's distance from the lit point up to the water) and its lines widen
+// deeper down. It only darkens (lines pass whole, the cells between keep
+// 1 - strength): SIGMA's translucency input stops at 1.
+// Animated Worley cells: 1 on the edges between neighbouring cells (F2 - F1).
+float causticWeb(vec2 p,float time,float width) {
+  ivec2 cell=ivec2(floor(p));vec2 f=p-vec2(cell);
+  float f1=8,f2=8;
+  for(int y=-1;y<=1;++y)for(int x=-1;x<=1;++x) {
+    uint h=hash(uint(cell.x+x)*73856093u^uint(cell.y+y)*19349663u);
+    vec2 phase=vec2(h&0xffffu,h>>16)*(6.28318530718/65536.0);
+    // Points stay within .3 of their cell's centre: the 3x3 search then finds both nearest.
+    vec2 point=vec2(x,y)+.5+.3*sin(vec2(time)+phase)-f;
+    float d=dot(point,point);
+    if(d<f1){f2=f1;f1=d;}else if(d<f2)f2=d;
+  }
+  return 1-smoothstep(0,width,sqrt(f2)-sqrt(f1));
+}
+float causticTint(vec3 p,vec3 n,float depth) {
+  vec2 a=unpackHalf2x16(uint(frame.caustics)),b=unpackHalf2x16(uint(frame.caustics>>32));
+  if(a.x<=0||a.y<=0)return 1;
+  // A basis on the water plane, the same from either side of it.
+  if(dot(n,vec3(.57735))<0)n=-n;
+  vec3 t=normalize(cross(abs(n.z)<.9?vec3(0,0,1):vec3(1,0,0),n)),u=cross(n,t);
+  vec2 q=vec2(dot(p,t),dot(p,u))/a.y;
+  float time=frame.animationTime*b.x,focus=b.y>0?clamp(depth/b.y,0,1):1;
+  float width=.06+.14*clamp(depth/(4*max(b.y,a.y*.25)),0,1);
+  // Two webs drifting apart, the second finer and turned.
+  float web=causticWeb(q,time,width);
+  web=1-(1-web)*(1-.6*causticWeb(mat2(.8,-.6,.6,.8)*q*1.37+vec2(17.3,5.1),time*1.31+2.1,width));
+  return 1-a.x*focus*focus*(3-2*focus)*(1-web);
+}
 void queryVisibility(accelerationStructureEXT scene,vec3 origin,vec3 direction,inout VisibilityHit hit,bool anyOpaque) {
   rayQueryEXT query;
   profileRay(8);
@@ -35,6 +71,7 @@ void queryVisibility(accelerationStructureEXT scene,vec3 origin,vec3 direction,i
   hit.n=normalize(cross(model*vec4(b-a,0),model*vec4(c-a,0)));
   if(dot(hit.n,direction)>0)hit.n=-hit.n;
   hit.transmission=sheetTransmission(s,color,hit.t);
+  if((s.state.w&2048u)!=0)hit.transmission*=causticTint(hit.p,hit.n,hit.t);
 }
 VisibilityHit visibilityHit(vec3 origin,vec3 direction,bool anyOpaque) {
   VisibilityHit hit;hit.t=1e30;hit.blocked=false;
@@ -104,5 +141,6 @@ VisibilityHit earlyVisibilityHit(vec3 origin,vec3 direction,float maximum,uint p
   hit.p=sheet.p;hit.n=sheet.n;
   if(dot(hit.n,direction)>0)hit.n=-hit.n;
   hit.transmission=sheetTransmission(s,color,hit.t);
+  if((s.state.w&2048u)!=0)hit.transmission*=causticTint(hit.p,hit.n,hit.t);
   return hit;
 }

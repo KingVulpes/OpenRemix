@@ -44,11 +44,16 @@ float causticFocus(Surface s,uint triangle,vec2 bary,float depth,float strength)
   if(uvArea<=1e-12||area<=1e-12)return 1;
   // One texel of the map, in mesh UVs.
   vec2 texel=1/(vec2(textureSize(textures[nonuniformEXT(s.pbrTextures.z-1)],0))*max(abs(s.uv.xy),vec2(1e-6)));
+  // The map's finest level: the footprint in uvGradX/Y is the shaded receiver's,
+  // and through it a blurred level held the waves flat a texel apart.
+  vec2 gradX=uvGradX,gradY=uvGradY;
+  uvGradX=uvGradY=vec2(0);
   vec2 slope[3];
   [[dont_unroll]] for(int i=0;i<3;++i) {
     vec3 l=materialLocalNormal(s,uv+vec2(i==1?texel.x:0,i==2?texel.y:0));
     slope[i]=l.z>0?l.xy/l.z:vec2(0);
   }
+  uvGradX=gradX;uvGradY=gradY;
   mat2 slopeGradient=mat2((slope[1]-slope[0])/texel.x,(slope[2]-slope[0])/texel.y);
   float ior=s.pbr.w!=0?max(unpackHalf2x16(floatBitsToUint(s.pbr.w)).x,1.):1.333;
   float bend=depth*(1-1/ior)*strength*2.5*sqrt(uvArea/area);

@@ -52,7 +52,10 @@ float causticFocus(Surface s,uint triangle,vec2 bary,float depth,float strength)
   mat2 slopeGradient=mat2((slope[1]-slope[0])/texel.x,(slope[2]-slope[0])/texel.y);
   float ior=s.pbr.w!=0?max(unpackHalf2x16(floatBitsToUint(s.pbr.w)).x,1.):1.333;
   float bend=depth*(1-1/ior)*strength*2.5*sqrt(uvArea/area);
-  return 1/max(abs(determinant(mat2(1)+bend*slopeGradient)),.25);
+  // One sample of the surface: where its waves fold light from several places
+  // onto one point, the others are missing, and deep water would go dark
+  // between thin lines. The light keeps at least 1 - strength of what passes.
+  return clamp(1/max(abs(determinant(mat2(1)+bend*slopeGradient)),1e-3),1-strength,4.);
 }
 float causticTint(Surface s,uint triangle,vec2 bary,vec3 p,vec3 n,float depth) {
   vec2 a=unpackHalf2x16(uint(frame.caustics)),b=unpackHalf2x16(uint(frame.caustics>>32));

@@ -136,6 +136,8 @@ namespace remix::config {
         TRACE(bloom, 0, 1);
         TRACE(bloomIntensity, 0, 1);
         TRACE(bloomRadius, 0, 1);
+        TRACE(contrast, 0, 1);
+        TRACE(contrastAmount, .5, 2);
         TRACE(prism, 0, 1);
         TRACE(gamma22, 0, 1);
         TRACE(localLights, 0, 1);

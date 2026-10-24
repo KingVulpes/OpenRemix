@@ -1000,6 +1000,7 @@ namespace remix::metal {
     configureSparse(command, frame, options);
     configureRegir(frame, options, frame.localConfig[0] != 0);
     configureLightGuiding(frame, options, frame.localScale[2] > 1);
+    configureSkyGuiding(frame, options);
     // Lights that changed since the previous frame (pathtrace/rendering.cpp):
     // the local denoiser drops history where they changed the light.
     {
@@ -1089,6 +1090,7 @@ namespace remix::metal {
     recordVolume(command);
     recordSparse(command);
     beginLightGuiding(command);
+    beginSkyGuiding(command);
     if (sharcUpdate)
       recordSharc(command);
     if (denoiser) {
@@ -1301,6 +1303,10 @@ namespace remix::metal {
       lightGuiding.writeIndex ^= 1;
       lightGuiding.valid = true;
       ++lightGuiding.stats.renderedFrames;
+    }
+    if (skyGuiding.active) {
+      skyGuiding.writeIndex ^= 1;
+      skyGuiding.valid = true;
     }
     statics.committed(prepareSerial, frame().retiredStates);
     if (sharc.stats.active && sharc.hasReceivers) {
@@ -1865,6 +1871,48 @@ namespace remix::metal {
       return;
     const auto &bank = lightGuiding.history[lightGuiding.writeIndex];
     id<MTLBlitCommandEncoder> blit = blitEncoder(command, @"Light guiding clear");
+    [blit fillBuffer:bank->handle range:NSMakeRange(0, bank->size) value:0];
+    [blit endEncoding];
+  }
+
+  // pathtrace/sky_guiding.cpp configureSkyGuiding. Only the extra sky rays of a
+  // path's first surface sample the learned directions, so it is active with
+  // skySamples above one, a sky, and the denoiser (a progressive reference
+  // keeps plain BRDF sampling).
+  void PathTracer::Gpu::configureSkyGuiding(Frame &frame, const TraceOptions &options) {
+    auto &g = skyGuiding;
+    g.active = false;
+    frame.skyGuideRead = frame.skyGuideWrite = 0;
+    std::fill_n(frame.skyGuideConfig, 4, 0u);
+    if (!options.skyGuiding || options.skySamples < 2 || frame.skyRadiance[3] == 0 || !options.sky ||
+        !denoiser || options.accumulate)
+      return;
+    if (!g.history[0]) {
+      const size_t bytes = size_t(SkyGuiding::capacity) * SkyGuiding::stride * 4;
+      g.history[0] = buffer(nullptr, bytes);
+      g.history[1] = buffer(nullptr, bytes);
+    }
+    const float cellUnits = options.skyGuideCellSize / options.sceneScale;
+    if (history.reset() || g.cellSize != cellUnits)
+      g.valid = false;
+    g.cellSize = cellUnits;
+    frame.skyGuideRead = g.valid ? g.history[g.writeIndex ^ 1]->address : 0;
+    frame.skyGuideWrite = g.history[g.writeIndex]->address;
+    const float scale = 1.f / cellUnits, share = std::clamp(options.skyGuideShare, 0.f, .95f);
+    frame.skyGuideConfig[0] = SkyGuiding::capacity;
+    std::memcpy(&frame.skyGuideConfig[1], &scale, 4);
+    std::memcpy(&frame.skyGuideConfig[2], &share, 4);
+    frame.skyGuideConfig[3] = 1;
+    g.active = true;
+  }
+
+  // As beginLightGuiding: the read bank stays immutable for the frame; clear
+  // the bank this frame trains before any pass's atomics.
+  void PathTracer::Gpu::beginSkyGuiding(id<MTLCommandBuffer> command) {
+    if (!skyGuiding.active)
+      return;
+    const auto &bank = skyGuiding.history[skyGuiding.writeIndex];
+    id<MTLBlitCommandEncoder> blit = blitEncoder(command, @"Sky guiding clear");
     [blit fillBuffer:bank->handle range:NSMakeRange(0, bank->size) value:0];
     [blit endEncoding];
   }

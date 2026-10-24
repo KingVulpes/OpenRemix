@@ -78,8 +78,9 @@ namespace remix::metal::trace {
     // remixapi_CameraMediumEXT: transmittance colour, measurement distance (0: in air).
     float cameraMedium[4] = {};
     uint64_t sheetResults = 0; // SheetResults: the sheet lighting pass's transport
-    // Sky guiding (pathtrace/gpu.h): Metal builds do not learn sky directions
-    // yet, so these stay 0 (none, inactive) and the extra sky rays follow the BRDF.
+    // Sky guiding (sky_guiding.glsl): each world cell's learned sky directions,
+    // last frame's (read, 0: none yet) and this frame's. skyGuideConfig: slot
+    // capacity, cells per world unit (float bits), guided share (float bits), active.
     uint64_t skyGuideRead = 0;
     uint64_t skyGuideWrite = 0, skyGuideReserved = 0;
     uint32_t skyGuideConfig[4] = {};

@@ -104,8 +104,10 @@ const uint reflectionOnlyInstanceMask=16u;
 bool viewModelPath=false;
 // The instance mask of shadow, light-visibility and bounce rays.
 uint secondaryMask(){return (frame.pathConfig.w&0xffu)|(viewModelPath?viewModelInstanceMask:0u);}
-// Bounce (reflection and indirect) rays: the secondary mask plus reflection-only instances.
-uint bounceMask(){return secondaryMask()|reflectionOnlyInstanceMask;}
+// Bounce (reflection and indirect) rays: the secondary mask plus reflection-only instances,
+// except on a view model's path: the player's own body, drawn around the camera, flickered in
+// the weapon's reflections and bounced light onto it.
+uint bounceMask(){return secondaryMask()|(viewModelPath?0u:reflectionOnlyInstanceMask);}
 // Shadow and light-visibility rays pass paint (each query skips decal
 // surfaces): instances of decals alone are left out of their traversal, so a
 // ray leaving a painted wall does not visit every quad of paint above it.

@@ -62,6 +62,8 @@ namespace remix::scene {
       e.shaping[2] = float(light.ies);
       for (unsigned v = 0; v < 3; ++v)
         std::copy_n(light.corners[v], 3, e.corners[v]);
+      // Free in every emitter: the volumetric radiance scale.
+      e.corners[1][3] = light.volumetric;
       // A sphere's corners are free: its cookie's projection.
       if (light.cookie && !light.triangle) {
         e.shaping[3] = float(light.cookie);

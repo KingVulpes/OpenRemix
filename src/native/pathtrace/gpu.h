@@ -102,7 +102,7 @@ namespace remix::trace::detail {
   static_assert(sizeof(TraceVertex) == 48);
   struct Frame {
     Matrix inverseCamera, camera;
-    float eye[4] = {}, direction[4] = {}, radiance[4] = {};
+    float eye[4] = {}, direction[4] = {}, radiance[4] = {}; // radiance w: the sun's volumetric scale
     uint32_t config[4] = {}, target[4] = {};
     float jitter[4] = {};      // primary offset; z water reuse, w blue-noise sun/local bits
     float skyRadiance[4] = {}; // linear uniform environment; w reserved

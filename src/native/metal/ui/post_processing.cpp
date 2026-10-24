@@ -51,6 +51,12 @@ namespace remix {
       } else
         ImGui::TextDisabled("%s", "Automatic exposure and bloom are not available on this backend (manual exposure applies).");
       if (!post.failure.empty()) ImGui::TextWrapped("%s", post.failure.c_str());
+      ui::Checkbox("Contrast before tonemapping", &options.contrast);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Per-channel contrast around middle grey (0.18), applied after exposure:\n"
+                          "colour = (colour / 0.18)^contrast * 0.18. Counters a flat, grey look.");
+      if (options.contrast)
+        ui::SliderFloat("Contrast", &options.contrastAmount, .5f, 2.f, "%.2f");
       ui::Checkbox("Prism tonemapping", &options.prism);
       ui::Checkbox("Gamma 2.2 output", &options.gamma22);
       for (auto [label, threshold] : {std::pair{"Local direct clamp", &options.localDirectClamp},

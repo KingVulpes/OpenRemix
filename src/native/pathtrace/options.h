@@ -24,6 +24,10 @@ namespace remix {
     float exposure = .98f, autoExposureTarget = .2f, autoExposureSpeed = 2;
     float autoExposureCentre = .75f, autoExposureMinEv = -16.3f, autoExposureMaxEv = 3.1f;
     float bloomIntensity = .01f, bloomRadius = .85f;
+    // Per-channel contrast before the tonemapper, pivoting on middle grey:
+    // c = (c / .18)^contrastAmount * .18 after exposure.
+    bool contrast = false;
+    float contrastAmount = 1.15f;
     uint32_t fsrQuality = 3;
     float fsrSharpness = 0.f;
     bool sigma = true;

@@ -46,7 +46,11 @@ float lightWeight(LightNode node,vec3 p,vec3 n) {
   // into its smallest emitter-sized distance: that starves sibling clusters
   // and produces enormous inverse-PDF samples. A tenth of the cluster radius
   // regularizes this importance estimate; emitter radiance is unchanged.
-  float distance2=max(dot(nearest,nearest),.01*radius2);
+  // Alone, the nearest distance also credits a tall box's whole flux to its
+  // closest corner: a cluster of street lamps whose box reaches down to a
+  // tunnel ceiling starved the tunnel's own light. The product with the
+  // center distance keeps nearby boxes ahead of far ones.
+  float distance2=max(sqrt(dot(nearest,nearest)*dot(delta,delta)),.01*radius2);
   return localFalloff(dot(nearest,nearest))*node.minimumPower.w*cosine/max(max(distance2,node.maximum.w),1e-12);
 }
 // Potentially visible lights (remixapi_SetVisibilityPartitionEXT): the

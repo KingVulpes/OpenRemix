@@ -769,11 +769,12 @@ namespace remix::scene {
       // The count median on the widest axis keeps the tree balanced, but it
       // can keep a small nearby light with huge distant emitters (a 3D
       // skybox's lit windows) for several levels, where the shared box's
-      // distance regularization starves it. Take a surface area heuristic
-      // (by perimeter) split instead when it is at least twice as cheap,
-      // above a depth bound. It reads only the emitters' positions and
-      // counts, which refits keep: a refit must match a rebuild (power and
-      // radius change by refit).
+      // distance regularization starves it; so do a few lights far below a
+      // map, stretching a box 16000 units. Take a surface area heuristic
+      // (by perimeter) split instead when it is at least a fifth cheaper,
+      // above a depth bound (uniform grids keep the median up to about .85).
+      // It reads only the emitters' positions and counts, which refits keep:
+      // a refit must match a rebuild (power and radius change by refit).
       if (level < m_splitDepthLimit) {
         std::vector<Extent> extents(end - begin), suffix(end - begin + 1);
         for (uint32_t i = begin; i < end; ++i) {
@@ -816,7 +817,7 @@ namespace remix::scene {
             }
           }
         }
-        if (bestCost < .5 * medianCost) {
+        if (bestCost < .8 * medianCost) {
           axis = bestAxis;
           middle = bestSplit;
         }
@@ -941,7 +942,9 @@ namespace remix::scene {
       return 0;
     const double cosine =
         std::min(1., (toward + std::sqrt(radius2)) / std::sqrt(std::max({distance2, radius2, 1.e-12})));
+    // Nearest-box times center distance (light_bvh.glsl).
+    const double regularized = std::max(std::sqrt(nearest2 * distance2), .01 * radius2);
     return falloff(nearest2, range) * node.minimumPower[3] * cosine /
-           std::max({nearest2, .01 * radius2, double(node.maximum[3]), 1.e-12});
+           std::max({regularized, double(node.maximum[3]), 1.e-12});
   }
 } // namespace remix::scene

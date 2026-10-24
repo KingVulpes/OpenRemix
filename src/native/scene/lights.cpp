@@ -1,4 +1,5 @@
 #include "scene/blackbody.h"
+#include "scene/ies.h"
 #include "scene/images.h"
 #include "scene/resources.h"
 #include "scene/validation.h"
@@ -102,6 +103,21 @@ namespace remix {
         std::copy_n(&source.direction.x, 3, emitter.direction);
     }
     return handle;
+  }
+
+  uint32_t NativeResources::iesProfile(std::string_view text) {
+    const uint64_t hash = hashBytes(text.data(), text.size());
+    if (auto found = m_iesIndex.find(hash); found != m_iesIndex.end())
+      return found->second;
+    IesTable table;
+    if (!parseIes(text, table))
+      throw invalid;
+    auto next = std::make_shared<std::vector<float>>(m_iesProfiles ? *m_iesProfiles : std::vector<float>{});
+    next->insert(next->end(), table.begin(), table.end());
+    m_iesProfiles = std::move(next);
+    const auto profile = uint32_t(m_iesProfiles->size() / kIesBins);
+    m_iesIndex.emplace(hash, profile);
+    return profile;
   }
 
   void NativeResources::createLight(const remixapi_LightInfo &info, remixapi_LightHandle &handle) {
@@ -249,6 +265,18 @@ namespace remix {
       prototype.coneCos = std::cos(shaping.coneAngleDegrees * pi / 180);
       prototype.softness = shaping.coneSoftness;
       prototype.focus = shaping.focusExponent;
+    }
+    if (auto *ies = static_cast<const remixapi_LightInfoIesProfileEXT *>(
+            ext(REMIXAPI_STRUCT_TYPE_LIGHT_INFO_IES_PROFILE_EXT))) {
+      if (!ies->data || !ies->size || type == REMIXAPI_STRUCT_TYPE_LIGHT_INFO_DISTANT_EXT ||
+          type == REMIXAPI_STRUCT_TYPE_LIGHT_INFO_DOME_EXT)
+        throw invalid;
+      prototype.ies = iesProfile({ies->data, size_t(ies->size)});
+      // The profile's axis: the shaping's direction, else the light's own.
+      if (!shaped) {
+        auto d = unit(z);
+        std::copy(d.begin(), d.end(), prototype.direction);
+      }
     }
     auto triangle = [&](Vec a, Vec b, Vec c, Vec direction) {
       if (length(cross(add(b, scale(a, -1)), add(c, scale(a, -1)))) < 1e-10f)

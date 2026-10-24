@@ -218,6 +218,8 @@ namespace remix {
       uint32_t triangle = 0; // 0 sphere, 1 one-sided, 2 two-sided
       float corners[3][3] = {};
       float direction[3] = {0, 0, -1}, coneCos = -1, softness = 0, focus = 0;
+      // IES profile (NativeResources::iesProfiles) + 1; 0: none.
+      uint32_t ies = 0;
       // Emitter of an instance the host identified as dynamic
       // (remixapi_InstanceIdentityEXT): kept in the light tree's dynamic part.
       bool dynamic = false;

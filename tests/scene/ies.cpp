@@ -1,0 +1,104 @@
+#include "scene/ies.h"
+#include "scene/resources.h"
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <string>
+#include <remix/remix_native_ext.h>
+
+namespace {
+void require(bool value, const char *message) {
+  if (!value) {
+    std::fprintf(stderr, "%s\n", message);
+    std::exit(1);
+  }
+}
+bool approx(float a, float b) { return std::abs(a - b) < 1e-4f; }
+// 0, 45 and 90 degrees from the axis; two horizontal planes that average to
+// 100, 50 and 0 candela.
+const std::string spot = "IESNA:LM-63-2002\r\n"
+                         "[TEST] spot\r\n"
+                         "TILT=NONE\r\n"
+                         "1 1000 1 3 2 1 1 0 0 0\r\n"
+                         "1 1 10\r\n"
+                         "0 45 90\r\n"
+                         "0 180\r\n"
+                         "120 60 0\r\n"
+                         "80 40 0\r\n";
+} // namespace
+
+int main() {
+  using namespace remix::scene;
+  {
+    IesTable table{};
+    require(parseIes(spot, table), "A plain LM-63 profile was rejected");
+    require(approx(table[0], 1), "The axis did not hold the profile's peak");
+    // Bin 85 lies at 60 degrees: a third of the way from 45 (0.5) to 90 (0).
+    require(approx(table[85], .5f * 2 / 3), "Angles between the file's were not interpolated");
+    require(approx(table[kIesBins - 1], 0) && approx(table[160], 0), "Light was emitted beyond the file's angles");
+  }
+  {
+    // Tilt data sits between the TILT line and the photometric header.
+    std::string tilted = spot;
+    tilted.replace(tilted.find("TILT=NONE"), 9, "TILT=INCLUDE\r\n1\r\n2\r\n0 90\r\n1 1");
+    IesTable table{};
+    require(parseIes(tilted, table) && approx(table[0], 1), "Tilt data was not skipped");
+  }
+  {
+    IesTable table{};
+    require(!parseIes("not a profile", table), "Text without a TILT line was accepted");
+    require(!parseIes(spot.substr(0, spot.size() - 8), table), "A truncated profile was accepted");
+    std::string dark = spot;
+    dark.replace(dark.find("120 60 0"), 8, "0 0 0");
+    dark.replace(dark.find("80 40 0"), 7, "0 0 0");
+    require(!parseIes(dark, table), "A profile emitting nothing was accepted");
+  }
+  {
+    // Lights share a profile by its text; the axis is the shaping direction,
+    // else the light's own.
+    remix::NativeResources resources;
+    remixapi_LightInfoIesProfileEXT ies{};
+    ies.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_IES_PROFILE_EXT;
+    ies.data = spot.data();
+    ies.size = spot.size();
+    remixapi_LightInfoSphereEXT sphere{};
+    sphere.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_SPHERE_EXT;
+    sphere.pNext = &ies;
+    sphere.radius = .1f;
+    remixapi_LightInfo info{};
+    info.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO;
+    info.pNext = &sphere;
+    info.hash = 1;
+    info.radiance = {10, 10, 10};
+    remixapi_LightHandle first{}, second{};
+    resources.createLight(info, first);
+    sphere.shaping_hasvalue = 1;
+    sphere.shaping_value.direction = {1, 0, 0};
+    sphere.shaping_value.coneAngleDegrees = 180;
+    info.hash = 2;
+    resources.createLight(info, second);
+    resources.drawLight(first);
+    resources.drawLight(second);
+    const auto lights = resources.sphereLights();
+    require(lights.size() == 2, "Profiled lights were not emitted");
+    require(resources.iesProfiles() && resources.iesProfiles()->size() == kIesBins,
+            "Lights with the same profile text did not share it");
+    for (const auto &light : lights) {
+      require(light.ies == 1, "A light lost its profile");
+      const bool shaped = light.id == 2;
+      require(approx(light.direction[0], shaped ? 1 : 0) && approx(light.direction[2], shaped ? 0 : -1),
+              "A profile's axis was not the shaping direction, else straight down");
+    }
+    bool failed = false;
+    try {
+      ies.size = 5;
+      info.hash = 3;
+      remixapi_LightHandle third{};
+      resources.createLight(info, third);
+    } catch (...) {
+      failed = true;
+    }
+    require(failed, "A light with a malformed profile was accepted");
+  }
+  return 0;
+}

@@ -254,6 +254,9 @@ namespace remix {
     // remixapi_CameraMediumEXT: transmittance colour, measurement distance (0: in air).
     const std::array<float, 4> &cameraMedium() const { return m_cameraMedium; }
     void createLight(const remixapi_LightInfo &info, remixapi_LightHandle &handle);
+    // IES profiles (remixapi_LightInfoIesProfileEXT), scene::kIesBins floats
+    // each. Adding one makes a new vector, so a published frame keeps its own.
+    std::shared_ptr<const std::vector<float>> iesProfiles() const { return m_iesProfiles; }
     void updateLight(remixapi_LightHandle handle, const remixapi_LightInfo &info);
     void destroyLight(remixapi_LightHandle handle);
     void drawLight(remixapi_LightHandle handle);
@@ -327,6 +330,10 @@ namespace remix {
       scene::DomeLight dome;
     };
     std::unordered_map<uint64_t, LightDefinition> m_lights;
+    // A profile's number (+ 1) by its text's hash; the profile for an IES text.
+    std::shared_ptr<const std::vector<float>> m_iesProfiles;
+    std::unordered_map<uint64_t, uint32_t> m_iesIndex;
+    uint32_t iesProfile(std::string_view text);
     std::unordered_set<uint64_t> m_frameLights;
     // A published frame's sphere lights, as sphereLights() returned them at
     // publication (m_frameLights then only tells whether there are any).

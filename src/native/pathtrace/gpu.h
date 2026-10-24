@@ -171,7 +171,10 @@ namespace remix::trace::detail {
     // frame's. skyGuideConfig: slot capacity, cells per world unit (float
     // bits), guided share of the extra sky rays (float bits), active.
     uint64_t skyGuideRead = 0;
-    uint64_t skyGuideWrite = 0, skyGuideReserved = 0;
+    uint64_t skyGuideWrite = 0;
+    // IES profiles (scene/ies.h): kIesBins floats each, a light's
+    // shaping.z the profile + 1.
+    uint64_t iesProfiles = 0;
     uint32_t skyGuideConfig[4] = {};
     // Camera rays (pathtrace.comp ray()): inverseCamera relative to the eye,
     // which the shader adds back. In single precision the absolute matrix
@@ -547,6 +550,9 @@ namespace remix {
     bool postCombinedDirect = false;
     std::unique_ptr<Buffer> lightNodes, lightEmitters;
     std::unique_ptr<Buffer> movedLights; // this frame's scene::LightBvh::moved()
+    // The IES profiles (NativeResources::iesProfiles) the buffer holds.
+    std::shared_ptr<const std::vector<float>> iesUploaded;
+    std::shared_ptr<Buffer> iesBuffer;
     uint64_t lightBufferGeneration = 0, torchBufferGeneration = 0, emissiveBufferGeneration = 0;
     // The hierarchy (LightBvh::instance) each slot's buffers hold; with the
     // generation above, what an upload of only the changes builds on.

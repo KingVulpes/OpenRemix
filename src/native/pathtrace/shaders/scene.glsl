@@ -89,7 +89,8 @@ layout(set=0,binding=3,std140) uniform Frame {
   vec4 cameraMedium; // remixapi_CameraMediumEXT: transmittance colour, measurement distance (0: in air)
   uint64_t sheetResults; // SheetResults: the sheet lighting pass's transport
   uint64_t skyGuideRead; // sky guiding: last frame's learned sky directions (0: none)
-  uint64_t skyGuideWrite, skyGuideReserved;
+  uint64_t skyGuideWrite;
+  uint64_t iesProfiles; // IES profiles (scene/ies.h): 256 floats each
   uvec4 skyGuideConfig; // slot capacity, cells per world unit (float bits), guided share (float bits), active
   mat4 inverseCameraRelative; // camera rays: world = point.xyz / point.w + eye.xyz
 } frame;

@@ -905,6 +905,22 @@ namespace remix {
       frame.movedLights = movedLights ? movedLights->address : 0;
       frame.visibilityConfig[1] = uint32_t(moved.size());
     }
+    // IES profiles: uploaded when one is added (they are never changed).
+    if (const auto ies = resources.iesProfiles(); ies != iesUploaded) {
+      if (iesBuffer)
+        retiredBuffers.push_back(std::move(iesBuffer));
+      if (ies && !ies->empty()) {
+        if (deviceLocalScene)
+          iesBuffer = upload(command, ies->data(), ies->size() * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        else {
+          std::unique_ptr<Buffer> host;
+          hostBuffer(host, ies->data(), ies->size() * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+          iesBuffer = std::move(host);
+        }
+      }
+      iesUploaded = ies;
+    }
+    frame.iesProfiles = iesBuffer ? iesBuffer->address : 0;
     // Classify the empty space just above a shading point (2 cm).
     frame.visibilityProbe[0] = .02f / options.sceneScale;
     // Paint lies at most this far above its receiver (5 cm; Source lifts 0.1 in).

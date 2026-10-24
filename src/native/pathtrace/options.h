@@ -235,17 +235,12 @@ namespace remix {
     float sunAngularDiameter = -1; // -1 inherits the distant light's diameter.
     bool rasterPrimary = true;
     bool waterIndirectReuse = true;
-    // Fake water caustics: light through water (remixapi_MaterialInfoCausticsEXT,
-    // Source's water) drawn into a moving web. Strength: how dark the cells
-    // between its lines get; the cell size and the depth below the surface
-    // at which they are fully formed in meters (see sceneScale).
+    // Caustics: light through translucent surfaces with normal maps (water,
+    // bumpy glass) focused by their waves or bumps. Strength scales the
+    // bending (.4: as the material bends it); contrast raises the result to a
+    // power (past 1, brighter lines and darker gaps).
     bool caustics = true;
-    // Caustics from the water's normal map where it has one: its waves focus
-    // the light (strength scales the bending). Off: the web everywhere.
-    bool causticsFromNormals = true;
-    float causticsStrength = .4f, causticsScale = .6f, causticsSpeed = .5f, causticsDepth = .5f;
-    // Raises the caustics to a power: past 1, brighter lines and darker cells.
-    float causticsContrast = 1;
+    float causticsStrength = .4f, causticsContrast = 1;
     bool translucencyDenoiser = true, translucencyReuse = true;
     bool pbrLocalReuse = true; // Experimental previous-frame secondary local lighting.
     bool sky = true;

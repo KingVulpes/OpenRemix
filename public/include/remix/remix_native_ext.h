@@ -1255,18 +1255,6 @@ typedef struct remixapi_MaterialPbrRemapEXT {
   remixapi_MaterialPbrChannelEXT roughness, metallic;
 } remixapi_MaterialPbrRemapEXT;
 
-// Optional pNext on MaterialInfo, with MaterialInfoTranslucentEXT (other
-// materials ignore it): light passing through the material is drawn into the
-// moving web of a wavy water surface's caustics, as a cheap approximation
-// (rtx.native.pathtrace.caustics and its settings); with a normal map, its
-// waves focus the light instead. Water with Source's scrolled normal map
-// (normal encoding 5) has caustics without it.
-#define REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_CAUSTICS_EXT ((remixapi_StructType)0x7fff1020)
-typedef struct remixapi_MaterialInfoCausticsEXT {
-  remixapi_StructType sType;
-  const void *pNext;
-} remixapi_MaterialInfoCausticsEXT;
-
 // A private value avoids the retained 0.1003 BC5 value (139).
 #define REMIXAPI_FORMAT_BC4_UNORM_EXT ((remixapi_Format)147)
 #define REMIXAPI_FORMAT_BC6H_UFLOAT_EXT ((remixapi_Format)143)

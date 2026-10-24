@@ -2,40 +2,28 @@
 // motion vertices or cache metadata. SIGMA needs the nearest blocker; ordinary
 // visibility can terminate at any accepted opaque blocker.
 struct VisibilityHit { float t; bool blocked; vec3 p; vec3 n; vec3 transmission; };
-// Fake water caustics (rtx.native.pathtrace.caustics): light crossing a
-// caustics surface (state.w bit 11: remixapi_MaterialInfoCausticsEXT, Source's
-// water) is focused as its waves would focus it (causticFocus), or without a
-// normal map (or with causticsFromNormals off) drawn into a moving web. The
-// web lies on the water where the ray crosses it, so it travels with the
-// light's direction; it forms over the focus depth below the surface
-// (`depth`: the ray's distance from the lit point up to the water) and its
-// lines widen deeper down. It only darkens (lines pass whole, the cells
-// between keep 1 - strength): SIGMA's translucency input stops at 1.
-// Animated Worley cells: 1 on the edges between neighbouring cells (F2 - F1).
-float causticWeb(vec2 p,float time,float width) {
-  ivec2 cell=ivec2(floor(p));vec2 f=p-vec2(cell);
-  float f1=8,f2=8;
-  for(int y=-1;y<=1;++y)for(int x=-1;x<=1;++x) {
-    uint h=hash(uint(cell.x+x)*73856093u^uint(cell.y+y)*19349663u);
-    vec2 phase=vec2(h&0xffffu,h>>16)*(6.28318530718/65536.0);
-    // Points stay within .3 of their cell's centre: the 3x3 search then finds both nearest.
-    vec2 point=vec2(x,y)+.5+.3*sin(vec2(time)+phase)-f;
-    float d=dot(point,point);
-    if(d<f1){f2=f1;f1=d;}else if(d<f2)f2=d;
-  }
-  return 1-smoothstep(0,width,sqrt(f2)-sqrt(f1));
-}
-// Caustics from the water's own normal map: how its waves bend light into the
-// depth below. Light refracts toward the surface normal, so a point `depth`
-// below lands displaced by about depth (1 - 1/ior) times the surface slope
+// Caustics (rtx.native.pathtrace.caustics): light passing a translucent
+// surface with a normal map (water, bumpy glass: state.w bit 11) is focused as
+// its waves or bumps would focus it. Light refracts toward the surface normal,
+// so a point `depth` behind it (the ray's distance from the lit point to the
+// surface) lands displaced by about depth (1 - 1/ior) times the surface slope
 // (normal xy over z); the light there is the inverse of how much that mapping
 // stretches area, 1 / |det(I + depth c dSlope/dx)|, with the slope's
 // derivatives taken a texel apart on the map, in the mesh's units. Strength
-// scales the bending (.4: as water bends it), the gain stops at 4. The three
-// samples are one loop, not unrolled: each copy of the map's sampling (three
-// texels for Source's layered water) inlined at every shadow query ran the
-// shaders out of SPIR-V ids.
-float causticFocus(Surface s,uint triangle,vec2 bary,float depth,float strength) {
+// scales the bending (.4: as the material bends it). One sample of the surface
+// misses the other places its waves fold light from onto the same point, and
+// deep water went dark between thin lines: the light keeps at least
+// 1 - strength. Contrast raises it to a power (past 1, brighter lines and
+// darker gaps, whatever the surface would really do); the gain stops at 8, and
+// SIGMA's translucency input at 1 (under the sun only the darkening shows).
+// The three samples are one loop, not unrolled: each copy of the map's sampling
+// (three texels for Source's layered water) inlined at every shadow query ran
+// the shaders out of SPIR-V ids.
+float causticTint(Surface s,uint triangle,vec2 bary,float depth) {
+  // Strength (8 bits) and contrast (8 bits, in 32nds).
+  uint settings=uint(frame.caustics)&0xffffu;
+  float strength=float(settings&255u)/255,contrast=float(settings>>8)/32;
+  if(strength<=0||s.pbrTextures.z==0)return 1;
   uint base=triangle*3;
   Vertex a=s.vertices.v[s.indices.i[base]],b=s.vertices.v[s.indices.i[base+1]],c=s.vertices.v[s.indices.i[base+2]];
   vec2 uv=a.uv.xy*(1-bary.x-bary.y)+b.uv.xy*bary.x+c.uv.xy*bary.y;
@@ -55,36 +43,11 @@ float causticFocus(Surface s,uint triangle,vec2 bary,float depth,float strength)
   }
   uvGradX=gradX;uvGradY=gradY;
   mat2 slopeGradient=mat2((slope[1]-slope[0])/texel.x,(slope[2]-slope[0])/texel.y);
-  float ior=s.pbr.w!=0?max(unpackHalf2x16(floatBitsToUint(s.pbr.w)).x,1.):1.333;
+  // A body's refractive index; a thin sheet bends as glass would.
+  float ior=s.pbr.w!=0?max(unpackHalf2x16(floatBitsToUint(s.pbr.w)).x,1.):1.5;
   float bend=depth*(1-1/ior)*strength*2.5*sqrt(uvArea/area);
-  // One sample of the surface: where its waves fold light from several places
-  // onto one point, the others are missing, and deep water would go dark
-  // between thin lines. The light keeps at least 1 - strength of what passes.
-  return clamp(1/max(abs(determinant(mat2(1)+bend*slopeGradient)),1e-3),1-strength,4.);
-}
-// Contrast raises either kind to a power: past 1 the lines brighten and the
-// cells darken further, whatever the water's waves would really do.
-float causticTint(Surface s,uint triangle,vec2 bary,vec3 p,vec3 n,float depth) {
-  vec2 a=unpackHalf2x16(uint(frame.caustics)),b=unpackHalf2x16(uint(frame.caustics>>32));
-  // The low half: strength (8 bits) and contrast (8 bits, in 32nds).
-  uint low=uint(frame.caustics)&0xffffu;
-  float strength=float(low&255u)/255,contrast=float(low>>8)/32;
-  if(strength<=0)return 1;
-  // Focus depth's sign bit: the web even where there is a normal map.
-  bool fromNormals=(uint(frame.caustics>>48)&0x8000u)==0;
-  if(fromNormals&&s.pbrTextures.z!=0)return min(pow(causticFocus(s,triangle,bary,depth,strength),contrast),8.);
-  b.y=abs(b.y);
-  if(a.y<=0)return 1;
-  // A basis on the water plane, the same from either side of it.
-  if(dot(n,vec3(.57735))<0)n=-n;
-  vec3 t=normalize(cross(abs(n.z)<.9?vec3(0,0,1):vec3(1,0,0),n)),u=cross(n,t);
-  vec2 q=vec2(dot(p,t),dot(p,u))/a.y;
-  float time=frame.animationTime*b.x,focus=b.y>0?clamp(depth/b.y,0,1):1;
-  float width=.06+.14*clamp(depth/(4*max(b.y,a.y*.25)),0,1);
-  // Two webs drifting apart, the second finer and turned.
-  float web=causticWeb(q,time,width);
-  web=1-(1-web)*(1-.6*causticWeb(mat2(.8,-.6,.6,.8)*q*1.37+vec2(17.3,5.1),time*1.31+2.1,width));
-  return pow(1-strength*focus*focus*(3-2*focus)*(1-web),contrast);
+  float light=clamp(1/max(abs(determinant(mat2(1)+bend*slopeGradient)),1e-3),1-strength,4.);
+  return min(pow(light,contrast),8.);
 }
 void queryVisibility(accelerationStructureEXT scene,vec3 origin,vec3 direction,inout VisibilityHit hit,bool anyOpaque) {
   rayQueryEXT query;
@@ -119,7 +82,7 @@ void queryVisibility(accelerationStructureEXT scene,vec3 origin,vec3 direction,i
   hit.n=normalize(cross(model*vec4(b-a,0),model*vec4(c-a,0)));
   if(dot(hit.n,direction)>0)hit.n=-hit.n;
   hit.transmission=sheetTransmission(s,color,hit.t);
-  if((s.state.w&2048u)!=0)hit.transmission*=causticTint(s,tri/3,bary,hit.p,hit.n,hit.t);
+  if((s.state.w&2048u)!=0)hit.transmission*=causticTint(s,tri/3,bary,hit.t);
 }
 VisibilityHit visibilityHit(vec3 origin,vec3 direction,bool anyOpaque) {
   VisibilityHit hit;hit.t=1e30;hit.blocked=false;
@@ -189,6 +152,6 @@ VisibilityHit earlyVisibilityHit(vec3 origin,vec3 direction,float maximum,uint p
   hit.p=sheet.p;hit.n=sheet.n;
   if(dot(hit.n,direction)>0)hit.n=-hit.n;
   hit.transmission=sheetTransmission(s,color,hit.t);
-  if((s.state.w&2048u)!=0)hit.transmission*=causticTint(s,sheet.primitive,sheet.bary,hit.p,hit.n,hit.t);
+  if((s.state.w&2048u)!=0)hit.transmission*=causticTint(s,sheet.primitive,sheet.bary,hit.t);
   return hit;
 }

@@ -725,8 +725,8 @@ namespace remix::trace {
                std::none_of(instance.begin(), instance.end(),
                             [](const auto &surface) { return surface.draw.doubleSided; }),
                // Wholly blended instances may be left out of shadow and bounce rays
-               // (skipBlendedSecondaryRays); water drawing caustics stays in them, the
-               // light through it carrying the caustics.
+               // (skipBlendedSecondaryRays); surfaces drawing caustics stay in them, the
+               // light through them carrying the caustics.
                std::all_of(instance.begin(), instance.end(),
                            [](const auto &surface) {
                              return surface.draw.blend.enabled && !surface.draw.decal &&
@@ -786,7 +786,7 @@ namespace remix::trace {
                          uint32_t(draw.classification == 0) << 4 |
                          uint32_t(material.translucent && !surface.decal) << 5 | uint32_t(surface.decal) << 6 |
                          (surface.decal ? detail::decalMode(b) : 0u) << 7 |
-                         // Bit 11: light through it draws fake water caustics.
+                         // Bit 11: light through it draws caustics.
                          uint32_t(material.caustics) << 11 |
                          // remixapi_InstanceInfoMaskEXT CUT: the group (bits 16-21) whose
                          // coverage hides the surface from camera rays.

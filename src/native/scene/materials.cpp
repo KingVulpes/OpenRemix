@@ -118,9 +118,6 @@ namespace remix {
         material->metallic = 0;
       }
     }
-    material->caustics = material->transmission &&
-                         (extension(info.pNext, REMIXAPI_STRUCT_TYPE_MATERIAL_INFO_CAUSTICS_EXT) ||
-                          material->normalEncoding == 5);
     finite(material->tint, 4);
     if (material->tint[3] < 0 || material->tint[3] > 1) {
       throw invalid;
@@ -139,6 +136,8 @@ namespace remix {
       material->sourceHash = material->texture->getHash();
     }
     material->normalTexture = dataTexturePath(info.normalTexture);
+    // Light through a translucent surface is focused by its waves or bumps.
+    material->caustics = material->translucent && material->normalTexture;
     // Water shares the packed remap fields (frame_tables.h materialFields).
     if (material->normalEncoding == 5 && (material->roughnessTexture || material->metallicTexture))
       throw invalid;

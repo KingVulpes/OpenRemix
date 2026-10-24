@@ -68,7 +68,7 @@ layout(set=0,binding=3,std140) uniform Frame {
   uvec4 restirConfig; // candidates, spatial samples, temporal M cap, flags (1 initial visibility)
   vec4 restirParams; // spatial radius (pixels), emitter count, reserved
   uint64_t regirRead, regirWrite, regirSlots;
-  uint64_t caustics; // water caustics: half strength, cell size | speed, focus depth (visibility.glsl)
+  uint64_t caustics; // caustics: strength, contrast (visibility.glsl causticTint)
   uvec4 regirConfig; // cell capacity, slots per cell, cells per world unit (float bits), active
   uint64_t orcaTable, orcaReserved;
   uvec4 orcaConfig; // entry capacity, sparse tile size, voxel levels, active

@@ -228,6 +228,7 @@ namespace remix::config {
         TRACE(caustics, 0, 1);
         TRACE(causticsStrength, 0, 1);
         TRACE(causticsContrast, 0, 7.96875);
+        TRACE(causticsDepth, 0, 100);
         TRACE(translucencyDenoiser, 0, 1);
         TRACE(translucencyReuse, 0, 1);
         TRACE(pbrLocalReuse, 0, 1);

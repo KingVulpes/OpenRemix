@@ -20,9 +20,10 @@ struct VisibilityHit { float t; bool blocked; vec3 p; vec3 n; vec3 transmission;
 // (three texels for Source's layered water) inlined at every shadow query ran
 // the shaders out of SPIR-V ids.
 float causticTint(Surface s,uint triangle,vec2 bary,float depth) {
-  // Strength (8 bits) and contrast (8 bits, in 32nds).
+  // Strength (8 bits) and contrast (8 bits, in 32nds), then the focus depth.
   uint settings=uint(frame.caustics)&0xffffu;
   float strength=float(settings&255u)/255,contrast=float(settings>>8)/32;
+  float focusDepth=unpackHalf2x16(uint(frame.caustics>>16)&0xffffu).x;
   if(strength<=0||s.pbrTextures.z==0)return 1;
   uint base=triangle*3;
   Vertex a=s.vertices.v[s.indices.i[base]],b=s.vertices.v[s.indices.i[base+1]],c=s.vertices.v[s.indices.i[base+2]];
@@ -47,6 +48,8 @@ float causticTint(Surface s,uint triangle,vec2 bary,float depth) {
   float ior=s.pbr.w!=0?max(unpackHalf2x16(floatBitsToUint(s.pbr.w)).x,1.):1.5;
   float bend=depth*(1-1/ior)*strength*2.5*sqrt(uvArea/area);
   float light=clamp(1/max(abs(determinant(mat2(1)+bend*slopeGradient)),1e-3),1-strength,4.);
+  // Light is not yet focused just behind the surface: caustics fade in over the focus depth.
+  if(focusDepth>0)light=mix(1.,light,smoothstep(0.,focusDepth,depth));
   return min(pow(light,contrast),8.);
 }
 void queryVisibility(accelerationStructureEXT scene,vec3 origin,vec3 direction,inout VisibilityHit hit,bool anyOpaque) {

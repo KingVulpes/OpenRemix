@@ -132,7 +132,8 @@ namespace remix::trace::detail {
     float restirParams[4] = {};    // spatial radius (pixels), emitter count, reserved
     uint64_t regirRead = 0, regirWrite = 0, regirSlots = 0;
     // Caustics (visibility.glsl causticTint): strength (8 bits) and contrast
-    // (8 bits, in 32nds); 0 off.
+    // (8 bits, in 32nds), then the half float focus depth in world units
+    // (bits 16-31); 0 off.
     uint64_t caustics = 0;
     uint32_t regirConfig[4] = {}; // cell capacity, slots per cell, cells per world unit (float bits), active
     uint64_t orcaTable = 0, orcaReserved = 0;

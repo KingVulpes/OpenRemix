@@ -241,6 +241,10 @@ namespace remix {
     // power (past 1, brighter lines and darker gaps).
     bool caustics = true;
     float causticsStrength = .4f, causticsContrast = 1;
+    // Caustics fade in over this depth (meters, see sceneScale) behind the
+    // surface: shallow water and thin glass have none, as light has not yet
+    // been focused. 0: at once.
+    float causticsDepth = .5f;
     bool translucencyDenoiser = true, translucencyReuse = true;
     bool pbrLocalReuse = true; // Experimental previous-frame secondary local lighting.
     bool sky = true;

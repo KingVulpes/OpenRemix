@@ -31,10 +31,13 @@ OPTIMIZED = {'pathtrace'}
 BACKENDS = {
     'postfx': ('postfx', 'vulkan1.2', ('meter', 'resolve', 'down', 'up')),
     'upscale': ('upscale', 'vulkan1.2', ('comp', 'vert', 'frag')),
-    'raster': ('raster', 'vulkan1.1', ('vert', 'frag', 'haloMask', 'haloVert', 'haloBlur', 'haloComposite', 'maskWithin', 'maskOverlay', 'spriteVert', 'spriteFrag')),
+    'raster': ('raster', 'vulkan1.1', ('vert', 'frag', 'haloMask', 'haloVert', 'haloBlur', 'haloComposite', 'maskWithin', 'maskOverlay', 'spriteVert', 'spriteFrag', 'skyComposite')),
     'pathtrace': ('trace', 'vulkan1.2', ('vert', 'frag', 'comp', 'temporal', 'transparency', 'temporalTransparency', 'frontGuides', 'psr', 'regirPresample', 'volumeUpdate', 'orcaSparse', 'sharcOrcaSparse', 'singleTransparency', 'singleTemporalTransparency', 'sharcSingleTransparency', 'sharcSingleTemporalTransparency', 'confidence', 'gbufferVert', 'gbufferFrag', 'depthFrag', 'sharcUpdate', 'sharcResolve', 'sharcQuery', 'sharcTransparency', 'sharcTemporal', 'sharcTemporalTransparency', 'sharcConfidence', 'sigmaTemporal', 'sharcSigmaTemporal', 'localTemporal', 'localSigmaTemporal', 'sharcLocalTemporal', 'sharcLocalSigmaTemporal', 'splitLocalTemporal', 'splitLocalSigmaTemporal', 'sharcSplitLocalTemporal', 'sharcSplitLocalSigmaTemporal', 'splitLocalDirect', 'splitRestirInitial', 'splitRestirSpatial', 'indirectTemporal', 'sharcIndirectTemporal', 'vertexAssemble', 'sparseCompact', 'sparseArgs', 'indirect', 'sharcIndirect', 'sheetLighting', 'sheetLightingTemporal', 'sharcSheetLighting', 'sharcSheetLightingTemporal')),
     'denoise': ('denoise', 'vulkan1.2', ('comp', 'sigma', 'local', 'localSigma', 'splitLocal', 'splitLocalSigma')),
+    'particles': ('particles', 'vulkan1.1', ('simulate', 'spawn', 'args', 'vert', 'frag', 'light', 'spawnTraced')),
 }
+# Stages that need a newer target than their backend's (ray queries: SPIR-V 1.4).
+STAGE_ENVIRONMENTS = {('particles', 'light'): 'vulkan1.2', ('particles', 'spawnTraced'): 'vulkan1.2'}
 
 
 def defines_for(backend, stage, stages):
@@ -99,6 +102,16 @@ def defines_for(backend, stage, stages):
         # with sprite vertices, frame and sequence blending and soft depth.
         defines = ['-DSPRITE=1']
         source = directory / ('raster.vert' if stage == 'spriteVert' else 'raster.frag')
+    if backend == 'raster' and stage == 'skyComposite':
+        # The NUMOS sky's fullscreen composite (raster/sky.cpp).
+        source = directory / 'sky.frag'
+    if backend == 'particles' and stage not in ('vert', 'frag'):
+        # Particles: one compute source, a pass per stage; the traced stages
+        # with ray queries against the scene.
+        defines = ['-DPASS_' + {'simulate': 'SIMULATE', 'spawn': 'SPAWN', 'args': 'ARGS', 'light': 'LIGHT',
+                                'spawnTraced': 'SPAWN'}[stage] + '=1']
+        if stage in ('light', 'spawnTraced'): defines += ['-DTRACED=1']
+        source = directory / 'particles.comp'
     if stage == 'sharcResolve': source = directory / 'sharc-resolve.comp'
     if stage == 'vertexAssemble': source = directory / 'vertex-assemble.comp'
     return defines, source
@@ -109,10 +122,10 @@ def glslang(arguments, output):
     depfile = output.with_suffix('.d')
     subprocess.run(['glslangValidator', '-V', *arguments, '--depfile', str(depfile), '-o', str(output)],
                    check=True, stdout=subprocess.DEVNULL)
-    # "output: input include ...", spaces in paths escaped with a backslash.
-    # A Windows output path has a drive colon: the separator is the first one before a space.
+    # "output: input include ...", spaces and Windows drive colons in paths escaped with a backslash.
+    # The separator is the first colon before a space.
     text = re.split(r':\s', depfile.read_text(), maxsplit=1)[1].replace('\\\n', ' ')
-    paths = [path.replace('\\ ', ' ') for path in re.findall(r'(?:\\ |[^\s])+', text)]
+    paths = [path.replace('\\ ', ' ').replace('\\:', ':') for path in re.findall(r'(?:\\ |[^\s])+', text)]
     depend(*paths)
 
 
@@ -127,6 +140,7 @@ def compile_stage(backend, stage, temporary):
     """SPIR-V words of one stage, compiled and validated; for an optimized
     backend, the optimized module and its XZ stream."""
     _, environment, stages = BACKENDS[backend]
+    environment = STAGE_ENVIRONMENTS.get((backend, stage), environment)
     defines, source = defines_for(backend, stage, stages)
     binary = Path(temporary) / (backend + '-' + stage + '.spv')
     glslang(['--target-env', environment, *defines, '-I' + str(ROOT/'third_party/nrd/Shaders'),
@@ -232,6 +246,8 @@ def use_tools(record):
     os.environ['PATH'] = os.pathsep.join(tools['path'] + [os.environ.get('PATH', '')])
     if 'spirv-cross' in tools:
         os.environ['REMIX_SPIRV_CROSS'] = tools['spirv-cross']
+    if 'slangc' in tools:
+        os.environ['REMIX_SLANGC'] = tools['slangc']
 
 
 def write_depfile(path, target):
@@ -243,7 +259,7 @@ def write_depfile(path, target):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     # metal translates the other backends' SPIR-V; 'all' leaves it out (it needs macOS and Xcode).
-    parser.add_argument('backend', choices=['postfx', 'upscale', 'raster', 'pathtrace', 'denoise', 'nrd', 'fsr31', 'metal', 'all'])
+    parser.add_argument('backend', choices=['postfx', 'upscale', 'raster', 'pathtrace', 'denoise', 'particles', 'nrd', 'fsr31', 'metal', 'sky', 'all'])
     parser.add_argument('--output', type=Path, help='Generated src/native tree (the build\'s); default _work/shaders')
     parser.add_argument('--tools', type=Path, help='Pinned tools recorded by toolchain.py --output')
     parser.add_argument('--depfile', type=Path, help='Make-style dependencies of the generated files')
@@ -260,13 +276,16 @@ def main():
         use_tools(args.tools)
     selected = [*BACKENDS, 'nrd', 'fsr31'] if args.backend == 'all' else [args.backend]
     glsl = [backend for backend in selected if backend in BACKENDS]
-    if (args.check or args.validate) and (glsl or 'metal' in selected):
+    if (args.check or args.validate) and (glsl or 'metal' in selected or 'sky' in selected):
         parser.error('--check and --validate apply to the committed nrd and fsr31 SPIR-V only')
     if glsl:
         process(glsl)
     if 'metal' in selected:
         import metal
         metal.process()
+    if 'sky' in selected:
+        import sky
+        sky.process()
     if args.depfile:
         write_depfile(args.depfile, args.depfile_target)
     for backend in selected:
@@ -275,6 +294,6 @@ def main():
 
 
 if __name__ == '__main__':
-    # metal.py imports generate: one module, so it sees --output and records dependencies here.
+    # metal.py and sky.py import generate: one module, so it sees --output and records dependencies here.
     sys.modules['generate'] = sys.modules[__name__]
     main()

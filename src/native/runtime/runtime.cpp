@@ -226,6 +226,8 @@ namespace remix {
     m_screenshot.reset(m_device);
     shutdownUi();
     m_pathTracer.reset();
+    m_rasterSky.reset();
+    m_rasterSkyReady = false;
     m_postProcessing.reset();
     m_exposureState.reset();
     m_postFailure.clear();
@@ -233,6 +235,9 @@ namespace remix {
     m_ngx.reset();
     m_raster.shutdownGpu();
     m_hostPasses.destroy();
+    m_particles.reset();
+    m_particleFrame = {};
+    m_particleClock = {};
     m_pipelines.reset();
     m_activePreparationKey.clear();
     m_failedPreparationKey.clear();

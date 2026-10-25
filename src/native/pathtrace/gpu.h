@@ -13,11 +13,13 @@
 #include "scene/light_bvh.h"
 #include "scene/opacity.h"
 #include "scene/static_scene.h"
+#include "scene/up_axis.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstring>
 #include <map>
+#include <mutex>
 #include <tuple>
 #include <unordered_set>
 
@@ -195,9 +197,15 @@ namespace remix::trace::detail {
     // Volumetrics: each source's share of the scattered light (sun, lights,
     // emissive surfaces, sky; the volumetric*Scale options).
     float volumeLightScales[4] = {1, 1, 1, 1};
+    // The NUMOS sky's cloud shadow (sky::Renderer::cloudShadow): rows taking
+    // a world position (w 1) to (u, v, slice) in its box; cloudShadowConfig:
+    // its texture + 1 (0: none), slices.
+    float cloudShadow[3][4] = {};
+    uint32_t cloudShadowConfig[4] = {};
   };
-  static_assert(sizeof(Frame) == 1216 && offsetof(Frame, localProbeRead) == 1168 &&
+  static_assert(sizeof(Frame) == 1280 && offsetof(Frame, localProbeRead) == 1168 &&
                 offsetof(Frame, localProbeParams) == 1184 && offsetof(Frame, volumeLightScales) == 1200 &&
+                offsetof(Frame, cloudShadow) == 1216 && offsetof(Frame, cloudShadowConfig) == 1264 &&
                 offsetof(Frame, inverseCameraRelative) == 1104 &&
                 offsetof(Frame, skyGuideRead) == 1064 && offsetof(Frame, skyGuideConfig) == 1088 && offsetof(Frame, volumeGrid) == 912 && offsetof(Frame, volumePrevious) == 1024 && offsetof(Frame, sparseList) == 880 && offsetof(Frame, sparseConfig) == 896 && offsetof(Frame, cameraCull) == 864 && offsetof(Frame, cutConfig) == 816 && offsetof(Frame, orcaParams) == 800 && offsetof(Frame, regirConfig) == 752 && offsetof(Frame, restirCurrent) == 656 && offsetof(Frame, visibilityNodes) == 592 && offsetof(Frame, pathConfig) == 528 &&
                 offsetof(Frame, firefly) == 512 && offsetof(Frame, indirectResults) == 496 &&
@@ -220,6 +228,9 @@ namespace remix::trace::detail {
   constexpr VkAccessFlags asWrite = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
 } // namespace remix::trace::detail
 
+namespace remix::sky {
+  class Renderer;
+}
 namespace remix {
   struct PathTracer::Gpu {
     remixapi_FramePerformanceEXT performance{.structSize = sizeof(remixapi_FramePerformanceEXT)};
@@ -490,11 +501,26 @@ namespace remix {
     } primaryRecording;
     void destroyPrimaryRecording(PrimaryRecording &recording);
     VkRenderPass skyPass{};
+    // The NUMOS sky (sky/renderer.h), created when first enabled. `skyReady`:
+    // it has outputs from an earlier frame; `skyApplied`: this frame's sky
+    // and sun are NUMOS's; `skyActive`: its work for this frame is recorded.
+    std::shared_ptr<sky::Renderer> numosSky;
+    config::SkySettings skySettings;
+    config::SkyControl skyControl;
+    // The sky's last frame, for the API's thread.
+    mutable std::mutex skyStateMutex;
+    config::SkyState skyState;
+    // skyFailure: the error that stopped the sky (it stays off until the
+    // sky settings change).
+    std::string skyUnavailable, skyReason, skyFailure;
+    bool skyReady = false, skyApplied = false, skyActive = false;
     VkFramebuffer skyFramebuffer{};
     uint32_t queueFamily{};
     std::unique_ptr<denoise::Renderer> denoiser;
     VkPipeline temporalCompute{}, confidenceCompute{};
     VkPipelineLayout temporalLayout{};
+    // The world's up axis for volumetricUpAxis Auto.
+    scene::UpAxisDetector upAxis;
     uint64_t shadowFrames = 0, shadowResets = 0;
     bool sigmaCapable = false, localCapable[2] = {};
     bool postSigma = false, postSigmaRequested = false;
@@ -788,6 +814,8 @@ namespace remix {
     // while the static inputs do not change.
     trace::CombinedTlasPolicy combinedPolicy;
     std::vector<VkAccelerationStructureInstanceKHR> combinedStatic, combinedDynamic;
+    // The frame's sun and sky (PathTracer::overlayLighting).
+    OverlayLighting overlay;
     uint64_t combinedStaticStamp = 0;
     bool combinedStaticValid = false;
     void buildCombinedTop(VkCommandBuffer command, const std::vector<trace::InstanceInput> &staticInputs,

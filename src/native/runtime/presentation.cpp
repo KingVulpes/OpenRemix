@@ -541,6 +541,7 @@ void RemixNativeRuntime::presented() {
       setupTime.stop();
       measured(m_asyncCaller.captureMilliseconds, [&] { m_raster.publishFrame(frame); });
       unsent.published = true;
+      publishParticles();
       setupTime.start();
       // As the synchronous path, reading the published frame.
       prepareSettings();
@@ -555,6 +556,8 @@ void RemixNativeRuntime::presented() {
         if (m_pathTracer)
           m_pathTracer->setStaticValidation(settings.persistentStatic && settings.persistentStaticValidation);
       }
+      if (m_pathTracer)
+        m_pathTracer->setSky(m_profiles.current().sky, m_skyControl, m_skyUnavailable);
       frame.setSkyTarget(m_pathTracer ? m_pathTracer->skyPass() : VK_NULL_HANDLE);
       m_rasterPreparing = !frame.preparePipelines(m_backend != 0);
       m_loading |= m_rasterPreparing;
@@ -657,6 +660,7 @@ void RemixNativeRuntime::presented() {
       setupTime.start();
       m_frames[m_frameIndex].snapshot.reset();
       frame.selectFrame(m_frameIndex);
+      if (m_particles) m_particles->selectFrame(m_frameIndex);
       if (m_postProcessing) m_postProcessing->selectFrame(m_frameIndex);
       if (m_pathTracer)
         m_pathTracer->selectFrame(m_frameIndex);
@@ -820,6 +824,7 @@ void RemixNativeRuntime::presented() {
       queueLock.lock();
       updateFreeCamera();
       m_raster.applyFreeCamera(m_freeCamera);
+      publishParticles();
       prepareSettings();
       {
         // A persistent static set is traced from the tracer's own copy of it.
@@ -834,6 +839,8 @@ void RemixNativeRuntime::presented() {
         if (m_pathTracer)
           m_pathTracer->setStaticValidation(settings.persistentStatic && settings.persistentStaticValidation);
       }
+      if (m_pathTracer)
+        m_pathTracer->setSky(m_profiles.current().sky, m_skyControl, m_skyUnavailable);
       m_raster.setSkyTarget(m_pathTracer ? m_pathTracer->skyPass()
                                          : VK_NULL_HANDLE);
       m_rasterPreparing = !m_raster.preparePipelines(m_backend != 0);
@@ -882,6 +889,7 @@ void RemixNativeRuntime::presented() {
       setupTime.start();
       m_frames[m_frameIndex].snapshot.reset();
       m_raster.selectFrame(m_frameIndex);
+      if (m_particles) m_particles->selectFrame(m_frameIndex);
       if (m_postProcessing) m_postProcessing->selectFrame(m_frameIndex);
       if (m_pathTracer)
         m_pathTracer->selectFrame(m_frameIndex);
@@ -1490,6 +1498,8 @@ void RemixNativeRuntime::presented() {
       m_lastFrame->restore(buffer, image, m_swapchainExtent, layout);
     }
     lap(breakdown.snapshotMilliseconds);
+    // Particle emitters: their compute passes, after the tracer's TLAS.
+    const bool particles = simulateParticles(buffer);
     VkRenderPassBeginInfo pass = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
         .renderPass = restore ? m_overlayPass : m_renderPass,
@@ -1503,6 +1513,10 @@ void RemixNativeRuntime::presented() {
     if (!m_asyncActive)
       drawUi(VK_NULL_HANDLE);
     lap(breakdown.uiMilliseconds);
+    // The raster backend's NUMOS sky records its frame outside the pass.
+    const bool rasterSky = !m_loading && !m_pathTracer && recordRasterSky(buffer, raster);
+    const bool rasterSkyHides =
+        rasterSky && m_profiles.current().sky.gameSky == config::SkySettings::GameSky::Hide;
     {
       // Includes the swapchain pass's clear and, when the GPU runs ahead of
       // presentation, its wait for the acquired image.
@@ -1518,12 +1532,14 @@ void RemixNativeRuntime::presented() {
       const bool masks = !m_loading && raster.maskRuns() != 0;
       // Frame generation takes the frame as it is before the UI layer.
       const bool hudless = generated.count && m_frameGeneration && !m_loading;
-      const bool split = halos || masks || hudless;
+      // Particles draw between the world and the view model (with frame
+      // generation, after the frame it takes, as the UI).
+      const bool split = halos || masks || hudless || particles || rasterSky;
       // The host's screen-space passes (remixapi_HostPassEXT) take the frame,
       // view model included, between render passes before its UI layer.
       const bool hostPasses = !m_loading && m_snapshotSupported && m_hostPasses.pending();
       const int sceneLayers = split ? 1 : hostPasses ? 2 : 3;
-      const bool skipSky = m_pathTracer != nullptr;
+      const bool skipSky = m_pathTracer != nullptr || rasterSkyHides;
       auto recordHostPasses = [&] {
         gpu::GpuScope hostTime(buffer, "Host passes", m_swapchainExtent);
         // The scene's depth stays in the target's depth attachment.
@@ -1549,8 +1565,12 @@ void RemixNativeRuntime::presented() {
         }
         gpu::GpuScope overlay(buffer, "Raster overlay (HUD, effects)", m_swapchainExtent);
         raster.record(buffer, false, true, nullptr, {}, 0, sceneLayers, masks ? 1 : 0);
-      } else if (!m_loading)
-        raster.record(buffer, false, false, nullptr, {}, 0, sceneLayers, masks ? 1 : 0);
+      } else if (!m_loading) {
+        raster.record(buffer, false, rasterSkyHides, nullptr, {}, 0, sceneLayers, masks ? 1 : 0);
+        scope.close();
+        if (rasterSky)
+          compositeRasterSky(buffer, raster, pass);
+      }
       scope.close();
       if (masks) {
         {
@@ -1577,6 +1597,8 @@ void RemixNativeRuntime::presented() {
           }
         }
       }
+      if (particles && !hudless)
+        drawParticles(buffer, pass);
       if (split && !hudless && !hostPasses) {
         gpu::GpuScope overlay(buffer, "Raster overlay (view model, HUD)", m_swapchainExtent);
         raster.record(buffer, false, true, nullptr, {}, 2, 3);
@@ -1593,6 +1615,8 @@ void RemixNativeRuntime::presented() {
           m_frameGeneration->captureHudless(buffer, image);
           pass.renderPass = m_resumePass;
           vkCmdBeginRenderPass(buffer, &pass, VK_SUBPASS_CONTENTS_INLINE);
+          if (particles)
+            drawParticles(buffer, pass);
         }
         gpu::GpuScope overlay(buffer, "Raster overlay (HUD)", m_swapchainExtent);
         raster.record(buffer, false, true, nullptr, {}, 3, 3);

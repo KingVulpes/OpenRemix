@@ -23,6 +23,7 @@
 #pragma once
 
 #include "pathtrace/renderer.h"
+#include "particles/renderer.h"
 #include "platform/gpu_frames.h"
 #include "platform/gpu_timers.h"
 #include "platform/present_queue.h"
@@ -37,6 +38,7 @@
 #include "ui/menu_shortcut.h"
 #include "ui/profiles.h"
 #include "scene/free_camera.h"
+#include "scene/up_axis.h"
 #include <remix/remix_c.h>
 #include <remix/remix_editor_ext.h>
 #include <atomic>
@@ -47,6 +49,9 @@ struct ImGuiContext;
 
 namespace remix {
 class FrameSnapshot;
+namespace sky {
+  class Renderer;
+}
 class RemixNativeRuntime {
 public:
   RemixNativeRuntime() = default;
@@ -153,6 +158,10 @@ public:
   // remixapi_SetConfigDefaultEXT: a host's default (config::Profiles::setDefault).
   remixapi_ErrorCode configureDefault(const char *key, const char *value);
   remixapi_BackendCapabilitiesEXT backendCapabilities() const;
+  // remix_sky_ext.h: the game's control over the sky (under the API lock),
+  // and what the sky did last frame.
+  config::SkyControl &skyControl() { return m_skyControl; }
+  config::SkyState skyState() const;
   remixapi_TracingStatisticsEXT tracingStatistics() const;
   remixapi_SharcStatisticsEXT sharcStatistics() const;
   // Low latency: asked for by the setting, and in effect (the path tracing
@@ -279,6 +288,7 @@ private:
   void drawUi(VkCommandBuffer commandBuffer);
   void drawRenderingTab(config::Settings &settings);
   void drawLightingTab(config::Settings &settings);
+  void drawSkyTab(config::Settings &settings);
   void drawPostProcessingTab(config::Settings &settings);
   void drawDiagnosticsTab(config::Settings &settings);
   void drawTexturesTab(config::Settings &settings);
@@ -338,6 +348,15 @@ private:
   void finishDeferredPresent();
   static bool processEvent(const SDL_Event *event, void *userData);
   void updateFreeCamera();
+  // Particle emitters (runtime/particles.cpp). publishParticles: Present
+  // setup (render thread idle): the registry's frame for the render thread
+  // and the last completed frame's statistics for the registry.
+  // simulateParticles: the frame's compute passes, outside a render pass;
+  // true when drawParticles has something to draw inside the target pass,
+  // after the world layer (it captures the scene's depth first if no one has).
+  void publishParticles();
+  bool simulateParticles(VkCommandBuffer buffer);
+  void drawParticles(VkCommandBuffer buffer, VkRenderPassBeginInfo &pass);
 
   RemixSdlWindow m_window;
   RasterRenderer m_raster;
@@ -370,6 +389,16 @@ private:
   scene::FreeCameraState m_freeCamera;
   std::shared_ptr<upscale::Ngx> m_ngx;
   std::unique_ptr<PathTracer> m_pathTracer;
+  // The raster backend's NUMOS sky (raster_sky.cpp): recordRasterSky before
+  // the target pass, false without a sky this frame; compositeRasterSky after
+  // the world's layers, inside the pass, which it leaves and re-enters.
+  bool recordRasterSky(VkCommandBuffer buffer, RasterRenderer &raster);
+  void compositeRasterSky(VkCommandBuffer buffer, RasterRenderer &raster, VkRenderPassBeginInfo &pass);
+  std::shared_ptr<sky::Renderer> m_rasterSky;
+  std::string m_rasterSkyFailure;
+  scene::Matrix m_rasterSkyView{}, m_rasterSkyProjection{};
+  bool m_rasterSkyReady = false, m_rasterSkyActive = false;
+  scene::UpAxisDetector m_rasterUpAxis;
   std::shared_ptr<postfx::State> m_exposureState;
   std::unique_ptr<postfx::Renderer> m_postProcessing;
   struct PreparedPost {
@@ -426,10 +455,18 @@ private:
   remixapi_DenoisingCapabilitiesEXT m_denoiseCapabilities{
       .structSize = sizeof(remixapi_DenoisingCapabilitiesEXT)};
   std::string m_traceUnavailable;
+  // Why the NUMOS sky cannot run on the device, or empty.
+  std::string m_skyUnavailable;
+  config::SkyControl m_skyControl;
   PresentedScreenshot m_screenshot;
   bool m_screenshotSupported = false;
   std::shared_ptr<FrameSnapshot> m_lastFrame;
   HostPasses m_hostPasses; // remixapi_HostPassEXT replay; needs the snapshot's swapchain usage
+  // Particles: render-owned, except the frame Present publishes (render thread idle).
+  std::unique_ptr<particles::Renderer> m_particles;
+  scene::ParticleFrame m_particleFrame;
+  std::chrono::steady_clock::time_point m_particleClock{}, m_particleStart = std::chrono::steady_clock::now();
+  uint32_t m_particleUpAxis = 2; // the up axis the last traced frame resolved
   bool m_snapshotSupported = false, m_snapshotAllocationFailed = false;
   bool m_initialized = false;
   uint64_t m_presentationCount = 0;

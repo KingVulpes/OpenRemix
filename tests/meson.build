@@ -10,6 +10,7 @@ if metal_backend
   subdir('abi')
   subdir('api')
   subdir('scene')
+  subdir('sky')
   subdir('ui')
   subdir('platform')
   subdir('runtime')
@@ -24,12 +25,13 @@ endif
 runtime_test_dep = declare_dependency(
   objects : remix.extract_all_objects(recursive : false),
   link_with : usd_libraries + [shell_platform, imgui_vulkan, scene_library,
-    raster_library, pathtrace_library, denoise_library, upscale_library],
+    raster_library, pathtrace_library, denoise_library, upscale_library, particles_library],
   dependencies : shell_deps,
   compile_args : ['-DREMIX_LIBRARY_EXPORTS=1'] + test_cpp_args)
 subdir('abi')
 subdir('api')
 subdir('scene')
+subdir('sky')
 subdir('ui')
 subdir('platform')
 subdir('runtime')

@@ -136,6 +136,21 @@ namespace remix {
     // colour and depth. Without the capture those draws are hard-edged.
     bool wantsSceneDepth() const;
     void captureSceneDepth(VkCommandBuffer command);
+    // Particles (particles/renderer.h) sample the same copy: after prepare(),
+    // requestSceneDepth makes wantsSceneDepth true for the frame; once
+    // captured, sceneDepth is the copy (shader read-only layout), else null.
+    void requestSceneDepth();
+    VkDescriptorImageInfo sceneDepth() const;
+
+    // The NUMOS sky (sky::Renderer::recordRasterComposite) over the target,
+    // inside its pass: the target times transmittance, plus addition (both
+    // sampled, target resolution). False while its pipelines compile.
+    bool recordSkyComposite(VkCommandBuffer command, const VkDescriptorImageInfo &transmittance,
+                            const VkDescriptorImageInfo &addition);
+    // The target blends linear values (an sRGB format).
+    bool linearTarget() const;
+    // The target's depth attachment (depthView's image).
+    VkImage depthImage() const;
 
     VkDescriptorImageInfo sampledMaterial(const std::shared_ptr<scene::Material> &material,
                                           VkCommandBuffer command);

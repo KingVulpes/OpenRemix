@@ -1,4 +1,7 @@
 #include "pathtrace/gpu.h"
+#if REMIX_HAS_NUMOS
+#include "sky/renderer.h"
+#endif
 #include "pathtrace/sharc_policy.h"
 #include "scene/emission.h"
 #include <chrono>
@@ -588,6 +591,7 @@ namespace remix {
     frame.inverseCamera = scene::inverse(frame.camera);
     const auto eye = scene::inverse(resources.view());
     std::copy_n(eye.data() + 12, 3, frame.eye);
+    upAxis.observe(eye);
     // Camera rays: the view and the projection inverted separately, without
     // the eye's translation (Frame::inverseCameraRelative).
     try {
@@ -601,6 +605,40 @@ namespace remix {
       frame.inverseCameraRelative = scene::multiply(toEye, frame.inverseCamera);
     }
     auto light = resources.light();
+    // The NUMOS sky's sun and sky come from its previous frame: its work for
+    // this one is recorded once the camera's jitter is known.
+    skyApplied = false;
+#if REMIX_HAS_NUMOS
+    // A sky failure must not take the frame with it: the sky stays off until
+    // its settings change.
+    const auto guardSky = [&](auto &&work) {
+      std::string error;
+      try {
+        work();
+        return;
+      } catch (const std::exception &exception) {
+        error = exception.what();
+      } catch (VkResult result) {
+        error = "Vulkan error " + std::to_string(int(result));
+      }
+      skyFailure = error;
+      skyActive = skyReady = false;
+      std::fprintf(stderr, "NUMOS sky stopped: %s\n", error.c_str());
+    };
+    const bool numosActive =
+        numosSky && skyReady && skySettings.enabled && skyUnavailable.empty() && skyFailure.empty();
+    if (numosActive && numosSky->sun().active) {
+      const auto &sun = numosSky->sun();
+      for (int i = 0; i < 3; ++i) {
+        light.direction[i] = sun.direction[i];
+        light.radiance[i] = sun.radiance[i] * skySettings.radianceScale;
+      }
+      light.angularDiameterDegrees = sun.angularDiameterDegrees;
+    } else if (numosActive) {
+      // No NUMOS light is above the horizon.
+      std::fill_n(light.radiance, 3, 0.f);
+    }
+#endif
     if (options.overrideLight) {
       float norm =
           std::hypot(options.lightDirection[0], options.lightDirection[1], options.lightDirection[2]);
@@ -661,6 +699,44 @@ namespace remix {
         hostBuffer(lightCookies, table.data(), table.size() * sizeof(uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
       frame.lightCookies = lightCookies ? lightCookies->address : 0;
     }
+#if REMIX_HAS_NUMOS
+    if (options.sky && numosActive) {
+      const auto environment = numosSky->environment();
+      if (environment.imageView && textures.size() < PathTracer::textureLimit) {
+        const float scale = numosSky->environmentScale() * skySettings.radianceScale;
+        std::fill_n(frame.skyRadiance, 3, scale);
+        frame.skyRadiance[3] = float(textures.size() + 1);
+        for (unsigned row = 0; row < 3; ++row)
+          for (unsigned col = 0; col < 4; ++col)
+            frame.domeTransform[row][col] = col < 3 ? numosSky->domeTransform()[row][col] : 0.f;
+        textures.push_back(environment);
+        skyApplied = true;
+      }
+      const auto cloudShadow = numosSky->cloudShadow();
+      if (cloudShadow.imageView && numosSky->sun().cloudShadowed && textures.size() < PathTracer::textureLimit) {
+        std::copy_n(&numosSky->cloudShadowTransform()[0][0], 12, &frame.cloudShadow[0][0]);
+        frame.cloudShadowConfig[0] = uint32_t(textures.size() + 1);
+        frame.cloudShadowConfig[1] = sky::Renderer::cloudShadowSlices;
+        textures.push_back(cloudShadow);
+      }
+    }
+#endif
+    // The sun and sky effects drawn over the frame are lit by.
+    std::copy_n(frame.direction, 3, overlay.sunDirection);
+    std::copy_n(frame.radiance, 3, overlay.sunRadiance);
+    std::copy_n(frame.skyRadiance, 4, overlay.skyRadiance);
+    overlay.environment = frame.skyRadiance[3] > 0 && size_t(frame.skyRadiance[3]) <= textures.size()
+                              ? textures[size_t(frame.skyRadiance[3]) - 1]
+                              : VkDescriptorImageInfo{};
+    for (unsigned row = 0; row < 3; ++row)
+      for (unsigned col = 0; col < 3; ++col)
+        overlay.domeTransform[row][col] = frame.domeTransform[row][col];
+    overlay.cloudShadow = frame.cloudShadowConfig[0] && frame.cloudShadowConfig[0] <= textures.size()
+                              ? textures[frame.cloudShadowConfig[0] - 1]
+                              : VkDescriptorImageInfo{};
+    std::copy_n(&frame.cloudShadow[0][0], 12, &overlay.cloudShadowTransform[0][0]);
+    overlay.cloudShadowSlices = frame.cloudShadowConfig[1];
+    overlay.upAxis = std::min(options.volumetricUpAxis, 2u);
     // Role CUT (remixapi_InstanceInfoMaskEXT): the coverage of the groups
     // whose instances the camera does not see, drawn by the raster renderer
     // ahead of this frame's passes. Its sources are in no table: their
@@ -860,6 +936,47 @@ namespace remix {
     if (upscaler)
       upscale::jitter(temporalFrame.jitter, sequence, extent, displayExtent);
     std::copy_n(temporalFrame.jitter, 2, frame.jitter);
+#if REMIX_HAS_NUMOS
+    skyActive = false;
+    if (skySettings.enabled && skyUnavailable.empty() && skyFailure.empty())
+      guardSky([&] {
+        if (!numosSky) {
+          numosSky = std::make_shared<sky::Renderer>(physical, device);
+          numosSky->selectFrame(frameIndex);
+        }
+        numosSky->setSettings(skySettings, skyControl);
+        sky::FrameDescription description{.view = resources.view(),
+                                          .projection = resources.projection(),
+                                          .previousView = temporalFrame.previousView,
+                                          .previousProjection =
+                                              history.reset() ? resources.projection() : previousProjection,
+                                          .jitter = {temporalFrame.jitter[0], temporalFrame.jitter[1]},
+                                          .renderWidth = extent.width,
+                                          .renderHeight = extent.height,
+                                          .outputWidth = displayExtent.width,
+                                          .outputHeight = displayExtent.height,
+                                          .metersPerUnit = options.sceneScale,
+                                          .upAxis = options.volumetricUpAxis,
+                                          .cameraCut = history.reset() || !skyReady};
+        // The combined TLAS, or the static one (the world) without it.
+        if (const auto &accel = tlas[topCombined ? 2 : 0].accel)
+          description.scene = accel->handle;
+        gpu::GpuScope scope(command, "NUMOS sky");
+        skyActive = numosSky->record(command, description);
+        skyReady |= skyActive;
+        skyReason = numosSky->status();
+        std::lock_guard lock(skyStateMutex);
+        skyState = numosSky->state();
+        skyState.active = skyActive;
+      });
+    else {
+      // A sky enabled again starts from its own next frame, not a stale one.
+      skyReady = false;
+      skyReason = skySettings.enabled ? "" : "Off.";
+      std::lock_guard lock(skyStateMutex);
+      skyState = {};
+    }
+#endif
     temporalFrame.jitter[2] = history.reset() ? temporalFrame.jitter[0] : previousJitter[0];
     temporalFrame.jitter[3] = history.reset() ? temporalFrame.jitter[1] : previousJitter[1];
     temporalFrame.hitDistance[3] = rrActive() ? 1.f : 0.f;
@@ -1095,7 +1212,7 @@ namespace remix {
     clear[0].color.float32[3] = 1;
     // With a dome, the rasterized sky layer (3D skybox) is drawn over it:
     // alpha -1 marks pixels no sky geometry covered (any draw writes >= 0).
-    if (options.sky && resources.dome().enabled)
+    if (options.sky && (resources.dome().enabled || skyApplied))
       clear[0].color.float32[3] = -1;
     clear[1].depthStencil.depth = 1;
     VkRenderPassBeginInfo skyBegin{.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
@@ -1107,7 +1224,9 @@ namespace remix {
     {
       gpu::GpuScope scope(command, "Sky raster", extent);
       vkCmdBeginRenderPass(command, &skyBegin, VK_SUBPASS_CONTENTS_INLINE);
-      resources.record(command, true, false, temporalFrame.jitter, extent);
+      // The NUMOS sky can take the place of the game's sky geometry.
+      if (!skyApplied || skySettings.gameSky != config::SkySettings::GameSky::Hide)
+        resources.record(command, true, false, temporalFrame.jitter, extent);
       vkCmdEndRenderPass(command);
     }
     if (timestamps)
@@ -1361,8 +1480,25 @@ namespace remix {
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, timestamps, 3);
       timingPending = true;
     }
+#if REMIX_HAS_NUMOS
+    if (skyActive)
+      guardSky([&] {
+        gpu::GpuScope scope(command, "NUMOS screen clouds");
+        const auto depth = denoiser ? denoiser->image(denoise::Depth) : upscale::Input{};
+        numosSky->recordPostDepth(command, depth.image, depth.view);
+      });
+#endif
     if (denoiser)
       denoiser->record(command);
+#if REMIX_HAS_NUMOS
+    if (skyActive && denoiser)
+      guardSky([&] {
+        gpu::GpuScope scope(command, "NUMOS composite", extent);
+        const auto color = denoiser->image(denoise::Composed), depth = denoiser->image(denoise::Depth);
+        numosSky->recordComposite(command, color.image, color.view, depth.image, depth.view,
+                                  numosSky->environmentScale() * skySettings.radianceScale, skySettings.gameSky);
+      });
+#endif
     stageTime(9);
     if (stateProfile) {
       const uint64_t values[] = {frame.config[2],

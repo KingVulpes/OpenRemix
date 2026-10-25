@@ -62,8 +62,11 @@ namespace remix::scene {
       // shaping[2] and [3] hold the leaf's power shares (LightNode).
       for (unsigned v = 0; v < 3; ++v)
         std::copy_n(light.corners[v], 3, e.corners[v]);
-      // Free in every emitter: the volumetric radiance scale.
-      e.corners[1][3] = light.volumetric;
+      // Free in every emitter: the volumetric radiance scale, negated less one
+      // for emissive surfaces (group) so the volume pass can scale those and
+      // lights apart (volume.glsl volumeEmitterScale; scales are never
+      // negative).
+      e.corners[1][3] = light.group ? -1 - light.volumetric : light.volumetric;
       // A sphere's corners are free: its IES profile and cookie (slots + 1,
       // 0: none) and its cookie's projection. (A triangle has no free field
       // for a profile; in shaping, the leaf's shares overwrote both slots,

@@ -177,8 +177,8 @@ namespace remix::trace::detail {
     // bits), guided share of the extra sky rays (float bits), active.
     uint64_t skyGuideRead = 0;
     uint64_t skyGuideWrite = 0;
-    // IES profiles (scene/ies.h): kIesBins floats each, a light's
-    // shaping.z the profile + 1.
+    // IES profiles (scene/ies.h): kIesBins floats each, a sphere emitter's
+    // corners[2].x the profile + 1.
     uint64_t iesProfiles = 0;
     uint32_t skyGuideConfig[4] = {};
     // Camera rays (pathtrace.comp ray()): inverseCamera relative to the eye,

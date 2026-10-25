@@ -48,6 +48,8 @@ and dependency setup. Normal builds use embedded shaders.
 
 - NVIDIA: NRD, SIGMA, SHARC and DLSS. AMD: FidelityFX FSR. Pixar and OpenUSD contributors.
 - SDL, Vulkan/MoltenVK, Dear ImGui, stb and bcdec contributors.
-- TheGreatHmmmmm, Jane, surething on the `RTX Remix Showcase` server for guiding me in the right direction. 
+- Jane, TheGreatHmmmmm, and surething on the `RTX Remix Showcase` server for guiding me in the right direction.
+- TheGreatHmmmmm for the Prism tonemapper and Bloom implementations.
+- [sparkles✨](https://github.com/Kim2091) for their Numos implementation, please [donate to them when you get the chance](https://ko-fi.com/kim20913944)
 
 See [third-party notices](ThirdPartyLicenses.txt)

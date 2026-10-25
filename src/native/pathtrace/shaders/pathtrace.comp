@@ -1365,8 +1365,9 @@ float localOcclusionConfidence(ivec2 pixel,Hit hit) {
 // which are all of a fast shadow's restarted pixels: averaged with the lit
 // surface around them, the shadow paled. A pixel whose occlusion changed
 // within the last frames reports a short distance, so it stays sharp while
-// its history rebuilds.
-float localBlurScale() { return clamp((localOcclusionAge+1)/8,0,1); }
+// its history rebuilds (from rtx.native.pathtrace.movingShadowBlur to all of
+// the distance over eight frames).
+float localBlurScale() { return mix(frame.localProbeParams.x,1,clamp(localOcclusionAge/8,0,1)); }
 #include "translucency.glsl"
 #endif
 // Indirect light at a transparent sheet without tracing from it (dxvk-remix,

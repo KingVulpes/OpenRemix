@@ -67,6 +67,11 @@ namespace remix {
     // Drop local-light history where moved lights or moved occluders (a closing
     // door; ReSTIR history samples re-tested) changed the light.
     bool localHistoryConfidence = true;
+    // Where a moving object's shadow just arrived or left (the denoiser
+    // restarted the pixel), the share of the light distance the local
+    // denoiser is told, rising to all of it over eight frames: lower keeps
+    // the moving shadow sharper and grainier, higher smoother and paler.
+    float movingShadowBlur = .125f;
     // Trace an indirect continuation path from each transparent sheet (glass,
     // blended surfaces). Off: a non-PBR sheet takes the denoised indirect light
     // of the surface behind it (much cheaper; transparent layers cost about a

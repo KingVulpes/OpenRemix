@@ -40,6 +40,11 @@ namespace remix {
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("REBLUR anti-lag for local lighting: lower values drop history sooner where the\n"
                           "light changed (faster shadows, more noise right after a change).");
+      ui::SliderFloat("Moving shadow blur", &options.movingShadowBlur, .01f, 1.f, "%.3f", ImGuiSliderFlags_Logarithmic);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Spatial smoothing where a moving object's shadow just arrived or left (the\n"
+                          "denoiser restarted those pixels). Lower: sharper, grainier moving shadows.\n"
+                          "Higher: smoother, paler. Settles to normal over eight frames.");
       ImGui::EndDisabled();
       ImGui::EndDisabled();
       ImGui::BeginDisabled(fsr.active);

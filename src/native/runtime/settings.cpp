@@ -159,6 +159,7 @@ namespace remix::config {
         TRACE(localAntilagSensitivity, .1, 16);
         TRACE(localHistoryFrames, 2, 64);
         TRACE(localHistoryConfidence, 0, 1);
+        TRACE(movingShadowBlur, .01, 1);
         TRACE(translucentIndirect, 0, 1);
         TRACE(skipBlendedSecondaryRays, 0, 1);
         TRACE(viewModel, 0, 1);

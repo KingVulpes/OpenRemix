@@ -93,10 +93,12 @@ namespace remix::metal::trace {
     Matrix inverseCameraRelative{};
     // Local occlusion probes (pathtrace.comp, localOcclusionConfidence): per
     // pixel, the arrived share of its local light, last frame's (0: none)
-    // and this frame's.
+    // and this frame's. localProbeParams: movingShadowBlur, reserved.
     uint64_t localProbeRead = 0, localProbeWrite = 0;
+    float localProbeParams[4] = {};
   };
-  static_assert(sizeof(Frame) == 1184 && offsetof(Frame, localProbeRead) == 1168 &&
+  static_assert(sizeof(Frame) == 1200 && offsetof(Frame, localProbeRead) == 1168 &&
+                offsetof(Frame, localProbeParams) == 1184 &&
                 offsetof(Frame, inverseCameraRelative) == 1104 &&
                 offsetof(Frame, skyGuideRead) == 1064 && offsetof(Frame, skyGuideConfig) == 1088 && offsetof(Frame, volumeGrid) == 912 && offsetof(Frame, volumePrevious) == 1024 && offsetof(Frame, sparseList) == 880 && offsetof(Frame, sparseConfig) == 896 && offsetof(Frame, cameraCull) == 864 && offsetof(Frame, cutConfig) == 816 && offsetof(Frame, orcaParams) == 800 && offsetof(Frame, regirConfig) == 752 && offsetof(Frame, restirCurrent) == 656 && offsetof(Frame, visibilityNodes) == 592 && offsetof(Frame, pathConfig) == 528 &&
                 offsetof(Frame, firefly) == 512 && offsetof(Frame, indirectResults) == 496 &&

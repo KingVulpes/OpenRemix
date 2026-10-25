@@ -114,6 +114,7 @@ void PathTracer::Gpu::configureLocalProbes(Frame &frame, const TraceOptions &opt
   p.writeIndex ^= 1;
   frame.localProbeWrite = p.buffers[p.writeIndex]->address;
   frame.localProbeRead = p.valid ? p.buffers[p.writeIndex ^ 1]->address : 0;
+  frame.localProbeParams[0] = options.movingShadowBlur;
   p.valid = true; // this frame writes it
 }
 

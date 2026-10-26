@@ -475,6 +475,10 @@ private:
   config::SkyControl m_skyControl;
   PresentedScreenshot m_screenshot;
   bool m_screenshotButton = false; // the post-processing tab's button, for menuShortcut
+  // The diagnostics tab's path inspector (PathTracer::inspectPixel).
+  bool m_inspecting = false;
+  int m_inspectX = -1, m_inspectY = -1;
+  void drawPathInspector();
   bool m_screenshotSupported = false;
   std::shared_ptr<FrameSnapshot> m_lastFrame;
   HostPasses m_hostPasses; // remixapi_HostPassEXT replay; needs the snapshot's swapchain usage

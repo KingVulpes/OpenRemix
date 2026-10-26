@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <unordered_map>
 #include <cstdio>
 #include <limits>
 #include <numeric>
@@ -666,6 +667,14 @@ namespace remix::scene {
   void LightBvh::build(std::vector<SphereLight> statics, std::vector<uint64_t> staticStamps,
                        std::vector<uint64_t> staticSeen, std::vector<SphereLight> dynamics,
                        std::vector<uint64_t> dynamicStamps, std::vector<uint64_t> dynamicSeen, Reason reason) {
+    // A light's identity across builds (leafRemap).
+    const auto lightKey = [](const SphereLight &light) {
+      return light.id * 4 + light.triangle;
+    };
+    std::vector<uint64_t> oldLeaves(m_nodes.size(), 0);
+    for (size_t i = 0; i < m_nodes.size(); ++i)
+      if (m_nodes[i].links[3] == 1 && m_nodes[i].links[2] < m_lights.size())
+        oldLeaves[i] = lightKey(m_lights[m_nodes[i].links[2]]);
     m_split |= !dynamics.empty();
     m_staticReal = uint32_t(statics.size());
     m_dynamicReal = uint32_t(dynamics.size());
@@ -727,6 +736,24 @@ namespace remix::scene {
     }
     m_builtAt = m_update;
     m_structure = m_changing;
+    m_leafRemap.clear();
+    if (!oldLeaves.empty()) {
+      std::unordered_map<uint64_t, uint32_t> leafOf;
+      leafOf.reserve(m_lights.size());
+      for (uint32_t i = 0; i < m_nodes.size(); ++i)
+        if (m_nodes[i].links[3] == 1)
+          for (uint32_t e = m_nodes[i].links[2], end = e + std::max(m_nodes[i].links[1], 1u);
+               e < end && e < m_lights.size(); ++e)
+            if (m_lights[e].id)
+              leafOf.emplace(lightKey(m_lights[e]), i);
+      m_leafRemap.assign(oldLeaves.size(), 0);
+      for (size_t i = 0; i < oldLeaves.size(); ++i)
+        if (oldLeaves[i]) {
+          const auto found = leafOf.find(oldLeaves[i]);
+          if (found != leafOf.end())
+            m_leafRemap[i] = found->second + 1;
+        }
+    }
     ++builds;
     ++buildReasons[lastBuildReason = reason];
   }

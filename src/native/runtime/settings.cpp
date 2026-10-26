@@ -195,6 +195,9 @@ namespace remix::config {
         TRACE(emissiveLights, 0, 1);
         TRACE(emissiveClusterSize, 1, 64);
         TRACE(lightPowerExponent, .25, 1);
+        TRACE(rayOffset, 4, 1024);
+        TRACE(shadowTerminatorFade, 0, .3);
+        TRACE(emissiveSpecularRoughness, 0, .45);
         TRACE(adaptiveLocalSampling, 0, 1);
         TRACE(stabilizeEmissiveLighting, 0, 1);
         TRACE(emissiveSolidAngleSampling, 0, 1);
@@ -274,6 +277,8 @@ namespace remix::config {
         TRACE(movingLocalHistory, 0, 1);
         TRACE(restirCandidates, 1, 32);
         TRACE(restirSpatialSamples, 0, 8);
+        TRACE(restirDisocclusionSamples, 0, 8);
+        TRACE(restirBoilingFilter, 0, 1);
         TRACE(restirSpatialRadius, 1, 100);
         TRACE(restirTemporalHistory, 0, 64);
         TRACE(restirInitialVisibility, 0, 1);

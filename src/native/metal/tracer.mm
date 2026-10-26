@@ -842,6 +842,7 @@ namespace remix::metal {
     // pixels (render/output size with reconstruction).
     frame.visibilityProbe[0] = .02f / options.sceneScale;
     frame.visibilityProbe[1] = .05f / options.sceneScale;
+    frame.visibilityProbe[3] = options.rayOffset;
     frame.visibilityProbe[2] = c.displayHeight && height < c.displayHeight ? float(height) / float(c.displayHeight) : 1.f;
     static_assert(PathTracer::textureLimit <= 32 * 128);
     for (const uint32_t slot : srgbSlots)

@@ -1116,6 +1116,7 @@ namespace remix {
     frame.visibilityProbe[1] = .05f / options.sceneScale;
     // Texture footprints are measured in output pixels: an upscaled frame
     // samples finer mips (render/output size, the usual upscaler mip bias).
+    frame.visibilityProbe[3] = options.rayOffset;
     frame.visibilityProbe[2] = upscaler && displayExtent.height && extent.height < displayExtent.height
                                    ? float(extent.height) / float(displayExtent.height)
                                    : 1.f;
@@ -1157,6 +1158,7 @@ namespace remix {
     configureSparse(command, frame, options, extent);
     configureVolume(command, frame, options);
     beginRayProfile(command, frame);
+    beginPathInspector(command, frame);
     frame.config[2] = uint32_t(sequence++);
     // Opt-in diagnostic offset for independently seeded HDR references.
     if (const auto *seed = std::getenv("REMIX_PATH_SAMPLE_SEED"))
@@ -1617,6 +1619,7 @@ namespace remix {
     captureLinear(command);
     finishPbrReuse(command);
     finishRayProfile(command);
+    finishPathInspector(command);
     finishLightGuiding(command);
     finishSharc(command);
     rendered = true;

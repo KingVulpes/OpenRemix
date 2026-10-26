@@ -287,7 +287,9 @@ LocalCandidate triangleCandidate(LightEmitter light,Hit hit,inout uint state,boo
                            :.5*twiceArea*geometry/(3.14159265359*distance2);
   vec3 scale=emitterRadiance(light,-direction)*integral
       *localFalloff(dot(light.positionRadius.xyz-hit.p,light.positionRadius.xyz-hit.p))*frame.localScale.x;
-  result.physical=materialResponse(hit,direction,result.specular)*scale;
+  result.physical=materialResponse(hit,direction,result.specular);
+  if(pathEmissiveSpecular(hit)){result.physical-=result.specular;result.specular=vec3(0);}
+  result.physical*=scale;
   result.specular*=scale;
   result.endpoint=offsetRay(endpoint,dot(normal,-direction)>0?normal:-normal);
   result.distance=sqrt(distance2);
@@ -688,6 +690,7 @@ vec3 localLighting(Hit hit,uint state,uint samples,out float lightDistance,bool 
     vec3 visibility=localVisibility(offsetRay(hit.p,hit.ng),endpoint);
     noteLocalProbe(visibility,estimate);
     vec3 contribution=estimate*visibility,specularContribution=physicalSpecular/selectionPdf*visibility;
+    pathDebugRecord(pathDebugVertex?4:2,endpoint,float(emitter),vec4(estimate,selectionPdf),vec4(visibility,distance),vec4(physical,0));
     clampLighting(hit,contribution,specularContribution,threshold);
     result+=contribution;specular+=specularContribution;
     if(useGuiding)localDirection(endpoint-hit.p,contribution);

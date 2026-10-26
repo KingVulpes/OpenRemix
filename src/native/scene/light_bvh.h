@@ -96,6 +96,13 @@ namespace remix::scene {
     // Selection weights are power to this exponent (1: power). A change
     // makes the next update build anew.
     void setPowerExponent(float exponent);
+    // The leaves of the build before the last one, by node index, to the
+    // leaf now holding their first light (new index + 1; 0: gone), when the
+    // last build followed `builds` == fromBuilds: what refers to leaves (the
+    // light guide) carries over the rebuild. Null otherwise.
+    const std::vector<uint32_t> *leafRemap(uint64_t fromBuilds) const {
+      return fromBuilds + 1 == builds && !m_leafRemap.empty() ? &m_leafRemap : nullptr;
+    }
     uint32_t leafCount() const { return uint32_t(m_clusters.size()); }
     const std::vector<LightEmitter> &emitters() const { return m_emitters; }
     const std::vector<LightNode> &nodes() const { return m_nodes; }
@@ -173,6 +180,7 @@ namespace remix::scene {
     std::vector<std::array<float, 3>> m_centers;
     uint32_t m_clusterSize = 1, m_staticClusters = 0;
     float m_powerExponent = 1;
+    std::vector<uint32_t> m_leafRemap;
     // Input identity order survives radiance animation.
     std::vector<std::pair<uint64_t, uint32_t>> m_sourceKeys;
     std::vector<uint32_t> m_order, m_parents, m_leaves;

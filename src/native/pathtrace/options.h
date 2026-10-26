@@ -49,6 +49,18 @@ namespace remix {
     // Below 1 dim lights draw more samples, bright ones fewer (RTXPT uses
     // 0.8); radiance and PDFs are unchanged, only where samples go.
     float lightPowerExponent = 1;
+    // Secondary rays start this many units in the last place of each
+    // coordinate off the surface (RT Gems ch. 6): about 0.5 units at 16384
+    // from the origin. Smaller tightens contact shadows, too small shows acne.
+    float rayOffset = 256;
+    // Light sampling fades out between cosines 3x and 1x this to the shading
+    // normal (0: off), ahead of the faceted shadow terminator of low-poly
+    // meshes with smooth normals (RTXPT's per-material shadowNoLFadeout).
+    float shadowTerminatorFade = 0;
+    // Smooth PBR surfaces (roughness below this; 0 off, at most 0.45, under
+    // the radiance cache's 0.5) reflect emissive surfaces through their
+    // sampled paths instead of light sampling (brdf.glsl pathEmissiveSpecular).
+    float emissiveSpecularRoughness = .3f;
     uint32_t emissiveCandidates = 1;
     // RIS candidates in sets of more than four sphere lights without emissive
     // surfaces (1: plain BVH sampling). Candidates compare unshadowed
@@ -236,12 +248,19 @@ namespace remix {
     bool skyGuiding = true;
     float skyGuideCellSize = 2, skyGuideShare = .5f;
     uint32_t restirCandidates = 32;     // initial light-tree candidates per pixel
-    uint32_t restirSpatialSamples = 8; // neighbor reservoirs per pixel
+    // Neighbor reservoirs per pixel, and where the temporal history is short
+    // (a disocclusion: M under a quarter of the cap) the boosted count
+    // (RTXDI: 1 and 8). Fewer neighbors correlate the signal less.
+    uint32_t restirSpatialSamples = 1, restirDisocclusionSamples = 8;
     float restirSpatialRadius = 30;    // pixels
     // Temporal M cap in multiples of the current M. Longer histories correlate
-    // the signal over time, which NRD cannot filter (frozen noise); dxvk-remix
-    // uses 4.
-    uint32_t restirTemporalHistory = 64;
+    // the signal over time, which NRD cannot filter (frozen noise); RTXDI
+    // uses 20, dxvk-remix 4.
+    uint32_t restirTemporalHistory = 20;
+    // RTXDI's boiling filter: a reservoir whose weight exceeds the average of
+    // its wave's nonzero ones by 10/strength - 9 times is dropped (a rare light
+    // flaring through reuse); 0 off. Darkens slightly by design.
+    float restirBoilingFilter = .2f;
     // RTXDI permutation sampling: the temporal lookup takes a per-frame
     // shuffled neighbor (2x2 block), decorrelating reused samples.
     bool restirPermutation = true;

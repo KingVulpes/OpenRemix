@@ -58,7 +58,7 @@ layout(set=0,binding=3,std140) uniform Frame {
   uvec4 localConfig; // active lights, samples, generation low, generation high + adaptive (bit 31) + guide spheres (bit 30)
   vec4 localScale; // radiance multiplier, reach, guiding requested, inverse reach squared
   uint64_t lightGuideRead, lightGuideWrite;
-  uvec4 lightGuideConfig; // capacity, node count, inverse cell size (float bits), reserved
+  uvec4 lightGuideConfig; // capacity, node count, inverse cell size (float bits), leaf remap entries this frame
   uint64_t torchNodes, torchEmitters, emissiveNodes, emissiveEmitters;
   uvec4 splitLocal;
   uint64_t reuseRead, reuseWrite;
@@ -69,10 +69,10 @@ layout(set=0,binding=3,std140) uniform Frame {
   vec4 domeTransform[3];
   uint64_t visibilityNodes, visibilityLeaves, visibilityTable, movedLights;
   uvec4 visibilityConfig; // table row words, moved light count, reserved
-  vec4 visibilityProbe; // world units: x probe offset above the surface, y decal attachment distance; z texture footprint scale (render/output size)
+  vec4 visibilityProbe; // world units: x probe offset above the surface, y decal attachment distance; z texture footprint scale (render/output size); w ray offset (ULPs)
   uint64_t restirCurrent, restirHistoryRead, restirHistoryWrite, restirRemap;
-  uvec4 restirConfig; // candidates, spatial samples, temporal M cap, flags (1 initial visibility)
-  vec4 restirParams; // spatial radius (pixels), emitter count, reserved
+  uvec4 restirConfig; // candidates, spatial samples (bits 8-15: after a disocclusion), temporal M cap, flags (1 initial visibility)
+  vec4 restirParams; // spatial radius (pixels), emitter count, boiling filter strength, reserved
   uint64_t regirRead, regirWrite, regirSlots;
   uint64_t caustics; // caustics: strength, contrast (visibility.glsl causticTint)
   uvec4 regirConfig; // cell capacity, slots per cell, cells per world unit (float bits), active
@@ -101,11 +101,12 @@ layout(set=0,binding=3,std140) uniform Frame {
   uvec4 skyGuideConfig; // slot capacity, cells per world unit (float bits), guided share (float bits), active
   mat4 inverseCameraRelative; // camera rays: world = point.xyz / point.w + eye.xyz
   uint64_t localProbeRead, localProbeWrite; // local occlusion probes: last frame's (0: none), this frame's
-  vec4 localProbeParams; // movingShadowBlur, reserved
+  vec4 localProbeParams; // movingShadowBlur, shadowTerminatorFade, emissiveSpecularRoughness, reserved
   vec4 volumeLightScales; // volumetrics: sun, lights, emissive surfaces, sky
   vec4 cloudShadow[3]; // rows: world position (w 1) to the sky's cloud shadow box, (u, v, slice) in [0, 1]
   uvec4 cloudShadowConfig; // its texture + 1 (0: no cloud shadow), slices, reserved
   uvec4 srgbTextures[32]; // a bit per texture slot: sRGB-encoded texels (stored UNORM), decoded with pow 2.2
+  uvec4 pathDebug; // path inspector: record buffer address (x low, y high), pixel (x | y << 16; ~0 none), capacity
 } frame;
 // Instance mask bit of view models (pathtrace/tlas_policy.h).
 const uint viewModelInstanceMask=64u;

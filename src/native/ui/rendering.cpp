@@ -62,6 +62,14 @@ namespace remix {
         ImGui::TextWrapped("%s", "Adaptive termination inactive: minimum reaches the maximum bounce limit.");
       if (options.russianRoulette && m_pathTracer && !m_pathTracer->adaptiveTerminationAvailable())
         ImGui::TextWrapped("%s", "Adaptive termination unavailable: using fixed-limit tracing.");
+      ui::SliderFloat("Shadow terminator fade", &options.shadowTerminatorFade, 0.f, .3f, "%.2f");
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Sampled light fades out toward grazing angles (0: off) before the faceted\n"
+                          "shadow edge of low-poly meshes with smooth normals.");
+      ui::SliderFloat("Ray offset (float steps)", &options.rayOffset, 4.f, 1024.f, "%.0f", ImGuiSliderFlags_Logarithmic);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("How far shadow and bounce rays start off a surface, in units in the last place\n"
+                          "of its coordinates. Smaller: tighter contact shadows; too small: shadow acne.");
       ui::Checkbox("Denoise translucent surfaces", &options.translucencyDenoiser);
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Filters single-layer surface lighting with its own motion and depth.\n"

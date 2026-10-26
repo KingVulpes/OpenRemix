@@ -24,33 +24,96 @@ float ggxD(float nh,float alpha) {
 float ggxG1(float nv,float alpha) {
   return 2*nv/(nv+sqrt(alpha*alpha+(1-alpha*alpha)*nv*nv));
 }
+// Height-correlated Smith masking-shadowing (Heitz 2014): the separable
+// product G1(i) G1(o) counts a microfacet hidden from both directions twice.
+float ggxG2(float ni,float no,float alpha) {
+  float a2=alpha*alpha;
+  float li=sqrt(1+a2*(1/(ni*ni)-1)),lo=sqrt(1+a2*(1/(no*no)-1));
+  return 2/(li+lo);
+}
+// Directional albedo of single-scattering GGX (F = 1, height-correlated
+// Smith), integrated with visible-normal sampling: rows perceptual roughness
+// 0..1, columns cos(view) 0..1, 16 steps each.
+const float ggxAlbedoTable[256]=float[](
+  0.8922,0.9999,1.0000,1.0000,1.0000,1.0000,1.0000,1.0000,1.0000,1.0000,1.0000,1.0000,1.0000,1.0000,1.0000,1.0000,
+  0.9568,0.9975,0.9994,0.9997,0.9999,0.9999,0.9999,0.9999,1.0000,1.0000,1.0000,1.0000,1.0000,1.0000,1.0000,1.0000,
+  0.9883,0.9602,0.9892,0.9952,0.9973,0.9982,0.9988,0.9991,0.9992,0.9994,0.9995,0.9995,0.9996,0.9996,0.9996,0.9997,
+  0.9945,0.9008,0.9512,0.9751,0.9854,0.9905,0.9933,0.9949,0.9960,0.9966,0.9970,0.9975,0.9978,0.9980,0.9982,0.9983,
+  0.9967,0.8886,0.9048,0.9353,0.9565,0.9698,0.9775,0.9828,0.9863,0.9885,0.9904,0.9915,0.9925,0.9933,0.9939,0.9943,
+  0.9975,0.9001,0.8811,0.8954,0.9163,0.9341,0.9479,0.9579,0.9655,0.9709,0.9751,0.9782,0.9807,0.9824,0.9840,0.9853,
+  0.9978,0.9112,0.8752,0.8699,0.8791,0.8931,0.9076,0.9208,0.9315,0.9403,0.9476,0.9538,0.9580,0.9620,0.9651,0.9679,
+  0.9977,0.9172,0.8735,0.8545,0.8505,0.8561,0.8656,0.8760,0.8869,0.8969,0.9061,0.9141,0.9217,0.9281,0.9326,0.9373,
+  0.9975,0.9163,0.8697,0.8420,0.8277,0.8222,0.8241,0.8292,0.8367,0.8450,0.8531,0.8617,0.8698,0.8765,0.8836,0.8906,
+  0.9971,0.9105,0.8593,0.8255,0.8041,0.7903,0.7835,0.7820,0.7829,0.7871,0.7914,0.7973,0.8047,0.8111,0.8179,0.8245,
+  0.9966,0.9005,0.8448,0.8050,0.7764,0.7566,0.7429,0.7335,0.7284,0.7256,0.7257,0.7267,0.7300,0.7341,0.7380,0.7423,
+  0.9960,0.8875,0.8246,0.7790,0.7458,0.7186,0.6988,0.6831,0.6714,0.6622,0.6567,0.6535,0.6509,0.6499,0.6494,0.6505,
+  0.9954,0.8723,0.8010,0.7484,0.7088,0.6772,0.6518,0.6302,0.6139,0.5988,0.5866,0.5781,0.5703,0.5645,0.5582,0.5556,
+  0.9947,0.8540,0.7733,0.7154,0.6691,0.6322,0.6020,0.5752,0.5536,0.5351,0.5178,0.5039,0.4916,0.4801,0.4715,0.4630,
+  0.9939,0.8355,0.7451,0.6793,0.6273,0.5854,0.5496,0.5198,0.4944,0.4716,0.4513,0.4345,0.4182,0.4035,0.3903,0.3794,
+  0.9932,0.8153,0.7150,0.6411,0.5843,0.5370,0.4986,0.4653,0.4366,0.4117,0.3896,0.3696,0.3515,0.3350,0.3205,0.3065);
+float ggxAlbedo(float roughness,float no) {
+  vec2 at=vec2(clamp(roughness,0.,1.),clamp(no,1.0/15,1.))*15;
+  ivec2 i=min(ivec2(at),ivec2(14));vec2 f=at-vec2(i);
+  float a=mix(ggxAlbedoTable[i.x*16+i.y],ggxAlbedoTable[i.x*16+i.y+1],f.y);
+  float b=mix(ggxAlbedoTable[i.x*16+16+i.y],ggxAlbedoTable[i.x*16+17+i.y],f.y);
+  return mix(a,b,f.x);
+}
+// The light single scattering loses to masking, returned by scattering again
+// (Turquin 2019; RTXPT): rough metals otherwise lose up to two thirds of it.
+vec3 ggxMultiScatter(vec3 f0,float roughness,float no) {
+  float e=max(ggxAlbedo(roughness,no),.05);
+  return 1+f0*(1-e)/e;
+}
 void materialLobes(Hit hit,vec3 wi,out vec3 diffuse,out vec3 specular) {
   diffuse=specular=vec3(0);
   float ni=dot(hit.n,wi),no=dot(hit.n,hit.wo);
   if(ni<=0||no<=0||dot(hit.ng,wi)<=0)return;
   if(!hit.pbr){diffuse=hit.color.rgb/eonPi;return;}
   diffuse=eonBrdfCosines(hit.color.rgb,hit.rm.x,ni,no,dot(wi,hit.wo));
-  vec3 h=normalize(wi+hit.wo);
-  vec3 f=surfaceFresnel(hit,mix(vec3(.04),hit.color.rgb,hit.rm.y),max(0,dot(hit.wo,h)));
+  vec3 h=normalize(wi+hit.wo),f0=mix(vec3(.04),hit.color.rgb,hit.rm.y);
+  vec3 f=surfaceFresnel(hit,f0,max(0,dot(hit.wo,h)));
   float alpha=max(.001,hit.rm.x*hit.rm.x);
-  specular=f*(ggxD(max(0,dot(hit.n,h)),alpha)*ggxG1(ni,alpha)*ggxG1(no,alpha)/(4*ni*no));
+  specular=f*ggxMultiScatter(f0,hit.rm.x,no)*(ggxD(max(0,dot(hit.n,h)),alpha)*ggxG2(ni,no,alpha)/(4*ni*no));
   diffuse*=(1-hit.rm.y)*(1-f);
 }
 vec3 materialBrdf(Hit hit,vec3 wi) {
   vec3 diffuse,specular;materialLobes(hit,wi,diffuse,specular);
   return diffuse+specular;
 }
+// Light sampling's fade toward the shadow terminator (RTXPT's low grazing
+// angle falloff): a smooth normal lights a low-poly surface past where its
+// flat triangles turn away or shadow each other, a cut in their shape. The
+// light fades out between cosines 3k and k to the shading normal first
+// (k = rtx.native.pathtrace.shadowTerminatorFade, frame.localProbeParams.y;
+// 0 off). Sampled bounce directions keep the full BRDF.
+float terminatorFade(Hit hit,vec3 wi) {
+  float k=frame.localProbeParams.y;
+  return k>0?clamp((dot(hit.n,wi)-k)/(2*k),0.,1.):1.;
+}
+// Emissive surfaces in the specular lobe of a smooth PBR surface (roughness
+// below rtx.native.pathtrace.emissiveSpecularRoughness, frame.localProbeParams.z;
+// 0 off) are found by its sampled path directions instead of light sampling:
+// a uniform point on an emitter rarely lands in a narrow GGX lobe, a
+// reflection of a screen or panel stayed noisy. Light sampling keeps the
+// diffuse lobe and every sphere light; the path adds the emission its next
+// hit shows, weighted by the scattering's specular share (continuation). Set
+// by callers only where that path follows the vertex (the last vertex of a
+// path, and cache training, keep full light sampling).
+bool emissiveSpecularFromPaths=false;
+bool pathEmissiveSpecular(Hit hit) {
+  return emissiveSpecularFromPaths&&hit.pbr&&hit.rm.x<frame.localProbeParams.z;
+}
 // All NEE estimators previously include cos/pi. Replace that Lambert factor
 // with the same BRDF used by continuation; keep the existing light PDFs.
 vec3 materialResponse(Hit hit,vec3 wi) {
-  if(!hit.pbr)return vec3(dot(hit.ng,wi)>0?1:0);
-  return materialBrdf(hit,wi)*eonPi/max(materialFactor(hit),vec3(1e-6));
+  if(!hit.pbr)return vec3(dot(hit.ng,wi)>0?terminatorFade(hit,wi):0);
+  return materialBrdf(hit,wi)*(eonPi*terminatorFade(hit,wi))/max(materialFactor(hit),vec3(1e-6));
 }
 vec3 materialResponse(Hit hit,vec3 wi,out vec3 specular) {
   specular=vec3(0);
   if(!hit.pbr)return materialResponse(hit,wi);
   vec3 diffuse;materialLobes(hit,wi,diffuse,specular);
-  vec3 scale=eonPi/max(materialFactor(hit),vec3(1e-6));
+  vec3 scale=eonPi*terminatorFade(hit,wi)/max(materialFactor(hit),vec3(1e-6));
   specular*=scale;
   return diffuse*scale+specular;
 }

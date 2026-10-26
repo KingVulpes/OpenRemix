@@ -116,7 +116,7 @@ namespace remix::trace::detail {
     uint32_t localConfig[4] = {};
     float localScale[4] = {};
     uint64_t lightGuideRead = 0, lightGuideWrite = 0;
-    uint32_t lightGuideConfig[4] = {}; // capacity, node count, inverse cell size (float bits), reserved
+    uint32_t lightGuideConfig[4] = {}; // capacity, node count, inverse cell size (float bits), leaf remap entries
     uint64_t torchNodes = 0, torchEmitters = 0, emissiveNodes = 0, emissiveEmitters = 0;
     uint32_t splitLocal[4] = {}; // mode, torch count, emissive count, debug view
     uint64_t reuseRead = 0, reuseWrite = 0;
@@ -128,10 +128,10 @@ namespace remix::trace::detail {
     uint64_t visibilityNodes = 0, visibilityLeaves = 0, visibilityTable = 0;
     uint64_t movedLights = 0; // scene::MovedLight pairs, count in visibilityConfig[1]
     uint32_t visibilityConfig[4] = {}; // table row words, moved light count, light-tree nodes in the table, reserved
-    float visibilityProbe[4] = {};     // world units: probe offset above the surface, decal attachment distance; texture footprint scale (render/output size)
+    float visibilityProbe[4] = {};     // world units: probe offset above the surface, decal attachment distance; texture footprint scale (render/output size); ray offset (ULPs)
     uint64_t restirCurrent = 0, restirHistoryRead = 0, restirHistoryWrite = 0, restirRemap = 0;
     uint32_t restirConfig[4] = {}; // candidates, spatial samples, temporal M cap, flags (1 initial visibility)
-    float restirParams[4] = {};    // spatial radius (pixels), emitter count, reserved
+    float restirParams[4] = {};    // spatial radius (pixels), emitter count, boiling filter strength, reserved
     uint64_t regirRead = 0, regirWrite = 0, regirSlots = 0;
     // Caustics (visibility.glsl causticTint): strength (8 bits) and contrast
     // (8 bits, in 32nds), then the half float focus depth in world units
@@ -191,7 +191,7 @@ namespace remix::trace::detail {
     Matrix inverseCameraRelative{};
     // Local occlusion probes (pathtrace.comp, localOcclusionConfidence): per
     // pixel, the arrived share of its local light, last frame's (0: none)
-    // and this frame's. localProbeParams: movingShadowBlur, reserved.
+    // and this frame's. localProbeParams: movingShadowBlur, shadowTerminatorFade, reserved.
     uint64_t localProbeRead = 0, localProbeWrite = 0;
     float localProbeParams[4] = {};
     // Volumetrics: each source's share of the scattered light (sun, lights,
@@ -205,8 +205,12 @@ namespace remix::trace::detail {
     // A bit per texture slot (slot / 32, its bit slot % 32): the slot holds
     // sRGB-encoded texels (stored UNORM), decoded with pow 2.2 (scene.glsl).
     uint32_t srgbTextures[32][4] = {};
+    // Path inspector (pathtrace.comp pathDebugRecord): its record buffer's
+    // address (low, high words), the pixel (x | y << 16; ~0 none) and the
+    // record capacity.
+    uint32_t pathDebug[4] = {0, 0, ~0u, 0};
   };
-  static_assert(sizeof(Frame) == 1792 && offsetof(Frame, srgbTextures) == 1280 &&
+  static_assert(sizeof(Frame) == 1808 && offsetof(Frame, srgbTextures) == 1280 && offsetof(Frame, pathDebug) == 1792 &&
                 offsetof(Frame, localProbeRead) == 1168 &&
                 offsetof(Frame, localProbeParams) == 1184 && offsetof(Frame, volumeLightScales) == 1200 &&
                 offsetof(Frame, cloudShadow) == 1216 && offsetof(Frame, cloudShadowConfig) == 1264 &&
@@ -377,6 +381,21 @@ namespace remix {
       bool pending = false;
       const char *path = std::getenv("REMIX_RAY_PROFILE");
     } rayProfile;
+    // Path inspector (PathTracer::inspectPixel): the pixel's records, read
+    // back like the ray profile.
+    struct PathInspector {
+      static constexpr uint32_t capacity = 256;
+      std::unique_ptr<Buffer> records, readback;
+      bool pending = false;
+      int x = -1, y = -1;
+      scene::Matrix camera{};
+      uint32_t width = 0, height = 0;
+      mutable std::mutex mutex;
+      PathInspection last; // guarded by mutex
+    } pathInspector;
+    void beginPathInspector(VkCommandBuffer command, Frame &frame);
+    void finishPathInspector(VkCommandBuffer command);
+    void completePathInspector();
     void beginRayProfile(VkCommandBuffer command, Frame &frame);
     void finishRayProfile(VkCommandBuffer command);
     void completeRayProfile();
@@ -624,6 +643,10 @@ namespace remix {
     std::vector<uint8_t> lightUploadPacking;
     struct LightGuiding {
       static constexpr uint32_t capacity = 65536;
+      // Behind each bank's slots and counters: a rebuilt tree's leaf remap
+      // (LightBvh::leafRemap), written into the read bank for one frame.
+      static constexpr uint32_t remapCapacity = 1u << 18;
+      std::vector<uint32_t> pendingRemap;
       std::unique_ptr<Buffer> history[2], readback;
       uint32_t writeIndex = 0;
       bool valid = false, pending = false, attempted = false, pipelineFailed = false;

@@ -278,14 +278,20 @@ namespace remix {
                           "(not used with DLSS Ray Reconstruction). Uses the separate local-lighting pass.");
       if (options.restir) {
         int candidates = int(options.restirCandidates), spatial = int(options.restirSpatialSamples),
-            history = int(options.restirTemporalHistory);
+            history = int(options.restirTemporalHistory), boost = int(options.restirDisocclusionSamples);
         if (ui::SliderInt("ReSTIR candidates", &candidates, 1, 32))
           options.restirCandidates = uint32_t(candidates);
         if (ui::SliderInt("ReSTIR spatial samples", &spatial, 0, 8))
           options.restirSpatialSamples = uint32_t(spatial);
+        if (ui::SliderInt("ReSTIR spatial samples after disocclusion", &boost, 0, 8))
+          options.restirDisocclusionSamples = uint32_t(boost);
         ui::SliderFloat("ReSTIR spatial radius", &options.restirSpatialRadius, 1, 100, "%.0f px");
         if (ui::SliderInt("ReSTIR temporal history", &history, 0, 64))
           options.restirTemporalHistory = uint32_t(history);
+        ui::SliderFloat("ReSTIR boiling filter", &options.restirBoilingFilter, 0, 1, "%.2f");
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Drops reservoirs far brighter than their neighbors' (0: off), before a rare light\n"
+                            "spreads through reuse as a flash. Slightly darkens by design.");
         ui::Checkbox("ReSTIR initial visibility", &options.restirInitialVisibility);
         ui::Checkbox("ReSTIR permutation sampling", &options.restirPermutation);
         if (ImGui::IsItemHovered())

@@ -5,6 +5,10 @@
 #extension GL_EXT_nonuniform_qualifier : require
 #extension GL_GOOGLE_include_directive : require
 #extension GL_EXT_control_flow_attributes : require // [[dont_unroll]] (visibility.glsl causticTint)
+#ifdef RESTIR_INITIAL
+#extension GL_KHR_shader_subgroup_arithmetic : require // restir.glsl boiling filter
+#extension GL_KHR_shader_subgroup_ballot : require
+#endif
 #ifdef ORCA_SPARSE_PASS
 #extension GL_EXT_shader_atomic_int64 : require
 #endif
@@ -94,6 +98,25 @@ uint rng;
 // The pixel this invocation shades; the invocation's own coordinate except
 // in a launch over the selected-pixel list.
 ivec2 shadingPixel;
+// Path inspector (PathTracer::inspectPixel, frame.pathDebug): the inspected
+// pixel's records, four vec4 each, the kind in the fourth's w:
+// 0 primary: position, t | normal, roughness (-1 legacy) | colour, emission luminance | pixel colour
+// 1 path vertex: position, bounce | normal, roughness | throughput, t | emission
+// 2 light sample: endpoint, emitter | estimate, selection PDF | visibility, distance | unshadowed
+//   (4: the same at a path vertex, pathDebugVertex)
+// 3 emission a path collected: hit position | its weight | the emission
+layout(buffer_reference,std430,buffer_reference_align=16) buffer PathDebugRecords { uvec4 header; vec4 data[]; };
+bool pathDebugVertex=false;
+bool pathDebugged() {
+  return frame.pathDebug.z!=0xffffffffu&&uvec2(shadingPixel)==uvec2(frame.pathDebug.z&0xffffu,frame.pathDebug.z>>16);
+}
+void pathDebugRecord(float kind,vec3 a,float aw,vec4 b,vec4 c,vec4 d) {
+  if(!pathDebugged())return;
+  PathDebugRecords records=PathDebugRecords(uint64_t(frame.pathDebug.x)|(uint64_t(frame.pathDebug.y)<<32));
+  uint i=atomicAdd(records.header.x,1u);
+  if(i>=frame.pathDebug.w)return;
+  records.data[i*4]=vec4(a,aw);records.data[i*4+1]=b;records.data[i*4+2]=c;records.data[i*4+3]=vec4(d.xyz,kind);
+}
 uint hash(uint x) { x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; return x ^ (x >> 16); }
 float random() { rng = hash(rng + 0x9e3779b9u); return float(rng >> 8) * (1.0 / 16777216.0); }
 #include "ray_profile.glsl"
@@ -168,6 +191,8 @@ float cameraPixelAngle() {
 // 1/cos along the view direction, whose axes map to UV through the
 // triangle's barycentric basis (e1, e2 world edges; du1, du2 their UV edges).
 // Anisotropic sampling then filters it like rasterized texture derivatives.
+// Bounce hits fetch their emission while a path looks for it (pathEmissiveSpecular).
+bool pathEmission=false;
 // Path rays carry their cone (coneSpread >= 0): its width where the ray
 // starts and its spread angle, which every scattering widens by the solid
 // angle of its sample's PDF (Akenine-Moller et al. 2021, "Improved Shader
@@ -249,7 +274,7 @@ void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, ino
     hitFootprint(direction,hit.t,model*vec4(b-a,0),model*vec4(c-a,0),
                  s.vertices.v[s.indices.i[tri+1]].uv.xy-ua,s.vertices.v[s.indices.i[tri+2]].uv.xy-ua);
   }
-  hit.color=albedo(s,tri/3,bary,motion,hit.emission,hit.self);
+  hit.color=albedo(s,tri/3,bary,motion||pathEmission,hit.emission,hit.self);
   hit.identity=motion&&frame.splitLocal.w==3?debugTriangle(s.debugIdentity,originalTriangle(s,tri/3)):0;
   {
     vec3 w=vec3(1-bary.x-bary.y,bary);
@@ -461,9 +486,11 @@ vec3 debugGeometry(Hit hit,ivec2 pixel) {
   if(view==5)return .15+.7*fract(hit.p); // one world unit per cell
   return vec3(0);
 }
-// Scale-aware integer ULP offset with a near-origin fallback (RT Gems, ch. 6).
+// Scale-aware integer ULP offset with a near-origin fallback (RT Gems, ch. 6):
+// rtx.native.pathtrace.rayOffset units in the last place along the normal
+// (frame.visibilityProbe.w; 256 without it).
 vec3 offsetRay(vec3 p,vec3 n) {
-  ivec3 step=ivec3(256.0*n);
+  ivec3 step=ivec3((frame.visibilityProbe.w>0?frame.visibilityProbe.w:256.0)*n);
   vec3 shifted=intBitsToFloat(floatBitsToInt(p)+mix(step,-step,lessThan(p,vec3(0))));
   return mix(shifted,p+n*(1.0/65536.0),lessThan(abs(p),vec3(1.0/32.0)));
 }
@@ -659,7 +686,8 @@ vec3 direct(Hit hit,bool primary,out vec3 specular,out float distance) {
     if(source==0) {
       if(cosine<=0||!any(greaterThan(frame.lightRadiance.rgb,vec3(0))))continue;
       vec3 diffuse;materialLobes(hit,toLight,diffuse,lobeSpecular);
-      weight=(diffuse+lobeSpecular)*cosine*frame.lightRadiance.rgb;lobeSpecular*=cosine*frame.lightRadiance.rgb;
+      vec3 sun=cosine*terminatorFade(hit,toLight)*frame.lightRadiance.rgb;
+      weight=(diffuse+lobeSpecular)*sun;lobeSpecular*=sun;
     } else {
       if(frame.skyRadiance.w==0)continue;
       weight=materialSample(hit,direction,lobeSpecular);
@@ -853,6 +881,12 @@ vec3 continuation(Hit primary,int lobe,float probability,out vec3 firstDirection
   directionSample=vec2(-1);
   pathDistance=0;specular=vec3(0);
   firstSpecularShare=dot(specularWeight,vec3(.2126,.7152,.0722))/max(dot(weight,vec3(.2126,.7152,.0722)),1e-20);
+  // The emission the next hit shows through the specular lobe, where the
+  // primary's light sampling leaves it to this path (pathEmissiveSpecular:
+  // the primary is lit with emissiveSpecularFromPaths whenever bounces follow).
+  emissiveSpecularFromPaths=maxBounces>0;
+  vec3 emissiveWeight=pathEmissiveSpecular(primary)?specularWeight/max(materialFactor(primary),vec3(1e-6)):vec3(0);
+  emissiveSpecularFromPaths=false;
   bool dead=primary.pbr&&!any(greaterThan(weight,vec3(0)));
   vec3 direction=firstDirection,origin=offsetRay(primary.p,primary.ng);
   vec3 throughput=primary.pbr?weight/max(materialFactor(primary),vec3(1e-6)):vec3(1),result=vec3(0);
@@ -942,7 +976,9 @@ vec3 continuation(Hit primary,int lobe,float probability,out vec3 firstDirection
     Hit hit=primary;
     if(!atPrimary) {
     if(layers==0)profilePath(1u+min(bounce,3u)); // Four depth counters: the last takes every deeper segment.
+    pathEmission=any(greaterThan(emissiveWeight,vec3(0)));
     hit=secondaryHit(origin,direction);
+    pathEmission=false;
     if(hit.t<1e30)coneWidth+=coneSpread*hit.t;
     // Also through blended layers, and to the sky (a reflection distance).
     pathDistance+=hit.t*(1-smoothstep(0.,.2,diffuseMotion));
@@ -950,11 +986,18 @@ vec3 continuation(Hit primary,int lobe,float probability,out vec3 firstDirection
     if(hit.blended&&random()>=hit.color.a) {
       if(++layers>=32){profilePath(9u);break;}
       // A translucent body: its depth absorption over the segment, per pass taken.
+      vec3 passed;
       if(hit.thick.y>0){float f0=(hit.thick.x-1)/(hit.thick.x+1);
-        throughput*=(1-f0*f0)*pow(clamp(hit.color.rgb,vec3(1e-4),vec3(1)),vec3(hit.t/hit.thick.y))/max(1-hit.color.a,1e-3);}
-      else throughput*=transmissionColor(hit.color.rgb,hit.tinted);
+        passed=(1-f0*f0)*pow(clamp(hit.color.rgb,vec3(1e-4),vec3(1)),vec3(hit.t/hit.thick.y))/max(1-hit.color.a,1e-3);}
+      else passed=transmissionColor(hit.color.rgb,hit.tinted);
+      throughput*=passed;emissiveWeight*=passed;
       origin=offsetRay(hit.p,-hit.ng);continue;
     }
+    if(any(greaterThan(emissiveWeight,vec3(0)))) {
+      pathDebugRecord(3,hit.p,0,vec4(emissiveWeight,0),vec4(hit.emission,0),vec4(0));
+      result+=emissiveWeight*hit.emission;emissiveWeight=vec3(0);
+    }
+    pathDebugRecord(1,hit.p,float(bounce+1),vec4(hit.n,hit.pbr?hit.rm.x:-1),vec4(throughput,hit.t),vec4(hit.emission,0));
 #if defined(TEMPORAL) && defined(SHEET_LIGHTING_PASS)
     vec3 opaqueRadiance;
     if(translucentRadiance(hit,opaqueRadiance)) {
@@ -985,9 +1028,15 @@ vec3 continuation(Hit primary,int lobe,float probability,out vec3 firstDirection
     }
 #endif
     }
-    // The one direct() call: the primary's own light, or a vertex's.
+    // The one direct() call: the primary's own light, or a vertex's. Its
+    // specular emission is left to the path wherever one follows.
     vec3 vertexSpecular;float vertexDistance;
+    const bool savedFromPaths=emissiveSpecularFromPaths;
+    emissiveSpecularFromPaths=atPrimary?maxBounces>0:bounce+1<maxBounces&&!shortPath;
+    pathDebugVertex=!atPrimary;
     vec3 vertexLight=direct(hit,atPrimary,vertexSpecular,vertexDistance);
+    pathDebugVertex=false;
+    emissiveSpecularFromPaths=savedFromPaths;
     if(atPrimary) {
       primaryLight=vertexLight;primarySpecular=vertexSpecular;primaryDistance=vertexDistance;
       atPrimary=false;
@@ -1009,6 +1058,9 @@ vec3 continuation(Hit primary,int lobe,float probability,out vec3 firstDirection
     vec3 hitSpecular;
     vec3 hitWeight=materialSample(hit,direction,hitSpecular);
     coneSpread=min(coneSpread+coneExpansion(samplePdf),2*3.14159265);
+    emissiveSpecularFromPaths=true; // as direct() was lit above (a path follows)
+    emissiveWeight=pathEmissiveSpecular(hit)?throughput*hitSpecular:vec3(0);
+    emissiveSpecularFromPaths=savedFromPaths;
     // A diffusely sampled continuation ends the distance as well.
     diffuseMotion+=1-dot(hitSpecular,luma)/max(dot(hitWeight,luma),1e-20);
     throughput*=hitWeight;previousVertex=hit.p;origin=offsetRay(hit.p,hit.ng);layers=0;
@@ -1028,7 +1080,7 @@ vec3 continuation(Hit primary,int lobe,float probability,out vec3 firstDirection
         rouletteState=hash(rouletteState+0x9e3779b9u);
         float choice=float(rouletteState>>8)*(1.0/16777216.0);
         if(choice>=p){profilePath(12u);break;}
-        throughput/=p;
+        throughput/=p;emissiveWeight/=p;
       }
       profilePath(11u);
     }
@@ -1195,7 +1247,8 @@ vec3 rrSpecularAlbedo(vec3 f0,float roughness,float NoV) {
   float bias=dot(M1*X.xy,Y.xy)/dot(M2*X.xyw,Y.xyw);
   float scale=dot(M3*X.xy,Y.xy)/dot(M4*X.xzw,Y.xyw);
   bias*=clamp(f0.g*50,0,1);
-  return clamp(f0*max(0,scale)+max(0,bias),0,1);
+  // With the BRDF's multiple-scattering compensation (brdf.glsl).
+  return clamp((f0*max(0,scale)+max(0,bias))*ggxMultiScatter(f0,roughness,NoV),0,1);
 }
 struct IndirectResult {
   vec3 radiance; uint state;
@@ -1664,6 +1717,9 @@ void main() {
   return;
 #elif defined(SPLIT_LIGHTING_PASS)
   if(any(greaterThanEqual(pixel,ivec2(frame.target.xy))))return;
+  // Primary light sampling alone: the opaque pass traces its paths whenever
+  // bounces are on (pathEmissiveSpecular).
+  emissiveSpecularFromPaths=frame.config.y>0u;
   // The opaque pass preserves the exact hit position and normal in scratch
   // images. Avoid another geometry query or depth reconstruction at edges.
   vec4 normal=imageLoad(emissiveInput,pixel);
@@ -1855,8 +1911,11 @@ void main() {
   vec3 sunTransmittance=vec3(1),unshadowedDirect=vec3(0);float blockerDistance=65504;
   if(primary.t<1e30&&!primary.blended&&sparseLaunch!=2u) {
     sunTransmittance=sunVisibility(primary,pixel,blockerDistance);
-    unshadowedDirect=materialBrdf(primary,-frame.lightDirection.xyz)*max(0,dot(primary.n,-frame.lightDirection.xyz))*frame.lightRadiance.rgb;
+    unshadowedDirect=materialBrdf(primary,-frame.lightDirection.xyz)*max(0,dot(primary.n,-frame.lightDirection.xyz))*
+                     terminatorFade(primary,-frame.lightDirection.xyz)*frame.lightRadiance.rgb;
     primaryDirect=unshadowedDirect*sunTransmittance;
+    // The primary's paths (traceIndirect) follow whenever bounces are on.
+    emissiveSpecularFromPaths=frame.config.y>0u;
 #ifdef SPLIT_LOCAL_PASS
     // Split direct lighting runs separately to keep its reservoirs out of the
     // opaque/indirect kernel's register footprint.
@@ -1869,6 +1928,7 @@ void main() {
       local=localLighting(primary,rng,frame.localConfig.y,localDistance,true,localSpecular);
     local+=emissive;localSpecular+=emissiveSpecular;
 #endif
+    emissiveSpecularFromPaths=false;
     if(separateIndirect) {
       IndirectTransport result=IndirectResults(frame.indirectResults).pixels[uint(pixel.x)+uint(pixel.y)*frame.target.x];
       vec2 rg=unpackHalf2x16(result.rg),bd=unpackHalf2x16(result.bd);
@@ -1896,6 +1956,8 @@ void main() {
   // once per pixel it represents. Emission and sky are exact at every pixel.
   float sparseScale=sparseLaunch==1u?256.0/float(frame.sparseConfig.y):1.0;
   vec3 color=opaque?emission+sparseScale*(primaryDirect+materialFactor(primary)*(indirect+local)):imageLoad(rawSky,pixel).rgb;
+  pathDebugRecord(0,primary.p,primary.t,vec4(primary.n,primary.pbr?primary.rm.x:-1),
+                  vec4(primary.color.rgb,dot(emission,vec3(.2126,.7152,.0722))),vec4(color,0));
   // A dome shows where the sky layer drew nothing (alpha -1, see the sky raster clear).
   if(!opaque&&frame.skyRadiance.w!=0&&imageLoad(rawSky,pixel).a<-.5)color=environmentRadiance(direction);
   if(primary.blended)color=vec3(0);

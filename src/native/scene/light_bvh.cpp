@@ -191,6 +191,15 @@ namespace remix::scene {
     m_due = 0;
   }
 
+  void LightBvh::setPowerExponent(float exponent) {
+    exponent = std::clamp(exponent, .25f, 1.f);
+    if (exponent == m_powerExponent)
+      return;
+    m_powerExponent = exponent;
+    m_nodes.clear();
+    m_due = 0;
+  }
+
   void LightBvh::makeClusters(uint32_t begin, uint32_t end) {
     for (uint32_t i = begin; i < end;) {
       uint32_t j = i + 1;
@@ -896,7 +905,11 @@ namespace remix::scene {
       // A leaf's emitters: bounds of the lit ones (all when none is, as for
       // internal nodes below), summed power, and each one's share of it.
       const uint32_t first = node.links[2], count = std::max(node.links[1], 1u);
-      const auto power = lightPower;
+      const double exponent = m_powerExponent;
+      const auto power = [exponent](const SphereLight &light) {
+        const double p = lightPower(light);
+        return exponent == 1 ? p : std::pow(p, exponent);
+      };
       double total = 0;
       for (uint32_t e = first; e < first + count; ++e)
         total += power(m_lights[e]);

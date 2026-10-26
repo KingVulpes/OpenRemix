@@ -122,7 +122,7 @@ namespace remix::trace::detail {
     uint64_t reuseRead = 0, reuseWrite = 0;
     uint32_t reuseConfig[4] = {}; // previous frame valid, diagnostics, ray counter address low/high
     uint64_t indirectResults = 0, blueNoise = 0;
-    float firefly[4] = {};       // outgoing local direct / indirect luminance limits; reserved
+    float firefly[4] = {};       // outgoing local direct / indirect luminance limits; meter guide; middle-grey radiance
     uint32_t pathConfig[4] = {}; // adaptive termination, minimum completed bounces, sheet flags (1 traced indirect, 2 local lights), secondary ray mask
     float domeTransform[3][4] = {};
     uint64_t visibilityNodes = 0, visibilityLeaves = 0, visibilityTable = 0;
@@ -1011,7 +1011,7 @@ namespace remix {
     trace::SceneSignature lastScene;
     uint64_t sequence = 0;
     float previousDirectClamp = 0, previousIndirectClamp = 0;
-    bool previousFireflyFilter = false;
+    bool previousFireflyFilter = false, previousRelativeClamps = false;
     std::chrono::steady_clock::time_point epoch = std::chrono::steady_clock::now();
 
     bool preparing = false, preparedRasterPrimary = true;

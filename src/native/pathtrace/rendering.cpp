@@ -48,12 +48,13 @@ namespace remix {
     complete(command);
     configureProfile(options);
     if (options.localDirectClamp != previousDirectClamp || options.indirectClamp != previousIndirectClamp ||
-        options.localFireflyFilter != previousFireflyFilter) {
+        options.localFireflyFilter != previousFireflyFilter || options.relativeClamps != previousRelativeClamps) {
       history.clear();
       stats.accumulationCount = 0;
       previousDirectClamp = options.localDirectClamp;
       previousIndirectClamp = options.indirectClamp;
       previousFireflyFilter = options.localFireflyFilter;
+      previousRelativeClamps = options.relativeClamps;
     }
     rendered = false;
     pendingTime = std::chrono::steady_clock::now();
@@ -1162,6 +1163,15 @@ namespace remix {
       frame.config[2] += uint32_t(std::strtoul(seed, nullptr, 10));
     frame.config[3] = uint32_t(stats.accumulationCount);
     frame.firefly[2] = postProcessing->materialGuide() ? 1.f : 0.f;
+    // The radiance that displays as middle grey (0.18) at the current exposure,
+    // the automatic part from the meter's latest readback. Set after the scene
+    // signature: exposure drifts while the meter adapts.
+    const float exposure = options.exposure * (options.autoExposure ? postProcessing->statistics().exposure : 1.f);
+    frame.firefly[3] = .18f / std::max(exposure, 1e-12f);
+    if (options.relativeClamps) {
+      frame.firefly[0] *= frame.firefly[3];
+      frame.firefly[1] *= frame.firefly[3];
+    }
     if (uniform && uniform->host == deviceLocalScene)
       uniform.reset(); // this completed slot's buffer, after a placement switch
     if (deviceLocalScene) {
@@ -1752,11 +1762,14 @@ namespace remix {
       staged.emissive = std::move(m_gpu->emissiveBvh);
       staged.families = true;
       staged.emissive.setClusterSize(options.emissiveClusterSize);
+      staged.torch.setPowerExponent(options.lightPowerExponent);
+      staged.emissive.setPowerExponent(options.lightPowerExponent);
       staged.torch.update({lights.begin(), lights.begin() + sphereCount});
       staged.emissive.update({lights.begin() + sphereCount, lights.end()});
     }
     const auto split = Clock::now();
     staged.combined.setClusterSize(options.emissiveClusterSize);
+    staged.combined.setPowerExponent(options.lightPowerExponent);
     staged.combined.update(lights);
     {
       std::lock_guard lock(scene::g_lightTreeSaveMutex);

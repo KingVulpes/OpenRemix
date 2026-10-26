@@ -168,10 +168,20 @@ float cameraPixelAngle() {
 // 1/cos along the view direction, whose axes map to UV through the
 // triangle's barycentric basis (e1, e2 world edges; du1, du2 their UV edges).
 // Anisotropic sampling then filters it like rasterized texture derivatives.
+// Path rays carry their cone (coneSpread >= 0): its width where the ray
+// starts and its spread angle, which every scattering widens by the solid
+// angle of its sample's PDF (Akenine-Moller et al. 2021, "Improved Shader
+// and Texture Level of Detail Using Ray Cones"; RTXPT's growth factor 0.3).
+// A bounce off a diffuse surface then samples coarse mips, as its filtered
+// result would.
+float coneWidth=0,coneSpread=-1;
+float coneExpansion(float pdf) {
+  return .3*2*acos(max(-1.,1-1/max(pdf*2*3.14159265,1e-20)));
+}
 void hitFootprint(vec3 direction,float t,vec3 e1,vec3 e2,vec2 du1,vec2 du2) {
   uvGradX=uvGradY=vec2(0);
   vec3 n=cross(e1,e2);
-  float nn=dot(n,n),r=cameraPixelAngle()*t;
+  float nn=dot(n,n),r=coneSpread<0?cameraPixelAngle()*t:coneWidth+coneSpread*t;
   if(nn<1e-30||!(r>0))return;
   vec3 nh=n*inversesqrt(nn),axis=direction-nh*dot(direction,nh);
   if(dot(axis,axis)<1e-12)axis=cross(abs(nh.z)<.999?vec3(0,0,1):vec3(1,0,0),nh);
@@ -716,11 +726,14 @@ SharcHitData cacheHit(Hit hit) {
   SharcHitData data;
   data.positionWorld=cachePosition(hit);data.normalWorld=cacheNormal(hit);
   data.radianceDirectionWorld=hit.wo;data.radianceDirectionWeight=0;
-  data.materialDemodulation=max(hit.color.rgb,vec3(.001));
+  // Floors as RTXPT's: a near-black texel's sample is amplified at most 20
+  // times into its cell (1000 before), where any mismatch between these
+  // factors and the sampled BRDF weight is a blotch.
+  data.materialDemodulation=max(hit.color.rgb,vec3(.05));
   if(hit.pbr) {
     vec3 diffuseFactor,specularFactor;
     NRD_MaterialFactors(hit.n,hit.wo,hit.color.rgb*(1-hit.rm.y),mix(vec3(.04),hit.color.rgb,hit.rm.y),cacheRoughness(hit),diffuseFactor,specularFactor);
-    data.materialDemodulation=max(diffuseFactor+specularFactor,vec3(.001));
+    data.materialDemodulation=max(diffuseFactor,vec3(.05))+max(specularFactor,vec3(.02));
   }
   return data;
 }
@@ -811,6 +824,9 @@ Hit orcaFirst;vec3 orcaDirection,orcaThroughput,orcaBefore;bool orcaRecorded=fal
 // rays; rtx.native.pathtrace.blueNoiseSky), one stream per ray and per path
 // of the pixel. Offset from the local lights' use of the same table.
 uint firstSurfacePaths=0u;
+// The specular lobe's share of the last continuation's first-direction weight
+// (luminance; 1 for a selected specular lobe, 0 for diffuse and legacy).
+float firstSpecularShare=0;
 vec2 firstSurfaceNoise(uint ray) {
   if((uint(frame.jitter.w)&4u)==0u)return vec2(-1);
   vec2 blue=blueNoiseSample(shadingPixel+ivec2(17,71),frame.config.z,16392u,31u);
@@ -832,8 +848,11 @@ vec3 continuation(Hit primary,int lobe,float probability,out vec3 firstDirection
     weight=lobeSample(primary,lobe==0,firstDirection)/probability;
     if(lobe==1)specularWeight=weight;
   }
+  coneWidth=cameraPixelAngle()*(primary.t<1e30?primary.t:0);
+  coneSpread=min(cameraPixelAngle()+coneExpansion(samplePdf),2*3.14159265);
   directionSample=vec2(-1);
   pathDistance=0;specular=vec3(0);
+  firstSpecularShare=dot(specularWeight,vec3(.2126,.7152,.0722))/max(dot(weight,vec3(.2126,.7152,.0722)),1e-20);
   bool dead=primary.pbr&&!any(greaterThan(weight,vec3(0)));
   vec3 direction=firstDirection,origin=offsetRay(primary.p,primary.ng);
   vec3 throughput=primary.pbr?weight/max(materialFactor(primary),vec3(1e-6)):vec3(1),result=vec3(0);
@@ -896,6 +915,7 @@ vec3 continuation(Hit primary,int lobe,float probability,out vec3 firstDirection
     }
   }
   if(dead&&!lightPrimary) {
+    coneWidth=0;coneSpread=-1;
     profilePath(6u);specular=extraSkySpecular;
     clampLighting(primary,extraSky,specular,frame.firefly.y/probability);
     return extraSky;
@@ -923,6 +943,7 @@ vec3 continuation(Hit primary,int lobe,float probability,out vec3 firstDirection
     if(!atPrimary) {
     if(layers==0)profilePath(1u+min(bounce,3u)); // Four depth counters: the last takes every deeper segment.
     hit=secondaryHit(origin,direction);
+    if(hit.t<1e30)coneWidth+=coneSpread*hit.t;
     // Also through blended layers, and to the sky (a reflection distance).
     pathDistance+=hit.t*(1-smoothstep(0.,.2,diffuseMotion));
     if(hit.t==1e30) { if(frame.skyRadiance.w==0)result+=throughput*environmentRadiance(direction);profilePath(5u);break; }
@@ -987,6 +1008,7 @@ vec3 continuation(Hit primary,int lobe,float probability,out vec3 firstDirection
     if(++bounce>=maxBounces||shortPath){profilePath(8u);break;}
     vec3 hitSpecular;
     vec3 hitWeight=materialSample(hit,direction,hitSpecular);
+    coneSpread=min(coneSpread+coneExpansion(samplePdf),2*3.14159265);
     // A diffusely sampled continuation ends the distance as well.
     diffuseMotion+=1-dot(hitSpecular,luma)/max(dot(hitWeight,luma),1e-20);
     throughput*=hitWeight;previousVertex=hit.p;origin=offsetRay(hit.p,hit.ng);layers=0;
@@ -1011,6 +1033,7 @@ vec3 continuation(Hit primary,int lobe,float probability,out vec3 firstDirection
       profilePath(11u);
     }
   }
+  coneWidth=0;coneSpread=-1;
   specular=result*specularWeight/max(weight,vec3(1e-20))+extraSkySpecular;
 #ifdef ORCA_SPARSE_PASS
   // Radiance leaving the first vertex toward the primary surface.
@@ -1106,7 +1129,11 @@ void updateCache(ivec2 pixel) {
   float footprintScale=0; // The camera ray scatters nothing; the first hit is never judged.
   uint bounce=0,layers=0;
   atomicAdd(CacheCounters(frame.sharcCounters).data[0],1u);
-  for(uint step=0;step<560&&bounce<=frame.config.y;++step) {
+  // Training paths take at most 8 bounces: a warm cache ends them sooner by
+  // resampling, and a cold one (after a clear) no longer runs every path to
+  // the full count.
+  uint maxBounces=min(frame.config.y,8u);
+  for(uint step=0;step<560&&bounce<=maxBounces;++step) {
     Hit hit=secondaryHit(origin,direction);
     if(hit.t==1e30) { SharcUpdateMiss(parameters,state,cacheLimitPrevious(parameters,state,frame.skyRadiance.w!=0?vec3(0):environmentRadiance(direction)));break; }
     // Transparent sheets never hold cache entries, and their lighting no longer
@@ -1139,7 +1166,7 @@ void updateCache(ivec2 pixel) {
       // sharp ones unless enabled) still light the path's cached vertices.
       SharcUpdateMiss(parameters,state,cacheLimitPrevious(parameters,state,lighting));
     }
-    if(++bounce>frame.config.y)break;
+    if(++bounce>maxBounces)break;
     vec3 specularWeight;
     vec3 weight=materialSample(hit,direction,specularWeight);
     if(store)SharcSetRadianceDirectionWeight(state,cacheDirectionWeight(hit,weight,specularWeight));
@@ -1228,12 +1255,20 @@ IndirectResult traceIndirect(Hit primary,ivec2 pixel,vec3 diffuseFactor,vec3 spe
 #else
       vec3 sampleLight=continuation(primary,firstDir,pathDistance,sampleSpecular);
 #endif
+      // A NaN passes the firefly limit (its comparison is false) and would
+      // stay in the denoiser's history.
+      if(any(isnan(sampleLight))||any(isinf(sampleLight))||any(isnan(sampleSpecular))||any(isinf(sampleSpecular)))
+        sampleLight=sampleSpecular=vec3(0);
       result.radiance+=sampleLight/float(frame.config.x);
 #ifdef TEMPORAL
       // The selection is a function of the pixel and frame: not carried
       // through the path either.
       lobe=primaryLobe(primary,pixel,frame.config.z,i,probability);
-      if(primary.pbr&&lobe!=0)result.distance=nearestDistance(result.distance,pathDistance);
+      // DLSS-RR's specular hit distance: a mixture sample counts only where
+      // the specular lobe carries most of its weight (mostly a diffuse ray's
+      // distance otherwise). Pixels without one are filled from neighbours
+      // (denoise.comp, mode 6).
+      if(primary.pbr&&(lobe==1||(lobe<0&&firstSpecularShare>=.5)))result.distance=nearestDistance(result.distance,pathDistance);
       if(temporal.hitDistance.w!=0)continue;
       // A surface seen in a mirror is denoised in its virtual space, like its guides.
       Mirror mirror=loadMirror(pixel);
@@ -1913,13 +1948,26 @@ void main() {
   }
   if(temporal.hitDistance.w!=0) {
     vec3 diffuse=opaque?(primary.color.rgb+primary.self)*(primary.pbr?1-primary.rm.y:1):vec3(.5);
+    // Emission guides RR as albedo would (RTXPT's stable-radiance mix): a
+    // screen or sign on a dark texture otherwise reads as noisy lighting there
+    // and loses its detail. Its displayed level, tonemapped, blends in by how
+    // much it outshines the albedo.
+    if(opaque&&any(greaterThan(primary.emission,vec3(0)))) {
+      vec3 shown=primary.emission*(.18/max(frame.firefly.w,1e-12));
+      vec3 stable=sqrt(shown/(1+max(shown.r,max(shown.g,shown.b))));
+      float level=dot(stable,vec3(1.0/3.0));
+      diffuse=mix(diffuse,mix(stable,vec3(.5),.2),level/(dot(diffuse,vec3(1.0/3.0))+sqrt(level)+1e-7));
+    }
     vec3 specular=opaque&&primary.pbr?rrSpecularAlbedo(filmF0(primary,mix(vec3(.04),primary.color.rgb,primary.rm.y)),primary.rm.x,dot(primary.n,primary.wo)):vec3(0);
     if(mirror.replaced){diffuse*=mirror.reflectance;specular*=mirror.reflectance;}
     imageStore(rrDiffuse,pixel,vec4(diffuse,0));
     imageStore(rrSpecular,pixel,vec4(specular,0));
-    imageStore(rrNormal,pixel,opaque?vec4(N,primary.pbr?primary.rm.x:1):vec4(0));
+    // The sky faces the camera: a zero normal is no direction to RR.
+    imageStore(rrNormal,pixel,opaque?vec4(N,primary.pbr?primary.rm.x:1):vec4(-direction,1));
     // Unnormalized transport distance, never a local-light blocker distance.
-    imageStore(rrHitDistance,pixel,vec4(opaque&&primary.pbr&&specularDistance>0?min(specularDistance,65504):65504));
+    // 0: a PBR surface without a specular sample, filled from its neighbours
+    // (denoise.comp, mode 6).
+    imageStore(rrHitDistance,pixel,vec4(opaque&&primary.pbr?min(specularDistance,65504):65504));
   }
   imageStore(guideMotion,pixel,mv);imageStore(guideDepth,pixel,vec4(z));
   // NRD material IDs (NRD sample: default 0, metal 1): diffuse never mixes

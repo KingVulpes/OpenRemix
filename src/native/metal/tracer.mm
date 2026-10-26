@@ -424,6 +424,7 @@ namespace remix::metal {
     staged.history.end();
     staged.hasEmissive = lights.size() > sphereCount;
     staged.combined.setClusterSize(options.emissiveClusterSize);
+    staged.combined.setPowerExponent(options.lightPowerExponent);
     staged.combined.update(std::move(lights));
     return frame;
   }
@@ -1028,6 +1029,14 @@ namespace remix::metal {
     }
     if (!f.uniform)
       f.uniform = buffer(nullptr, sizeof(frame));
+    // Middle-grey radiance at the current exposure (pathtrace/rendering.cpp):
+    // after the scene signature, since exposure drifts while the meter adapts.
+    const float exposure = options.exposure * (options.autoExposure && g.post ? g.post->statistics().exposure : 1.f);
+    frame.firefly[3] = .18f / std::max(exposure, 1e-12f);
+    if (options.relativeClamps) {
+      frame.firefly[0] *= frame.firefly[3];
+      frame.firefly[1] *= frame.firefly[3];
+    }
     if (rayProfile.path) {
       if (!rayProfile.counters)
         rayProfile.counters = buffer(nullptr, 768);

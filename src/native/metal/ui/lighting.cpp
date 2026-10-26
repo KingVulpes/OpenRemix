@@ -178,6 +178,10 @@ namespace remix {
                             "shape and color; larger groups make the light tree cheaper to update and walk, at\n"
                             "some noise close to large glowing surfaces.");
       }
+      ui::SliderFloat("Light selection power exponent", &options.lightPowerExponent, .5f, 1.f, "%.2f");
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("The light tree picks lights by their power to this exponent (1: by power). Lower\n"
+                          "values give dim lights more samples and bright ones fewer; brightness is unchanged.");
       ui::Checkbox("Adaptive local-light sampling", &options.adaptiveLocalSampling);
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Smoothly raises the local-light sample budget toward four near important light "

@@ -93,6 +93,9 @@ namespace remix::scene {
     // the next update build the hierarchy anew.
     void setClusterSize(uint32_t size);
     uint32_t clusterSize() const { return m_clusterSize; }
+    // Selection weights are power to this exponent (1: power). A change
+    // makes the next update build anew.
+    void setPowerExponent(float exponent);
     uint32_t leafCount() const { return uint32_t(m_clusters.size()); }
     const std::vector<LightEmitter> &emitters() const { return m_emitters; }
     const std::vector<LightNode> &nodes() const { return m_nodes; }
@@ -169,6 +172,7 @@ namespace remix::scene {
     std::vector<std::pair<uint32_t, uint32_t>> m_clusters;
     std::vector<std::array<float, 3>> m_centers;
     uint32_t m_clusterSize = 1, m_staticClusters = 0;
+    float m_powerExponent = 1;
     // Input identity order survives radiance animation.
     std::vector<std::pair<uint64_t, uint32_t>> m_sourceKeys;
     std::vector<uint32_t> m_order, m_parents, m_leaves;

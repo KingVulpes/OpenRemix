@@ -45,6 +45,10 @@ namespace remix {
     // power: each keeps its own shape and color, and the tree to build and
     // descend is that many times smaller.
     uint32_t emissiveClusterSize = 16;
+    // The light tree selects lights by power to this exponent (1: by power).
+    // Below 1 dim lights draw more samples, bright ones fewer (RTXPT uses
+    // 0.8); radiance and PDFs are unchanged, only where samples go.
+    float lightPowerExponent = 1;
     uint32_t emissiveCandidates = 1;
     // RIS candidates in sets of more than four sphere lights without emissive
     // surfaces (1: plain BVH sampling). Candidates compare unshadowed
@@ -57,6 +61,10 @@ namespace remix {
     uint32_t localSamples = 1;
     float localIntensity = 1, localRange = 16;
     float localDirectClamp = 0, indirectClamp = 0;
+    // The two clamps in multiples of middle grey at the current exposure
+    // (the radiance that displays as 0.18): one setting works across games'
+    // light units and scene brightness. Off: linear scene luminance.
+    bool relativeClamps = false;
     bool localFireflyFilter = true;
     bool localGuiding = true;
     // Visibility-guiding cell size in meters (see sceneScale).

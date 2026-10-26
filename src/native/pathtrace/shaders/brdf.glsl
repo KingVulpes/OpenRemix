@@ -94,10 +94,14 @@ vec3 sampleGgx(vec3 wo,float alpha,vec2 u) {
   vec3 h=normalize(vec3(alpha*nh.xy,max(0,nh.z)));
   return reflect(-wo,h);
 }
+// The PDF of the last direction materialSample or lobeSample drew (0: none),
+// which widens a path's ray cone.
+float samplePdf=0;
 vec3 materialSample(Hit hit,out vec3 direction,out vec3 specularWeight) {
-  specularWeight=vec3(0);
+  specularWeight=vec3(0);samplePdf=0;
   if(!hit.pbr) {
     direction=diffuseDirection(hit.n);
+    samplePdf=max(dot(direction,hit.n),0.)/eonPi;
     return dot(direction,hit.ng)>0?hit.color.rgb:vec3(0);
   }
   mat3 basis=shadingBasis(hit.n);
@@ -112,6 +116,7 @@ vec3 materialSample(Hit hit,out vec3 direction,out vec3 specularWeight) {
   vec3 h=normalize(wi+wo);
   float specPdf=ggxD(max(0,h.z),alpha)*ggxG1(wo.z,alpha)/(4*wo.z);
   float pdf=p*specPdf+(1-p)*eonPdf(wo,wi,hit.rm.x);
+  samplePdf=pdf;
   vec3 diffuse,specular;materialLobes(hit,direction,diffuse,specular);
   float scale=wi.z/max(pdf,1e-20);
   specularWeight=specular*scale;
@@ -126,6 +131,7 @@ vec3 materialSample(Hit hit,out vec3 direction) {
 // selection, where each denoised signal only receives in-lobe samples and hit
 // distances. The caller divides by the selection probability.
 vec3 lobeSample(Hit hit,bool diffuseLobe,out vec3 direction) {
+  samplePdf=0;
   mat3 basis=shadingBasis(hit.n);
   vec3 wo=transpose(basis)*hit.wo;
   if(wo.z<=0){direction=hit.n;return vec3(0);}
@@ -135,8 +141,9 @@ vec3 lobeSample(Hit hit,bool diffuseLobe,out vec3 direction) {
   direction=basis*wi;
   if(wi.z<=0||dot(direction,hit.ng)<=0)return vec3(0);
   vec3 diffuse,specular;materialLobes(hit,direction,diffuse,specular);
-  if(diffuseLobe)return diffuse*(wi.z/max(eonPdf(wo,wi,hit.rm.x),1e-20));
+  if(diffuseLobe){samplePdf=eonPdf(wo,wi,hit.rm.x);return diffuse*(wi.z/max(samplePdf,1e-20));}
   vec3 h=normalize(wi+wo);
   float pdf=ggxD(max(0,h.z),alpha)*ggxG1(wo.z,alpha)/(4*wo.z);
+  samplePdf=pdf;
   return specular*(wi.z/max(pdf,1e-20));
 }

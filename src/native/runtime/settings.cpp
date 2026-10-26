@@ -194,6 +194,7 @@ namespace remix::config {
         TRACE(torchLights, 0, 1);
         TRACE(emissiveLights, 0, 1);
         TRACE(emissiveClusterSize, 1, 64);
+        TRACE(lightPowerExponent, .25, 1);
         TRACE(adaptiveLocalSampling, 0, 1);
         TRACE(stabilizeEmissiveLighting, 0, 1);
         TRACE(emissiveSolidAngleSampling, 0, 1);
@@ -309,6 +310,7 @@ namespace remix::config {
         TRACE(fsrSharpness, 0, 1);
         TRACE(localDirectClamp, 0, 1000000);
         TRACE(indirectClamp, 0, 1000000);
+        TRACE(relativeClamps, 0, 1);
         TRACE(localIntensity, 0, 100);
         result.push_back(scalar("rtx.native.pathtrace.localRange", FIELD(trace.localRange), 0, 1024, .01));
         result.push_back(scalar("rtx.native.pathtrace.sunAngularDiameter", FIELD(trace.sunAngularDiameter), 0,

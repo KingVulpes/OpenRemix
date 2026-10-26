@@ -622,9 +622,14 @@ namespace remix::denoise {
     if (g.frame.hitDistance[3] == 0) {
       gpu::GpuScope scope(command, "Denoised lighting compose", g.extent);
       g.pass(command, 2, 1);
-    } else if (g.frame.translucency[0]) {
-      gpu::GpuScope scope(command, "DLSS-RR foreground compose", g.extent);
-      g.pass(command, 5);
+    } else {
+      if (g.frame.translucency[0]) {
+        gpu::GpuScope scope(command, "DLSS-RR foreground compose", g.extent);
+        g.pass(command, 5);
+      }
+      gpu::GpuScope scope(command, "DLSS-RR specular hit distance fill", g.extent);
+      g.pass(command, 6, 0);
+      g.pass(command, 6, 1);
     }
     if (g.timestamps)
       vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g.timestamps, 3);

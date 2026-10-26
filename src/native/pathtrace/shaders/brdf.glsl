@@ -83,9 +83,13 @@ vec3 materialBrdf(Hit hit,vec3 wi) {
 // Light sampling's fade toward the shadow terminator (RTXPT's low grazing
 // angle falloff): a smooth normal lights a low-poly surface past where its
 // flat triangles turn away or shadow each other, a cut in their shape. The
-// light fades out between cosines 3k and k to the shading normal first
-// (k = rtx.native.pathtrace.shadowTerminatorFade, frame.localProbeParams.y;
-// 0 off). Sampled bounce directions keep the full BRDF.
+// light fades out between cosines 3k and k to the shading normal first (k =
+// rtx.native.pathtrace.shadowTerminatorFade, frame.localProbeParams.y; 0
+// off), at the cost of some grazing light on every surface. Nothing here
+// may depend on the triangle's own normal: it differs from triangle to
+// triangle and puts steps at their edges (Chiang et al.'s term did, and so
+// did limiting the fade to where the shading normal departs from it).
+// Sampled bounce directions keep the full BRDF.
 float terminatorFade(Hit hit,vec3 wi) {
   float k=frame.localProbeParams.y;
   return k>0?clamp((dot(hit.n,wi)-k)/(2*k),0.,1.):1.;

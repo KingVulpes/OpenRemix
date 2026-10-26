@@ -55,7 +55,8 @@ namespace remix {
     float rayOffset = 256;
     // Light sampling fades out between cosines 3x and 1x this to the shading
     // normal (0: off), ahead of the faceted shadow terminator of low-poly
-    // meshes with smooth normals (RTXPT's per-material shadowNoLFadeout).
+    // meshes with smooth normals (RTXPT's shadowNoLFadeout). It also takes
+    // grazing light from flat surfaces: a darker scene as it grows.
     float shadowTerminatorFade = 0;
     // Smooth PBR surfaces (roughness below this; 0 off, at most 0.45, under
     // the radiance cache's 0.5) reflect emissive surfaces through their

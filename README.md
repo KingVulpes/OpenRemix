@@ -3,8 +3,6 @@
 ﻿
 A performance-focused, multi-platform alternative to [dxvk-remix](https://github.com/NVIDIAGameWorks/dxvk-remix). 
 ﻿
-The entire codebase is different, the only Remix-part of OpenRemix is the compatibility with OpenUSD and the Remix API
-﻿
 ## Features
 - Raster rendering and path tracing, with raster or ray-traced primary visibility, this is used to pass through raster effects/overlays into the Path-traced view 
 - PBR materials, normal maps, decals, alpha cutouts, and translucent surfaces.
@@ -15,6 +13,7 @@ The entire codebase is different, the only Remix-part of OpenRemix is the compat
 - FSR FG and DLSS FG
 - Autoexposure, threshold-free bloom, and Prism tonemapping.
 - OpenUSD support for loading existing Remix replacement mods.
+- Remix compatible render API
 
 ## Projects Using OpenRemix
 - [BetaRT](https://github.com/sambow23/BetaRT/tree/openremix)

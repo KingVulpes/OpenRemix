@@ -127,5 +127,27 @@ namespace remix {
         ImGui::TextWrapped("HDR10 output inactive: %s", m_hdrStatus.c_str());
       }
     }
+    if (!m_headless && ImGui::CollapsingHeader("Screenshots")) {
+      if (ImGui::Button("Take screenshot"))
+        m_screenshotButton = true;
+      ImGui::SameLine();
+      // The shortcut: click, then press it (ui/menu_shortcut.cpp).
+      const std::string label = (m_profileUi.capturingScreenshotShortcut ? std::string("Press a shortcut...")
+                                                                          : m_profileUi.screenshotShortcut) +
+                                "###Screenshot shortcut";
+      if (ImGui::SmallButton(label.c_str()))
+        m_profileUi.captureScreenshotShortcut = true;
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Shortcut that takes a screenshot.\nClick, then press a key while holding the "
+                          "modifiers to use (Alt, Ctrl, Shift).\nEscape keeps the current shortcut.");
+      ImGui::TextWrapped("%s", "Always an SDR PNG. While HDR10 output is active, also:");
+      ui::Checkbox("HDR PNG (BT.2020 PQ, 16-bit)", &settings.screenshotHdrPng);
+      ui::Checkbox("JPEG XR (scRGB, as Windows' HDR captures)", &settings.screenshotJxr);
+      ui::Checkbox("OpenEXR (linear scRGB)", &settings.screenshotExr);
+      const auto folder = config::Profiles::defaultDirectory() / "screenshots";
+      ImGui::TextWrapped("Folder: %s", folder.string().c_str());
+      if (const auto status = m_screenshot.status(); !status.empty())
+        ImGui::TextWrapped("%s", status.c_str());
+    }
   }
 } // namespace remix

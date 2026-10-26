@@ -50,6 +50,9 @@ namespace remix::config {
     // and the developer UI are shown with their white at hdrUiNits.
     bool hdr = true;
     float hdrPeakNits = 1000, hdrPaperWhiteNits = 203, hdrUiNits = 203;
+    // Screenshots (the screenshot shortcut, the post-processing tab): an SDR
+    // PNG always; while HDR10 output is active also these HDR files.
+    bool screenshotHdrPng = true, screenshotJxr = true, screenshotExr = true;
     std::array<float, 4> clearColor = {0.025f, 0.035f, 0.055f, 1.f};
     // Upload BC textures as GPU BC images instead of decoding them on the CPU.
     // Applies to textures created after the change; no restart needed.

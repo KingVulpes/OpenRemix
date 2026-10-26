@@ -378,6 +378,9 @@ namespace remix::config {
         result.push_back(scalar("rtx.native.hdrPeakNits", FIELD(hdrPeakNits), 80, 10000));
         result.push_back(scalar("rtx.native.hdrPaperWhiteNits", FIELD(hdrPaperWhiteNits), 80, 1000));
         result.push_back(scalar("rtx.native.hdrUiNits", FIELD(hdrUiNits), 80, 1000));
+        result.push_back(scalar("rtx.native.screenshot.hdrPng", FIELD(screenshotHdrPng), 0, 1));
+        result.push_back(scalar("rtx.native.screenshot.jxr", FIELD(screenshotJxr), 0, 1));
+        result.push_back(scalar("rtx.native.screenshot.exr", FIELD(screenshotExr), 0, 1));
         result.push_back(scalar("rtx.native.frameGeneration", FIELD(frameGeneration), 0, 1));
         result.push_back(choices("rtx.native.frameGenerationBackend", FIELD(frameGenerationBackend),
                                  {"auto", "dlss", "fsr31"}));

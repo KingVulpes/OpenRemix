@@ -42,4 +42,25 @@ namespace remix::ui {
     }
     return window.takeMenuToggle();
   }
+
+  bool screenshotShortcut(RemixSdlWindow &window, config::Profiles &profiles, ProfileUi &ui, bool panelOpen) {
+    auto panel = profiles.panel();
+    remixapi_Key key{};
+    uint32_t modifiers = 0;
+    if (window.takeCapturedScreenshotShortcut(key, modifiers)) {
+      panel.screenshotKey = key;
+      panel.screenshotModifiers = modifiers;
+      profiles.savePanel(panel);
+    }
+    if (ui.captureScreenshotShortcut && panelOpen)
+      window.captureScreenshotShortcut();
+    else if (!panelOpen)
+      window.cancelScreenshotShortcutCapture();
+    ui.captureScreenshotShortcut = false;
+    window.setScreenshotShortcut(static_cast<remixapi_Key>(panel.screenshotKey), panel.screenshotModifiers);
+    ui.capturingScreenshotShortcut = window.capturingScreenshotShortcut();
+    ui.screenshotShortcut =
+        RemixSdlWindow::shortcutName(static_cast<remixapi_Key>(panel.screenshotKey), panel.screenshotModifiers);
+    return window.takeScreenshotPresses() != 0;
+  }
 } // namespace remix::ui

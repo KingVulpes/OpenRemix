@@ -27,6 +27,9 @@ namespace remix::ui {
     // The USD scene capture shortcut, likewise ("" while none is set).
     std::string sceneCaptureShortcut;
     bool capturingSceneCaptureShortcut = false, captureSceneCaptureShortcut = false;
+    // The screenshot shortcut, the same way (ui::screenshotShortcut).
+    std::string screenshotShortcut = "Alt+F12";
+    bool capturingScreenshotShortcut = false, captureScreenshotShortcut = false;
   };
   void drawProfiles(config::Profiles &profiles, ProfileUi &ui);
   void drawProfileFooter(config::Profiles &profiles, ProfileUi &ui);

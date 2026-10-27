@@ -5,6 +5,8 @@
 #include "platform/utf8_path.h"
 #include <algorithm>
 #include <cmath>
+#include <fstream>
+#include <iterator>
 namespace remix::usd {
   namespace {
     uint64_t hash64(const std::string &value) {
@@ -303,7 +305,10 @@ namespace remix::usd {
     remixapi_MaterialNormalEncodingEXT normal_encoding{};
     normal_encoding.sType = REMIXAPI_STRUCT_TYPE_MATERIAL_NORMAL_ENCODING_EXT;
     normal_encoding.pNext = info.pNext;
-    normal_encoding.encoding = uint32_t(data.value("normal_encoding", 0)) + 1;
+    // AperturePBR's encodings (0 octahedral, 1 tangent space OpenGL, 2 tangent
+    // space DirectX) as the runtime's (1 octahedral, 3 OpenGL, 2 DirectX).
+    const int encoding = data.value("normal_encoding", 0);
+    normal_encoding.encoding = encoding == 1 ? 3 : encoding == 2 ? 2 : 1;
     info.pNext = &normal_encoding;
     remixapi_MaterialHandle handle{};
     resources_.createMaterial(info, handle);
@@ -465,6 +470,32 @@ namespace remix::usd {
       info.pNext = &usd;
       usd.pConeSoftness = &softness;
       usd.pFocus = &focus;
+    }
+    // An IES profile (UsdLuxShapingAPI's file) and a light cookie, chained in
+    // front of the light's own description.
+    std::string profile;
+    remixapi_LightInfoIesProfileEXT ies{};
+    ies.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_IES_PROFILE_EXT;
+    if (const auto file = data.value("ies", std::string());
+        !file.empty() && type != "DomeLight" && type != "DistantLight") {
+      std::ifstream input(utf8Path(file), std::ios::binary);
+      profile.assign(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+      if (!input && !input.eof())
+        throw std::runtime_error("Could not read IES profile " + file);
+      ies.data = profile.data();
+      ies.size = profile.size();
+      ies.pNext = info.pNext;
+      info.pNext = &ies;
+    }
+    auto cookieTexture = native_path(data.value("cookie", std::string()));
+    remixapi_LightInfoCookieEXT cookie{};
+    cookie.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_COOKIE_EXT;
+    if (!cookieTexture.empty() && type == "SphereLight" && data.value("cookie_fov", 0.f) > 0) {
+      cookie.texture = cookieTexture.c_str();
+      cookie.up = vector3(data.value("cookie_up", Json::array({0, 0, 1})));
+      cookie.fovDegrees = data.value("cookie_fov", 0.f);
+      cookie.pNext = info.pNext;
+      info.pNext = &cookie;
     }
     remixapi_LightHandle light{};
     resources_.createLight(info, light);

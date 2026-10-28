@@ -68,7 +68,7 @@ layout(set=0,binding=3,std140) uniform Frame {
   uvec4 pathConfig; // adaptive termination, minimum completed bounces, sheet flags (1 traced indirect, 2 local lights; bits 8-12 sky rays at a first surface), secondary ray mask (bits 0-7; bit 8: a view model is traced; bit 9: thin films off)
   vec4 domeTransform[3];
   uint64_t visibilityNodes, visibilityLeaves, visibilityTable, movedLights;
-  uvec4 visibilityConfig; // table row words, moved light count, reserved
+  uvec4 visibilityConfig; // table row words, moved light count, table nodes, terminator lift max doubled area (units², float bits)
   vec4 visibilityProbe; // world units: x probe offset above the surface, y decal attachment distance; z texture footprint scale (render/output size); w ray offset (ULPs)
   uint64_t restirCurrent, restirHistoryRead, restirHistoryWrite, restirRemap;
   uvec4 restirConfig; // candidates, spatial samples (bits 8-15: after a disocclusion), temporal M cap, flags (1 initial visibility)
@@ -101,7 +101,7 @@ layout(set=0,binding=3,std140) uniform Frame {
   uvec4 skyGuideConfig; // slot capacity, cells per world unit (float bits), guided share (float bits), active
   mat4 inverseCameraRelative; // camera rays: world = point.xyz / point.w + eye.xyz
   uint64_t localProbeRead, localProbeWrite; // local occlusion probes: last frame's (0: none), this frame's
-  vec4 localProbeParams; // movingShadowBlur, shadowTerminatorFade, emissiveSpecularRoughness, reserved
+  vec4 localProbeParams; // movingShadowBlur, shadowTerminatorSoften (1/0), emissiveSpecularRoughness, terminator lift max length (units; 0 off)
   vec4 volumeLightScales; // volumetrics: sun, lights, emissive surfaces, sky
   vec4 cloudShadow[3]; // rows: world position (w 1) to the sky's cloud shadow box, (u, v, slice) in [0, 1]
   uvec4 cloudShadowConfig; // its texture + 1 (0: no cloud shadow), slices, reserved
@@ -149,6 +149,34 @@ bool cutSurface(uint flags,uint bits) {
   if(bits==0u||group==0u)return false;
   uint slot=(frame.cutSlots[(group-1u)>>3]>>(((group-1u)&7u)*4u))&15u;
   return slot!=0u&&((bits>>(slot-1u))&1u)!=0u;
+}
+// Shadow-ray origins on smooth-shaded low-poly meshes (Hanika 2021, "Hacking
+// the Shadow Terminator", Ray Tracing Gems II ch. 4): a point on a flat
+// triangle lies below the smooth surface its vertex normals describe, and its
+// shadow rays meet the neighbouring triangles (a faceted terminator). Each
+// vertex's tangent plane lifts the point where it lies below it; their
+// barycentric blend is where shadow rays start. Returned as the height along
+// the triangle's normal ng (facing the viewer); 0 on flat geometry, and equal
+// on both triangles at a shared edge. As dxvk-remix (rtx.shadowTerminator):
+// the offset is at most maxLength long, and fades out on triangles whose
+// doubled area grows from half of maxArea to maxArea, where it would leak
+// light (large walls with vertex normals averaged across their corners).
+// Lengths in world units (frame.localProbeParams.w, visibilityConfig.w).
+// horizon: the plane light sampling's diffuse lobe ends at (materialLobes):
+// the smooth normal there, faded to ng with the offset. Light below the
+// triangle but above the smooth surface's horizon reaches it through the
+// shadow ray (single-sided back faces do not block it), so the terminator
+// follows the smooth shading instead of the triangles facing away.
+float terminatorLift(vec3 p0,vec3 p1,vec3 p2,vec3 n0,vec3 n1,vec3 n2,vec3 b,vec3 ng,float maxLength,float maxArea,out vec3 horizon) {
+  vec3 p=b.x*p0+b.y*p1+b.z*p2;
+  n0=dot(n0,ng)<0?-n0:n0;n1=dot(n1,ng)<0?-n1:n1;n2=dot(n2,ng)<0?-n2:n2;
+  vec3 lifted=-(b.x*min(0.,dot(p-p0,n0))*n0+b.y*min(0.,dot(p-p1,n1))*n1+b.z*min(0.,dot(p-p2,n2))*n2);
+  float length2=dot(lifted,lifted);
+  if(length2>maxLength*maxLength)lifted*=maxLength*inversesqrt(length2);
+  float scale=1-smoothstep(.5*maxArea,maxArea,length(cross(p1-p0,p2-p0)));
+  vec3 smoothNormal=b.x*n0+b.y*n1+b.z*n2;
+  horizon=dot(smoothNormal,smoothNormal)>1e-12?normalize(mix(ng,normalize(smoothNormal),scale)):ng;
+  return scale*max(dot(lifted,ng),0.);
 }
 // remixapi_InstanceInfoCameraCullingEXT (state.w bits 9-10: back faces,
 // visibility): what rays along the camera's lines of sight skip of a surface
@@ -287,6 +315,25 @@ vec3 decodeGeometricNormal(vec2 e) {
   vec3 n=vec3(e,1-abs(e.x)-abs(e.y));
   if(n.z<0)n.xy=(1-abs(n.yx))*mix(vec2(-1),vec2(1),greaterThanEqual(n.xy,vec2(0)));
   return normalize(n);
+}
+// The G-buffer's previous-position w, as float bits: bit 31 history
+// validity; 30..16 the half bits of 1 + the terminator lift (an exponent
+// never zero: no denormal for the attachment to flush, no NaN); 15..0 the
+// lighting horizon (terminatorLift), octahedral at 8 bits each, 0 where it
+// is the triangle's normal. 0 where nothing was drawn.
+float packPreviousW(bool valid,float lift,vec3 horizon,vec3 ng) {
+  uint e=0u;
+  if(dot(horizon,horizon)>.5&&dot(horizon,ng)<.99999) {
+    uvec2 q=uvec2(round(clamp(encodeGeometricNormal(horizon)*.5+.5,0.,1.)*254.))+1u;
+    e=q.x|q.y<<8;
+  }
+  return uintBitsToFloat((valid?0x80000000u:0u)|(packHalf2x16(vec2(1+lift))&0x7fffu)<<16|e);
+}
+void unpackPreviousW(float w,vec3 ng,out bool valid,out float lift,out vec3 horizon) {
+  uint bits=floatBitsToUint(w),e=bits&0xffffu;
+  valid=bits>>31!=0u;
+  lift=max(unpackHalf2x16((bits>>16)&0x7fffu).x-1,0.);
+  horizon=e==0u?ng:decodeGeometricNormal((vec2(e&0xffu,e>>8)-1)/254*2-1);
 }
 vec3 materialEmission(Surface s,vec2 uv) {
   if(!any(greaterThan(s.emission.rgb,vec3(0))))return vec3(0);

@@ -148,7 +148,7 @@ bool acceptCandidate(Surface s,uint triangle,vec2 bary) {
 }
 // color: what the surface reflects. self: the part of its colour that emits
 // instead (remixapi_MaterialInfoSelfIlluminationEXT), set with the emission.
-struct Hit { float t; vec3 p; vec3 n; vec4 color; bool blended; bool blendedDraw; bool decal; uint decalMode; bool tinted; bool cacheable; vec3 previousPosition; vec3 previousNormal; bool historyValid; vec3 emission; float identity; vec3 ng; vec3 wo; vec2 rm; bool pbr; vec3 self; vec2 thick; vec4 film; };
+struct Hit { float t; vec3 p; vec3 n; vec4 color; bool blended; bool blendedDraw; bool decal; uint decalMode; bool tinted; bool cacheable; vec3 previousPosition; vec3 previousNormal; bool historyValid; vec3 emission; float identity; vec3 ng; vec3 wo; vec2 rm; bool pbr; vec3 self; vec2 thick; vec4 film; float lift; vec3 horizon; };
 // Every query rejects back faces of one-sided surfaces ((state.w&4)==0 below).
 // With hardware face culling (target.z bit 2) one-sided instances enable
 // facing culling in the TLAS and this flag culls exactly those back faces in
@@ -275,17 +275,24 @@ void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, ino
                  s.vertices.v[s.indices.i[tri+1]].uv.xy-ua,s.vertices.v[s.indices.i[tri+2]].uv.xy-ua);
   }
   hit.color=albedo(s,tri/3,bary,motion||pathEmission,hit.emission,hit.self);
+  hit.lift=0;
   hit.identity=motion&&frame.splitLocal.w==3?debugTriangle(s.debugIdentity,originalTriangle(s,tri/3)):0;
   {
     vec3 w=vec3(1-bary.x-bary.y,bary);
     vec2 uv=s.vertices.v[s.indices.i[tri]].uv.xy*w.x+s.vertices.v[s.indices.i[tri+1]].uv.xy*w.y+s.vertices.v[s.indices.i[tri+2]].uv.xy*w.z;
-    hit.ng=hit.n;hit.wo=-direction;hit.rm=materialParameters(s,uv,hit.color.rgb);hit.pbr=s.pbr.z!=0;
+    hit.ng=hit.n;hit.horizon=hit.ng;hit.wo=-direction;hit.rm=materialParameters(s,uv,hit.color.rgb);hit.pbr=s.pbr.z!=0;
     vec2 ua=s.vertices.v[s.indices.i[tri]].uv.xy;
     vec2 ub=s.vertices.v[s.indices.i[tri+1]].uv.xy;
     vec2 uc=s.vertices.v[s.indices.i[tri+2]].uv.xy;
     vec3 normal=vertexNormal(s.vertices.v[s.indices.i[tri]])*w.x+
       vertexNormal(s.vertices.v[s.indices.i[tri+1]])*w.y+vertexNormal(s.vertices.v[s.indices.i[tri+2]])*w.z;
-    normal=shadingNormal(transpose(mat3(rayQueryGetIntersectionWorldToObjectEXT(query,true)))*normal,hit.ng,hit.wo);
+    mat3 toWorld=transpose(mat3(rayQueryGetIntersectionWorldToObjectEXT(query,true)));
+    if(frame.localProbeParams.w!=0)
+      hit.lift=terminatorLift(model*vec4(a,1),model*vec4(b,1),model*vec4(c,1),
+        normalize(toWorld*vertexNormal(s.vertices.v[s.indices.i[tri]])),normalize(toWorld*vertexNormal(s.vertices.v[s.indices.i[tri+1]])),
+        normalize(toWorld*vertexNormal(s.vertices.v[s.indices.i[tri+2]])),w,hit.ng,
+        frame.localProbeParams.w,uintBitsToFloat(frame.visibilityConfig.w),hit.horizon);
+    normal=shadingNormal(toWorld*normal,hit.ng,hit.wo);
     hit.n=materialNormal(s,uv,materialBasis(normal,model*vec4(b-a,0),model*vec4(c-a,0),ub-ua,uc-ua),hit.wo);
     // A thin film, its structural colour in the albedo (iridescence.glsl).
     hit.film=surfaceFilm(s,uv,a+bary.x*(b-a)+bary.y*(c-a),hit.color.a);
@@ -312,7 +319,7 @@ void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, ino
 Hit closestGeometry(vec3 origin,vec3 direction,float maximum,bool motion,float minimum) {
   Hit hit; hit.t=maximum; hit.p=vec3(0);hit.n=vec3(0);hit.color=vec4(0);hit.blended=false;hit.blendedDraw=false;hit.decal=false;hit.decalMode=0u;hit.cacheable=false;hit.previousPosition=vec3(0);hit.previousNormal=vec3(0);hit.historyValid=false;
   hit.emission=vec3(0);hit.self=vec3(0);hit.tinted=false;hit.thick=vec2(0);hit.film=vec4(0);
-  hit.identity=0;hit.ng=vec3(0);hit.wo=-direction;hit.rm=vec2(1,0);hit.pbr=false;
+  hit.identity=0;hit.ng=vec3(0);hit.wo=-direction;hit.rm=vec2(1,0);hit.pbr=false;hit.lift=0;hit.horizon=vec3(0);
   if ((frame.target.z&1)!=0) queryScene(staticScene,origin,direction,hit,motion,minimum);
   if ((frame.target.z&2)!=0) queryScene(dynamicScene,origin,direction,hit,motion,minimum);
   if(hit.t==maximum)hit.t=1e30;
@@ -444,7 +451,7 @@ Hit rasterSurface(ivec2 pixel, vec3 origin) {
   hit.t=normal.w==0?1e30:length(position.xyz-origin);
   hit.p=position.xyz;hit.n=normal.w==0?vec3(0):normalize(normal.xyz);
   hit.color=imageLoad(primaryAlbedo,pixel);hit.blended=normal.w>=2;hit.blendedDraw=hit.blended;hit.decal=normal.w==4;hit.decalMode=0u;hit.tinted=normal.w==3;hit.cacheable=false;hit.thick=vec2(0);
-  hit.previousPosition=previous.xyz;hit.previousNormal=hit.n;hit.historyValid=previous.w!=0;
+  hit.previousPosition=previous.xyz;hit.previousNormal=hit.n;
   hit.emission=imageLoad(primaryEmission,pixel).rgb;
   // Alpha: a debug identity, or minus the self-illuminated share of the colour.
   float identity=imageLoad(primaryEmission,pixel).a;
@@ -452,6 +459,7 @@ Hit rasterSurface(ivec2 pixel, vec3 origin) {
   hit.self=hit.color.rgb*clamp(-identity,0,1);hit.color.rgb-=hit.self;
   vec4 pbr=imageLoad(primaryPbr,pixel);
   hit.ng=decodeGeometricNormal(pbr.zw);hit.rm=vec2(max(0,pbr.x),pbr.y);hit.pbr=pbr.x>=0;
+  unpackPreviousW(previous.w,hit.ng,hit.historyValid,hit.lift,hit.horizon);
   hit.wo=hit.t<1e30?normalize(origin-hit.p):vec3(0,0,1);
 #if defined(TEMPORAL) && !defined(PSR_PASS)
   // A surface seen through a mirror (PSR) is viewed from the mirrored eye.
@@ -476,8 +484,18 @@ Hit rasterPrimary(ivec2 pixel, vec3 origin) {
 // guides belong to the opaque receiver behind transparent sheets.
 vec3 debugGeometry(Hit hit,ivec2 pixel) {
   uint view=frame.splitLocal.w;
-  if(view>=8&&view!=12&&view!=14)return debugUnavailable(pixel); // filled by temporal composition when available
+  if(view>=8&&view!=12&&view!=14&&view!=15)return debugUnavailable(pixel); // filled by temporal composition when available
   if(hit.t==1e30)return vec3(0);
+  // Shadow terminator offset: red, the lift over its longest allowed
+  // length; blue, the sun lit by the smooth normal on a triangle facing away
+  // (only softening reaches it); grey, the sun's cosine.
+  if(view==15) {
+    vec3 toLight=-frame.lightDirection.xyz;
+    float maxLength=frame.localProbeParams.w,cosine=max(dot(hit.n,toLight),0.);
+    vec3 base=vec3(.15+.35*cosine);
+    if(cosine>0&&dot(hit.horizon,toLight)<=0)base=vec3(.05,.15,.8);
+    return maxLength>0&&hit.lift>0?mix(base,vec3(1,0,0),clamp(sqrt(hit.lift/maxLength),0.,1.)):base;
+  }
   if(view==12)return hit.pbr?vec3(hit.rm.x,hit.rm.y,0):vec3(0,0,1);
   if(view==1)return hit.color.rgb;
   if(view==2)return hit.n*.5+.5;
@@ -489,6 +507,10 @@ vec3 debugGeometry(Hit hit,ivec2 pixel) {
 // Scale-aware integer ULP offset with a near-origin fallback (RT Gems, ch. 6):
 // rtx.native.pathtrace.rayOffset units in the last place along the normal
 // (frame.visibilityProbe.w; 256 without it).
+vec3 offsetRay(vec3 p,vec3 n);
+// Where a surface's shadow and light-visibility rays start: lifted off a
+// smooth-shaded triangle (terminatorLift; Hit.lift 0 without it).
+vec3 shadowOrigin(Hit hit) { return offsetRay(hit.p+hit.ng*hit.lift,hit.ng); }
 vec3 offsetRay(vec3 p,vec3 n) {
   ivec3 step=ivec3((frame.visibilityProbe.w>0?frame.visibilityProbe.w:256.0)*n);
   vec3 shifted=intBitsToFloat(floatBitsToInt(p)+mix(step,-step,lessThan(p,vec3(0))));
@@ -637,7 +659,7 @@ vec3 sunVisibility(Hit receiver,ivec2 pixel,out float blockerDistance) {
     direction=normalize(center+frame.sun.x*sqrt(u)*(cos(angle)*t+sin(angle)*cross(center,t)));
   }
   if(dot(receiver.n,direction)<=0)return vec3(0);
-  vec3 transmission=vec3(cloudShadow(receiver.p)),origin=offsetRay(receiver.p,receiver.ng);
+  vec3 transmission=vec3(cloudShadow(receiver.p)),origin=shadowOrigin(receiver);
   float distance=0;blockerDistance=65504;
 #ifndef SIGMA_PASS
   // Only SIGMA reads the blocker distance. Without it this is the same
@@ -686,13 +708,13 @@ vec3 direct(Hit hit,bool primary,out vec3 specular,out float distance) {
     if(source==0) {
       if(cosine<=0||!any(greaterThan(frame.lightRadiance.rgb,vec3(0))))continue;
       vec3 diffuse;materialLobes(hit,toLight,diffuse,lobeSpecular);
-      vec3 sun=cosine*terminatorFade(hit,toLight)*frame.lightRadiance.rgb;
-      weight=(diffuse+lobeSpecular)*sun;lobeSpecular*=sun;
+      vec3 sun=cosine*frame.lightRadiance.rgb;
+      weight=(diffuse*terminatorSoften(hit,toLight)+lobeSpecular)*sun;lobeSpecular*=sun;
     } else {
       if(frame.skyRadiance.w==0)continue;
       weight=materialSample(hit,direction,lobeSpecular);
     }
-    vec3 visibility=shadow(offsetRay(hit.p,hit.ng),direction);
+    vec3 visibility=shadow(shadowOrigin(hit),direction);
     if(source==0)visibility*=cloudShadow(hit.p);
     if(source==1)visibility*=environmentRadiance(direction);
     local+=weight*visibility;specular+=lobeSpecular*visibility;
@@ -1514,7 +1536,7 @@ void replaceMirror(ivec2 pixel) {
         imageStore(primaryPosition,pixel,vec4(hit.p,imageLoad(primaryPosition,pixel).w));
         imageStore(primaryNormal,pixel,vec4(hit.n,1));
         imageStore(primaryAlbedo,pixel,vec4(hit.color.rgb+hit.self,1));
-        imageStore(primaryPrevious,pixel,vec4(hit.previousPosition,hit.historyValid?1:0));
+        imageStore(primaryPrevious,pixel,vec4(hit.previousPosition,packPreviousW(hit.historyValid,hit.lift,hit.horizon,hit.ng)));
         imageStore(primaryEmission,pixel,vec4(hit.emission,hit.identity>0?hit.identity:-selfShare(hit.color.rgb,hit.self)));
         imageStore(primaryPbr,pixel,vec4(hit.pbr?hit.rm.x:-1,hit.rm.y,encodeGeometricNormal(hit.ng)));
       }
@@ -1662,7 +1684,7 @@ void main() {
   bool front=abs(signedCount)==1||(abs(signedCount)>1&&multiSheetFallback);
   vec3 origin,direction;
   ray((vec2(pixel)+.5+frame.jitter.xy)/vec2(frame.target.xy)*2-1,frame.inverseCameraRelative,frame.eye.xyz,origin,direction);
-  Hit hit;hit.t=1e30;hit.p=vec3(0);hit.n=vec3(0);hit.blended=false;hit.pbr=false;hit.thick=vec2(0);hit.film=vec4(0);
+  Hit hit;hit.t=1e30;hit.p=vec3(0);hit.n=vec3(0);hit.blended=false;hit.pbr=false;hit.thick=vec2(0);hit.film=vec4(0);hit.lift=0;hit.horizon=vec3(0);
   uint passed;
   if(front)hit=primarySurface(pixel,origin,direction,false,passed);
   hit.wo=-direction;
@@ -1911,8 +1933,11 @@ void main() {
   vec3 sunTransmittance=vec3(1),unshadowedDirect=vec3(0);float blockerDistance=65504;
   if(primary.t<1e30&&!primary.blended&&sparseLaunch!=2u) {
     sunTransmittance=sunVisibility(primary,pixel,blockerDistance);
-    unshadowedDirect=materialBrdf(primary,-frame.lightDirection.xyz)*max(0,dot(primary.n,-frame.lightDirection.xyz))*
-                     terminatorFade(primary,-frame.lightDirection.xyz)*frame.lightRadiance.rgb;
+    {
+      vec3 diffuse,specular;materialLobes(primary,-frame.lightDirection.xyz,diffuse,specular);
+      unshadowedDirect=(diffuse*terminatorSoften(primary,-frame.lightDirection.xyz)+specular)*
+                       max(0,dot(primary.n,-frame.lightDirection.xyz))*frame.lightRadiance.rgb;
+    }
     primaryDirect=unshadowedDirect*sunTransmittance;
     // The primary's paths (traceIndirect) follow whenever bounces are on.
     emissiveSpecularFromPaths=frame.config.y>0u;
@@ -2076,7 +2101,9 @@ void main() {
   // Denoised lighting takes the mirror's reflectance in composition.
   if(mirror.replaced){emission*=mirror.reflectance;color*=mirror.reflectance;}
   #endif
-  imageStore(primaryPrevious,pixel,vec4(emission,0));
+  // Its w keeps the terminator lift and horizon for the split local pass
+  // (packPreviousW; no history there, as before).
+  imageStore(primaryPrevious,pixel,vec4(emission,packPreviousW(false,primary.lift,primary.horizon,primary.ng)));
   #ifdef TEMPORAL
   if(temporal.hitDistance.w!=0)imageStore(composed,pixel,vec4(safeRadiance(color),1));
   #endif
@@ -2112,7 +2139,7 @@ void main() {
 #ifndef SINGLE_SHEET_PASS
   if(sheetCount<=1)return;
 #endif
-  Hit primary;primary.p=vec3(0);primary.n=vec3(0);primary.blended=false;primary.pbr=false;primary.thick=vec2(0);primary.film=vec4(0);
+  Hit primary;primary.p=vec3(0);primary.n=vec3(0);primary.blended=false;primary.pbr=false;primary.thick=vec2(0);primary.film=vec4(0);primary.lift=0;primary.horizon=vec3(0);
   if(sheetCount!=0
 #ifdef SINGLE_SHEET_PASS
       &&(sheetCount==1||multiSheetFallback)

@@ -378,7 +378,7 @@ vec3 smallLocalLighting(LightNodes nodes,LightEmitters emitters,Hit hit,uint sta
     if(guided) {selected=preferredSample;selectedIndex=preferred;}
     float pdf=(1-mixWeight)*localLuminance(selected.physical)/total+(selectedIndex==preferred?mixWeight:0);
     vec3 estimate=selected.physical/pdf;
-    vec3 visibility=localVisibility(offsetRay(hit.p,hit.ng),selected.endpoint);
+    vec3 visibility=localVisibility(shadowOrigin(hit),selected.endpoint);
     noteLocalProbe(visibility,estimate);
     vec3 contribution=estimate*visibility,specularContribution=selected.specular/pdf*visibility;
     clampLighting(hit,contribution,specularContribution,threshold);
@@ -457,7 +457,7 @@ vec3 resampledLocalLighting(LightNodes nodes,LightEmitters emitters,Hit hit,uint
     }
     if(total<=0)continue;
     vec3 estimate=selected.physical*(total/(float(count)*localLuminance(selected.physical)));
-    vec3 visibility=localVisibility(offsetRay(hit.p,hit.ng),selected.endpoint);
+    vec3 visibility=localVisibility(shadowOrigin(hit),selected.endpoint);
     noteLocalProbe(visibility,estimate);
     vec3 contribution=estimate*visibility,specularContribution=selected.specular*(total/(float(count)*localLuminance(selected.physical)))*visibility;
     clampLighting(hit,contribution,specularContribution,threshold);
@@ -687,7 +687,7 @@ vec3 localLighting(Hit hit,uint state,uint samples,out float lightDistance,bool 
     // A spot light facing away or a back-facing response: no visibility ray.
     if(localLuminance(physical)<=0)continue;
     vec3 estimate=physical/selectionPdf;
-    vec3 visibility=localVisibility(offsetRay(hit.p,hit.ng),endpoint);
+    vec3 visibility=localVisibility(shadowOrigin(hit),endpoint);
     noteLocalProbe(visibility,estimate);
     vec3 contribution=estimate*visibility,specularContribution=physicalSpecular/selectionPdf*visibility;
     pathDebugRecord(pathDebugVertex?4:2,endpoint,float(emitter),vec4(estimate,selectionPdf),vec4(visibility,distance),vec4(physical,0));

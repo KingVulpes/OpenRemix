@@ -95,7 +95,11 @@ void PathTracer::Gpu::configureLocalProbes(Frame &frame, const TraceOptions &opt
                       localIlluminationActive && !restir.active;
   frame.localProbeRead = frame.localProbeWrite = 0;
   // Not probe settings; free slots.
-  frame.localProbeParams[1] = options.shadowTerminatorFade;
+  frame.localProbeParams[1] = options.shadowTerminatorSoften ? 1.f : 0.f;
+  // The terminator lift's limits in world units (0 length: off).
+  const float scale = std::max(options.sceneScale, 1e-6f), maxArea = options.shadowTerminatorMaxArea / (scale * scale);
+  frame.localProbeParams[3] = options.shadowTerminatorLift ? options.shadowTerminatorMaxLength / scale : 0.f;
+  std::memcpy(&frame.visibilityConfig[3], &maxArea, 4);
   frame.localProbeParams[2] = options.bounces > 0 ? std::min(options.emissiveSpecularRoughness, .45f) : 0.f;
   if (!active) {
     p.valid = false;

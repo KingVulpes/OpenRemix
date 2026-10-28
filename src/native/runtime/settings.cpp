@@ -196,7 +196,10 @@ namespace remix::config {
         TRACE(emissiveClusterSize, 1, 64);
         TRACE(lightPowerExponent, .25, 1);
         TRACE(rayOffset, 4, 1024);
-        TRACE(shadowTerminatorFade, 0, .3);
+        TRACE(shadowTerminatorSoften, 0, 1);
+        TRACE(shadowTerminatorLift, 0, 1);
+        TRACE(shadowTerminatorMaxArea, 0, 10);
+        TRACE(shadowTerminatorMaxLength, 0, 1);
         TRACE(emissiveSpecularRoughness, 0, .45);
         TRACE(adaptiveLocalSampling, 0, 1);
         TRACE(stabilizeEmissiveLighting, 0, 1);
@@ -285,7 +288,7 @@ namespace remix::config {
         TRACE(restirPermutation, 0, 1);
         TRACE(localSamples, 1, 16);
         TRACE(shadowDebug, 0, 2);
-        TRACE(debugView, 0, 14);
+        TRACE(debugView, 0, 15);
         TRACE(taa, 0, 1);
         TRACE(waterIndirectReuse, 0, 1);
         TRACE(caustics, 0, 1);

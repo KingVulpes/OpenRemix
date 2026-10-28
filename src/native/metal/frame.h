@@ -93,7 +93,7 @@ namespace remix::metal::trace {
     Matrix inverseCameraRelative{};
     // Local occlusion probes (pathtrace.comp, localOcclusionConfidence): per
     // pixel, the arrived share of its local light, last frame's (0: none)
-    // and this frame's. localProbeParams: movingShadowBlur, shadowTerminatorFade, reserved.
+    // and this frame's. localProbeParams: movingShadowBlur, shadowTerminatorSoften, emissiveSpecularRoughness, terminator lift length.
     uint64_t localProbeRead = 0, localProbeWrite = 0;
     float localProbeParams[4] = {};
     // Volumetrics: each source's share of the scattered light (sun, lights,

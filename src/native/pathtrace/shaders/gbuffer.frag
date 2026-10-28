@@ -20,6 +20,12 @@ layout(location=5) flat in float triangleIdentity;
 layout(location=6) flat in vec3 tangent;
 layout(location=7) flat in vec3 bitangent;
 layout(location=8) in vec3 authoredNormal;
+layout(location=9) flat in vec3 corner0;
+layout(location=10) flat in vec3 corner1;
+layout(location=11) flat in vec3 corner2;
+layout(location=12) flat in vec3 cornerNormal0;
+layout(location=13) flat in vec3 cornerNormal1;
+layout(location=14) flat in vec3 cornerNormal2;
 #ifdef STABLE_DEPTH
 layout(location=0) out float outDepth;
 #else
@@ -95,7 +101,20 @@ void main() {
   vec2 rm=materialParameters(s,uv,albedo.rgb);
   outPbr=vec4(s.pbr.z!=0?rm.x:-1,rm.y,encodeGeometricNormal(n));
   outAlbedo=vec4(albedo.rgb+self,albedo.a);
-  outPrevious=vec4(previousPosition,s.previousVertices!=0?1:0);
+  // Shadow rays leave smooth-shaded triangles lifted, and light sampling
+  // ends at their smooth horizon (terminatorLift): barycentrics of the
+  // interpolated position, by least squares.
+  float lift=0;vec3 horizon=n;
+  if(frame.localProbeParams.w!=0) {
+    vec3 e1=corner1-corner0,e2=corner2-corner0,d=position-corner0;
+    float d00=dot(e1,e1),d01=dot(e1,e2),d11=dot(e2,e2),d20=dot(d,e1),d21=dot(d,e2),det=d00*d11-d01*d01;
+    if(abs(det)>1e-20) {
+      vec2 bc=clamp(vec2(d11*d20-d01*d21,d00*d21-d01*d20)/det,0.,1.);
+      lift=terminatorLift(corner0,corner1,corner2,cornerNormal0,cornerNormal1,cornerNormal2,vec3(1-bc.x-bc.y,bc),n,
+                          frame.localProbeParams.w,uintBitsToFloat(frame.visibilityConfig.w),horizon);
+    }
+  }
+  outPrevious=vec4(previousPosition,packPreviousW(s.previousVertices!=0,lift,horizon,n));
   outEmission=vec4(emission,triangleIdentity>0?triangleIdentity:-selfShare(albedo.rgb,self));
 #endif
 }

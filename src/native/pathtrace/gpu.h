@@ -127,7 +127,7 @@ namespace remix::trace::detail {
     float domeTransform[3][4] = {};
     uint64_t visibilityNodes = 0, visibilityLeaves = 0, visibilityTable = 0;
     uint64_t movedLights = 0; // scene::MovedLight pairs, count in visibilityConfig[1]
-    uint32_t visibilityConfig[4] = {}; // table row words, moved light count, light-tree nodes in the table, reserved
+    uint32_t visibilityConfig[4] = {}; // table row words, moved light count, light-tree nodes in the table, terminator lift max doubled area (units², float bits)
     float visibilityProbe[4] = {};     // world units: probe offset above the surface, decal attachment distance; texture footprint scale (render/output size); ray offset (ULPs)
     uint64_t restirCurrent = 0, restirHistoryRead = 0, restirHistoryWrite = 0, restirRemap = 0;
     uint32_t restirConfig[4] = {}; // candidates, spatial samples, temporal M cap, flags (1 initial visibility)
@@ -191,7 +191,7 @@ namespace remix::trace::detail {
     Matrix inverseCameraRelative{};
     // Local occlusion probes (pathtrace.comp, localOcclusionConfidence): per
     // pixel, the arrived share of its local light, last frame's (0: none)
-    // and this frame's. localProbeParams: movingShadowBlur, shadowTerminatorFade, reserved.
+    // and this frame's. localProbeParams: movingShadowBlur, shadowTerminatorSoften, emissiveSpecularRoughness, terminator lift length.
     uint64_t localProbeRead = 0, localProbeWrite = 0;
     float localProbeParams[4] = {};
     // Volumetrics: each source's share of the scattered light (sun, lights,

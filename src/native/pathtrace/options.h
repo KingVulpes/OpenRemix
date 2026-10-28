@@ -53,11 +53,16 @@ namespace remix {
     // coordinate off the surface (RT Gems ch. 6): about 0.5 units at 16384
     // from the origin. Smaller tightens contact shadows, too small shows acne.
     float rayOffset = 256;
-    // Light sampling fades out between cosines 3x and 1x this to the shading
-    // normal (0: off), ahead of the faceted shadow terminator of low-poly
-    // meshes with smooth normals (RTXPT's shadowNoLFadeout). It also takes
-    // grazing light from flat surfaces: a darker scene as it grows.
-    float shadowTerminatorFade = 0;
+    // The shadow terminator, as dxvk-remix (rtx.shadowTerminator.*): light
+    // sampling's diffuse lobe softened within a few degrees of the triangle's
+    // horizon (brdf.glsl terminatorSoften), and shadow rays leaving
+    // smooth-shaded triangles from where their vertex normals put the smooth
+    // surface (Hanika 2021; scene.glsl terminatorLift), where sampled light
+    // also ends at the smooth surface's horizon instead of the triangle's: at
+    // most shadowTerminatorMaxLength meters, faded out on triangles whose
+    // doubled area grows to shadowTerminatorMaxArea square meters (see sceneScale).
+    bool shadowTerminatorSoften = true, shadowTerminatorLift = true;
+    float shadowTerminatorMaxArea = .05f, shadowTerminatorMaxLength = .02f;
     // Smooth PBR surfaces (roughness below this; 0 off, at most 0.45, under
     // the radiance cache's 0.5) reflect emissive surfaces through their
     // sampled paths instead of light sampling (brdf.glsl pathEmissiveSpecular).

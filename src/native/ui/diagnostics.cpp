@@ -277,7 +277,7 @@ namespace remix {
               "Final lighting\0Albedo\0Shading normals\0Triangle IDs\0Depth bands\0World position grid\0"
               "Raw local lighting\0Raw indirect lighting\0Motion vectors\0Motion validity\0"
               "Indirect lighting confidence\0TAA current-frame weight\0Roughness and metalness\0Local history confidence\0"
-              "Translucent layer count\0"))
+              "Translucent layer count\0Shadow terminator offset\0"))
         options.debugView = uint32_t(view);
       static const char *help[] = {
           "Start with Triangle IDs and Shading normals at the problem angle, then compare Raw local "
@@ -309,7 +309,11 @@ namespace remix {
           "Local-light denoiser history confidence: white = history kept, black = dropped (moved lights, "
           "moved occluders, moving surfaces). Indexed as NRD reads it.",
           "Translucent layers each camera ray passes: black none, blue 1, green 2, yellow 3, red 4, white 5 "
-          "or more. Pixels with two or more are lit layer by layer in the multi-sheet pass."};
+          "or more. Pixels with two or more are lit layer by layer in the multi-sheet pass.",
+          "Shadow-ray lift off smooth-shaded triangles: red = lifted (full red at the longest offset allowed), "
+          "grey = the sun's shading cosine, blue = sun-lit by the shading normal but past the lighting horizon "
+          "(the triangle's, or with the offset the smooth surface's), where sun light is cut off. No red with "
+          "the offset off."};
       ImGui::TextWrapped("%s", help[options.debugView]);
       if (options.debugView) {
         ImGui::TextWrapped(

@@ -191,7 +191,7 @@ Reservoir restirInitial(Hit hit,uint state,float depth,ivec2 pixel) {
   if(r.light!=restirNone&&(frame.restirConfig.w&1u)!=0) {
     vec3 specular,endpoint;float distance;
     restirContribution(hit,emitters.data[r.light],vec2(r.u,r.v),specular,endpoint,distance);
-    if(localLuminance(localVisibility(offsetRay(hit.p,hit.ng),endpoint))<=0){r.W=0;r.light=restirNone;}
+    if(localLuminance(localVisibility(shadowOrigin(hit),endpoint))<=0){r.W=0;r.light=restirNone;}
   }
   r.target=selected;
   float occlusionChange=0;
@@ -319,7 +319,7 @@ vec3 restirShade(Hit hit,ivec2 pixel,uint state,float depth,out float lightDista
   if(r.light!=restirNone) {
     vec3 endpoint;
     vec3 physical=restirContribution(hit,emitters.data[r.light],vec2(r.u,r.v),specular,endpoint,lightDistance);
-    vec3 visibility=localVisibility(offsetRay(hit.p,hit.ng),endpoint);
+    vec3 visibility=localVisibility(shadowOrigin(hit),endpoint);
     radiance=physical*r.W*visibility;specular*=r.W*visibility;
     localDirection(endpoint-hit.p,radiance);
     // Occluded samples are never reused (RTXDI discardInvisibleSamples); the

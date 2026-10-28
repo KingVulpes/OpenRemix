@@ -64,35 +64,40 @@ vec3 ggxMultiScatter(vec3 f0,float roughness,float no) {
   float e=max(ggxAlbedo(roughness,no),.05);
   return 1+f0*(1-e)/e;
 }
+// The diffuse lobe ends at the lighting horizon (terminatorLift: the smooth
+// surface's on lifted triangles, else the triangle's), the specular one at
+// the triangle's.
 void materialLobes(Hit hit,vec3 wi,out vec3 diffuse,out vec3 specular) {
   diffuse=specular=vec3(0);
   float ni=dot(hit.n,wi),no=dot(hit.n,hit.wo);
-  if(ni<=0||no<=0||dot(hit.ng,wi)<=0)return;
+  if(ni<=0||no<=0||dot(hit.horizon,wi)<=0)return;
   if(!hit.pbr){diffuse=hit.color.rgb/eonPi;return;}
   diffuse=eonBrdfCosines(hit.color.rgb,hit.rm.x,ni,no,dot(wi,hit.wo));
   vec3 h=normalize(wi+hit.wo),f0=mix(vec3(.04),hit.color.rgb,hit.rm.y);
   vec3 f=surfaceFresnel(hit,f0,max(0,dot(hit.wo,h)));
   float alpha=max(.001,hit.rm.x*hit.rm.x);
-  specular=f*ggxMultiScatter(f0,hit.rm.x,no)*(ggxD(max(0,dot(hit.n,h)),alpha)*ggxG2(ni,no,alpha)/(4*ni*no));
+  if(dot(hit.ng,wi)>0)specular=f*ggxMultiScatter(f0,hit.rm.x,no)*(ggxD(max(0,dot(hit.n,h)),alpha)*ggxG2(ni,no,alpha)/(4*ni*no));
   diffuse*=(1-hit.rm.y)*(1-f);
 }
 vec3 materialBrdf(Hit hit,vec3 wi) {
   vec3 diffuse,specular;materialLobes(hit,wi,diffuse,specular);
   return diffuse+specular;
 }
-// Light sampling's fade toward the shadow terminator (RTXPT's low grazing
-// angle falloff): a smooth normal lights a low-poly surface past where its
-// flat triangles turn away or shadow each other, a cut in their shape. The
-// light fades out between cosines 3k and k to the shading normal first (k =
-// rtx.native.pathtrace.shadowTerminatorFade, frame.localProbeParams.y; 0
-// off), at the cost of some grazing light on every surface. Nothing here
-// may depend on the triangle's own normal: it differs from triangle to
-// triangle and puts steps at their edges (Chiang et al.'s term did, and so
-// did limiting the fade to where the shading normal departs from it).
+// Softening of the shadow terminator on light sampling's diffuse lobe
+// (dxvk-remix softenShadowTerminator, after "Predictable and Targeted
+// Softening of the Shadow Terminator"): light within about 3 degrees of the
+// lighting horizon (materialLobes) fades out, within about 9 where the shading normal (a
+// normal map, smooth normals) departs from the triangle's, so the abrupt cut
+// where the triangle turns away is a gradient. A band that thin takes next
+// to no light, and the triangle normal's differences between neighbours do
+// not show (a broad fade by it put steps at triangle edges). 1 with
+// rtx.native.pathtrace.shadowTerminatorSoften off (frame.localProbeParams.y).
 // Sampled bounce directions keep the full BRDF.
-float terminatorFade(Hit hit,vec3 wi) {
-  float k=frame.localProbeParams.y;
-  return k>0?clamp((dot(hit.n,wi)-k)/(2*k),0.,1.):1.;
+float terminatorSoften(Hit hit,vec3 wi) {
+  if(frame.localProbeParams.y==0)return 1;
+  float threshold=mix(sin(.15),sin(.05),clamp(dot(hit.n,hit.horizon),0.,1.));
+  float shadowing=clamp(dot(hit.horizon,wi)/threshold,0.,1.);
+  return shadowing*shadowing*(3-2*shadowing);
 }
 // Emissive surfaces in the specular lobe of a smooth PBR surface (roughness
 // below rtx.native.pathtrace.emissiveSpecularRoughness, frame.localProbeParams.z;
@@ -109,17 +114,16 @@ bool pathEmissiveSpecular(Hit hit) {
 }
 // All NEE estimators previously include cos/pi. Replace that Lambert factor
 // with the same BRDF used by continuation; keep the existing light PDFs.
-vec3 materialResponse(Hit hit,vec3 wi) {
-  if(!hit.pbr)return vec3(dot(hit.ng,wi)>0?terminatorFade(hit,wi):0);
-  return materialBrdf(hit,wi)*(eonPi*terminatorFade(hit,wi))/max(materialFactor(hit),vec3(1e-6));
-}
 vec3 materialResponse(Hit hit,vec3 wi,out vec3 specular) {
   specular=vec3(0);
-  if(!hit.pbr)return materialResponse(hit,wi);
+  if(!hit.pbr)return vec3(dot(hit.horizon,wi)>0?terminatorSoften(hit,wi):0);
   vec3 diffuse;materialLobes(hit,wi,diffuse,specular);
-  vec3 scale=eonPi*terminatorFade(hit,wi)/max(materialFactor(hit),vec3(1e-6));
+  vec3 scale=eonPi/max(materialFactor(hit),vec3(1e-6));
   specular*=scale;
-  return diffuse*scale+specular;
+  return diffuse*(scale*terminatorSoften(hit,wi))+specular;
+}
+vec3 materialResponse(Hit hit,vec3 wi) {
+  vec3 specular;return materialResponse(hit,wi,specular);
 }
 // Diffuse share of the reflectance at this view angle (NRD sample,
 // EstimateDiffuseProbability). A lobe with next to no energy (the diffuse lobe

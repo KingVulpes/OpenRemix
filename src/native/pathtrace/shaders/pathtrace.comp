@@ -236,11 +236,16 @@ vec3 carriedNormal(vec3 n,vec3 e1,vec3 e2,vec3 f1,vec3 f2) {
 // double-sided, so a ray leaving a painted surface meets every layer above
 // it; one query passes them all.
 float originPaint=0;
-void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, inout Hit hit,bool motion,float minimum) {
+// The nearest intersection a query committed (surface ~0u: none), all a Hit
+// is built from. The Hit is built once, after both scenes (and in closest(),
+// after the paint in front of it): carried across further queries whole it
+// took the big stages from 168 to 255 registers.
+struct Intersection { float t; uint surface; uint primitive; vec2 bary; mat4x3 model; };
+void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, inout Intersection x,float minimum) {
   rayQueryEXT query;
   profileRay(0);
   uvGradX=uvGradY=vec2(0); // candidates test coverage at the finest mip
-  rayQueryInitializeEXT(query, scene, traceFlags()|(cameraCut!=0u||cameraRay?gl_RayFlagsNoOpaqueEXT:gl_RayFlagsNoneEXT), traceMask, origin, minimum, direction, hit.t);
+  rayQueryInitializeEXT(query, scene, traceFlags()|(cameraCut!=0u||cameraRay?gl_RayFlagsNoOpaqueEXT:gl_RayFlagsNoneEXT), traceMask, origin, minimum, direction, x.t);
   while (rayQueryProceedEXT(query)) {
     if (rayQueryGetIntersectionTypeEXT(query,false)!=gl_RayQueryCandidateIntersectionTriangleEXT) continue;
     profileRay(1);
@@ -262,16 +267,23 @@ void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, ino
     else profileRay(3);
   }
   if (rayQueryGetIntersectionTypeEXT(query,true)==gl_RayQueryCommittedIntersectionNoneEXT) return;
+  x.t=rayQueryGetIntersectionTEXT(query,true);
+  x.surface=rayQueryGetIntersectionInstanceCustomIndexEXT(query,true)+rayQueryGetIntersectionGeometryIndexEXT(query,true);
+  x.primitive=rayQueryGetIntersectionPrimitiveIndexEXT(query,true);
+  x.bary=rayQueryGetIntersectionBarycentricsEXT(query,true);
+  x.model=rayQueryGetIntersectionObjectToWorldEXT(query,true);
+}
+void surfaceHit(Intersection x,vec3 direction,inout Hit hit,bool motion) {
   profileRay(5);
-  hit.t=rayQueryGetIntersectionTEXT(query,true);
-  Surface s=surfaces[rayQueryGetIntersectionInstanceCustomIndexEXT(query,true)+rayQueryGetIntersectionGeometryIndexEXT(query,true)];
+  hit.t=x.t;
+  Surface s=surfaces[x.surface];
   s.indices=s.traceIndices;
-  uint tri=rayQueryGetIntersectionPrimitiveIndexEXT(query,true)*3;
+  uint tri=x.primitive*3;
   vec3 a=s.vertices.v[s.indices.i[tri]].position.xyz;
   vec3 b=s.vertices.v[s.indices.i[tri+1]].position.xyz;
   vec3 c=s.vertices.v[s.indices.i[tri+2]].position.xyz;
-  vec2 bary=rayQueryGetIntersectionBarycentricsEXT(query,true);
-  mat4x3 model=rayQueryGetIntersectionObjectToWorldEXT(query,true);
+  vec2 bary=x.bary;
+  mat4x3 model=x.model;
   // Reconstruct on the triangle, then transform; see Ray Tracing Gems chapter 6.
   hit.p=model*vec4(a + bary.x*(b-a) + bary.y*(c-a),1);
   hit.n=normalize(cross(model*vec4(b-a,0),model*vec4(c-a,0)));
@@ -293,7 +305,7 @@ void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, ino
     vec2 uc=s.vertices.v[s.indices.i[tri+2]].uv.xy;
     vec3 normal=vertexNormal(s.vertices.v[s.indices.i[tri]])*w.x+
       vertexNormal(s.vertices.v[s.indices.i[tri+1]])*w.y+vertexNormal(s.vertices.v[s.indices.i[tri+2]])*w.z;
-    mat3 toWorld=transpose(mat3(rayQueryGetIntersectionWorldToObjectEXT(query,true)));
+    mat3 toWorld=transpose(inverse(mat3(model)));
     if(frame.localProbeParams.w!=0)
       hit.lift=terminatorLift(model*vec4(a,1),model*vec4(b,1),model*vec4(c,1),
         normalize(toWorld*vertexNormal(s.vertices.v[s.indices.i[tri]])),normalize(toWorld*vertexNormal(s.vertices.v[s.indices.i[tri+1]])),
@@ -323,12 +335,22 @@ void queryScene(accelerationStructureEXT scene, vec3 origin, vec3 direction, ino
   }
 #endif
 }
-Hit closestGeometry(vec3 origin,vec3 direction,float maximum,bool motion,float minimum) {
+Intersection nearest(vec3 origin,vec3 direction,float maximum,float minimum) {
+  Intersection x;x.t=maximum;x.surface=~0u;x.primitive=0u;x.bary=vec2(0);x.model=mat4x3(1);
+  if ((frame.target.z&1)!=0) queryScene(staticScene,origin,direction,x,minimum);
+  if ((frame.target.z&2)!=0) queryScene(dynamicScene,origin,direction,x,minimum);
+  return x;
+}
+Hit missedHit(vec3 direction,float maximum) {
   Hit hit; hit.t=maximum; hit.p=vec3(0);hit.n=vec3(0);hit.color=vec4(0);hit.blended=false;hit.blendedDraw=false;hit.decal=false;hit.decalMode=0u;hit.cacheable=false;hit.previousPosition=vec3(0);hit.previousNormal=vec3(0);hit.historyValid=false;
   hit.emission=vec3(0);hit.self=vec3(0);hit.tinted=false;hit.thick=vec2(0);hit.film=vec4(0);
   hit.identity=0;hit.ng=vec3(0);hit.wo=-direction;hit.rm=vec2(1,0);hit.pbr=false;hit.lift=0;hit.horizon=vec3(0);
-  if ((frame.target.z&1)!=0) queryScene(staticScene,origin,direction,hit,motion,minimum);
-  if ((frame.target.z&2)!=0) queryScene(dynamicScene,origin,direction,hit,motion,minimum);
+  return hit;
+}
+Hit closestGeometry(vec3 origin,vec3 direction,float maximum,bool motion,float minimum) {
+  Hit hit=missedHit(direction,maximum);
+  Intersection x=nearest(origin,direction,maximum,minimum);
+  if(x.surface!=~0u)surfaceHit(x,direction,hit,motion);
   if(hit.t==maximum)hit.t=1e30;
   return hit;
 }
@@ -344,11 +366,15 @@ Hit closestGeometry(vec3 origin,vec3 direction,float maximum,bool motion) {
 // paint texel (alpha-tested) past the last; paint the ray starts at (bounce,
 // sky and light rays from under it) belongs to the surface the ray leaves and
 // is passed (originPaint). The receiver query visits no quad of a stack of
-// paint, and covering paint ends the peel at once.
-// Every query is one call site: every closestGeometry (two inlined scene
-// queries) is inlined wherever closest() is.
+// paint, and covering paint ends the peel at once. The receiver's Hit is
+// built after the peel (Intersection); where the first layer shows as an
+// ordinary surface it is queried again, as only its distance is kept.
+// The peel is one query call site and the receiver and first layer one each:
+// every query (two inlined scene queries) is inlined wherever closest() is.
 Hit closest(vec3 origin,vec3 direction,float maximum,bool motion) {
-  Hit first,hit,receiver;
+  Hit hit;
+  Intersection receiver;
+  vec3 firstNg=vec3(0);float firstT=0;
   vec3 color=vec3(0),normal=vec3(0),emission=vec3(0),self=vec3(0);
   vec2 parameters=vec2(0);
   // `through` carries color into the layers below: alpha paint covers them,
@@ -363,20 +389,21 @@ Hit closest(vec3 origin,vec3 direction,float maximum,bool motion) {
   // Step 0 finds the receiver; the steps after it, up to 32 layers of paint.
   for(uint step=0;step<33;++step) {
     traceMask=step==0u?(paint?mask&~decalInstanceMask:mask):decalInstanceMask;
-    originPaint=step==0u?0.:attach;
-    hit=closestGeometry(origin,direction,end,motion,minimum);
-    originPaint=0;
     if(step==0u) {
-      receiver=hit;
+      receiver=nearest(origin,direction,maximum,0);
       if(!paint)break;
-      end=receiver.t<1e30?receiver.t:maximum;
+      end=receiver.t;
       continue;
     }
-    if(hit.t>=1e30)break;
+    originPaint=attach;
+    Intersection x=nearest(origin,direction,end,minimum);
+    originPaint=0;
+    if(x.surface==~0u)break;
+    hit=missedHit(direction,end);surfaceHit(x,direction,hit,motion);
     // Keep the ray origin fixed. The normal-offset used for lighting rays can
     // jump through a decal's close receiver at large world coordinates.
     minimum=uintBitsToFloat(floatBitsToUint(hit.t)+1u);
-    if(layers==0u)first=hit;
+    if(layers==0u){firstT=x.t;firstNg=hit.ng;}
     if(hit.decalMode!=0u) {
       // mod2x is authored gamma-encoded (128 is neutral): scale so (128/255)^2.2 maps to one.
       through*=hit.color.rgb*(hit.decalMode==2u?4.5554:1.);
@@ -392,26 +419,36 @@ Hit closest(vec3 origin,vec3 direction,float maximum,bool motion) {
     if(++layers>=32u||all(lessThan(through,vec3(1./1024))))break;
   }
   traceMask=mask;
-  hit=receiver;
-  if(layers==0u)return receiver;
+  hit=missedHit(direction,maximum);
+  if(receiver.surface!=~0u)surfaceHit(receiver,direction,hit,motion);
+  if(hit.t==maximum)hit.t=1e30;
+  if(layers==0u)return hit;
   // Paint coats the surface right behind it. The gap is measured across the
   // paint, not along the ray: a grazing ray travels 1/cos further between the
   // paint and its receiver, and paint lifted an inch stopped being attached
   // from 60 degrees off the normal (mod2x paint then stood as an opaque grey
   // quad). The facing term is floored so a ray skimming past the paint's edge
   // cannot attach it to a surface far behind (at most 20 x attach along the ray).
-  const float facing=max(abs(dot(direction,first.ng)),.05);
+  const float facing=max(abs(dot(direction,firstNg)),.05);
   const bool attached=hit.t<1e30&&!hit.decal&&(hit.t-lastDecal)*facing<=attach;
-  // Multiplicative paint over glass tints what is seen through it (a sheet
-  // without coverage of its own) instead of standing as an opaque quad.
-  if(attached&&hit.blended&&remaining==1) {
-    first.decal=false;first.blended=true;first.blendedDraw=true;first.tinted=true;
-    first.color=vec4(through,0);first.emission=vec3(0);first.self=vec3(0);
-    return first;
-  }
   // Unattached decals and layers above translucent receivers retain ordinary
   // source-over transport. Do not project paint onto the sky or change glass.
-  if(!attached||hit.blended) {first.decal=false;return first;}
+  if(!attached||hit.blended) {
+    const bool tint=attached&&remaining==1;
+    traceMask=decalInstanceMask;originPaint=attach;
+    Intersection first=nearest(origin,direction,uintBitsToFloat(floatBitsToUint(firstT)+1u),0);
+    traceMask=mask;originPaint=0;
+    hit=missedHit(direction,maximum);
+    if(first.surface!=~0u)surfaceHit(first,direction,hit,motion);
+    hit.decal=false;
+    // Multiplicative paint over glass tints what is seen through it (a sheet
+    // without coverage of its own) instead of standing as an opaque quad.
+    if(tint) {
+      hit.blended=true;hit.blendedDraw=true;hit.tinted=true;
+      hit.color=vec4(through,0);hit.emission=vec3(0);hit.self=vec3(0);
+    }
+    return hit;
+  }
   hit.color.rgb=min(color+through*hit.color.rgb,vec3(1));
   hit.emission=emission+through*hit.emission;
   hit.self=min(self+through*hit.self,vec3(1)-hit.color.rgb);

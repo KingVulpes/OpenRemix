@@ -219,6 +219,7 @@ namespace remix::config {
         TRACE(movingShadowBlur, .01, 1);
         TRACE(translucentIndirect, 0, 1);
         TRACE(skipBlendedSecondaryRays, 0, 1);
+        TRACE(precompileConfigurations, 0, 1);
         TRACE(viewModel, 0, 1);
         TRACE(viewModelScale, .05f, 1);
         TRACE(primarySurfaceReplacement, 0, 1);

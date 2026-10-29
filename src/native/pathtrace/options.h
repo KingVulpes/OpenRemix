@@ -108,6 +108,11 @@ namespace remix {
     // sprites): no transmission through them and no candidate alpha tests.
     // Camera and transparency rays still see them.
     bool skipBlendedSecondaryRays = true;
+    // Once a configuration's pipelines are requested, the other
+    // configurations' temporal lighting pipelines (ray reconstruction or not,
+    // SIGMA, split local lighting, ReSTIR) compile on idle compiler workers,
+    // so switching those settings finds them ready (Gpu::prewarmTemporalConfigurations).
+    bool precompileConfigurations = true;
     // View models (REMIXAPI_CAMERA_TYPE_VIEW_MODEL instances): path-traced in
     // the world camera's view instead of rasterized with their own camera
     // (NativeResources::applyViewModel). The camera sees them in front of

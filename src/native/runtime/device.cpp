@@ -362,6 +362,21 @@ namespace remix {
         VK_EXT_PIPELINE_CREATION_FEEDBACK_EXTENSION_NAME);
     if (pipelineFeedback)
       extensions.push_back(VK_EXT_PIPELINE_CREATION_FEEDBACK_EXTENSION_NAME);
+    // Dev aid (REMIX_PIPELINE_STATISTICS=1): compiled pipelines' register
+    // counts and spills in the compile report (pipelines.request). The flag
+    // changes the pipelines' driver cache keys, so it stays off otherwise.
+    VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR executables{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR};
+    const char *statisticsSwitch = std::getenv("REMIX_PIPELINE_STATISTICS");
+    const bool pipelineStatistics =
+        statisticsSwitch && *statisticsSwitch && *statisticsSwitch != '0' &&
+        supportsDeviceExtension(selection.physicalDevice, VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME);
+    if (pipelineStatistics) {
+      extensions.push_back(VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME);
+      executables.pipelineExecutableInfo = VK_TRUE;
+      executables.pNext = features.pNext;
+      features.pNext = &executables;
+    }
     // NVIDIA Reflex. Its sleep is signalled on a timeline semaphore (core in
     // Vulkan 1.2, enabled through the 1.2 features the tracer's chain holds).
     m_lowLatencySupported = !m_headless && m_traceSupported && m_instanceApiVersion >= VK_API_VERSION_1_2 &&
@@ -428,7 +443,7 @@ namespace remix {
     }
     m_gpuTimers.initialize(m_physicalDevice, m_device, m_queueFamily);
     m_pipelines = std::make_unique<pipeline::Service>(m_device, m_properties,
-                                                      pipelineFeedback);
+                                                      pipelineFeedback, pipelineStatistics);
     m_hostPasses.initialize(m_physicalDevice, m_device);
     // Ray queries are enabled with tracing.
     m_particles = std::make_unique<particles::Renderer>(m_physicalDevice, m_device, m_traceSupported);

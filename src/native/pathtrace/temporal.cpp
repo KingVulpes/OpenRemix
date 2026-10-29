@@ -218,47 +218,14 @@ namespace remix {
         check(pipeline::createPipelineLayout(device, &li, nullptr,
                                              &temporalLayout));
         // One batch: the temporal lighting passes compile concurrently.
-        std::vector<LightingRequest> requests;
         const bool separateIndirect = indirectPlanned(options);
-        auto make = [&](trace::Stage stage, VkPipeline &out) {
-          // The multi-sheet pass compiles in the background: the composition
-          // pass composes layered pixels from the front sheet's light meanwhile.
-          requests.push_back({lightingStage(stage), temporalLayout, &out,
-                              &out == &temporalCompute || &out == &splitDirectCompute || &out == &indirectPass.pipeline,
-                              true, &out == &splitDirectCompute, &out != &psrCompute && &out != &frontGuidesCompute,
-                              separateIndirect && &out == &temporalCompute, &out == &temporalTransparencyCompute});
-        };
-        // The separate indirect pass and its consumer compile together.
-        if (separateIndirect && !indirectPass.pipeline)
-          make(trace::Stage::indirectTemporal, indirectPass.pipeline);
-        if (postSplit && postSigma)
-          make(trace::Stage::splitLocalSigmaTemporal, temporalCompute);
-        else if (postSplit)
-          make(trace::Stage::splitLocalTemporal, temporalCompute);
-        else if (postLocal && postSigma)
-          make(trace::Stage::localSigmaTemporal, temporalCompute);
-        else if (postLocal)
-          make(trace::Stage::localTemporal, temporalCompute);
-        else if (postSigma)
-          make(trace::Stage::sigmaTemporal, temporalCompute);
-        else
-          make(trace::Stage::temporal, temporalCompute);
-        make(trace::Stage::temporalTransparency,
-             temporalTransparencyCompute);
-        make(trace::Stage::frontGuides, frontGuidesCompute);
-        make(trace::Stage::psr, psrCompute);
-        make(trace::Stage::singleTemporalTransparency,
-             singleTemporalTransparencyCompute);
-        make(trace::Stage::sheetLightingTemporal, sheetTemporalCompute);
-        if (postSplit)
-          make(trace::Stage::splitLocalDirect, splitDirectCompute);
-        if (postSplit && options.restir) {
-          requests.push_back({trace::Stage::splitRestirInitial, temporalLayout, &restir.initial, false});
-          requests.push_back({trace::Stage::splitRestirSpatial, temporalLayout, &restir.spatial, false});
-        }
-        if (reblur)
-          make(trace::Stage::confidence, confidenceCompute);
-        awaitLightingPipelines(requests);
+        const TemporalTargets targets{&indirectPass.pipeline, &temporalCompute, &temporalTransparencyCompute,
+                                      &frontGuidesCompute, &psrCompute, &singleTemporalTransparencyCompute,
+                                      &sheetTemporalCompute, &splitDirectCompute, &restir.initial,
+                                      &restir.spatial, &confidenceCompute};
+        awaitLightingPipelines(temporalRequests(postSplit, postSigma, postLocal, postSplit && options.restir, reblur,
+                                                separateIndirect, targets));
+        prewarmTemporalConfigurations(separateIndirect);
         denoiser = std::move(next);
         return;
       } catch (VkResult r) {
@@ -577,4 +544,81 @@ namespace remix {
     std::strncpy(result.unavailableReason, g.postFailure.c_str(), sizeof(result.unavailableReason) - 1);
     return result;
   }
+// The temporal lighting requests of one configuration: its opaque stage (by
+// split lighting, local lights and SIGMA), the passes every configuration
+// has, and its split direct, ReSTIR and confidence passes; each pipeline
+// lands in its target.
+std::vector<PathTracer::Gpu::LightingRequest>
+PathTracer::Gpu::temporalRequests(bool split, bool sigma, bool local, bool restirPasses, bool reblur,
+                                  bool separateIndirect, const TemporalTargets &t) const {
+  std::vector<LightingRequest> requests;
+  auto make = [&](trace::Stage stage, VkPipeline *out) {
+    // The multi-sheet pass compiles in the background: the composition
+    // pass composes layered pixels from the front sheet's light meanwhile.
+    requests.push_back({lightingStage(stage), temporalLayout, out,
+                        out == t.opaque || out == t.splitDirect || out == t.indirect, true, out == t.splitDirect,
+                        out != t.psr && out != t.frontGuides, separateIndirect && out == t.opaque,
+                        out == t.transparency});
+  };
+  // The separate indirect pass and its consumer compile together.
+  if (separateIndirect && !*t.indirect)
+    make(trace::Stage::indirectTemporal, t.indirect);
+  if (split && sigma)
+    make(trace::Stage::splitLocalSigmaTemporal, t.opaque);
+  else if (split)
+    make(trace::Stage::splitLocalTemporal, t.opaque);
+  else if (local && sigma)
+    make(trace::Stage::localSigmaTemporal, t.opaque);
+  else if (local)
+    make(trace::Stage::localTemporal, t.opaque);
+  else if (sigma)
+    make(trace::Stage::sigmaTemporal, t.opaque);
+  else
+    make(trace::Stage::temporal, t.opaque);
+  make(trace::Stage::temporalTransparency, t.transparency);
+  make(trace::Stage::frontGuides, t.frontGuides);
+  make(trace::Stage::psr, t.psr);
+  make(trace::Stage::singleTemporalTransparency, t.single);
+  make(trace::Stage::sheetLightingTemporal, t.sheet);
+  if (split)
+    make(trace::Stage::splitLocalDirect, t.splitDirect);
+  if (restirPasses) {
+    requests.push_back({trace::Stage::splitRestirInitial, temporalLayout, t.restirInitial, false});
+    requests.push_back({trace::Stage::splitRestirSpatial, temporalLayout, t.restirSpatial, false});
+  }
+  if (reblur)
+    make(trace::Stage::confidence, t.confidence);
+  return requests;
+}
+
+// The other configurations' temporal pipelines (and their split variants),
+// queued for idle compiler workers once this one's are requested: switching
+// ray reconstruction, the denoiser, SIGMA, split local lighting or ReSTIR
+// then finds them compiled (or compiling, promoted when requested). Their
+// keys match because the denoiser's input layout no longer follows the
+// configuration. Only this SHARC choice, separate indirect role and shadow
+// early-out are covered; changing those compiles on demand.
+void PathTracer::Gpu::prewarmTemporalConfigurations(bool separateIndirect) {
+  if (!lightingOptions.precompileConfigurations)
+    return;
+  VkPipeline scratch[11] = {};
+  const TemporalTargets targets{&scratch[0], &scratch[1], &scratch[2], &scratch[3], &scratch[4], &scratch[5],
+                                &scratch[6], &scratch[7], &scratch[8], &scratch[9], &scratch[10]};
+  std::vector<LightingRequest> requests;
+  // Split lighting implies local lights; ReSTIR and confidence ride along.
+  const bool kinds[][3] = {{true, true, true}, {true, false, true}, {false, true, true},
+                           {false, false, true}, {false, true, false}, {false, false, false}};
+  for (const auto &[split, sigma, local] : kinds)
+    for (auto &request : temporalRequests(split, sigma, local, split, postCapabilities.reblurShSupported,
+                                          separateIndirect, targets))
+      if (std::none_of(requests.begin(), requests.end(),
+                       [&](const LightingRequest &r) { return r.stage == request.stage; }))
+        requests.push_back(request);
+  prewarmingLighting = true;
+  struct Reset {
+    bool &flag;
+    ~Reset() { flag = false; }
+  } reset{prewarmingLighting};
+  createLightingPipelines(requests);
+}
 } // namespace remix

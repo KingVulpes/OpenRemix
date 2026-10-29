@@ -33,9 +33,15 @@ namespace remix::trace::detail {
     featureAngularEmitters = 8,
     featureFirstOpaqueHit = 16,
     featureMultiSheetFallback = 32, // the composition pass composes layered pixels itself
+    // Light sampling (the stage's guidingCapable specialization gates the last three).
+    featureLocalLights = 64,
+    featureLocalGuiding = 128,
+    featureSmallSet = 256,
+    featureResampling = 512,
   };
-  // What a stage outside the lighting selection sees: decals on, the rest off.
-  inline constexpr uint32_t defaultFeatures = featureDecals;
+  // What a stage outside the lighting selection sees: decals, local lights
+  // and guiding on (as their constants' defaults were), the rest off.
+  inline constexpr uint32_t defaultFeatures = featureDecals | featureLocalLights | featureLocalGuiding;
   inline constexpr uint32_t featuresOffset = 28; // after the composite's fragment constants
   inline constexpr VkPushConstantRange pushRanges[] = {{VK_SHADER_STAGE_FRAGMENT_BIT, 0, featuresOffset},
                                                        {VK_SHADER_STAGE_COMPUTE_BIT, featuresOffset, 4}};
@@ -347,12 +353,8 @@ namespace remix {
     // Variant key bits (selectedLightingKey). Sparse launch mode occupies the
     // two bits from variantSparseShift.
     enum VariantBit : uint32_t {
-      variantGuided = 1,
-      variantSmallSet = 2,
-      variantResampling = 4,
       variantSplit = 8,
       variantCombinedDirect = 16,
-      variantLocal = 64,
       variantProfile = 256,
       variantSeparateIndirect = 1024,
       variantEarlyOut = 8192,
@@ -375,7 +377,7 @@ namespace remix {
     // current settings, so gameplay never waits for a compile: with and
     // without local lights, the small set, resampling, guiding and split
     // lighting.
-    void prewarmLightingVariants(LightingPipeline &source);
+    void prewarmLightingVariants(LightingPipeline &source, bool everyRole = false);
     struct RayProfile {
       std::unique_ptr<Buffer> counters, readback;
       bool pending = false;
@@ -1030,6 +1032,17 @@ namespace remix {
     void awaitLightingPipelines(const std::vector<LightingRequest> &requests);
     void finishLightingPipelines();
     bool deferLighting = false;
+    // A configuration's temporal lighting pipelines, by role.
+    struct TemporalTargets {
+      VkPipeline *indirect, *opaque, *transparency, *frontGuides, *psr, *single, *sheet, *splitDirect,
+          *restirInitial, *restirSpatial, *confidence;
+    };
+    std::vector<LightingRequest> temporalRequests(bool split, bool sigma, bool local, bool restirPasses, bool reblur,
+                                                  bool separateIndirect, const TemporalTargets &targets) const;
+    // Queues the other configurations' temporal pipelines for idle compiler
+    // workers (rtx.native.pathtrace.precompileConfigurations).
+    void prewarmTemporalConfigurations(bool separateIndirect);
+    bool prewarmingLighting = false; // createLightingPipelines only queues, in the background
     std::vector<LightingRequest> deferredLighting;
     trace::SceneSignature lastScene;
     uint64_t sequence = 0;

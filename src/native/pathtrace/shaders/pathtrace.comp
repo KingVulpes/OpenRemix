@@ -77,10 +77,17 @@ layout(push_constant) uniform Features { layout(offset=28) uint bits; } features
 // first blocker (visibility.glsl). A setting, so it stays a variant: both
 // implementations in one binary push the stage to 255 registers.
 layout(constant_id=12) const bool shadowEarlyOut=false;
-layout(constant_id=0) const bool enableLocalLights=true;
-layout(constant_id=1) const bool enableLocalGuiding=true;
-layout(constant_id=2) const bool enableSmallLights=false;
-layout(constant_id=3) const bool enableLightResampling=false;
+// Light sampling's structure (local lights, guiding, the small set,
+// resampling) is pushed too (Gpu::selectLightingPipeline): as variants an
+// opaque stage compiled up to eight times, each no leaner in registers or
+// spills than the all-on build. Guiding, the small set and resampling exist
+// only in stages that can guide (guidingCapable, specialized per stage: the
+// transparency stages compile without them).
+layout(constant_id=1) const bool guidingCapable=true;
+#define enableLocalLights ((features.bits&64u)!=0u)
+#define enableLocalGuiding (guidingCapable&&(features.bits&128u)!=0u)
+#define enableSmallLights (guidingCapable&&(features.bits&256u)!=0u)
+#define enableLightResampling (guidingCapable&&(features.bits&512u)!=0u)
 layout(constant_id=9) const bool separateIndirect=false;
 layout(constant_id=7) const bool enableRayProfile=false;
 #ifdef SPLIT_LOCAL_PASS

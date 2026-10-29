@@ -21,3 +21,6 @@
 /src/native/*/shaders/embedded.h
 /src/native/*/shaders/embedded.bin
 /src/native/*/shaders/embedded_data.cpp
+
+# Runtime profiles and pipeline cache written when the renderer runs from the repo root.
+/openremix/

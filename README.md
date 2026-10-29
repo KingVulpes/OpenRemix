@@ -11,7 +11,7 @@ A performance-focused, multi-platform alternative to [dxvk-remix](https://github
 - SHARC radiance caching and progressive accumulation.
 - Native TAA, FSR, DLSS Super Resolution and Ray Reconstruction.
 - FSR FG and DLSS FG
-- FSR on Windows uses AMD's FSR SDK 2.4.0 libraries: FSR 4 upscaling and frame generation on RDNA 4, FSR 3.1 elsewhere. Linux and macOS use FSR 3.1.4.
+  -  FSR on Windows uses AMD's FSR SDK 2.4.0 libraries: FSR 4 upscaling and frame generation on RDNA 4, FSR 3.1 elsewhere. Linux and macOS use FSR 3.1.4.
 - Autoexposure, threshold-free bloom, and Prism tonemapping.
 - OpenUSD support for loading existing Remix replacement mods.
 - Remix compatible render API
@@ -20,7 +20,7 @@ A performance-focused, multi-platform alternative to [dxvk-remix](https://github
 - [BetaRT](https://github.com/sambow23/BetaRT/tree/openremix)
 - [garrys-mod-rtx-remixed-2](https://github.com/sambow23/garrys-mod-rtx-remixed-2)
 - [UnityRTX](https://github.com/Veitaserum4/UnityRTX/tree/unity-bridge-openremix)
-- [xash3d-fwgs (from Veitaserum4)](https://github.com/Veitaserum4/xash3d-fwgs-openremix)
+- [XashOpenremix](https://github.com/Veitaserum4/xash3d-fwgs-openremix)
 
 ## Building
 

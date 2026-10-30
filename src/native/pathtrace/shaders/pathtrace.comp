@@ -1570,7 +1570,7 @@ bool deltaSurface(Hit hit) {
 }
 // A surface written over this pixel's raster G-buffer entry. kind: as
 // gbuffer.frag writes it (0 sky, 1 opaque, 2 blended, 3 tinted; plus 8 for a
-// view model).
+// view model, plus 16 for a thin film, traced again where it is read).
 void storePrimary(ivec2 pixel,Hit hit,float kind) {
   imageStore(primaryPosition,pixel,vec4(hit.p,imageLoad(primaryPosition,pixel).w));
   imageStore(primaryNormal,pixel,vec4(hit.n,kind));
@@ -1611,7 +1611,7 @@ void replaceMirror(ivec2 pixel) {
     }
   }
   if(painted&&packed.w==0u)
-    storePrimary(pixel,mirror,(mirror.t==1e30?0:mirror.tinted?3:mirror.blended?2:1)+(viewModelPath?8:0));
+    storePrimary(pixel,mirror,(mirror.t==1e30?0:mirror.tinted?3:mirror.blended?2:1)+(viewModelPath?8:0)+(mirror.film.x>0?16:0));
   imageStore(psrMirror,pixel,packed);
 }
 #endif

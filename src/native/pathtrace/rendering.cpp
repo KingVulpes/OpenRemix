@@ -1372,7 +1372,8 @@ namespace remix {
       vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, temporalLayout, 1, 1, &inputs, 0,
                               nullptr);
     }
-    if (denoiser && temporalFrame.translucency[2]) {
+    // Also with mirrors off: it resolves painted raster pixels once (replaceMirror).
+    if (denoiser && psrCompute && options.rasterPrimary) {
       gpu::GpuScope scope(command, "Primary surface replacement", extent);
       bindTrace(command, psrCompute, temporalLayout, defaultFeatures);
       vkCmdDispatch(command, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);

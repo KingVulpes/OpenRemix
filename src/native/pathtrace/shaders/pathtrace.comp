@@ -415,8 +415,10 @@ Hit closest(vec3 origin,vec3 direction,float maximum,bool motion) {
       remaining*=1-hit.color.a;through*=1-hit.color.a;
     }
     lastDecal=hit.t;
-    // Nothing shows past paint that covers all.
-    if(++layers>=32u||all(lessThan(through,vec3(1./1024))))break;
+    // Little shows past paint that covers nearly all: the peel ends once
+    // under 1/32 of the layers below would show (a wall under dozens of
+    // translucent blood layers: ~2.5 ms less than 1/1024).
+    if(++layers>=32u||all(lessThan(through,vec3(1./32))))break;
   }
   traceMask=mask;
   hit=missedHit(direction,maximum);
@@ -1555,18 +1557,34 @@ vec3 sheetIndirect(ivec2 pixel,Hit hit,vec3 direction) {
 bool deltaSurface(Hit hit) {
   return hit.pbr&&hit.rm.x<.041&&(hit.rm.y>.941||dot(hit.color.rgb,vec3(.2126,.7152,.0722))<.005);
 }
+// A surface written over this pixel's raster G-buffer entry. kind: as
+// gbuffer.frag writes it (0 sky, 1 opaque, 2 blended, 3 tinted; plus 8 for a
+// view model).
+void storePrimary(ivec2 pixel,Hit hit,float kind) {
+  imageStore(primaryPosition,pixel,vec4(hit.p,imageLoad(primaryPosition,pixel).w));
+  imageStore(primaryNormal,pixel,vec4(hit.n,kind));
+  imageStore(primaryAlbedo,pixel,vec4(hit.color.rgb+hit.self,hit.color.a));
+  imageStore(primaryPrevious,pixel,vec4(hit.previousPosition,packPreviousW(hit.historyValid,hit.lift,hit.horizon,hit.ng)));
+  imageStore(primaryEmission,pixel,vec4(hit.emission,hit.identity>0?hit.identity:-selfShare(hit.color.rgb,hit.self)));
+  imageStore(primaryPbr,pixel,vec4(hit.pbr?hit.rm.x:-1,hit.rm.y,encodeGeometricNormal(hit.ng)));
+}
 // Primary surface replacement (dxvk-remix PSR, NRD sample's delta event):
 // a mirror's reflection is deterministic, so the surface it shows replaces
 // the mirror as this pixel's primary surface. Lighting, ReSTIR and the
 // diffuse denoisers then treat it like a directly visible surface, at the
 // mirrored (virtual) position, instead of a one-sample secondary hit. The
 // mirror's reflectance multiplies the composed result.
+// The same pass resolves painted pixels: their ray is traced once here (the
+// receiver with its paint, closest()) and written over the G-buffer, so the
+// passes after it read the surface instead of each peeling the paint again
+// (a wall under dozens of translucent layers took 15 ms a pass).
 void replaceMirror(ivec2 pixel) {
   vec3 origin,direction;
   ray((vec2(pixel)+.5+frame.jitter.xy)/vec2(frame.target.xy)*2-1,frame.inverseCameraRelative,frame.eye.xyz,origin,direction);
+  const bool painted=imageLoad(primaryNormal,pixel).w==4;
   Hit mirror=rasterPrimary(pixel,origin);
   uvec4 packed=uvec4(0);
-  if(mirror.t<1e30&&!mirror.blended&&!mirror.decal&&deltaSurface(mirror)) {
+  if(temporal.translucency.z!=0&&mirror.t<1e30&&!mirror.blended&&!mirror.decal&&deltaSurface(mirror)) {
     vec3 reflected=reflect(-mirror.wo,mirror.n);
     if(dot(reflected,mirror.ng)>0) {
       // The mirror's reflection is a bounce: it shows reflection-only instances
@@ -1577,15 +1595,12 @@ void replaceMirror(ivec2 pixel) {
         // A delta lobe reflects exactly the Fresnel term (GGX shadowing -> 1).
         vec3 reflectance=surfaceFresnel(mirror,mix(vec3(.04),mirror.color.rgb,mirror.rm.y),max(0,dot(mirror.n,mirror.wo)));
         packed=packMirror(mirror.n,mirror.p,reflectance);
-        imageStore(primaryPosition,pixel,vec4(hit.p,imageLoad(primaryPosition,pixel).w));
-        imageStore(primaryNormal,pixel,vec4(hit.n,1));
-        imageStore(primaryAlbedo,pixel,vec4(hit.color.rgb+hit.self,1));
-        imageStore(primaryPrevious,pixel,vec4(hit.previousPosition,packPreviousW(hit.historyValid,hit.lift,hit.horizon,hit.ng)));
-        imageStore(primaryEmission,pixel,vec4(hit.emission,hit.identity>0?hit.identity:-selfShare(hit.color.rgb,hit.self)));
-        imageStore(primaryPbr,pixel,vec4(hit.pbr?hit.rm.x:-1,hit.rm.y,encodeGeometricNormal(hit.ng)));
+        hit.color.a=1;storePrimary(pixel,hit,1);
       }
     }
   }
+  if(painted&&packed.w==0u)
+    storePrimary(pixel,mirror,(mirror.t==1e30?0:mirror.tinted?3:mirror.blended?2:1)+(viewModelPath?8:0));
   imageStore(psrMirror,pixel,packed);
 }
 #endif

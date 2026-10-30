@@ -321,7 +321,7 @@ fragment half4 uiFragment(VertexOut in [[stage_in]], texture2d<half, access::sam
     [encoder setScissorRect:{0, 0, NSUInteger(width), NSUInteger(height)}];
   }
 
-  // The developer UI's view of the Metal runtime (metal/ui/status.h); the
+  // The developer UI's view of the Metal runtime (ui/status.h); the
   // tabs themselves are ui/rendering.cpp, lighting.cpp, post_processing.cpp
   // and diagnostics.cpp, as in Vulkan builds.
   ui::DeviceStatus RemixNativeRuntime::uiDevice() const {
@@ -394,6 +394,7 @@ fragment half4 uiFragment(VertexOut in [[stage_in]], texture2d<half, access::sam
     result.upscalers = "Off\0MetalFX\0";
     result.vendorModes = false;
     result.denoiser = "MetalFX denoising";
+    result.denoiserModels = false; // DLSS Ray Reconstruction's model and preset choices
     result.sharpening = false;
     result.frameGenerationBackends = nullptr;
     result.multiFrameGeneration = false;
@@ -401,6 +402,43 @@ fragment half4 uiFragment(VertexOut in [[stage_in]], texture2d<half, access::sam
                                     "rendered ones. Needs the path tracer without accumulation. Adds latency.";
     return result;
   }
+
+  bool RemixNativeRuntime::reconstructionDenoises() const {
+    return m_pathTracer && metal::denoises(m_pathTracer->upscalingStatistics().backend);
+  }
+
+  ui::ReconstructionStatus RemixNativeRuntime::uiReconstruction() const {
+    const auto s = m_pathTracer ? m_pathTracer->upscalingStatistics() : metal::ReconstructionStatistics{};
+    ui::ReconstructionStatus result;
+    result.name = metal::name(s.backend);
+    result.active = s.active;
+    result.denoises = metal::denoises(s.backend);
+    result.renderWidth = s.render.width;
+    result.renderHeight = s.render.height;
+    result.displayWidth = s.display.width;
+    result.displayHeight = s.display.height;
+    result.milliseconds = s.milliseconds;
+    result.failure = s.failure;
+    return result;
+  }
+
+  // Not ported to Metal yet: the NUMOS sky, HDR10 output, screenshot sets and
+  // the path inspector report unavailable, and the tabs hide or explain them.
+  ui::SkyStatus RemixNativeRuntime::uiSky() const {
+    ui::SkyStatus status;
+    status.reason = "The Metal backend does not render the NUMOS sky yet.";
+    return status;
+  }
+
+  ui::HdrStatus RemixNativeRuntime::uiHdr() const { return {}; }
+
+  ui::ScreenshotStatus RemixNativeRuntime::uiScreenshots() const { return {}; }
+
+  void RemixNativeRuntime::uiTakeScreenshot() {}
+
+  ui::PathInspectionStatus RemixNativeRuntime::uiPathInspection() const { return {}; }
+
+  void RemixNativeRuntime::uiInspectPixel(int, int) {}
 
   const void *RemixNativeRuntime::uiTextureView(const scene::Texture *texture) const {
     const auto &textures = const_cast<metal::Raster &>(m_raster).gpu().textures;

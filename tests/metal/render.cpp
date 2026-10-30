@@ -186,7 +186,9 @@ int main(int argc, char **argv) {
   // passes under the settings these checks were written for.
   for (const auto &[key, value] : {std::pair{"bounces", "2"}, {"russianRoulette", "0"}, {"sharcSceneScale", "50"},
                                    {"separateLocalLighting", "0"}, {"localFireflyFilter", "0"}, {"pbrLocalReuse", "0"},
-                                   {"translucencyReuse", "0"}, {"viewModel", "0"}, {"upscaler", "auto"}})
+                                   {"translucencyReuse", "0"}, {"viewModel", "0"}, {"upscaler", "auto"},
+                                   // The thresholds are for the fixed exposure, not the metered one.
+                                   {"autoExposure", "0"}})
     ok(api.SetConfigVariable((std::string("rtx.native.pathtrace.") + key).c_str(), value));
   const auto capabilitiesOf = reinterpret_cast<PFN_remixapi_GetBackendCapabilitiesEXT>(
       dlsym(library, "remixapi_GetBackendCapabilitiesEXT"));
@@ -220,6 +222,15 @@ int main(int argc, char **argv) {
   require(rgb[1] > rgb[0] + .1f && rgb[1] > rgb[2], "Path tracing: the cube's sunlit green face is missing");
   traced.sample(.5f, .12f, rgb);
   require(rgb[2] > rgb[0] && rgb[2] < .4f, "Path tracing: the sky is wrong");
+  // Automatic exposure meters the frame (postfx meter and resolve): this scene
+  // is darker than the meter's target, so it brightens the sunlit ground.
+  ok(api.SetConfigVariable("rtx.native.pathtrace.autoExposure", "1"));
+  Image metered;
+  render(scene, 64, directory + "/pathtrace-metered.png", metered);
+  const float meteredLit = metered.luminance(.14f, .84f);
+  std::printf("metered lit ground %.3f\n", meteredLit);
+  require(meteredLit > lit * 1.05f, "Path tracing: automatic exposure did not meter the frame");
+  ok(api.SetConfigVariable("rtx.native.pathtrace.autoExposure", "0"));
 
   // The temporal stack (NRD REBLUR/SIGMA, TAA, SHARC by default) replaces
   // accumulation: a new configuration is prepared while frames present.

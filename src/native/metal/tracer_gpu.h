@@ -2,6 +2,7 @@
 // Objective-C++ only: the Metal path tracer's GPU state (pathtrace/gpu.h's
 // counterpart). The frame tables, opacity proofs, light hierarchies, static
 // set and temporal history are the shared CPU implementations.
+#include "scene/up_axis.h"
 #include "metal/denoise.h"
 #include <cstdlib>
 #include <cstring>
@@ -231,6 +232,19 @@ namespace remix::metal {
       float cellSize = 0;
     } skyGuiding;
     void configureSkyGuiding(Frame &frame, const TraceOptions &options);
+    // The split local pass's occlusion probes (pathtrace/restir.cpp
+    // configureLocalProbes): each pixel's share of its local light that its
+    // shadow rays let through, compared the next frame to restart local
+    // history where an occluder moved. Two banks, read last frame's.
+    struct LocalProbes {
+      std::shared_ptr<Buffer> buffers[2];
+      uint32_t width = 0, height = 0, writeIndex = 0;
+      bool valid = false;
+    } localProbes;
+    void configureLocalProbes(Frame &frame, const TraceOptions &options);
+    // The world's up axis for volumetricUpAxis Auto (pathtrace/gpu.h): the
+    // camera's, learned over frames.
+    scene::UpAxisDetector upAxis;
     void beginSkyGuiding(id<MTLCommandBuffer> command);
     // pathtrace/ray_profile.cpp (REMIX_RAY_PROFILE=file): structural ray
     // counters from one pixel in 64, appended to a CSV per completed frame.

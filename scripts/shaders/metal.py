@@ -1,6 +1,6 @@
 """Metal libraries of the native Metal backend, translated from the Vulkan backends' SPIR-V.
 
-SPIR-V --pinned SPIRV-Cross fork--> MSL --xcrun metal--> AIR --metallib--> one library per stage,
+SPIR-V --pinned SPIRV-Cross (+ patches/)--> MSL --xcrun metal--> AIR --metallib--> one library per stage,
 each an XZ stream in metal/shaders/embedded.bin of the build's generated tree (generate.py --output),
 which the build generates before this from the same sources. The input is the SPIR-V the Vulkan
 backends embed, so both backends run the same shaders; for the backends embedded after spirv-opt -O
@@ -67,6 +67,12 @@ STAGES = {
     # Volumetrics (volume.cpp) and sparse rendering (sparse.cpp).
     'volumeUpdate': ('pathtrace', 'volumeUpdate'),
     'sparseCompact': ('pathtrace', 'sparseCompact'), 'sparseArgs': ('pathtrace', 'sparseArgs'),
+    # Particle emitters (particles/renderer.cpp): the light volume, simulation,
+    # spawns (SHELTER's traced ones), indirect draw arguments and the draw.
+    'particleLight': ('particles', 'light'), 'particleSimulate': ('particles', 'simulate'),
+    'particleSpawn': ('particles', 'spawn'), 'particleSpawnTraced': ('particles', 'spawnTraced'),
+    'particleArgs': ('particles', 'args'), 'particleVert': ('particles', 'vert'),
+    'particleFrag': ('particles', 'frag'),
 }
 # denoise.comp switches on a push constant (pass.mode), so every image some
 # mode writes is a read_write texture in its translation, and Apple GPUs read

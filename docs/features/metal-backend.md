@@ -21,7 +21,7 @@ and a build contains exactly one backend. Metal builds link neither Vulkan nor M
 | `post.h`, `post.mm` | automatic exposure and bloom |
 | `timers.h`, `timers.mm` | GPU pass timers (counter sample buffers at encoder boundaries) |
 | `shaders.mm`, `gpu.h` | embedded libraries, pipelines (compiled now or in the background) and argument buffers |
-| `ui.mm`, `ui/*.cpp`, `ui/status.h` | Dear ImGui on Metal; Metal copies of the developer panel's tabs |
+| `ui.mm` | Dear ImGui on Metal, and the Metal runtime's answers to the panel's queries (`ui/status.h`) |
 | `diagnostics.h`, `host_passes.h` | the API layer's diagnostics and host passes, as Metal provides them |
 | `shaders/embedded.{h,bin}` | generated Metal libraries |
 
@@ -32,20 +32,20 @@ surface), settings and profiles, the panel, profile and mods UI, the path tracer
 sparse policies. The Metal host code ports the Vulkan renderer's passes; comments name the Vulkan
 function each mirrors.
 
-The developer panel's Rendering, Lighting, Post-processing, Diagnostics and Textures tabs read the
-Vulkan runtime directly, so Metal builds compile copies of them (`metal/ui/*.cpp`) that ask the
-same questions through `ui*` queries (`metal/ui/status.h`). Port upstream changes to `ui/*.cpp`
-there: applying the upstream diff to the copy usually works as is. `metal/ui/upstream.txt` records
-the upstream tabs the copies match; the test `Metal UI copies match the upstream tabs` fails once
-an upstream tab changes and prints the `git diff` to port. `scripts/macos/metal-ui.py --update`
-records the tabs after porting.
+The developer panel is shared: both builds compile the same tabs (`ui/*.cpp`). What differs
+between the backends (device, swapchain or drawables, reconstruction, frame generation, features
+one backend lacks) reaches the tabs only through the queries in `ui/status.h`, which the Vulkan
+runtime answers in `runtime/ui_status.cpp` and the Metal runtime in `metal/ui.mm`. A tab never
+reads a backend's members directly; a new control that needs backend state adds a query that both
+answer. Features the Metal backend does not have yet (the NUMOS sky, HDR10 output, screenshot sets,
+the path inspector) report unavailable, and the tabs hide or explain them.
 
 ## Shaders
 
 The Metal backend runs the same shaders as the Vulkan one. The build generates the Vulkan SPIR-V
 and then, with `scripts/shaders/generate.py metal`, translates each stage with the pinned
-SPIRV-Cross fork (`toolchain.lock.json`, `spirv-cross-msl`, built by
-`scripts/shaders/toolchain.py --metal`) and compiles it with Xcode's `metal` into one
+upstream SPIRV-Cross (`toolchain.lock.json`, `spirv-cross-msl`) with OpenRemix's MSL fixes
+(`scripts/shaders/patches/spirv-cross-msl.patch`), built by `scripts/shaders/toolchain.py --metal`, and compiles it with Xcode's `metal` into one
 XZ-compressed library per stage, which `embedded_data.cpp` embeds. Path tracing stages are translated
 from glslang's SPIR-V before `spirv-opt -O`: Apple's compiler service fails on the fully inlined
 lighting kernels. Descriptor sets become argument buffers at `buffer(set)`; `embedded.h` maps

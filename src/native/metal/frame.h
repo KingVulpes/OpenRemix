@@ -175,10 +175,12 @@ namespace remix::metal::denoise {
     PbrSpecularSh1, PbrDiffuseOutputSh1, PbrSpecularOutputSh1,
     // Gradient tiles of surfaces that move on their own (see inputs.glsl).
     MovingA, MovingB,
+    // Motion vectors of the local-light passes (see denoise/renderer.h).
+    LocalMotion,
     ImageCount
   };
   static_assert(BaseImageCount == 22 && PbrSpecularInput == 29 && FrontNormal == 37 && PbrSpecularSh1 == 49 &&
-                    MovingA == 52 && ImageCount == 54,
+                    MovingA == 52 && LocalMotion == 54 && ImageCount == 55,
                 "Update the matching inputs.glsl bindings when changing image slots");
   // Shared std140 constants. Matrices are nonjittered, in Vulkan framebuffer coordinates.
   struct Frame {

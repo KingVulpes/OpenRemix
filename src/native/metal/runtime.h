@@ -7,7 +7,8 @@
 #include "metal/raster.h"
 #include "metal/tracer.h"
 #include "pathtrace/options.h"
-#include "metal/ui/status.h"
+#include "metal/statistics.h"
+#include "ui/status.h"
 #include "platform/gpu_timings.h"
 #include "platform/window.h"
 #include "runtime/profiles.h"
@@ -52,7 +53,7 @@ namespace remix {
     uint64_t presentationCount() const { return m_presentationCount; }
     remixapi_FramePerformanceEXT framePerformance() const { return m_framePerformance; }
     remixapi_FrameBreakdownEXT frameBreakdown() const { return m_frameBreakdown; }
-    // The developer UI's view of the runtime (metal/ui/status.h), the same
+    // The developer UI's view of the runtime (ui/status.h), the same
     // queries the Vulkan runtime answers (metal/ui.mm).
     ui::DeviceStatus uiDevice() const;
     ui::PreparationStatus uiPreparation() const;
@@ -60,6 +61,15 @@ namespace remix {
     ui::PostStatus uiPost() const;
     ui::PresentStatus uiPresent() const;
     ui::ReconstructionChoices uiReconstructionChoices() const;
+    bool reconstructionDenoises() const;
+    ui::ReconstructionStatus uiReconstruction() const;
+    ui::SkyStatus uiSky() const;
+    ui::HdrStatus uiHdr() const;
+    ui::ScreenshotStatus uiScreenshots() const;
+    void uiTakeScreenshot();
+    ui::PathInspectionStatus uiPathInspection() const;
+    void uiInspectPixel(int x, int y);
+    bool hostPassesSupported() const { return false; } // metal/host_passes.h: not replayed yet
     bool textureCompressionSupported() const;
     bool gpuTimersSupported() const;
     auto rasterMemoryStatistics() const { return m_raster.memoryStatistics(); }
@@ -201,7 +211,7 @@ namespace remix {
     void buildUi();
     void renderUi(void *encoder); // an id<MTLRenderCommandEncoder>
     // The developer UI's tabs (ui/rendering.cpp, lighting.cpp,
-    // post_processing.cpp, diagnostics.cpp), shared with Vulkan builds.
+    // post_processing.cpp, diagnostics.cpp, textures.cpp), shared with Vulkan builds.
     void drawRenderingTab(config::Settings &settings);
     void drawLightingTab(config::Settings &settings);
     void drawSkyTab(config::Settings &settings);
@@ -209,6 +219,10 @@ namespace remix {
     void drawDiagnosticsTab(config::Settings &settings);
     void drawGpuPassTimings(bool enabled);
     void drawTexturesTab(config::Settings &settings);
+    // The diagnostics tab's path inspector (uiPathInspection).
+    bool m_inspecting = false;
+    int m_inspectX = -1, m_inspectY = -1;
+    void drawPathInspector();
     static bool processEvent(const SDL_Event *event, void *userData);
     void destroyMetal();
 

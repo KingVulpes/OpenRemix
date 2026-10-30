@@ -22,9 +22,7 @@ subdir('denoise/shaders')
 subdir('postfx/shaders')
 subdir('upscale/shaders')
 subdir('pathtrace/shaders')
-if not metal_backend
-  subdir('particles/shaders')
-endif
+subdir('particles/shaders')
 if numos_enabled and not metal_backend
   subdir('sky/shaders')
 endif

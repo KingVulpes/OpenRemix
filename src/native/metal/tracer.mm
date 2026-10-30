@@ -519,6 +519,7 @@ namespace remix::metal {
     // pathtrace/temporal.cpp effectiveOptions: the MetalFX denoiser (Ray
     // Reconstruction's place) replaces NRD, SIGMA, TAA and their inputs.
     auto options = requestedOptions;
+    options.volumetricUpAxis = upAxis.resolve(options.volumetricUpAxis);
     const bool denoised = reconstruction::Backend(configuration.reconstruction) ==
                           reconstruction::Backend::MetalFXDenoising;
     if (denoised) {
@@ -715,6 +716,7 @@ namespace remix::metal {
     frame.inverseCamera = scene::inverse(frame.camera);
     const auto eye = scene::inverse(resources.view());
     std::copy_n(eye.data() + 12, 3, frame.eye);
+    upAxis.observe(eye);
     // Camera rays (pathtrace/rendering.cpp): the view and the projection
     // inverted separately, without the eye's translation, which single
     // precision loses far from the origin (near geometry would jitter).
@@ -1021,6 +1023,7 @@ namespace remix::metal {
     configureRegir(frame, options, frame.localConfig[0] != 0);
     configureLightGuiding(frame, options, frame.localScale[2] > 1);
     configureSkyGuiding(frame, options);
+    configureLocalProbes(frame, options);
     // Lights that changed since the previous frame (pathtrace/rendering.cpp):
     // the local denoiser drops history where they changed the light.
     {
@@ -1034,7 +1037,7 @@ namespace remix::metal {
       f.uniform = buffer(nullptr, sizeof(frame));
     // Middle-grey radiance at the current exposure (pathtrace/rendering.cpp):
     // after the scene signature, since exposure drifts while the meter adapts.
-    const float exposure = options.exposure * (options.autoExposure && g.post ? g.post->statistics().exposure : 1.f);
+    const float exposure = options.exposure * (options.autoExposure && post ? post->statistics().exposure : 1.f);
     frame.firefly[3] = .18f / std::max(exposure, 1e-12f);
     if (options.relativeClamps) {
       frame.firefly[0] *= frame.firefly[3];
@@ -1940,6 +1943,44 @@ namespace remix::metal {
     std::memcpy(&frame.skyGuideConfig[2], &share, 4);
     frame.skyGuideConfig[3] = 1;
     g.active = true;
+  }
+
+  // pathtrace/restir.cpp configureLocalProbes. Metal has no ReSTIR DI yet, so
+  // the probes run whenever the split local pass is denoised.
+  void PathTracer::Gpu::configureLocalProbes(Frame &frame, const TraceOptions &options) {
+    auto &p = localProbes;
+    const bool active = options.localHistoryConfidence && configuration.local && denoiser && frame.localConfig[0] != 0;
+    frame.localProbeRead = frame.localProbeWrite = 0;
+    // Not probe settings; free slots.
+    frame.localProbeParams[1] = options.shadowTerminatorSoften ? 1.f : 0.f;
+    // The terminator lift's limits in world units (0 length: off).
+    const float scale = std::max(options.sceneScale, 1e-6f), maxArea = options.shadowTerminatorMaxArea / (scale * scale);
+    frame.localProbeParams[3] = options.shadowTerminatorLift ? options.shadowTerminatorMaxLength / scale : 0.f;
+    std::memcpy(&frame.visibilityConfig[3], &maxArea, 4);
+    frame.localProbeParams[2] = options.bounces > 0 ? std::min(options.emissiveSpecularRoughness, .45f) : 0.f;
+    if (!active) {
+      p.valid = false;
+      return;
+    }
+    // Must match struct LocalProbe in pathtrace.comp.
+    constexpr size_t kProbeBytes = 32;
+    if (!p.buffers[0] || p.width != width || p.height != height) {
+      for (auto &b : p.buffers) {
+        if (b)
+          this->frame().retiredBuffers.push_back(std::move(b));
+        b = buffer(nullptr, size_t(width) * height * kProbeBytes);
+      }
+      p.width = width;
+      p.height = height;
+      p.valid = false;
+    }
+    if (history.reset())
+      p.valid = false;
+    p.writeIndex ^= 1;
+    frame.localProbeWrite = p.buffers[p.writeIndex]->address;
+    frame.localProbeRead = p.valid ? p.buffers[p.writeIndex ^ 1]->address : 0;
+    frame.localProbeParams[0] = options.movingShadowBlur;
+    p.valid = true; // this frame writes it
   }
 
   // As beginLightGuiding: the read bank stays immutable for the frame; clear

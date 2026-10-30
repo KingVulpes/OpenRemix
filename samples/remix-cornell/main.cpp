@@ -179,7 +179,11 @@ int main(int argc, char **argv) {
               {mesh(0xd4, panel, light), true}};
   }
   if (!status)
+#if defined(__APPLE__)
+    std::fprintf(stderr, "Cmd+X: settings panel (the runtime's shortcut; set it in the panel's header)\n");
+#else
     std::fprintf(stderr, "Alt+X: settings panel (the runtime's shortcut; set it in the panel's header)\n");
+#endif
 
   // One frame: camera, instances and presentation (with the capture request).
   auto drawFrame = [&](const remixapi_WindowState &state, bool capture = false) {

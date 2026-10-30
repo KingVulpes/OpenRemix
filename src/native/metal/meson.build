@@ -5,11 +5,6 @@
 metal_args = shell_args + ['-fobjc-arc'] + cpp.get_supported_arguments('-Wno-nullability-completeness')
 metal_sources = files(
   'denoise.mm',
-  'ui/diagnostics.cpp',
-  'ui/lighting.cpp',
-  'ui/post_processing.cpp',
-  'ui/rendering.cpp',
-  'ui/textures.cpp',
   'post.mm',
   'presentation.mm',
   'raster.mm',
@@ -32,5 +27,10 @@ metal_shared_sources = files(
   '../ui/profile_actions.cpp',
   '../ui/profiles.cpp',
   '../ui/sky.cpp',
+  '../ui/rendering.cpp',
+  '../ui/lighting.cpp',
+  '../ui/post_processing.cpp',
+  '../ui/diagnostics.cpp',
+  '../ui/textures.cpp',
   '../ui/style.cpp',
 )

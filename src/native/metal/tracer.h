@@ -1,6 +1,6 @@
 #pragma once
 #include "metal/raster.h"
-#include "metal/ui/status.h"
+#include "metal/statistics.h"
 #include "pathtrace/options.h"
 #include "scene/trace_frame.h"
 #include <remix/remix_native_ext.h>

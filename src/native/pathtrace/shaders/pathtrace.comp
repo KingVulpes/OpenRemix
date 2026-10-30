@@ -236,6 +236,12 @@ vec3 carriedNormal(vec3 n,vec3 e1,vec3 e2,vec3 f1,vec3 f2) {
 // double-sided, so a ray leaving a painted surface meets every layer above
 // it; one query passes them all.
 float originPaint=0;
+// The geometric normal of the surface a path's bounce ray leaves (zero for
+// any other ray): the paint over that surface lies within the attachment
+// distance across it, so closest()'s paint queries start past it and
+// traversal skips those layers instead of passing each to originPaint (a
+// bounce off a wall under ~75 layers of blood visited every one of them).
+vec3 leavingNormal=vec3(0);
 // The nearest intersection a query committed (surface ~0u: none), all a Hit
 // is built from. The Hit is built once, after both scenes (and in closest(),
 // after the paint in front of it): carried across further queries whole it
@@ -393,6 +399,10 @@ Hit closest(vec3 origin,vec3 direction,float maximum,bool motion) {
       receiver=nearest(origin,direction,maximum,0);
       if(!paint)break;
       end=receiver.t;
+      // Floored like the attachment test below (at most 20 x attach).
+      if(!motion&&dot(leavingNormal,leavingNormal)>0)
+        minimum=attach/max(abs(dot(direction,leavingNormal)),.05);
+      if(minimum>=end)break;
       continue;
     }
     originPaint=attach;
@@ -957,6 +967,7 @@ vec3 continuation(Hit primary,int lobe,float probability,out vec3 firstDirection
   emissiveSpecularFromPaths=false;
   bool dead=primary.pbr&&!any(greaterThan(weight,vec3(0)));
   vec3 direction=firstDirection,origin=offsetRay(primary.p,primary.ng);
+  leavingNormal=primary.ng;
   vec3 throughput=primary.pbr?weight/max(materialFactor(primary),vec3(1e-6)):vec3(1),result=vec3(0);
   // Explicit environment visibility also evaluates dome lighting at zero
   // diffuse bounces. Continuation misses then contribute only non-dome skies.
@@ -1017,7 +1028,7 @@ vec3 continuation(Hit primary,int lobe,float probability,out vec3 firstDirection
     }
   }
   if(dead&&!lightPrimary) {
-    coneWidth=0;coneSpread=-1;
+    coneWidth=0;coneSpread=-1;leavingNormal=vec3(0);
     profilePath(6u);specular=extraSkySpecular;
     clampLighting(primary,extraSky,specular,frame.firefly.y/probability);
     return extraSky;
@@ -1059,7 +1070,7 @@ vec3 continuation(Hit primary,int lobe,float probability,out vec3 firstDirection
         passed=(1-f0*f0)*pow(clamp(hit.color.rgb,vec3(1e-4),vec3(1)),vec3(hit.t/hit.thick.y))/max(1-hit.color.a,1e-3);}
       else passed=transmissionColor(hit.color.rgb,hit.tinted);
       throughput*=passed;emissiveWeight*=passed;
-      origin=offsetRay(hit.p,-hit.ng);continue;
+      origin=offsetRay(hit.p,-hit.ng);leavingNormal=vec3(0);continue;
     }
     if(any(greaterThan(emissiveWeight,vec3(0)))) {
       pathDebugRecord(3,hit.p,0,vec4(emissiveWeight,0),vec4(hit.emission,0),vec4(0));
@@ -1131,7 +1142,7 @@ vec3 continuation(Hit primary,int lobe,float probability,out vec3 firstDirection
     emissiveSpecularFromPaths=savedFromPaths;
     // A diffusely sampled continuation ends the distance as well.
     diffuseMotion+=1-dot(hitSpecular,luma)/max(dot(hitWeight,luma),1e-20);
-    throughput*=hitWeight;previousVertex=hit.p;origin=offsetRay(hit.p,hit.ng);layers=0;
+    throughput*=hitWeight;previousVertex=hit.p;origin=offsetRay(hit.p,hit.ng);leavingNormal=hit.ng;layers=0;
 #ifdef SHARC_QUERY
     footprintScale=cacheSpread(footprintScale,cacheFootprint(hit));
 #endif
@@ -1153,7 +1164,7 @@ vec3 continuation(Hit primary,int lobe,float probability,out vec3 firstDirection
       profilePath(11u);
     }
   }
-  coneWidth=0;coneSpread=-1;
+  coneWidth=0;coneSpread=-1;leavingNormal=vec3(0);
   specular=result*specularWeight/max(weight,vec3(1e-20))+extraSkySpecular;
 #ifdef ORCA_SPARSE_PASS
   // Radiance leaving the first vertex toward the primary surface.
@@ -1264,7 +1275,7 @@ void updateCache(ivec2 pixel) {
     if(hit.blended&&((frame.pathConfig.z&1u)==0||random()>=hit.color.a)) {
       if(++layers>=32)break;
       if(bounce!=0)SharcSetThroughput(state,transmissionColor(hit.color.rgb,hit.tinted)*((frame.pathConfig.z&1u)==0?1-hit.color.a:1.));
-      origin=offsetRay(hit.p,-hit.ng);continue;
+      origin=offsetRay(hit.p,-hit.ng);leavingNormal=vec3(0);continue;
     }
     bool store=cacheSurface(hit);
     // A glossy surface's entry is lit, and scatters the path on, as the rough
@@ -1292,7 +1303,7 @@ void updateCache(ivec2 pixel) {
     if(store)SharcSetRadianceDirectionWeight(state,cacheDirectionWeight(hit,weight,specularWeight));
     SharcSetThroughput(state,weight);
     previousVertex=hit.p;footprintScale=cacheSpread(footprintScale,cacheFootprint(hit));
-    origin=offsetRay(hit.p,hit.ng);layers=0;
+    origin=offsetRay(hit.p,hit.ng);leavingNormal=hit.ng;layers=0;
     if(!any(greaterThan(weight,vec3(0))))break;
   }
 }
